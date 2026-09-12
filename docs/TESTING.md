@@ -24,7 +24,10 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import datetime as dt
+import json
+import uuid
 from fathom import config, db, scanner
+from fastapi.responses import JSONResponse
 import uvicorn
 
 with TemporaryDirectory(prefix='fathom-ui-') as runtime:
@@ -60,11 +63,23 @@ with TemporaryDirectory(prefix='fathom-ui-') as runtime:
     else:
         notify.notify_scan_done = lambda *args, **kwargs: None
     from fathom.api import app
+    fixture_id = uuid.uuid4().hex
+
+    @app.middleware('http')
+    async def fixture_identity(request, call_next):
+        if request.url.path == '/__fixture':
+            return JSONResponse({'fixture_id': fixture_id, 'root': root})
+        return await call_next(request)
+
+    print(json.dumps({'fixture_id': fixture_id,
+                      'url': f'http://127.0.0.1:{config.PORT}'}), flush=True)
     uvicorn.run(app, host='127.0.0.1', port=config.PORT)
 PY
 ```
 
-浏览器访问 `http://127.0.0.1:8799`，走总览 → 变化 → 扫描 → 对比 → 分布 → 子目录 → 返回。检查负号/未知、SVG 按钮、快照 IDs 更新和失败反馈。不要点 Finder；需要检查请求时 mock 系统动作。Ctrl-C 退出后临时目录自动释放。
+启动后先读取终端的 `fixture_id`，再 GET `http://127.0.0.1:8799/__fixture` 核对同一个值，同时确认启动进程仍在运行。标识不匹配、接口不存在或进程退出时，立即停止该次验证，不向此端口发送扫描请求，也不能仅因 `/api/status` 返回 200 就判冒烟成功。这一身份端点仅存在于夹具，不属于产品 API。
+
+身份确认后浏览器访问 `http://127.0.0.1:8799`，走总览 → 变化 → 扫描 → 对比 → 分布 → 子目录 → 返回。检查负号/未知、SVG 按钮、快照 IDs 更新和失败反馈。不要点 Finder；需要检查请求时 mock 系统动作。Ctrl-C 退出后临时目录自动释放。
 
 在夹具里省略 seed 循环得到空库，保留一次得到单快照。500/延迟/响应乱序用可控测试服务/拦截器模拟，不能断开生产服务。截图只用合成数据，记录视口尺寸和关键 DOM 断言。
 

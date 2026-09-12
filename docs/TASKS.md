@@ -62,15 +62,15 @@
 | ISS-015 | 周报与月报 | P3 | M4 | DEFERRED | ISS-021 |
 | ISS-016 | 设置持久化与真实服务反馈 | P1 | M2 | BLOCKED | ISS-010、ISS-025 |
 | ISS-017 | 全项目审查与规划 | P1 | M0 | DONE | — |
-| ISS-018 | 拒绝无效扫描，保护有效快照 | P0 | M0 | READY | — |
+| ISS-018 | 拒绝无效扫描，保护有效快照 | P0 | M0 | IN_PROGRESS | — |
 | ISS-019 | 修正真实 BSD du 路径解析 | P0 | M0 | READY | — |
 | ISS-020 | 统一扫描运行与跨进程互斥 | P0 | M0 | BLOCKED | ISS-007、ISS-018、ISS-025 |
 | ISS-021 | 同口径差分与缺失语义 | P0 | M0 | BLOCKED | ISS-025 |
-| ISS-022 | 本地 API 与渲染边界 | P0 | M0 | READY | — |
+| ISS-022 | 本地 API 与渲染边界 | P0 | M0 | IN_PROGRESS | — |
 | ISS-023 | 修复可见数值与快照刷新缺陷 | P1 | M0 | READY | — |
 | ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | BLOCKED | ISS-021 |
 | ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | READY | — |
-| ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | READY | — |
+| ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | IN_PROGRESS | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | BLOCKED | ISS-023 |
 | ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | BLOCKED | ISS-021、ISS-024、ISS-026、ISS-027 |
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | READY | — |
@@ -95,10 +95,10 @@
 - **实施边界**：PM 管理工作，不派发独立文档 worker；不代写业务代码。当前 baseline `b4be3330c5dbf37c4bc9c93510dc98e44ce5543a`，策略分支 `iss-038-m0-pm-autopilot`；仓库继续 private。
 - **验收**：
   - [x] 授权范围、泳道、独立审查、暂停与撤销规则已落在任务源
-  - [ ] Wave 2 全部 Task 在任一 worker 启动前建立，收到真实 dispatch/启动证据
-  - [ ] 周期巡检已启用，交付以 Task/Dispatch 与实测证据核对
+  - [x] Wave 2 全部 Task 在任一 worker 启动前建立，收到真实 dispatch/启动证据
+  - [x] 周期巡检已启用，交付以 Task/Dispatch 与实测证据核对
   - [ ] 每项验收、PR、剩余条件和资源终态均写回，队列停止时暂停心跳
-- **证据/接续**：已确认 Orca runtime ready，项目身份匹配，当前无开放 PR；实际依赖检查通过。GLM 路由摘要新鲜、可用，内存门检查通过；尚未派发不计为工作已开始。
+- **证据/接续**：Orca Run `run_5457fcebf191` 预建 3 个 Task 后启动，三项 spawn exit 0、dispatch_bind=ok；独立目录/分支均基于 b4be333。ISS-018 → `task_22a2d2b0a4ce` / `ctx_a1487c779f45`；ISS-022 → `task_b2091c808847` / `ctx_90a55ca3a103`；ISS-026 → `task_e8f2228ab015` / `ctx_5cdee2f4a4c1`。Claude Code＋GLM 使用现有配置；派发价值门、身份/隔离/额度/内存/安装禁止与写范围门均通过。额度摘要缺条目经已有采集器重新读取后通过；Python 布局改用任务私有链接复用已有 venv，无安装，失败启动产生的空工作区已精确回收。心跳 `fathom-m0-pm` 为 ACTIVE、每 20 分钟，在当前任务接续。已观察三个绑定终端 running 和模型活动；Orca projection 的 session 状态尚为 missing_status，不能视为业务完成。后续以交付与实际 diff/test 核对，当前全部工程验收未完成。
 
 ### ISS-017 · 全项目审查与规划
 
@@ -122,7 +122,7 @@
   - [ ] 正常空目录与读取失败可区分；部分覆盖携带质量说明
   - [ ] du_seconds 记录实际耗时，报告错误不改写扫描事实
   - [ ] 真实小目录扫描与故障注入回归通过
-- **证据/接续**：反例 AUD-01：原 20000 KiB 被失败 du 的 0 KiB 替换，旧快照消失。
+- **证据/接续**：Wave 2 已派发，分支 `iss-018-preserve-valid-snapshots`、工作区 `~/orca/workspaces/fathom/iss-018-preserve-valid-snapshots`；验证尚未完成，运行身份见 ISS-038。反例 AUD-01：原 20000 KiB 被失败 du 的 0 KiB 替换，旧快照消失。
 
 ### ISS-019 · 修正真实 BSD du 路径解析
 
@@ -170,7 +170,7 @@
   - [ ] reveal 的 ..、符号链接越界、前缀同名根、不存在路径及非对象请求均明确响应；mock 证明确实未调用 open
   - [ ] 恶意文件名在表格/tooltip/报告入口不可生成执行节点；真实浏览器验证
   - [ ] 读取路径/报告的边界明确；凭据不进 URL、日志、前端持久存储；本任务不提供任意 shell API
-- **证据/接续**：AUD-06：越界 ../outside 返回 200 并进入 mock open；带外站 Origin 的 scan 返回 200。浏览器跨站限制未被当作已绕过。
+- **证据/接续**：Wave 2 已派发，分支 `iss-022-local-api-boundaries`、工作区 `~/orca/workspaces/fathom/iss-022-local-api-boundaries`；验证尚未完成，运行身份见 ISS-038。AUD-06：越界 ../outside 返回 200 并进入 mock open；带外站 Origin 的 scan 返回 200。浏览器跨站限制未被当作已绕过。
 
 ### ISS-023 · 修复可见数值与快照刷新缺陷
 
@@ -242,7 +242,7 @@
   - [ ] 980×640、1220×820 与长路径布局通过，文字/颜色/键盘可辨
   - [ ] 覆盖真实/未知/权限缺口/Agent 未启用的区别，未来内容按状态出现
   - [ ] 用户评审针对具体产物，反馈回写 DESIGN；不能只产出一张不可操作的静态美图
-- **证据/接续**：尚未执行；不得勾选验收项。
+- **证据/接续**：Wave 2 已派发，分支 `iss-026-interactive-ux-prototype`、工作区 `~/orca/workspaces/fathom/iss-026-interactive-ux-prototype`；验证尚未完成，运行身份见 ISS-038。尚未执行；不得勾选验收项。
 
 ### ISS-027 · 原生前端模块与状态生命周期
 

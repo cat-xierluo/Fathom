@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import os
 import sqlite3
 import subprocess
@@ -39,6 +40,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+logger = logging.getLogger(__name__)
 _scan_lock = threading.Lock()
 
 # 扫描状态持久化（ISS-007）：三态入 scan_runs 表，/api/scan/status 与 /api/status
@@ -66,7 +68,7 @@ def _finalize_running_runs(
     """把遗留的 running 记录收尾为 failed，返回收尾条数（不提交，由调用方 commit）。
 
     - max_age_seconds=None：收尾全部。仅限调用方已持有 _scan_lock 的路径——
-      锁在手即无存活扫描线程，表中 running 必属上次进程；
+      单 Web 进程约定下视为遗留；不能识别其他进程 owner（ISS-020）；
     - 否则只收尾 started_at 早于该时长的（状态读取路径的超时判定）。
     """
     now = dt.datetime.now().isoformat(timespec="seconds")
@@ -92,7 +94,7 @@ def _latest_scan_state(conn: sqlite3.Connection) -> dict:
     """scan_runs 最新一条 -> 扫描状态（原内存态形状，新增 id/status 字段）。
 
     本进程持有 _scan_lock 时扫描确在进行，running 如实上报；锁空闲而表中仍有
-    running 属上次进程遗留，超过 SCAN_STALE_SECONDS 即收尾（重启后"如实报告或
+    running 按单 Web 进程约定视为遗留，超过 SCAN_STALE_SECONDS 即收尾（重启后"如实报告或
     超时收尾"的判定就在这里）。
     """
     if not _scan_lock.locked():
@@ -308,7 +310,7 @@ def api_scan():
     conn = None
     try:
         conn = _get_conn()
-        # 已持有锁 -> 表中残留的 running 必属上次进程，收尾与本次启动同事务提交
+        # 仅在单 Web 进程约定下恢复遗留记录；跨进程 owner 由 ISS-020 补齐
         _finalize_running_runs(conn)
         cur = conn.execute(
             "INSERT INTO scan_runs(started_at, status) VALUES (?, 'running')",
@@ -334,16 +336,28 @@ def api_scan():
                 {"snapshot_id": sid, "report": str(report_path), "pruned": pruned},
                 ensure_ascii=False))
         except Exception as exc:  # noqa: BLE001 - 状态需如实回传前端
+            if conn is not None:
+                conn.rollback()  # 先释放失败阶段的写事务，独立连接才能记录 failed
             try:
                 _set_run_status(run_id, "failed", str(exc))
             except Exception:
-                pass  # 收尾失败只丢状态记录，不掩盖扫描异常本身
+                logger.exception("扫描失败状态无法持久化：run_id=%s", run_id)
         finally:
             if conn is not None:
                 conn.close()
             _scan_lock.release()
 
-    threading.Thread(target=_run, daemon=True).start()
+    try:
+        threading.Thread(target=_run, daemon=True).start()
+    except Exception as exc:
+        try:
+            _set_run_status(run_id, "failed", f"扫描线程启动失败：{exc}")
+        except Exception:
+            logger.exception("线程启动失败状态无法持久化：run_id=%s", run_id)
+        finally:
+            _scan_lock.release()
+        return JSONResponse({"ok": False, "message": "扫描线程启动失败", "run_id": run_id},
+                            status_code=503)
     return {"ok": True, "message": "扫描已启动", "run_id": run_id}
 
 

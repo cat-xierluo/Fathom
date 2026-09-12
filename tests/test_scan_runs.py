@@ -263,3 +263,34 @@ class TestLegacyUpgrade:
         assert client.post("/api/scan").json()["ok"] is True
         assert _wait_until(
             lambda: client.get("/api/scan/status").json()["status"] == "done")
+
+
+def test_thread_start_failure_releases_lock(monkeypatch):
+    class UnstartableThread:
+        def __init__(self, **kwargs):
+            pass
+        def start(self):
+            raise RuntimeError("cannot start thread")
+    monkeypatch.setattr(api.threading, "Thread", UnstartableThread)
+    response = api.api_scan()
+    assert response.status_code == 503
+    assert not api._scan_lock.locked()
+    conn = db.connect()
+    try:
+        row = conn.execute("SELECT * FROM scan_runs").fetchone()
+        assert row["status"] == "failed" and row["finished_at"]
+    finally:
+        conn.close()
+
+
+def test_partial_write_failure_can_persist_failed_state(client, monkeypatch):
+    _mock_scan_kernel(monkeypatch)
+    def broken_prune(conn):
+        conn.execute("UPDATE snapshots SET total_kb=0")
+        raise RuntimeError("prune interrupted after write")
+    monkeypatch.setattr(api.scanner, "prune_snapshots", broken_prune)
+    assert client.post("/api/scan").status_code == 200
+    assert _wait_until(lambda: not api._scan_lock.locked(), timeout=8)
+    state = client.get("/api/scan/status").json()
+    assert state["status"] == "failed"
+    assert "prune interrupted" in state["error"]

@@ -120,7 +120,7 @@ def render_markdown(
 ) -> str:
     """渲染 Markdown 日报。"""
     lines: list[str] = []
-    lines.append(f"# Fathom日报 · {new_meta['created_at'][:10]}")
+    lines.append(f"# Fathom 日报 · {new_meta['created_at'][:10]}")
     lines.append("")
     lines.append(
         f"- 对比快照：{old_meta['created_at']} → {new_meta['created_at']}（根：`{new_meta['root']}`）"

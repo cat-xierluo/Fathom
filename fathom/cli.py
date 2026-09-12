@@ -129,7 +129,7 @@ def cmd_serve(_: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="fathom", description="Fathom：目录大小历史追踪")
+    parser = argparse.ArgumentParser(prog="fathom", description="Fathom ：目录大小历史追踪")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("scan", help="扫描一次并生成日报")

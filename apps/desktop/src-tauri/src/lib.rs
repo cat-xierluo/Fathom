@@ -39,7 +39,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let status = MenuItem::with_id(app, "status", "Fathom启动中…", false, None::<&str>)?;
+            let status = MenuItem::with_id(app, "status", "Fathom 启动中…", false, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
             let scan = MenuItem::with_id(app, "scan", "立即扫描…", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;

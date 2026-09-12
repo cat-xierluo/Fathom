@@ -1,10 +1,17 @@
-# Fathom（Fathom）项目协作指南
+# Fathom 项目协作指南
 
 ## 项目简介
 
-Fathom是 macOS 本机的目录容量变化追踪软件，对标群晖「存储空间分析器（Storage Analyzer）」中最有价值、但 Mac 上没有任何成熟开源工具提供的能力——**目录级历史变化**：每日定时扫描磁盘，差分出"哪个文件夹冒出来了"，配合 Web 仪表盘可视化趋势，支撑有地放矢的清理。
+Fathom 是 macOS 本机的目录容量变化追踪软件，对标群晖「存储空间分析器（Storage Analyzer）」中最有价值、但 Mac 上没有任何成熟开源工具提供的能力——**目录级历史变化**：每日定时扫描磁盘，差分出"哪个文件夹冒出来了"，配合 Web 仪表盘可视化趋势，支撑有地放矢的清理。
 
-技术栈：Python 3.14 + FastAPI + SQLite + 原生 HTML/JS（无构建链）+ ECharts（本地化）+ launchd
+技术栈：Python 3.14 + FastAPI + SQLite + 原生 HTML/JS（无构建链）+ ECharts（本地化）+ launchd + Tauri 2 桌面壳
+
+## 当前状态（2026-09-12 · v0.3.0）
+
+- **已部署运行**：launchd 双任务（`com.maoscripts.fathom-scan` 每日 12:00 / `fathom-web` 常驻 127.0.0.1:7952）；基线快照已建立（93.7 万目录 / 1610 GB / 库 3.6MB），**次日 12:00 起自动产生差分日报**
+- **接手第一步**：读 `docs/TASKS.md` 认领 ISS（当前优先级：ISS-001 次日日报验证 → ISS-008 tray 实测 → ISS-009 .app 打包），推进方向见 `docs/ROADMAP.md`
+- **改名注记**：0.2.0 前名为 disk-sentinel/容量哨兵，历史文档条目保留原名
+- 测试基线：9 passed（`.venv/bin/python -m pytest tests/ -q`）
 
 > 行为规则（中文优先、决策记录、变更透明）遵循 legal-skills 全局 AGENTS.md 惯例，本文件只补充本项目上下文。
 
@@ -48,7 +55,9 @@ Fathom是 macOS 本机的目录容量变化追踪软件，对标群晖「存储�
 | `fathom/api.py` | FastAPI 只读查询 + 手动扫描触发 + 目录浏览/日报档案/Finder 显示 |
 | `fathom/launchd.py` | 两个 plist 的生成与安装（每日扫描 + 常驻 Web） |
 | `frontend/app.js` | hash 路由五页（总览/变化/分布/大文件/设置）+ Tauri 桥（tray 推送/tray-action） |
+| `frontend/icons.js` | SVG 线条图标库（DEC-010：全应用禁止 emoji，新图标只加 `ICON_PATHS`） |
 | `apps/desktop/` | Tauri 薄壳：tray 菜单栏 + 主窗口（loader 页轮询后跳转 FastAPI） |
+| `scripts/make_tray_icon.py` | 生成菜单栏 tray 图标（纯 stdlib PNG 编码） |
 
 ## 开发命令
 

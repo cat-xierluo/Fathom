@@ -168,11 +168,24 @@
 - **范围**：fathom/api.py、frontend/app.js、Tauri capability/CSP、相关测试。
 - **实施边界**：先复现 AUD-06；Host/Origin、发行鉴权及受控浏览器入口形成明确合同，不把 CORS 当写入鉴权。reveal 用规范化路径验证根包含关系，拒绝 .. 与越界符号链接；使用结构化输入。tooltip/日报名等全部按文本/安全转义展示。仅授予需要的 Tauri 命令。
 - **验收**：
-  - [ ] 恶意 Origin/Host、无凭据写请求在副作用前被拒绝，合法 UI/CLI 入口按合同可用
-  - [ ] reveal 的 ..、符号链接越界、前缀同名根、不存在路径及非对象请求均明确响应；mock 证明确实未调用 open
-  - [ ] 恶意文件名在表格/tooltip/报告入口不可生成执行节点；真实浏览器验证
-  - [ ] 读取路径/报告的边界明确；凭据不进 URL、日志、前端持久存储；本任务不提供任意 shell API
-- **证据/接续**（2026-09-13）：[PR #9](https://github.com/cat-xierluo/fathom/pull/9)，head `de7f45f3439df2e781ce24dffec320fb8a62a104`；58 项定向 pytest、31 项真实 Chromium 安全检查与语法检查通过，PM postflight 通过。实现 Dispatch succeeded/completed，精确终端及额度 lease 已回收；独立 reviewer R1 已 REJECT：F1 统一 CSP 导致 /docs 空白；修复 episode 1 已提交 `74fc5aee941e1e26e5002eb499529652ea7d403a` 并 safe-push 更新原 PR；68 项定向 pytest 和 39 项 Chromium 检查通过（真实 CDN 文档初始化）。PM 根据保留原记录的最终 head 证据通过 postflight，R2 独立审查 `ctx_f5c159585927` 在途，尚未合并。AUD-06 原反例与合法请求均在临时夹具覆盖；实际 Tauri WebView 尚未验证。
+  - [x] 恶意 Origin/Host、无凭据写请求在副作用前被拒绝，合法 UI/CLI 入口按合同可用
+  - [x] reveal 的 ..、符号链接越界、前缀同名根、不存在路径及非对象请求均明确响应；mock 证明确实未调用 open
+  - [x] 恶意文件名在表格/tooltip/报告入口不可生成执行节点；真实浏览器验证
+  - [x] 读取路径/报告的边界明确；凭据不进 URL、日志、前端持久存储；本任务不提供任意 shell API
+- **证据/接续**（2026-09-13）：[PR #9](https://github.com/cat-xierluo/fathom/pull/9) 最终 head `74fc5aee941e1e26e5002eb499529652ea7d403a` 经独立 R2 ACCEPT：68 项定向 pytest、39 项真实 Chromium 安全检查、6 项独立探针与真实 CDN 文档初始化通过。PM 在隔离候选上复跑全量 92 pytest 与 39 项浏览器检查，随后按未保护 main 的安全推送门将同树候选 `597a3029824a20a4a77d0a338e5a4ac006ff073e` 集成至 main，并关闭原 PR #9；GitHub 私有免费仓库的 rules API 返回 403，无法证明 merge queue 缺席，故未绕过 fail-closed 门直接调用远端 merge。AUD-06 反例、合法 UI/CLI、目录名文本渲染与 `/docs` 路径专用 CSP 均有固定 head 证据；实际 Tauri WebView 仍 `NOT_VERIFIED`，留给发行/实装验收，不影响本卡本地 Web 合同完成。
+
+### ISS-039 · 扫描结果合同与安全浏览器夹具兼容
+
+- **状态**：READY；阻塞 PR #8 集成。
+- **目标**：让 PR #9 引入的安全浏览器夹具适配 ISS-018 的结构化 `DuResult`，恢复组合基线验证。
+- **范围**：`scripts/security_fixture_server.py`；仅在证明需要时调整对应验证脚本或测试。不得改生产 API、扫描判定或前端行为。
+- **实施边界**：先在 PR #8 更新后固定 head 复现旧二元组 stub 导致的 `AttributeError`，再让 fixture 返回与生产 `run_du` 一致的结构化结果。使用合成临时根，不触生产 HOME、Finder、launchd 或 TCC，不安装依赖。
+- **验收**：
+  - [ ] 安全夹具 seeding 不再因 `run_du` 返回类型失配失败
+  - [ ] `scripts/verify_api_security.cjs` 的 39 项浏览器与 API 边界检查全通过
+  - [ ] 全量 pytest 通过，ISS-018 的无效采集和权限证据反例不回归
+  - [ ] 修复提交绑定 PR #8 最新组合 head，并由独立 reviewer 复核后再集成
+- **证据/接续**：PR #8 更新至 main 后的独立 R4 审查在 head `46f027d` 发现；pytest 134 项与 ISS-018 探针通过，但 `scripts/security_fixture_server.py` 仍按旧二元组 stub `run_du`，组合浏览器验证会在 seeding 阶段触发 `AttributeError`。作为新发现的跨任务兼容缺口单独修复，不计入 ISS-018 原缺陷的第三个 repair episode。
 
 ### ISS-023 · 修复可见数值与快照刷新缺陷
 
@@ -240,11 +253,11 @@
 - **范围**：docs/DESIGN.md，拟新增独立合成数据原型（路径在任务开始时登记）。
 - **实施边界**：按 DESIGN 合同做桌面原型，先表达信息层级/工作流再细化视觉；真实可点的导航、目录选择、状态切换。原型不接生产 API，不假装智能识别已实现。拿具体原型给用户评审，记录取舍后交 ISS-028。
 - **验收**：
-  - [ ] 首次启动、日常定位、失败恢复三个流程能走通，最多三步定位到证据
-  - [ ] 980×640、1220×820 与长路径布局通过，文字/颜色/键盘可辨
-  - [ ] 覆盖真实/未知/权限缺口/Agent 未启用的区别，未来内容按状态出现
+  - [x] 首次启动、日常定位、失败恢复三个流程能走通，最多三步定位到证据
+  - [x] 980×640、1220×820 与长路径布局通过，文字/颜色/键盘可辨
+  - [x] 覆盖真实/未知/权限缺口/Agent 未启用的区别，未来内容按状态出现
   - [ ] 用户评审针对具体产物，反馈回写 DESIGN；不能只产出一张不可操作的静态美图
-- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10)，head `e02488a96d7936dc31aa254ebf9b9feb054668f9`；只交付 `prototypes/ux/` 与验证脚本。首轮长路径/窄窗/权限流程失败后修复，PM 在同步基线后复跑 91 项浏览器检查与语法检查通过，10 张截图，临时验证资源关闭。用户已评审具体原型并反馈“流程可以，但视觉需要明显提升”。用户进一步选择“原生 Mac：克制、精致、轻量”；保留流程，按 [第二轮执行方案](plans/2026-09-13-native-mac-prototype-design.md) 迭代视觉。独立 R1 报告为 REJECT：正常场景切首次启动时残留旧增长结论（B1）；67 项探针通过、1 项失败，另测得 1220px 详情展开后关键数字列进入内部滚动。上述问题纳入已授权视觉第二轮，原 reviewer 已结算、精确终端/lease已回收；第二轮 Task `task_4bc36f9caf3d` / Dispatch `ctx_7b1d38efdb4a` 已启动，范围仍限定原型与验证脚本。整卡 IN_PROGRESS，不将反馈当作定稿认可。原 worker 因 CLI 守卫未发 worker_done，最终 turn 已结束；PM fence 为 abandoned 后关闭其精确自建终端并回收 lease，不把运行结算异常伪报成功。裸 push 未经过安全推送门的问题已由 PM 同步基线并重新 safe-push 完整提交链，代码保留。
+- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10) 已更新至 head `30391ed5e60587b1ed88d7039fc7cc1d9047a9e1` 并同步当前 main。用户首轮反馈“流程可以，但视觉需要明显提升”，进一步选择“原生 Mac：克制、精致、轻量”。视觉二轮交付 `94c94393b96e86411c53c71b40f183f898d4a0bd` 修复首启残留结论、1220 详情关键列挤压和走势末位标签裁切；worker 99/99 浏览器门禁通过。独立 UX R2 同样取得 99/99、13 张截图、三视口×五页 15/15 无页面横向溢出，固定视觉 head 结论 ACCEPT、无阻塞发现；未执行的自编冗余探针已如实记录，不冒充证据。更新后的可点击预览继续在 `http://127.0.0.1:60664`，等待用户第二轮视觉复评；因此第四项保持未勾，整卡仍 IN_PROGRESS，PR 不自动合并或实装生产 UI。
 
 ### ISS-027 · 原生前端模块与状态生命周期
 

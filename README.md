@@ -21,7 +21,14 @@ cd ~/Library/Application\ Support/maoscripts/disk-sentinel
 .venv/bin/python main.py install    # 安装 launchd：每日 12:00 扫描 + 常驻 Web 服务
 ```
 
-然后浏览器打开 **http://127.0.0.1:7952**（可在 Safari 里「添加到 Dock」获得类原生应用体验）。
+**两种使用形态（同一前端）**：
+
+1. **桌面软件**（推荐）：
+   ```bash
+   cd apps/desktop/src-tauri && cargo run   # 菜单栏常驻 + 原生窗口
+   ```
+   菜单栏出现圆环图标与剩余 GB；左键点图标打开主窗口；关闭窗口=隐藏，退出走 tray 菜单。（.app 打包见 ISS-009，当前为 debug 直跑）
+2. **浏览器**：打开 [http://127.0.0.1:7952](http://127.0.0.1:7952)（Safari 可"添加到 Dock"）
 
 手动操作：
 

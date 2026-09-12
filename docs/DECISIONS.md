@@ -4,6 +4,43 @@
 
 ---
 
+### [DEC-009] - 2026-09-12 - UX 重构为群晖式信息架构 + 研究文档不入 Git
+
+**背景**：用户提出三点——①整体 UX 向群晖 DSM 看齐（功能如何编排展示同样重要）；②能点开目录查看；③前期调研的参照项目（duc/disktracker/QDirStat 等）作为内部研究文档保留但不 git 上传。UX 方法论参照 badminton-lab（其 DESIGN.md 的 UX 合同体系）。
+
+**决策**：
+1. 信息架构从单页纵向堆叠重构为左侧导航五页（总览/变化/分布/大文件/设置），对齐群晖"总览=结论先行、报告=档案"的编排（映射表见 docs/research/synology-storage-analyzer.md）；
+2. 新增目录浏览器（面包屑 + 子目录表 + Finder 打开 + 趋势侧栏），旭日图与浏览器联动（QDirStat 双栏模式）；
+3. `docs/research/` 目录沉淀研究文档，`.gitignore` 覆盖；DECISIONS 只保留决策结论与必要链接；
+4. DESIGN.md 升级为 UX 合同（badminton-lab 方法论精简版）：UX 总纲 + 信息架构合同 + 页面职责合同 + 状态约定，单一真值。
+
+**验证**：Chrome 实测分布页——旭日图（Documents 552GB/Library 516GB/Downloads 96.9GB）、面包屑、四列目录表渲染正常，无报错。
+
+**影响**：前端从单文件堆叠变为路由化五页，后续新功能按页面合同落位；研究资料可自由引用而不污染仓库。
+
+---
+
+### [DEC-008] - 2026-09-12 - 桌面壳：菜单栏 tray + 主窗口（用户核心诉求）
+
+**背景**：用户要求"软件形态"：macOS 菜单栏常驻监控 + 点击打开完整软件页面（浏览器 Tab 不算软件）。本机已具备 Rust 工具链（cargo 1.98）。
+
+**决策**：Tauri 2 薄壳（apps/desktop/），参照 badminton-lab 的 apps/desktop 形态但从简：
+1. 壳只做 UI（tray + 窗口），**不做 supervisor**——Python 后端已由 launchd 常驻（比 Badminton Lab 的 sidecar 管理简单一个量级）；
+2. 窗口经本地 loader 页（tauri://localhost）轮询 FastAPI 可达后跳转 127.0.0.1:7952，复用同一前端（浏览器与壳共用，capability 配 remote urls）；
+3. tray 标题（剩余 GB）由前端心跳 invoke `update_tray_status` 推送，Rust 侧零 HTTP 依赖；
+4. 不做 updater/SBOM/CI 矩阵（个人软件，Badminton Lab 的产品级工程暂不需要）；
+5. 关闭窗口=隐藏，退出走 tray 菜单（macOS 菜单栏应用惯例）。
+
+**验证**：编译通过；壳进程运行，原生窗口（1220×820 居中）打开并完整渲染五页仪表盘（截图确认：左侧导航、状态卡告警、旭日图数据）。tray 图标注册无错（进程存活）；标题显示效果待用户菜单栏实测（ISS-008）。
+
+**影响**：软件形态达成"菜单栏监控 + 独立窗口"；后续 .app 打包（bundle）后可入启动台/配 Dock 图标（ISS-009）。
+
+---
+
+### [DEC-007] - 2026-09-12 -（并入 DEC-008）
+
+---
+
 ### [DEC-006] - 2026-09-12 - 快照保留策略：35 日全量 + 12 周每周一份
 
 **背景**：数据卷仅剩 23GB，监控自身不能成为新的容量负担。群晖趋势以周/月为观察尺度。

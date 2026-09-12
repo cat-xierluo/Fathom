@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>容量哨兵</title>
+<style>
+  body {
+    margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: #f5f6f8; color: #1a2233;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+  }
+  .box { text-align: center; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  p { color: #6b7486; font-size: 13px; }
+  button {
+    margin-top: 14px; border: none; background: #2f6fed; color: #fff;
+    padding: 8px 20px; border-radius: 8px; font-size: 14px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <div class="box">
+    <h1>🛰️ 容量哨兵</h1>
+    <p id="msg">正在连接本机服务（127.0.0.1:7952）…</p>
+    <button id="retry" hidden>重试</button>
+  </div>
+<script>
+  const URL_ = "http://127.0.0.1:7952";
+  async function tryConnect() {
+    document.getElementById("retry").hidden = true;
+    document.getElementById("msg").textContent = "正在连接本机服务（127.0.0.1:7952）…";
+    try {
+      const res = await fetch(URL_ + "/api/status", { mode: "cors" });
+      if (res.ok) {
+        location.replace(URL_);
+        return;
+      }
+      throw new Error("HTTP " + res.status);
+    } catch (e) {
+      document.getElementById("msg").textContent =
+        "本机服务未响应——后台扫描服务应由 launchd 常驻，若刚卸载过请运行 main.py install。";
+      document.getElementById("retry").hidden = false;
+    }
+  }
+  document.getElementById("retry").addEventListener("click", tryConnect);
+  tryConnect();
+  setInterval(() => { if (!document.hidden) tryConnect(); }, 5000);
+</script>
+</body>
+</html>

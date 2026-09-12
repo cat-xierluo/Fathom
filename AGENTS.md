@@ -19,19 +19,22 @@
 
 ## 文件清单
 
-| 文档 | 位置 | 职责 |
+| 文档/目录 | 位置 | 职责 |
 |------|------|------|
 | README.md | 根目录 | 项目介绍、快速开始、故障排查 |
 | CHANGELOG.md | 根目录 | 版本变更记录 |
 | main.py | 根目录 | CLI 入口（scan/report/bigfiles/status/serve/install/uninstall） |
 | disk_sentinel/ | 根目录 | Python 包：内核与 API |
-| frontend/ | 根目录 | 无构建链静态前端（ECharts 已本地化到 vendor/） |
+| frontend/ | 根目录 | 无构建链静态前端（ECharts 已本地化到 vendor/），hash 路由五页 |
+| apps/desktop/ | 根目录 | Tauri 2 桌面壳：菜单栏 tray + 主窗口（DEC-008） |
+| scripts/ | 根目录 | tray 图标生成等工具脚本 |
 | tests/ | 根目录 | pytest 单元测试 |
 | docs/ARCHITECTURE.md | docs/ | 系统架构、数据流、API 清单、DB schema |
-| docs/DECISIONS.md | docs/ | 技术决策记录（含为什么不用 duc / 不 fork disktracker） |
-| docs/TASKS.md | docs/ | 待办追踪 |
+| docs/DECISIONS.md | docs/ | 技术决策记录（含为什么不用 duc / 不 fork disktracker / Tauri 从简） |
+| docs/TASKS.md | docs/ | 待办追踪（ISS-XXX） |
 | docs/ROADMAP.md | docs/ | 阶段路线图 |
-| docs/DESIGN.md | docs/ | 前端视觉与交互规范 |
+| docs/DESIGN.md | docs/ | UX 合同：信息架构、五页职责、状态约定、视觉规范 |
+| docs/research/ | docs/ | **内部研究文档（gitignore，不入库）**：群晖 UX 映射、开源项目功能抽取 |
 | data/ reports/ logs/ | 根目录 | 运行时产物（gitignore，含全盘路径，绝不入库） |
 
 ## 模块速查
@@ -42,8 +45,10 @@
 | `disk_sentinel/scanner.py` | 调 `du -xk` 生成快照；同日覆盖；周/日保留策略清理 |
 | `disk_sentinel/reports.py` | 快照差分（父子折叠算法 `fold_changes`）+ Markdown 日报 |
 | `disk_sentinel/bigfiles.py` | `find` 近 N 天大文件 |
-| `disk_sentinel/api.py` | FastAPI 只读查询 + 手动扫描触发（API 文档自动生成在 `/docs`） |
+| `disk_sentinel/api.py` | FastAPI 只读查询 + 手动扫描触发 + 目录浏览/日报档案/Finder 显示 |
 | `disk_sentinel/launchd.py` | 两个 plist 的生成与安装（每日扫描 + 常驻 Web） |
+| `frontend/app.js` | hash 路由五页（总览/变化/分布/大文件/设置）+ Tauri 桥（tray 推送/tray-action） |
+| `apps/desktop/` | Tauri 薄壳：tray 菜单栏 + 主窗口（loader 页轮询后跳转 FastAPI） |
 
 ## 开发命令
 
@@ -53,6 +58,7 @@
 .venv/bin/python main.py serve         # 前台启动 Web 服务（开发用）
 .venv/bin/python main.py install       # 安装 launchd 任务（部署用）
 .venv/bin/python main.py uninstall     # 卸载 launchd 任务
+cd apps/desktop/src-tauri && cargo run # 桌面壳开发运行（需 Rust 工具链）
 ```
 
 冒烟测试不污染生产库：`DISK_SENTINEL_DB=/tmp/x.db .venv/bin/python main.py serve`

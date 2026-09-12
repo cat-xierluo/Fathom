@@ -8,16 +8,38 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - GET  /api/diff             两快照差分
 - GET  /api/trend?path=      单目录历史大小序列
 - GET  /api/bigfiles         近期大文件
+- GET  /api/bootstrap        发放写令牌（同源受控，ISS-022）
 - POST /api/scan             触发手动扫描（后台执行，状态入 scan_runs 表）
 - GET  /api/scan/status      查询扫描任务状态（?history=N 附最近 N 条记录）
+- POST /api/reveal           在 Finder 中显示根内路径（受 reveal 边界约束）
+
+本地边界合同（ISS-022，仅覆盖当前单实例 loopback 服务；发行端口/服务发现归 ISS-029）：
+
+1. Host 校验：所有请求的 Host 必须是本服务 loopback 别名（127.0.0.1 / localhost
+   + config.PORT），否则 403 —— DNS rebinding 防线。
+2. Origin 校验：携带 Origin 的请求必须是同源或 Tauri loader 源，跨站 403。
+   CORS 中间件只决定跨域响应“可读性”，不是写鉴权（写鉴权见下一条）。
+3. 写令牌：副作用方法（POST 等）必须带 X-Fathom-Token，与进程内存中的随机
+   令牌比对。令牌只经同源 GET /api/bootstrap 发放，不进 URL、日志或前端持久
+   存储；进程重启即轮换。同源页面 / Tauri 主窗口（remote loopback，与浏览器
+   同源）启动时自动 bootstrap；无 Origin 的机器请求（curl/CLI）按下法使用：
+
+   TOKEN=$(curl -s http://127.0.0.1:7952/api/bootstrap | python3 -c \
+       'import json,sys; print(json.load(sys.stdin)["token"])')
+   curl -X POST -H "X-Fathom-Token: $TOKEN" http://127.0.0.1:7952/api/scan
+
+不提供任意 shell 执行类 API；reveal 只接受监控根内的规范化存在路径。
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import json
 import logging
 import os
+import re
+import secrets
 import sqlite3
 import subprocess
 import threading
@@ -32,7 +54,7 @@ from . import bigfiles, config, db, reports, scanner
 
 app = FastAPI(title="Fathom", version="0.2.0")
 
-# Tauri 壳的 loader 页（tauri://localhost）需要跨域探测本服务
+# Tauri 壳的 loader 页（tauri://localhost）需要跨域探测本服务（只读）
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["tauri://localhost", "http://tauri.localhost"],
@@ -42,6 +64,89 @@ app.add_middleware(
 
 logger = logging.getLogger(__name__)
 _scan_lock = threading.Lock()
+
+# ---------- 本地边界合同（ISS-022） ----------
+
+# 写令牌：进程启动时随机生成，仅存内存；不写库、不写日志、不经 URL 传输。
+# 发放渠道唯一：GET /api/bootstrap（见 guard 的 Host/Origin 校验）。
+_WRITE_TOKEN = secrets.token_urlsafe(32)
+
+# Tauri 壳本地 loader 页（只读探测）；发行模式主窗口直接加载 loopback URL，
+# 与浏览器同源，不在此列。
+_TAURI_LOADER_ORIGINS = frozenset({"tauri://localhost", "http://tauri.localhost"})
+
+# 无副作用方法之外的请求都需要写令牌（当前路由只有 POST /api/scan、/api/reveal）
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+# 静态前端与 API 响应统一安全头：前端无内联脚本，ECharts 只需内联样式
+_CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'")
+
+# FastAPI 自动文档页（/docs /redoc）模板固定引用外部资源：jsdelivr 的
+# Swagger UI / Redoc 脚本与样式、fastapi.tiangolo.com 图标、redoc 的 Google
+# Fonts；初始化脚本是模板内联的，无 nonce 挂点。统一 _CSP 会把这些全部拒掉，
+# 使文档页成为空页（F1 回归）。因此只对下面三个精确路径（不含任何用户输入）
+# 放行这些固定来源 + 内联初始化；其余响应（前端静态页、/api、404 等）不变。
+# worker-src blob: 供 Swagger UI 自带的语法高亮 Web Worker（页面内生成的
+# 同源代码，非外部来源）。
+_DOCS_CSP = ("default-src 'self'; "
+             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net "
+             "https://fonts.googleapis.com; "
+             "font-src 'self' https://fonts.gstatic.com; "
+             "img-src 'self' data: https://fastapi.tiangolo.com "
+             "https://cdn.redoc.ly; "
+             "connect-src 'self'; worker-src 'self' blob:; "
+             "object-src 'none'; base-uri 'self'")
+_DOC_PATHS = frozenset({"/docs", "/redoc", "/openapi.json"})
+
+
+def _trusted_hosts() -> frozenset[str]:
+    """本服务 loopback 别名（含端口）。Host 不在其中即视为 rebinding/误连。"""
+    return frozenset((f"127.0.0.1:{config.PORT}", f"localhost:{config.PORT}"))
+
+
+def _trusted_origins() -> frozenset[str]:
+    """允许携带的 Origin：自身 loopback 源 + Tauri loader 源。"""
+    origins = {f"http://127.0.0.1:{config.PORT}", f"http://localhost:{config.PORT}"}
+    return frozenset(origins | _TAURI_LOADER_ORIGINS)
+
+
+@app.middleware("http")
+async def local_boundary_guard(request: Request, call_next):
+    """本地边界守卫：Host / Origin / 写令牌三重校验，先于任何 handler 副作用。
+
+    - CORS 中间件在本守卫内层：跨站请求在这里被拒，与“响应是否可读”无关；
+    - 无 Origin 的请求（curl/CLI/无 Origin 头的机器客户端）不受 Origin 规则
+      限制，但写请求仍需令牌（先 GET /api/bootstrap）；
+    - 文档页（精确 /docs /redoc /openapi.json）的 CSP 用 _DOCS_CSP（FastAPI
+      模板固定 CDN + 内联初始化），其余响应仍用严格 _CSP；
+    - 拒绝响应不含令牌或内部路径信息。
+    """
+    host = request.headers.get("host", "").lower()
+    if host not in _trusted_hosts():
+        return JSONResponse({"detail": "已拒绝：Host 不是本机服务地址"}, status_code=403)
+
+    origin = request.headers.get("origin")
+    if origin is not None and origin not in _trusted_origins():
+        return JSONResponse({"detail": "已拒绝：跨站 Origin"}, status_code=403)
+
+    if request.method not in _SAFE_METHODS:
+        token = request.headers.get("x-fathom-token", "")
+        ok = bool(token) and token.isascii() and hmac.compare_digest(token, _WRITE_TOKEN)
+        if not ok:
+            return JSONResponse(
+                {"detail": "已拒绝：写请求需要 X-Fathom-Token（先 GET /api/bootstrap 获取）"},
+                status_code=403)
+
+    response = await call_next(request)
+    # 文档页（精确匹配，路径不经用户输入）用文档兼容 CSP，其余一律严格 _CSP
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        _DOCS_CSP if request.url.path in _DOC_PATHS else _CSP)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
+
 
 # 扫描状态持久化（ISS-007）：三态入 scan_runs 表，/api/scan/status 与 /api/status
 # 改查表，服务重启后状态不丢。陈旧 running 判定：du 全盘实测 5-15 分钟（DEC-002），
@@ -302,6 +407,17 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
     return {"files": bigfiles.find_big_files(days=days, min_mb=min_mb, topn=topn)}
 
 
+@app.get("/api/bootstrap")
+def api_bootstrap():
+    """发放写令牌（ISS-022）。守卫已保证：Host 正确，且 Origin（若有）同源或
+    Tauri loader 源——跨站脚本即使发起请求也无法读取本响应（同源策略）。
+
+    前端把令牌保存在页面内存变量中，随写请求以 X-Fathom-Token 头回传；
+    不写入 localStorage/URL。进程重启后令牌轮换，前端 403 时自动重新获取。
+    """
+    return {"token": _WRITE_TOKEN}
+
+
 @app.post("/api/scan")
 def api_scan():
     if not _scan_lock.acquire(blocking=False):
@@ -462,7 +578,8 @@ def api_reports():
 
 @app.get("/api/reports/{date}")
 def api_report(date: str):
-    if not (len(date) == 10 and date[4] == "-" and date[:4].isdigit()):
+    # 完整 YYYY-MM-DD 格式校验：日期是唯一进入文件名的用户输入片段
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
         raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
     path = config.REPORTS_DIR / f"{date}.md"
     if not path.is_file():
@@ -472,18 +589,41 @@ def api_report(date: str):
 
 @app.post("/api/reveal")
 async def api_reveal(request: Request):
-    """在 Finder 中显示指定路径（open -R）。仅允许监控根内的路径。"""
-    body = await request.json()
-    path = str(body.get("path", ""))
-    root = str(config.DEFAULT_ROOT)
-    if not (path == root or path.startswith(root + "/")):
-        raise HTTPException(400, "路径必须在监控根之内")
-    if not os.path.exists(path):
+    """在 Finder 中显示指定路径（open -R）。仅接受监控根内真实存在、规范化后
+    仍在根内的路径（ISS-022：拒绝 ..、越界符号链接、前缀同名根、相对路径、
+    非对象请求）。实际交给 open -R 的是解析后的规范路径。
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "请求体必须是合法 JSON 对象")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "请求体必须是 JSON 对象")
+    raw = body.get("path")
+    if not isinstance(raw, str) or not raw:
+        raise HTTPException(400, "path 必须是非空字符串")
+
+    root_str = str(config.DEFAULT_ROOT).rstrip("/") or "/"
+    if not (raw == root_str or raw.startswith(root_str + "/")):
+        # 字符串层先拒绝相对路径与前缀同名根（/scanroot-evil 不是 /scanroot）
+        raise HTTPException(400, f"路径必须是监控根 {root_str} 之内的绝对路径")
+
+    try:
+        root_real = Path(root_str).resolve()
+        resolved = Path(raw).resolve()
+    except (OSError, ValueError, RuntimeError):
+        raise HTTPException(400, "路径无法规范化")
+    if resolved != root_real and root_real not in resolved.parents:
+        # 规范化层拒绝 .. 折叠与符号链接越界
+        raise HTTPException(400, "路径规范化后位于监控根之外，已拒绝")
+    if not resolved.exists():
         raise HTTPException(404, "路径不存在（可能已被移动或删除）")
-    result = subprocess.run(["/usr/bin/open", "-R", path], capture_output=True, text=True)
+
+    result = subprocess.run(["/usr/bin/open", "-R", str(resolved)],
+                            capture_output=True, text=True)
     if result.returncode != 0:
         raise HTTPException(500, f"打开失败：{result.stderr.strip()}")
-    return {"ok": True}
+    return {"ok": True, "path": str(resolved)}
 
 
 # 前端静态资源挂载在最后，避免覆盖 /api 路由

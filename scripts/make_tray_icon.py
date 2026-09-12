@@ -3,6 +3,8 @@
 
 图案：44x44 template 风格（透明底 + 白色图形，macOS 自动适配深浅菜单栏）——
 外环雷达 + 中心点，呼应"哨兵"。
+线宽/留白：环为实心带（非发丝线），44px 画布在菜单栏 22pt 高度下约 2pt 线宽，
+外缘各留 2.5px 空白，保证深浅色下均清晰。
 输出：apps/desktop/src-tauri/icons/tray.png
 """
 
@@ -12,17 +14,20 @@ from pathlib import Path
 
 SIZE = 44
 CX = CY = SIZE / 2
-R_OUT, R_IN = 19.5, 15.5   # 外环
-R_DOT = 4.5                # 中心点
-ARC = 1.0                  # 简易抗锯齿半径容差
+R_OUT, R_IN = 18.5, 14.5   # 外环实心带（浅色菜单栏下发丝线近乎不可见，需足够线宽）
+R_DOT = 5.0                # 中心点
+ARC = 1.0                  # 边缘抗锯齿半宽
 
 
-def _alpha(dist: float, r: float) -> int:
-    """距环中心线 r 的点，按距离容差给出 0-255 抗锯齿 alpha。"""
-    d = abs(dist - r)
-    if d >= ARC:
+def _band_alpha(dist: float, lo: float, hi: float) -> int:
+    """实心环带 [lo, hi]，内外边缘各 ARC 半宽线性抗锯齿。"""
+    if dist <= lo - ARC or dist >= hi + ARC:
         return 0
-    return round(255 * (1 - d / ARC))
+    if dist < lo:
+        return round(255 * (dist - (lo - ARC)) / (2 * ARC))
+    if dist > hi:
+        return round(255 * ((hi + ARC) - dist) / (2 * ARC))
+    return 255
 
 
 def build_pixels() -> bytearray:
@@ -31,11 +36,7 @@ def build_pixels() -> bytearray:
         raw.append(0)  # filter: None
         for x in range(SIZE):
             dist = ((x - CX + 0.5) ** 2 + (y - CY + 0.5) ** 2) ** 0.5
-            a = max(_alpha(dist, (R_OUT + R_IN) / 2), _alpha(dist, 0) if R_DOT == 0 else 0)
-            # 中心点
-            if dist <= R_DOT + ARC:
-                dot_a = round(255 * min(1, (R_DOT + ARC - dist) / (2 * ARC)))
-                a = max(a, dot_a)
+            a = max(_band_alpha(dist, R_IN, R_OUT), _band_alpha(dist, 0.0, R_DOT))
             raw += bytes((255, 255, 255, a))
     return raw
 

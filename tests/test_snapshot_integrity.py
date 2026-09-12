@@ -15,6 +15,10 @@ ISS-018 修复合同（2026-09-13，PM 驳回宽松定性后保守收敛）：�
 TestErroredCollectionRejected / TestQualityClassification /
 TestStderrErrorClassification 的反例钉住）。错误判据来自 run_du 对 stderr
 全量的逐行分类，stderr_tail 只是截尾显示、不得作为判据。
+R2 BLK-1 追加（TestPathTextCannotSpoofPermissionEvidence）：逐行分类只认
+每行最后一个 ": " 之后 errno 消息段的精确权限文案，出错路径文本本身含
+权限措辞（以报错文案命名的目录）不得冒充权限证据——否则 ENOENT/
+ENAMETOOLONG 行被误计为 denied 后，根行存在 + exit=1 仍覆盖当日旧快照。
 """
 
 from __future__ import annotations
@@ -75,6 +79,44 @@ def _make_valid_snapshot(conn, tree, min_kb: int = 1024) -> int:
     assert row["total_kb"] >= 19 * 1024, "先建立当日有效快照（≈20000 KiB）"
     assert row["du_seconds"] > 0
     return sid
+
+
+def _build_deep_tree(root, levels) -> None:
+    """在 root 下用 chdir 逐层 mkdir 造总长超过 PATH_MAX 的深目录树。
+
+    每步只用 ≤255 字符的短相对名（mkdir/chdir），不触碰长绝对路径；
+    finally 恢复原 cwd。levels 为各层目录名（其中一个含权限措辞文案，
+    用于构造"路径文本冒充权限证据"的反例）。"""
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        for name in levels:
+            os.mkdir(name)
+            os.chdir(name)
+    finally:
+        os.chdir(cwd)
+
+
+def _remove_deep_tree(root, levels) -> None:
+    """自底向上用短相对名逐层回收深目录树。
+
+    深树的绝对路径超过 PATH_MAX，按绝对路径 rmtree 会 ENAMETOOLONG；
+    先 chdir 到实际建成的最深层，再逐层 chdir("..") + rmdir(子层名)，
+    每步只用短相对名，部分建成（中途失败）也能回收。"""
+    cwd = os.getcwd()
+    try:
+        os.chdir(root)
+        reached = 0
+        for name in levels:
+            if not os.path.isdir(name):
+                break
+            os.chdir(name)
+            reached += 1
+        for name in reversed(levels[:reached]):
+            os.chdir("..")
+            os.rmdir(name)
+    finally:
+        os.chdir(cwd)
 
 
 class TestAudit01InvalidScanRejected:
@@ -474,6 +516,128 @@ class TestStderrErrorClassification:
         # 截尾显示干净不代表采集干净：判定必须基于全量分类拒绝
         with pytest.raises(scanner.InvalidScanError):
             scanner.classify_collection(result, str(valid_tree))
+
+
+class TestPathTextCannotSpoofPermissionEvidence:
+    """R2 BLK-1 回归：出错路径文本含权限措辞不得冒充权限证据。
+
+    权限分类只认每行最后一个 ": " 之后 errno 消息段与权限文案的精确
+    相等，不对整行做子串匹配——目录名恰含 "Permission denied"（以报错
+    文案命名并不罕见）时，其下的 ENOENT/ENAMETOOLONG 等非权限行会被
+    误计为 denied；于是根行存在 + exit=1 仍进入同日替换，覆盖当日旧
+    快照（R2 review S12a 真实 du 实机复现）。
+    """
+
+    def _spoof_lines(self, root_str):
+        """三种"出错路径含权限措辞 + 真实 errno 非权限"的 stderr 形态。"""
+        return [
+            # 目录名含冒号+空格+权限文案，真实 errno=ENOENT（churn 竞态行）
+            f"du: {root_str}/dir: Permission denied/child: No such file or directory\n",
+            # 目录名以权限文案结尾，真实 errno=ENAMETOOLONG（深路径）
+            f"du: {root_str}/save: Permission denied: File name too long\n",
+            # 目录名含带空格的权限措辞（S12b 形态），真实 errno=ENAMETOOLONG
+            f"du: {root_str}/d3 Permission denied xxxx: File name too long\n",
+        ]
+
+    def test_spoofed_errno_lines_counted_as_other_and_rejected(
+            self, valid_tree, monkeypatch):
+        """路径含权限措辞的非权限 errno 行必须全部计为非权限错误并拒绝，
+        不得覆盖当日旧 snapshot/entries/volume_stats。"""
+        conn = db.connect()
+        try:
+            sid = _make_valid_snapshot(conn, valid_tree)
+            before = _db_state(conn)
+            for line in self._spoof_lines(str(valid_tree)):
+                _inject_du_process(
+                    monkeypatch, returncode=1,
+                    stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n",
+                    stderr=line)
+                result = scanner.run_du(valid_tree)
+                assert result.denied_count == 0, line
+                assert result.other_error_count == 1, line
+                assert result.other_error_sample == line.rstrip("\n")
+                with pytest.raises(scanner.InvalidScanError) as ei:
+                    scanner.create_snapshot(conn, valid_tree, min_kb=1024)
+                assert "非权限错误" in str(ei.value)
+                assert _db_state(conn) == before
+                assert _db_state(conn)["snapshots"][0][0] == sid
+        finally:
+            conn.close()
+
+    def test_mixed_spoofed_and_real_permission_rejected(self, valid_tree, monkeypatch):
+        """spoof 行 + 真实权限行混合：无法证明仅权限受限，必须拒绝。"""
+        conn = db.connect()
+        try:
+            _make_valid_snapshot(conn, valid_tree)
+            before = _db_state(conn)
+            _inject_du_process(
+                monkeypatch, returncode=1,
+                stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n",
+                stderr=(
+                    f"du: {valid_tree}/dir: Permission denied/child:"
+                    " No such file or directory\n"
+                    f"du: {valid_tree}/hidden: Permission denied\n"))
+            result = scanner.run_du(valid_tree)
+            assert result.denied_count == 1
+            assert result.other_error_count == 1
+            with pytest.raises(scanner.InvalidScanError):
+                scanner.create_snapshot(conn, valid_tree, min_kb=1024)
+            assert _db_state(conn) == before
+        finally:
+            conn.close()
+
+    def test_real_permission_error_with_marker_in_path_still_partial(
+            self, valid_tree, monkeypatch):
+        """反向安全网：真实权限错误行即使路径本身含 ": " 与权限文案
+        （目录名字面含权限措辞），消息段精确匹配仍计为权限证据 → partial。"""
+        _inject_du_process(
+            monkeypatch, returncode=1,
+            stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n",
+            stderr=f"du: {valid_tree}/x: Permission denied/child: Permission denied\n")
+        result = scanner.run_du(valid_tree)
+        assert result.denied_count == 1
+        assert result.other_error_count == 0
+        assert scanner.classify_collection(result, str(valid_tree)) == "partial"
+
+    def test_real_du_deep_marker_path_rejected_preserving(self, tmp_path):
+        """真实 du（零注入）：超 PATH_MAX 深路径确定性产生 ENAMETOOLONG
+        非权限错误行，其出错路径文本含 'Permission denied' 文案（R2 S12a
+        反例）——必须拒绝且当日旧 snapshot/entries/volume_stats 一字不动，
+        不得作为 partial 覆盖旧快照。"""
+        conn = db.connect()
+        try:
+            tree = tmp_path / "deep_root"
+            _write_file(tree / "big" / "data.bin", 20 * 1024 * 1024)
+            sid = _make_valid_snapshot(conn, tree)
+            before = _db_state(conn)
+
+            # 8 层 × ~200 字符：总绝对路径超 PATH_MAX；第 4 层目录名逐字含
+            # 权限措辞（带空格），全程 0755、无任何真实权限限制
+            levels = [
+                f"d{i} Permission denied " + "x" * 170 if i == 3
+                else f"d{i}_" + "x" * 200
+                for i in range(8)
+            ]
+            _build_deep_tree(tree, levels)
+            try:
+                result = scanner.run_du(tree)
+                assert result.exit_code != 0
+                assert str(tree) in result.sizes
+                # 出错路径含权限措辞，但 errno 消息段是 ENAMETOOLONG：
+                # 必须计为非权限错误，不得冒充权限证据
+                assert result.other_error_count >= 1
+                assert "Permission denied" in result.other_error_sample
+                assert result.denied_count == 0
+
+                with pytest.raises(scanner.InvalidScanError) as ei:
+                    scanner.create_snapshot(conn, tree, min_kb=1024)
+                assert "非权限错误" in str(ei.value)
+                assert _db_state(conn) == before
+                assert _db_state(conn)["snapshots"][0][0] == sid
+            finally:
+                _remove_deep_tree(tree, levels)
+        finally:
+            conn.close()
 
 
 class TestPartialCoverage:

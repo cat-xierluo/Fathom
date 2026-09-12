@@ -15,7 +15,10 @@
   负数/无效大小等解析无效证据，不能因根记录存在而豁免：一律在进入事务前抛
   InvalidScanError，当日旧 snapshot/entries/volume_stats 原样保留，错误不吞。
   错误分类判据是 run_du 时点对 stderr 全量的逐行计数（存于 DuResult），
-  stderr_tail 只是截尾显示，不得作为判据（会遗漏前部错误）。
+  stderr_tail 只是截尾显示，不得作为判据（会遗漏前部错误）；逐行只认
+  errno 消息段（行内最后一个 ": " 之后）与权限文案的精确相等，出错
+  路径文本含权限措辞不得冒充权限证据（R2 BLK-1），无法证明权限类的
+  行保守计为非权限错误。
 - 采集质量的持久化边界：现有 schema 只有 denied_count/du_seconds 两列，
   退出码、stderr 摘要等质量细节只存在于当次 DuResult，不伪造未知元数据；
   完整质量元数据的持久化随 ISS-025 的 schema 工作补齐。
@@ -37,8 +40,24 @@ from . import config
 # BSD du 对文件名中的非打印字符输出八进制转义（如 \346\226\207），tab 也会被转义
 _OCTAL_RE = re.compile(r"\\([0-7]{1,3})")
 
-# stderr 权限类错误标志（与 denied_count 口径一致；BSD du 英文输出，大小写敏感）
-_PERMISSION_MARKERS = ("Operation not permitted", "Permission denied")
+# stderr 权限类错误消息（BSD du errno 文案，英文、大小写敏感）。
+# 分类判据是每行最后一个 ": " 之后的 errno 消息段与集合的精确相等，
+# 不是整行子串匹配：出错路径的文本本身可能含权限措辞（如以报错文案
+# 命名的目录），整行子串会把 ENOENT/ENAMETOOLONG 等非权限 errno 行
+# 误判为权限证据（R2 BLK-1）。errno 消息由 du 的 strerror 生成、不含
+# ": "，行内最后一个 ": " 恰是路径与消息的边界；消息段不是已知权限
+# 文案的行一律保守计为非权限错误。
+_PERMISSION_MESSAGES = frozenset({"Operation not permitted", "Permission denied"})
+
+
+def _errno_message_segment(line: str) -> str:
+    """取 du stderr 错误行最后一个 ": " 之后的 errno 消息段（去尾部空白）。
+
+    BSD du 错误行形态是 "du: <path>: <errno message>"，errno 消息不含
+    ": "，故最后一个 ": " 总是路径与消息的边界——消息段不含路径文本，
+    路径里逐字包含权限措辞也无法冒充权限证据。
+    """
+    return line.rstrip().rsplit(": ", 1)[-1]
 
 
 class InvalidScanError(RuntimeError):
@@ -116,7 +135,9 @@ def run_du(root: Path) -> DuResult:
     """执行 du -xk，返回结构化采集结果（大小表、退出码、质量线索、真实耗时）。
 
     错误分类在采集时点对 stderr 全量逐行进行（权限类 / 非权限类）并固化到
-    DuResult——有效性判据后续只读这些全量计数，不重新看 stderr_tail 截尾。
+    DuResult——每行只认最后一个 ": " 之后 errno 消息段与权限文案的精确
+    相等，路径文本不参与判据；有效性判据后续只读这些全量计数，不重新看
+    stderr_tail 截尾。
     """
     started = time.monotonic()
     proc = subprocess.run(
@@ -142,7 +163,7 @@ def run_du(root: Path) -> DuResult:
     for line in proc.stderr.splitlines():
         if not line.strip():
             continue
-        if any(marker in line for marker in _PERMISSION_MARKERS):
+        if _errno_message_segment(line) in _PERMISSION_MESSAGES:
             denied += 1
         else:
             other_error_count += 1

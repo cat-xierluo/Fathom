@@ -124,7 +124,7 @@
   - [ ] 正常空目录与读取失败可区分；部分覆盖携带质量说明
   - [ ] du_seconds 记录实际耗时，报告错误不改写扫描事实
   - [ ] 真实小目录扫描与故障注入回归通过
-- **证据/接续**（2026-09-13）：实现交付 [PR #8](https://github.com/cat-xierluo/fathom/pull/8)，固定 head `ce67e282af8dd575e246b664369aa70684539730`；只改 scanner 与新增完整性测试，32 项定向测试自验通过，PM 交付价值门通过。实现 Dispatch 已 succeeded/completed、精确终端已关闭；代码尚未合并。独立 reviewer `fathom-review-018-r1` / `ctx_269acc6aa1e3` 在独立工作区审查；reviewer R1 完成，但 PM 根据 C5O 的实际反例认定非权限错误采集仍会覆盖有效快照，尚不满足本卡；进入 repair episode 1，修复后须重新独立审查。验收框保持未勾。反例 AUD-01：原 20000 KiB 被失败 du 的 0 KiB 替换，旧快照消失。
+- **证据/接续**（2026-09-13）：实现交付 [PR #8](https://github.com/cat-xierluo/fathom/pull/8)，固定 head `ce67e282af8dd575e246b664369aa70684539730`；只改 scanner 与新增完整性测试，32 项定向测试自验通过，PM 交付价值门通过。实现 Dispatch 已 succeeded/completed、精确终端已关闭；代码尚未合并。独立 reviewer `fathom-review-018-r1` / `ctx_269acc6aa1e3` 在独立工作区审查；reviewer R1 完成，但 PM 根据 C5O 的实际反例认定非权限错误采集仍会覆盖有效快照，尚不满足本卡；repair episode 1 已提交 `7e97e72e66b474862d4d37cb71fca88780fdf4b5` 并经 safe-push 更新原 PR，47 项定向测试通过；独立 R2 `ctx_f30d8811d516` 报告 REJECT：真实 BSD du 的错误路径含“Permission denied”但 errno 为 File name too long 时，整行子串分类仍误判为权限部分覆盖；47 项回归通过，独立真实反例失败。第二个窄修复 Task `task_8d9e038a09aa` 已建，结算 reviewer 后启动。验收框保持未勾。反例 AUD-01：原 20000 KiB 被失败 du 的 0 KiB 替换，旧快照消失。
 
 ### ISS-019 · 修正真实 BSD du 路径解析
 
@@ -172,7 +172,7 @@
   - [ ] reveal 的 ..、符号链接越界、前缀同名根、不存在路径及非对象请求均明确响应；mock 证明确实未调用 open
   - [ ] 恶意文件名在表格/tooltip/报告入口不可生成执行节点；真实浏览器验证
   - [ ] 读取路径/报告的边界明确；凭据不进 URL、日志、前端持久存储；本任务不提供任意 shell API
-- **证据/接续**（2026-09-13）：[PR #9](https://github.com/cat-xierluo/fathom/pull/9)，head `de7f45f3439df2e781ce24dffec320fb8a62a104`；58 项定向 pytest、31 项真实 Chromium 安全检查与语法检查通过，PM postflight 通过。实现 Dispatch succeeded/completed，精确终端及额度 lease 已回收；独立 reviewer `ctx_5025db3d4616` / `fathom-review-022-r1` 审查中，尚未合并，验收框不提前勾。AUD-06 原反例与合法请求均在临时夹具覆盖；实际 Tauri WebView 尚未验证。
+- **证据/接续**（2026-09-13）：[PR #9](https://github.com/cat-xierluo/fathom/pull/9)，head `de7f45f3439df2e781ce24dffec320fb8a62a104`；58 项定向 pytest、31 项真实 Chromium 安全检查与语法检查通过，PM postflight 通过。实现 Dispatch succeeded/completed，精确终端及额度 lease 已回收；独立 reviewer R1 已 REJECT：F1 统一 CSP 导致 /docs 空白；进入修复 episode 1，`ctx_c71e5dc9cea1` 负责修复后再独立审查，尚未合并。AUD-06 原反例与合法请求均在临时夹具覆盖；实际 Tauri WebView 尚未验证。
 
 ### ISS-023 · 修复可见数值与快照刷新缺陷
 
@@ -244,7 +244,7 @@
   - [ ] 980×640、1220×820 与长路径布局通过，文字/颜色/键盘可辨
   - [ ] 覆盖真实/未知/权限缺口/Agent 未启用的区别，未来内容按状态出现
   - [ ] 用户评审针对具体产物，反馈回写 DESIGN；不能只产出一张不可操作的静态美图
-- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10)，head `e02488a96d7936dc31aa254ebf9b9feb054668f9`；只交付 `prototypes/ux/` 与验证脚本。首轮长路径/窄窗/权限流程失败后修复，PM 在同步基线后复跑 91 项浏览器检查与语法检查通过，10 张截图，临时验证资源关闭。用户已评审具体原型并反馈“流程可以，但视觉需要明显提升”。用户进一步选择“原生 Mac：克制、精致、轻量”；保留流程，按 [第二轮执行方案](plans/2026-09-13-native-mac-prototype-design.md) 迭代视觉。独立工程验收仍在进行，整卡 IN_PROGRESS，不将反馈当作定稿认可。原 worker 因 CLI 守卫未发 worker_done，最终 turn 已结束；PM fence 为 abandoned 后关闭其精确自建终端并回收 lease，不把运行结算异常伪报成功。裸 push 未经过安全推送门的问题已由 PM 同步基线并重新 safe-push 完整提交链，代码保留。
+- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10)，head `e02488a96d7936dc31aa254ebf9b9feb054668f9`；只交付 `prototypes/ux/` 与验证脚本。首轮长路径/窄窗/权限流程失败后修复，PM 在同步基线后复跑 91 项浏览器检查与语法检查通过，10 张截图，临时验证资源关闭。用户已评审具体原型并反馈“流程可以，但视觉需要明显提升”。用户进一步选择“原生 Mac：克制、精致、轻量”；保留流程，按 [第二轮执行方案](plans/2026-09-13-native-mac-prototype-design.md) 迭代视觉。独立 R1 报告为 REJECT：正常场景切首次启动时残留旧增长结论（B1）；67 项探针通过、1 项失败，另测得 1220px 详情展开后关键数字列进入内部滚动。上述问题纳入已授权视觉第二轮，原 reviewer 已结算、精确终端/lease已回收；第二轮 Task `task_4bc36f9caf3d` / Dispatch `ctx_7b1d38efdb4a` 已启动，范围仍限定原型与验证脚本。整卡 IN_PROGRESS，不将反馈当作定稿认可。原 worker 因 CLI 守卫未发 worker_done，最终 turn 已结束；PM fence 为 abandoned 后关闭其精确自建终端并回收 lease，不把运行结算异常伪报成功。裸 push 未经过安全推送门的问题已由 PM 同步基线并重新 safe-push 完整提交链，代码保留。
 
 ### ISS-027 · 原生前端模块与状态生命周期
 

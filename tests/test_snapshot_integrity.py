@@ -4,10 +4,17 @@
 stdout）曾把当日 20000 KiB 有效快照静默替换为 0 KiB、du_seconds=0。
 
 本文件的真实基线（本机 /usr/bin/du，只扫 tempfile 小根）：
-- 正常根+000 子目录：exit=1 但根行存在（部分覆盖，可接受）
+- 正常根+000 子目录：exit=1 但根行存在，stderr 全部为权限类（部分覆盖，可接受）
 - 空根：exit=0，根行存在且为 0（有效全量）
 - 根 000 / 缺根：exit=1 且无根行（无效，必须拒绝）
-因此有效性锚点是"根目录记录存在"，退出码与 denied_count 表达采集质量。
+
+ISS-018 修复合同（2026-09-13，PM 驳回宽松定性后保守收敛）：进入同日替换
+事务的只有 (a) 干净完整采集，或 (b) 可证明仅权限受限且根记录有效的部分
+采集。信号终止、非权限/混合错误、退出码非零但无权限证据、负数/无效大小
+不能因根记录存在而豁免（reviewer 观察 C3O/C4O/C5O 由
+TestErroredCollectionRejected / TestQualityClassification /
+TestStderrErrorClassification 的反例钉住）。错误判据来自 run_du 对 stderr
+全量的逐行分类，stderr_tail 只是截尾显示、不得作为判据。
 """
 
 from __future__ import annotations
@@ -171,6 +178,129 @@ class TestAudit01InvalidScanRejected:
             conn.close()
 
 
+class TestErroredCollectionRejected:
+    """带根记录的错误采集必须整体拒绝（reviewer 观察 C3O/C4O/C5O 反例）。
+
+    合同修订后：信号终止、非权限/混合错误、退出码非零但无权限证据、负数
+    大小不能因根记录存在而豁免。注入面统一在子进程层（走 run_du 真实解析
+    与 stderr 全量分类）；每个用例先建立当日有效快照，注入错误采集后必须
+    抛 InvalidScanError 且旧 snapshot/entries/volume_stats 一字不动。
+    """
+
+    def _assert_rejected_preserving(
+        self, conn, tree, before, monkeypatch, *, returncode, stdout, stderr, frag
+    ):
+        _inject_du_process(monkeypatch, returncode=returncode, stdout=stdout, stderr=stderr)
+        with pytest.raises(scanner.InvalidScanError) as ei:
+            scanner.create_snapshot(conn, tree, min_kb=1024)
+        assert frag in str(ei.value)
+        assert _db_state(conn) == before, "被拒采集不得改动当日旧快照"
+
+    def test_signal_terminated_with_root_preserves(self, valid_tree, monkeypatch):
+        """C3O：即使根行已打印（合成形态），信号终止（负退出码）也必须拒绝。"""
+        conn = db.connect()
+        try:
+            sid1 = _make_valid_snapshot(conn, valid_tree)
+            before = _db_state(conn)
+            self._assert_rejected_preserving(
+                conn, valid_tree, before, monkeypatch,
+                returncode=-9,
+                stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n",
+                stderr="",
+                frag="信号终止",
+            )
+            assert _db_state(conn)["snapshots"][0][0] == sid1
+        finally:
+            conn.close()
+
+    def test_non_permission_error_with_root_preserves(self, valid_tree, monkeypatch):
+        """C5O：根在 + exit=1 + 非权限错误（denied_count=0）必须拒绝，不得覆盖旧快照。"""
+        conn = db.connect()
+        try:
+            _make_valid_snapshot(conn, valid_tree)
+            before = _db_state(conn)
+            self._assert_rejected_preserving(
+                conn, valid_tree, before, monkeypatch,
+                returncode=1,
+                stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n",
+                stderr=f"du: {valid_tree}/gone: No such file or directory\n",
+                frag="非权限错误",
+            )
+        finally:
+            conn.close()
+
+    def test_mixed_errors_with_root_preserves(self, valid_tree, monkeypatch):
+        """权限与非权限错误混合：不能证明"仅权限受限"，必须拒绝。"""
+        conn = db.connect()
+        try:
+            _make_valid_snapshot(conn, valid_tree)
+            before = _db_state(conn)
+            self._assert_rejected_preserving(
+                conn, valid_tree, before, monkeypatch,
+                returncode=1,
+                stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n",
+                stderr=(
+                    f"du: {valid_tree}/hidden: Permission denied\n"
+                    f"du: {valid_tree}/gone: No such file or directory\n"
+                ),
+                frag="非权限错误",
+            )
+        finally:
+            conn.close()
+
+    def test_front_loaded_error_not_hidden_by_clean_tail(self, valid_tree, monkeypatch):
+        """错误判据看 stderr 全量：前部非权限错误不因末尾几行全是权限行而漏判。"""
+        conn = db.connect()
+        try:
+            _make_valid_snapshot(conn, valid_tree)
+            before = _db_state(conn)
+            stderr = (
+                f"du: {valid_tree}/gone: No such file or directory\n"
+                + "".join(f"du: {valid_tree}/d{i}: Permission denied\n" for i in range(4))
+            )
+            self._assert_rejected_preserving(
+                conn, valid_tree, before, monkeypatch,
+                returncode=1,
+                stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n",
+                stderr=stderr,
+                frag="非权限错误",
+            )
+        finally:
+            conn.close()
+
+    def test_nonzero_exit_without_evidence_preserves(self, valid_tree, monkeypatch):
+        """exit=1 且 stderr 无任何错误行：无法证明仅权限受限，必须拒绝。"""
+        conn = db.connect()
+        try:
+            _make_valid_snapshot(conn, valid_tree)
+            before = _db_state(conn)
+            self._assert_rejected_preserving(
+                conn, valid_tree, before, monkeypatch,
+                returncode=1,
+                stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n",
+                stderr="",
+                frag="无权限受限证据",
+            )
+        finally:
+            conn.close()
+
+    def test_negative_root_size_preserves(self, valid_tree, monkeypatch):
+        """C4O：负数根大小能被解析器读出，必须拒绝，不得落库 total_kb 为负。"""
+        conn = db.connect()
+        try:
+            _make_valid_snapshot(conn, valid_tree)
+            before = _db_state(conn)
+            self._assert_rejected_preserving(
+                conn, valid_tree, before, monkeypatch,
+                returncode=0,
+                stdout=f"3\t{valid_tree}/a\n-5\t{valid_tree}\n",
+                stderr="",
+                frag="根目录大小为负数",
+            )
+        finally:
+            conn.close()
+
+
 class TestRealDuSemantics:
     """真实 /usr/bin/du 行为回归（只扫 tempfile 小根），锚定有效性判定依据。"""
 
@@ -210,6 +340,7 @@ class TestRealDuSemantics:
             assert result.exit_code == 1          # BSD du 部分权限失败也非零退出
             assert str(tmp_path) in result.sizes  # 但根行存在 → 部分覆盖而非无效
             assert result.denied_count == 1
+            assert result.other_error_count == 0  # 错误全部是权限类 → 可证明的部分覆盖
             assert result.stderr_tail
             assert "Permission denied" in result.stderr_tail[-1]
         finally:
@@ -229,24 +360,71 @@ class TestRealDuSemantics:
 
 
 class TestQualityClassification:
-    """classify_collection：根记录缺失抛错；退化信号决定 full/partial。"""
+    """classify_collection 有效性闸门（ISS-018 修复合同）。
 
-    def _du_result(self, *, sizes, exit_code=0, denied=0):
+    full：干净完整采集。partial：根记录有效且全部错误行都是权限类。
+    以下不能因根记录存在而豁免，一律抛 InvalidScanError：信号终止、
+    非权限/混合错误、退出码非零但无权限证据、负数大小（含根）。
+    """
+
+    def _du_result(self, *, sizes, exit_code=0, denied=0, other=0):
         return scanner.DuResult(
             sizes=sizes, exit_code=exit_code, denied_count=denied,
+            other_error_count=other,
             elapsed_seconds=0.01, stderr_tail=())
 
     def test_full_when_clean(self):
         r = self._du_result(sizes={"/r": 10})
         assert scanner.classify_collection(r, "/r") == "full"
 
-    def test_partial_when_nonzero_exit_with_root(self):
-        r = self._du_result(sizes={"/r": 10}, exit_code=1)
+    def test_full_when_zero_sized_root(self):
+        """空根 0 KiB 是有效全量（兼容保留）。"""
+        r = self._du_result(sizes={"/r": 0})
+        assert scanner.classify_collection(r, "/r") == "full"
+
+    def test_partial_when_permission_only_errors(self):
+        """可证明仅权限受限（denied>0 且无非权限错误）：部分覆盖。"""
+        r = self._du_result(sizes={"/r": 10}, exit_code=1, denied=2)
         assert scanner.classify_collection(r, "/r") == "partial"
 
     def test_partial_when_denied_with_zero_exit(self):
         r = self._du_result(sizes={"/r": 10}, denied=3)
         assert scanner.classify_collection(r, "/r") == "partial"
+
+    def test_invalid_when_signal_terminated_with_root(self):
+        """C3O：根记录存在不能豁免信号终止。"""
+        r = self._du_result(sizes={"/r": 10}, exit_code=-9)
+        with pytest.raises(scanner.InvalidScanError):
+            scanner.classify_collection(r, "/r")
+
+    def test_invalid_when_nonzero_exit_without_permission_evidence(self):
+        """合同修订：exit=1 且无权限证据不再是 partial——无法证明仅权限受限。"""
+        r = self._du_result(sizes={"/r": 10}, exit_code=1)
+        with pytest.raises(scanner.InvalidScanError):
+            scanner.classify_collection(r, "/r")
+
+    def test_invalid_when_non_permission_error_with_root(self):
+        """C5O：存在非权限错误行时根记录不能豁免。"""
+        r = self._du_result(sizes={"/r": 10}, exit_code=1, denied=0, other=1)
+        with pytest.raises(scanner.InvalidScanError):
+            scanner.classify_collection(r, "/r")
+
+    def test_invalid_when_mixed_permission_and_other_errors(self):
+        r = self._du_result(sizes={"/r": 10}, exit_code=1, denied=1, other=1)
+        with pytest.raises(scanner.InvalidScanError):
+            scanner.classify_collection(r, "/r")
+
+    def test_invalid_when_negative_root_size(self):
+        """C4O：负数根大小不能以根记录存在豁免。"""
+        r = self._du_result(sizes={"/r": -5}, exit_code=0)
+        with pytest.raises(scanner.InvalidScanError):
+            scanner.classify_collection(r, "/r")
+
+    def test_invalid_when_negative_child_size(self):
+        """负数子目录大小属于解析无效证据，同样拒绝。"""
+        r = self._du_result(sizes={"/r": 10, "/r/a": -1}, exit_code=0)
+        with pytest.raises(scanner.InvalidScanError):
+            scanner.classify_collection(r, "/r")
 
     def test_invalid_when_root_record_missing(self):
         r = self._du_result(sizes={"/r/sub": 5}, exit_code=0)
@@ -257,6 +435,45 @@ class TestQualityClassification:
         r = self._du_result(sizes={}, exit_code=0)
         with pytest.raises(scanner.InvalidScanError):
             scanner.classify_collection(r, "/r")
+
+
+class TestStderrErrorClassification:
+    """run_du 对 stderr 全量逐行分类：权限行计入 denied_count，其余计入
+    other_error_count；分类不得依赖 stderr_tail（截尾会漏掉前部错误）。"""
+
+    def test_full_stderr_lines_classified(self, valid_tree, monkeypatch):
+        stderr = (
+            f"du: {valid_tree}/gone: No such file or directory\n"
+            f"du: {valid_tree}/p1: Permission denied\n"
+            "\n"
+            f"du: {valid_tree}/p2: Operation not permitted\n"
+        )
+        _inject_du_process(
+            monkeypatch, returncode=1,
+            stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n", stderr=stderr)
+        result = scanner.run_du(valid_tree)
+        assert result.denied_count == 2        # 两种权限措辞都计入
+        assert result.other_error_count == 1   # 非权限错误单独计数
+        assert result.other_error_sample.startswith(f"du: {valid_tree}/gone")
+        assert str(valid_tree) in result.sizes  # 解析不受 stderr 影响
+
+    def test_front_loaded_error_counted_despite_clean_tail(self, valid_tree, monkeypatch):
+        """前部非权限错误 + 末尾多条权限行：tail 全是权限行，计数仍必须正确。"""
+        stderr = (
+            f"du: {valid_tree}/gone: No such file or directory\n"
+            + "".join(f"du: {valid_tree}/d{i}: Permission denied\n" for i in range(4))
+        )
+        _inject_du_process(
+            monkeypatch, returncode=1,
+            stdout=f"64\t{valid_tree}/big\n8192\t{valid_tree}\n", stderr=stderr)
+        result = scanner.run_du(valid_tree)
+        assert result.other_error_count == 1
+        assert result.denied_count == 4
+        assert result.stderr_tail
+        assert all("Permission denied" in line for line in result.stderr_tail)
+        # 截尾显示干净不代表采集干净：判定必须基于全量分类拒绝
+        with pytest.raises(scanner.InvalidScanError):
+            scanner.classify_collection(result, str(valid_tree))
 
 
 class TestPartialCoverage:

@@ -7,11 +7,15 @@
   全存会让数据库在 23GB 剩余空间下成为新的负担；小目录对"哪个文件夹
   冒出来了"这一问题没有回答价值。
 - 同一天重复扫描会覆盖当天的旧快照，保证"一天一行"的趋势语义。
-- 采集有效性（ISS-018，反例 AUD-01）：du 输出里必须能找到根目录记录才算
-  有效采集——本机实测 BSD du 对"部分权限失败"（根行存在，exit=1）与
-  "致命失败"（根缺失，exit=1）都返回非零，退出码本身无法区分两者，
-  根记录才是唯一可靠锚点。无效采集在进入同日替换事务前被拒绝并抛
-  InvalidScanError，当日旧 snapshot/entries/volume_stats 原样保留。
+- 采集有效性（ISS-018，反例 AUD-01；合同修订 2026-09-13 保守收敛）：进入
+  同日替换事务的只有两类采集——(a) 干净完整采集（退出码 0 且 stderr 无错误行），
+  或 (b) 可证明仅权限受限的部分采集（根记录存在、大小非负、非信号终止，
+  且 stderr 全量错误行均为权限类；兼容 BSD du 对 000 子目录的 exit=1 部分覆盖
+  与空根 0）。信号终止（负退出码）、非权限/混合错误、退出码非零但无权限证据、
+  负数/无效大小等解析无效证据，不能因根记录存在而豁免：一律在进入事务前抛
+  InvalidScanError，当日旧 snapshot/entries/volume_stats 原样保留，错误不吞。
+  错误分类判据是 run_du 时点对 stderr 全量的逐行计数（存于 DuResult），
+  stderr_tail 只是截尾显示，不得作为判据（会遗漏前部错误）。
 - 采集质量的持久化边界：现有 schema 只有 denied_count/du_seconds 两列，
   退出码、stderr 摘要等质量细节只存在于当次 DuResult，不伪造未知元数据；
   完整质量元数据的持久化随 ISS-025 的 schema 工作补齐。
@@ -33,9 +37,13 @@ from . import config
 # BSD du 对文件名中的非打印字符输出八进制转义（如 \346\226\207），tab 也会被转义
 _OCTAL_RE = re.compile(r"\\([0-7]{1,3})")
 
+# stderr 权限类错误标志（与 denied_count 口径一致；BSD du 英文输出，大小写敏感）
+_PERMISSION_MARKERS = ("Operation not permitted", "Permission denied")
+
 
 class InvalidScanError(RuntimeError):
-    """du 采集无效（致命退出/空输出/缺根记录），本次扫描已被整体拒绝。
+    """du 采集无效（缺根记录/空输出、信号终止、非权限或混合错误、负数
+    大小、退出码非零但无权限证据），本次扫描已被整体拒绝。
 
     抛出时数据库没有任何写入，当日旧快照不受影响。
     """
@@ -46,10 +54,14 @@ class DuResult:
     """一次 du 采集的结构化结果：退出码、质量线索与真实耗时。
 
     sizes          目录路径 -> 累计大小 KB（含根记录）
-    exit_code      du 进程退出码（部分权限失败也是 1，不能单独当致命判据）
-    denied_count   stderr 中权限/读取失败行数
+    exit_code      du 进程退出码（负值=信号终止；部分权限失败也是 1）
+    denied_count   stderr 全量中权限/读取失败行数
     elapsed_seconds 本次采集的实测耗时（time.monotonic 口径）
-    stderr_tail    stderr 末尾若干行，仅用于失败诊断，不持久化
+    stderr_tail    stderr 末尾若干行，仅用于失败诊断显示，不持久化；
+                   截尾会遗漏前部错误，不得作为错误判据
+    other_error_count  stderr 全量中非权限错误行数（错误分类判据，
+                       ISS-018 合同修订新增；默认 0 兼容既有构造方）
+    other_error_sample 首条非权限错误行，仅诊断用
     """
 
     sizes: dict[str, int]
@@ -57,6 +69,8 @@ class DuResult:
     denied_count: int
     elapsed_seconds: float
     stderr_tail: tuple[str, ...] = ()
+    other_error_count: int = 0
+    other_error_sample: str = ""
 
     def stderr_hint(self) -> str:
         return self.stderr_tail[-1] if self.stderr_tail else ""
@@ -99,7 +113,11 @@ def unescape_du_path(raw: str) -> str:
 
 
 def run_du(root: Path) -> DuResult:
-    """执行 du -xk，返回结构化采集结果（大小表、退出码、质量线索、真实耗时）。"""
+    """执行 du -xk，返回结构化采集结果（大小表、退出码、质量线索、真实耗时）。
+
+    错误分类在采集时点对 stderr 全量逐行进行（权限类 / 非权限类）并固化到
+    DuResult——有效性判据后续只读这些全量计数，不重新看 stderr_tail 截尾。
+    """
     started = time.monotonic()
     proc = subprocess.run(
         ["/usr/bin/du", "-xk", str(root)],
@@ -118,31 +136,76 @@ def run_du(root: Path) -> DuResult:
         except ValueError:
             continue
         sizes[unescape_du_path(path)] = size_kb
-    denied = sum(
-        1 for l in proc.stderr.splitlines() if "Operation not permitted" in l or "Permission denied" in l
-    )
+    denied = 0
+    other_error_count = 0
+    other_error_sample = ""
+    for line in proc.stderr.splitlines():
+        if not line.strip():
+            continue
+        if any(marker in line for marker in _PERMISSION_MARKERS):
+            denied += 1
+        else:
+            other_error_count += 1
+            if not other_error_sample:
+                other_error_sample = line
     return DuResult(
         sizes=sizes,
         exit_code=proc.returncode,
         denied_count=denied,
         elapsed_seconds=elapsed,
         stderr_tail=tuple(proc.stderr.splitlines()[-4:]),
+        other_error_count=other_error_count,
+        other_error_sample=other_error_sample,
     )
 
 
 def classify_collection(result: DuResult, root_str: str) -> str:
     """判定一次采集是否可用于建快照；返回 'full' 或 'partial'。
 
-    有效性锚点是根目录记录：缺失（致命退出、空输出、被信号截断、根不可读、
-    根不存在）即抛 InvalidScanError，绝不进入同日替换事务。根记录存在但
-    退出码非零或存在权限缺口时，按"部分覆盖"接受——缺的子树不会出现在
-    entries 里，数量经 denied_count 持久化，其余质量细节留在 DuResult。
+    ISS-018 修复合同（保守收敛）：进入同日替换事务的只有两类采集——
+    1. full：干净完整采集（退出码 0 且无任何错误行）；
+    2. partial：根记录存在、大小非负、非信号终止，且 stderr 全量错误行均为
+       权限类（denied_count>0、other_error_count=0）。兼容 BSD du 对 000
+       子目录 exit=1 的部分覆盖与空根 0。
+    以下情形不能因根记录存在而豁免，一律抛 InvalidScanError：根记录缺失、
+    任意负数大小（含根）、信号终止（负退出码）、非权限或混合错误、退出码
+    非零但无权限证据（无法证明仅权限受限）。错误分类取自 run_du 时点对
+    stderr 全量的计数，不使用截尾 stderr_tail。
     """
     if root_str not in result.sizes:
         hint = f"；du stderr：{result.stderr_hint()}" if result.stderr_hint() else ""
         raise InvalidScanError(
             f"du 采集无效：未返回根目录记录（退出码 {result.exit_code}）{hint}。"
             "已拒绝本次写入，当日旧快照保持不变"
+        )
+    root_kb = result.sizes[root_str]
+    if root_kb < 0:
+        raise InvalidScanError(
+            f"du 采集无效：根目录大小为负数（{root_kb} KiB）。"
+            "已拒绝本次写入，当日旧快照保持不变"
+        )
+    negative = next((p for p, s in result.sizes.items() if s < 0), None)
+    if negative is not None:
+        raise InvalidScanError(
+            f"du 采集无效：存在负数大小记录（{negative} = {result.sizes[negative]} KiB）。"
+            "已拒绝本次写入，当日旧快照保持不变"
+        )
+    if result.exit_code < 0:
+        raise InvalidScanError(
+            f"du 采集无效：du 被信号终止（退出码 {result.exit_code}），"
+            "根记录存在不能豁免。已拒绝本次写入，当日旧快照保持不变"
+        )
+    if result.other_error_count > 0:
+        sample = f"（如 {result.other_error_sample!r}）" if result.other_error_sample else ""
+        raise InvalidScanError(
+            f"du 采集无效：stderr 含非权限错误 {result.other_error_count} 行{sample}，"
+            "只有可证明仅权限受限的部分采集才被接受。"
+            "已拒绝本次写入，当日旧快照保持不变"
+        )
+    if result.exit_code != 0 and result.denied_count == 0:
+        raise InvalidScanError(
+            f"du 采集无效：退出码 {result.exit_code} 但无权限受限证据，"
+            "无法证明仅权限限制。已拒绝本次写入，当日旧快照保持不变"
         )
     if result.exit_code != 0 or result.denied_count > 0:
         return "partial"
@@ -179,8 +242,9 @@ def create_snapshot(
 
     min_kb 可在测试中注入小值；生产使用 config.MIN_DIR_KB。
 
-    采集无效（致命退出/空输出/缺根记录）时抛 InvalidScanError，数据库不做
-    任何写入，当日旧快照原样保留；权限受限但根记录有效时按部分覆盖落库
+    采集无效（缺根记录/空输出、信号终止、非权限或混合错误、负数大小、
+    退出码非零但无权限证据）时抛 InvalidScanError，数据库不做任何写入，
+    当日旧快照原样保留；可证明仅权限受限且根记录有效时按部分覆盖落库
     （denied_count 记录缺口数量）。du_seconds 记录本次采集实测耗时。
     """
     root = Path(root) if root else config.DEFAULT_ROOT

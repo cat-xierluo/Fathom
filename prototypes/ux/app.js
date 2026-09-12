@@ -111,6 +111,7 @@
   var toastTimer = null;
   function toast(msg) {
     var region = $("#toast-region");
+    region.textContent = ""; /* 单条反馈：先清空再显示，不堆叠遮挡 */
     var t = document.createElement("div");
     t.className = "toast";
     t.textContent = msg;
@@ -329,6 +330,7 @@
     var wizardOn = s === "first-launch";
     $("#onboard").hidden = !wizardOn;
     $("#ov-rest").hidden = wizardOn;
+    conc.hidden = wizardOn; /* B1：向导期间隐藏结论区，切换场景不残留旧结论 */
     if (wizardOn) { renderOnboard(); q.innerHTML = ""; return; }
 
     /* 数据时间 / 范围 / 质量行 */
@@ -424,9 +426,9 @@
       var d = delta(r.prev, r.curr);
       return (
         '<tr class="krow" data-path="' + esc(p) + '" tabindex="0">' +
-        '<td class="cell-path" title="' + esc(p) + '">' + esc(midTrunc(p)) + "</td>" +
+        "<td><div class=\"cell-path\" title=\"" + esc(p) + '">' + esc(midTrunc(p)) + "</div></td>" +
         '<td class="num ' + d.cls + '">' + d.text + "</td>" +
-        '<td><span class="st st-measured">' + icon("check", 12) + " 已测量</span></td></tr>"
+        '<td><span class="st st-measured"><span class="st-dot"></span>已测量</span></td></tr>'
       );
     });
     el.innerHTML =
@@ -437,7 +439,9 @@
   }
 
   function makeSpark(series, labels, unit) {
-    var W = 560, H = 140, L = 40, R = 10, T = 10, B = 22;
+    /* 第二轮图表规格：精简网格（3 条弱参考线 + 刻度值）、明确坐标轴、
+     * 首末 x 标签分别 start/end 锚定避免越出 viewBox、缺失日断开留空。 */
+    var W = 640, H = 168, L = 46, R = 30, T = 12, B = 26;
     var vals = series.filter(function (v) { return v !== null; });
     if (vals.length === 0) return "";
     var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
@@ -445,27 +449,51 @@
     var pad = (max - min) * 0.15; min -= pad; max += pad;
     function x(i) { return L + (i * (W - L - R)) / (series.length - 1); }
     function y(v) { return T + (1 - (v - min) / (max - min)) * (H - T - B); }
+    function fmtTick(v) { return v >= 100 ? String(Math.round(v)) : v.toFixed(1).replace(/\.0$/, ""); }
+
+    var grid = "", ticks = "";
+    [0.25, 0.5, 0.75].forEach(function (f) {
+      var gy = T + f * (H - T - B);
+      var gv = max - f * (max - min);
+      grid += '<line class="spark-grid" x1="' + L + '" y1="' + gy.toFixed(1) + '" x2="' + (W - R) + '" y2="' + gy.toFixed(1) + '"/>';
+      ticks += '<text x="' + (L - 8) + '" y="' + (gy + 3.5).toFixed(1) + '" text-anchor="end">' + esc(fmtTick(gv)) + "</text>";
+    });
+
+    /* 分段折线与面积：缺失日断开、留空，不补零 */
     var segs = [], cur = [];
     series.forEach(function (v, i) {
       if (v === null) { if (cur.length) segs.push(cur); cur = []; }
-      else cur.push(x(i).toFixed(1) + "," + y(v).toFixed(1));
+      else cur.push({ i: i, v: v });
     });
     if (cur.length) segs.push(cur);
-    var lines = segs.map(function (pts) {
-      return '<polyline fill="none" stroke="#2f6fed" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="' + pts.join(" ") + '"/>';
-    }).join("");
+    var area = "", lines = "";
+    segs.forEach(function (seg) {
+      var pts = seg.map(function (p) { return x(p.i).toFixed(1) + "," + y(p.v).toFixed(1); });
+      lines += '<polyline class="spark-line" points="' + pts.join(" ") + '"/>';
+      if (seg.length >= 2) {
+        var base = (H - B).toFixed(1);
+        area += '<polygon class="spark-area" points="' + x(seg[0].i).toFixed(1) + "," + base + " " + pts.join(" ") +
+          " " + x(seg[seg.length - 1].i).toFixed(1) + "," + base + '"/>';
+      }
+    });
     var dots = series.map(function (v, i) {
-      return v === null ? "" : '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="2.6" fill="#2f6fed"/>';
+      return v === null ? "" :
+        '<circle class="spark-dot" cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="2.6"><title>' +
+        esc(labels[i] + " · " + fmtTick(v) + " " + unit) + "</title></circle>";
     }).join("");
+
     var xlabels = labels.map(function (lb, i) {
-      return '<text x="' + x(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="middle">' + esc(lb) + "</text>";
+      var anchor = i === 0 ? "start" : i === labels.length - 1 ? "end" : "middle";
+      return '<text x="' + x(i).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="' + anchor + '">' + esc(lb) + "</text>";
     }).join("");
+
     var hasGap = series.indexOf(null) >= 0;
     return (
       '<svg class="spark" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="走势图（' + esc(unit) +
       (hasGap ? "；缺失日期留空、不补零" : "") + "）；等价数据见下方表格\">" +
-      '<line x1="' + L + '" y1="' + (H - B) + '" x2="' + (W - R) + '" y2="' + (H - B) + '" stroke="#e4e7ec"/>' +
-      lines + dots + xlabels + "</svg>"
+      grid + ticks +
+      '<line class="spark-axis" x1="' + L + '" y1="' + (H - B) + '" x2="' + (W - R) + '" y2="' + (H - B) + '"/>' +
+      area + lines + dots + xlabels + "</svg>"
     );
   }
 
@@ -540,8 +568,11 @@
     var body = $('[data-region="onboard-body"]');
     var steps = ["欢迎", "监控范围", "权限说明", "首扫进度"];
     var stepsLine = steps.map(function (n, i) {
-      return '<span class="' + (i === state.onboardStep ? "step-on" : "") + '">' + (i + 1) + ". " + n + "</span>";
-    }).join('<span aria-hidden="true">·</span>');
+      var cls = "step";
+      if (i < state.onboardStep) cls += " step-done";
+      if (i === state.onboardStep) cls += " step-on";
+      return '<span class="' + cls + '"><span class="step-dot"></span>' + n + "</span>";
+    }).join("");
 
     if (state.onboardStep === 0) {
       body.innerHTML =
@@ -691,12 +722,12 @@
       var dprev = r.prev === null ? { text: "—", cls: "delta-none" } : { text: fmtKib(r.prev), cls: "delta-zero" };
       var dcurr = r.curr === null ? { text: "—", cls: "delta-none" } : { text: fmtKib(r.curr), cls: "delta-zero" };
       var stHtml;
-      if (r.st === "restricted") stHtml = '<span class="st st-restricted">' + icon("alert", 12) + " 读取受限</span>";
-      else if (r.st === "unrecorded") stHtml = '<span class="st st-unrecorded">' + icon("clock", 12) + " 未记录</span>";
-      else stHtml = '<span class="st st-measured">' + icon("check", 12) + " 已测量</span>";
+      if (r.st === "restricted") stHtml = '<span class="st st-restricted"><span class="st-dot"></span>读取受限</span>';
+      else if (r.st === "unrecorded") stHtml = '<span class="st st-unrecorded"><span class="st-dot"></span>未记录</span>';
+      else stHtml = '<span class="st st-measured"><span class="st-dot"></span>已测量</span>';
       return (
         '<tr class="krow" data-path="' + esc(r.path) + '" tabindex="0" title="' + esc(r.note || r.path) + '">' +
-        '<td class="cell-path" title="' + esc(r.path) + '">' + esc(midTrunc(r.path)) + "</td>" +
+        "<td><div class=\"cell-path\" title=\"" + esc(r.path) + '">' + esc(midTrunc(r.path)) + "</div></td>" +
         '<td class="num ' + dprev.cls + '">' + dprev.text + "</td>" +
         '<td class="num ' + dcurr.cls + '">' + dcurr.text + "</td>" +
         '<td class="num ' + d.cls + '">' + d.text + "</td>" +
@@ -803,7 +834,7 @@
       var parentPath = chainPath(state.browse.length - 2);
       rowsHtml +=
         '<tr class="krow" data-path="' + esc(parentPath) + '" tabindex="0">' +
-        '<td class="cell-path" colspan="4">../ 返回上层（' + esc(lastSeg(parentPath) || ROOT) + "）</td>" +
+        '<td colspan="4"><div class="cell-path">../ 返回上层（' + esc(lastSeg(parentPath) || ROOT) + "）</div></td>" +
         '<td><span class="row-actions"><button class="btn-mini" data-action="finder" data-path="' + esc(parentPath) +
         '" aria-label="在 Finder 中显示上级目录" title="在 Finder 中显示（模拟）">' + icon("folderOpen", 14) + "</button></span></td></tr>";
     }
@@ -815,7 +846,7 @@
       var fullName = (state.browse.length ? chainPath(state.browse.length - 1) : ROOT) + "/" + k.name;
       rowsHtml +=
         '<tr class="krow" data-path="' + esc(fullName) + '" tabindex="0">' +
-        '<td class="cell-path" title="' + esc(fullName) + '">' + esc(k.name) + (restricted ? ' <span class="st st-restricted">读取受限</span>' : "") + "</td>" +
+        "<td><div class=\"cell-path\" title=\"" + esc(fullName) + '">' + esc(k.name) + (restricted ? ' <span class="st st-restricted"><span class="st-dot"></span>读取受限</span>' : "") + "</div></td>" +
         '<td class="num">' + fmtKib(restricted ? null : k.curr) + "</td>" +
         '<td class="num ' + d.cls + '">' + d.text + "</td>" +
         '<td class="num">' + fmtPct(k.curr, total) + "</td>" +
@@ -826,7 +857,7 @@
     if (small.length) {
       var sum2 = small.reduce(function (acc, k) { return acc + (k.curr || 0); }, 0);
       rowsHtml +=
-        "<tr><td class='cell-path' style='color:var(--muted)'>其他 " + small.length + " 个小目录（&lt;100 MiB）</td>" +
+        "<tr><td><div class='cell-path cell-muted'>其他 " + small.length + " 个小目录（&lt;100 MiB）</div></td>" +
         "<td class='num'>" + fmtKib(sum2) + "</td><td class='num delta-none'>—</td><td class='num'>" + fmtPct(sum2, total) + "</td><td></td></tr>";
     }
     bodyEl.innerHTML = rowsHtml;
@@ -887,7 +918,7 @@
           "<tr>" +
           '<td class="num">' + fmtKib(f.kib) + "</td>" +
           "<td>" + esc(f.mtime) + "</td>" +
-          '<td class="cell-path" title="' + esc(f.path) + '">' + esc(midTrunc(f.path, 52)) + "</td>" +
+          "<td><div class=\"cell-path\" title=\"" + esc(f.path) + '">' + esc(midTrunc(f.path, 52)) + "</div></td>" +
           '<td><span class="row-actions"><button class="btn-mini" data-action="finder" data-path="' + esc(dirOf(f.path)) +
           '" aria-label="打开所在目录" title="在 Finder 中显示（模拟）">' + icon("folderOpen", 14) + "</button></span></td>" +
           "</tr>"
@@ -915,7 +946,7 @@
     if (s === "partial") {
       perm = kv([
         ["监控范围", "<span class='path-mono'>" + esc(ROOT) + "</span>（单根）"],
-        ["权限状态", "<span class='st st-restricted'>" + icon("alert", 12) + " 部分受限：6 个目录读取失败</span>"],
+        ["权限状态", "<span class='st st-restricted'><span class='st-dot'></span>部分受限：6 个目录读取失败</span>"],
         ["影响", "受限目录未计入容量与对比；不会被当作已删除。授权后重扫即可补全。"],
         ["操作", "<div class='settings-actions'><button class='btn' data-action='open-tcc'>打开系统设置（模拟）</button>" +
           "<button class='btn' data-action='rescan'>重扫并补全</button></div>"],
@@ -934,7 +965,7 @@
     } else {
       perm = kv([
         ["监控范围", "<span class='path-mono'>" + esc(ROOT) + "</span>（单根；多根在后续版本提供）"],
-        ["权限状态", "<span class='st st-ok'>" + icon("check", 12) + " 已授权完全磁盘访问（演示）</span>"],
+        ["权限状态", "<span class='st st-ok'><span class='st-dot'></span>已授权完全磁盘访问（演示）</span>"],
         ["覆盖", "完整 · 最近一次扫描未出现读取受限"],
         ["操作", "<div class='settings-actions'><button class='btn' data-action='open-tcc'>打开系统设置（模拟）</button>" +
           "<button class='btn' data-action='goto' data-goto='overview'>查看覆盖摘要</button></div>"],
@@ -948,18 +979,18 @@
       service =
         kv([
           ["扫描计划", "每日 12:00（缓存显示，服务恢复后核对）"],
-          ["后台服务", "<span class='st st-fail'>" + icon("alert", 12) + " 未连接（127.0.0.1:7952，演示）</span>"],
+          ["后台服务", "<span class='st st-fail'><span class='st-dot'></span>未连接（127.0.0.1:7952，演示）</span>"],
         ]) +
         '<div class="settings-actions">' +
         '<button class="btn" data-action="retry-region">' + icon("refresh", 13) + " 重试连接</button></div>" +
-        "<h3 style='font-size:13px;margin:16px 0 6px'>恢复说明</h3><ol style='margin:0;padding-left:20px;color:var(--muted);font-size:13px'>" +
+        "<h3 class='settings-h3'>恢复说明</h3><ol class='settings-note'>" +
         "<li>确认 Fathom 应用是否仍在运行（程序坞或菜单栏图标）。</li>" +
         "<li>从“应用程序”重新启动 Fathom，后台服务会随之拉起。</li>" +
         "<li>仍失败时导出匿名诊断并反馈；历史数据保留在本机，不会丢失。</li></ol>";
     } else {
       service = kv([
         ["扫描计划", "每日 12:00 自动扫描 · 首扫/重扫可手动触发"],
-        ["后台服务", "<span class='st st-ok'>" + icon("check", 12) + " 运行中 · 已连接</span>"],
+        ["后台服务", "<span class='st st-ok'><span class='st-dot'></span>运行中 · 已连接</span>"],
         ["通知", "日报完成后尝试系统通知；剩余空间低于 10 GiB 时提醒（与页面告警同一设置）"],
         ["操作", "<div class='settings-actions'><button class='btn' data-action='rescan'>立即扫描</button></div>"],
       ]);
@@ -987,8 +1018,8 @@
         '<table class="tbl"><thead><tr><th>时间</th><th>结果</th><th>说明</th></tr></thead><tbody>' +
         runs.map(function (r) {
           var st = r.st === "done"
-            ? "<span class='st st-ok'>" + icon("check", 12) + " 成功</span>"
-            : "<span class='st st-fail'>" + icon("alert", 12) + " 失败</span>";
+            ? "<span class='st st-ok'><span class='st-dot'></span>成功</span>"
+            : "<span class='st st-fail'><span class='st-dot'></span>失败</span>";
           return "<tr><td>" + esc(r.at) + "</td><td>" + st + "</td><td style='color:var(--muted)'>" + esc(r.msg) + "</td></tr>";
         }).join("") +
         "</tbody></table>";
@@ -1028,10 +1059,10 @@
 
     var stats =
       '<div class="detail-stats" data-region="detail-stats">' +
-      "<span>现在 <strong class='num'>" + fmtKib(restricted ? null : node.curr) + "</strong></span>" +
-      "<span>较上次 <strong class='num " + d.cls + "'>" + d.text + "</strong></span>" +
-      "<span>数据截至 9月12日 12:03</span>" +
-      "<span>" + (s === "partial" ? "部分覆盖" : "覆盖完整") + "</span></div>";
+      '<div class="stat"><span class="stat-label">现在</span><strong class="num">' + fmtKib(restricted ? null : node.curr) + "</strong></div>" +
+      '<div class="stat"><span class="stat-label">较上次</span><strong class="num ' + d.cls + '">' + d.text + "</strong></div>" +
+      '<div class="stat"><span class="stat-label">数据截至</span><strong>9月12日 12:03</strong></div>' +
+      '<div class="stat"><span class="stat-label">覆盖</span><strong>' + (s === "partial" ? "部分覆盖" : "覆盖完整") + "</strong></div></div>";
 
     var trendHtml = "";
     if (!restricted) {
@@ -1060,7 +1091,7 @@
           var fullName = path + "/" + c.name;
           return (
             '<tr class="krow" data-path="' + esc(fullName) + '" tabindex="0">' +
-            '<td class="cell-path" title="' + esc(fullName) + '">' + esc(c.name) + "</td>" +
+            "<td><div class=\"cell-path\" title=\"" + esc(fullName) + '">' + esc(c.name) + "</div></td>" +
             "<td class='num'>" + fmtKib(c.curr) + "</td>" +
             "<td class='num " + cd.cls + "'>" + cd.text + "</td></tr>"
           );
@@ -1095,10 +1126,10 @@
       (trendHtml ? '<div class="detail-section" data-region="detail-trend"><h3>历史趋势</h3>' + trendHtml + "</div>" : "") +
       subdirHtml +
       noteHtml +
-      '<div class="detail-section" data-region="detail-agent"><div class="agent-off">' +
-      '<div class="agent-title">' + icon("shield", 15) + " 用途与来源：未启用</div>" +
-      "<p>智能解释尚未启用。启用后会显示本地规则或 Agent 的解释及其证据与时间，且可驳回；当前不展示任何虚构用途。</p>" +
-      '<a class="link-muted" href="#/settings">在设置中查看智能分析说明 →</a></div></div>' +
+      '<div class="detail-section" data-region="detail-agent"><div class="detail-footnote">' +
+      '<span class="footnote-title">用途与来源：未启用</span>' +
+      "<span>智能解释尚未启用；启用后会显示本地规则或 Agent 的解释及其证据与时间，且可驳回，当前不展示任何虚构用途。</span>" +
+      '<a class="link-muted" href="#/settings">在设置中查看说明 →</a></div></div>' +
       '<div class="detail-actions" data-region="detail-actions">' +
       '<button class="btn" data-action="finder" data-path="' + esc(path) + '">' + icon("folderOpen", 14) + " 在 Finder 中显示</button>" +
       '<button class="btn" data-action="copy" data-path="' + esc(path) + '">' + icon("copy", 14) + " 复制路径</button></div>";

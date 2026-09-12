@@ -2,28 +2,69 @@
 /* ISS-026 · UX 原型自动验证（Playwright 驱动，无外部依赖安装）
  *
  * 合同映射：
- * - docs/DESIGN.md「原型验收」：五页导航、总览→变化→目录详情（≤3 步定位证据）、
- *   首次启动向导、失败恢复（保留旧数据 + 重试）。
+ * - docs/DESIGN.md「原型验收」与「原型第二轮：原生 Mac 视觉方向」：五页导航、
+ *   总览→变化→目录详情（≤3 步定位证据）、首次启动向导、失败恢复（保留旧数据 + 重试）、
+ *   详情关键列（现在/变化/状态）在打开详情时无需容器内横向滚动即可见。
  * - docs/TESTING.md UX 回归行：980×640 / 1220×820（另加 1440×900）无横向溢出；
- *   长路径不撑破布局；键盘导航 + Esc 焦点返回；图表非零尺寸且缺失日不补零。
- * - 状态合同：正常 / 单快照 / 首次启动 / 部分权限 / 失败保留旧数据 / 服务断开 /
- *   未记录 ≠ 新增 / Agent 未启用不得假装已识别。
+ *   长路径不撑破布局；键盘导航 + Esc 焦点返回；图表非零尺寸且缺失日不补零、
+ *   末位 x 轴标签不越出 viewBox。
+ * - 状态合同：正常 / 单快照 / 首次启动（结论区不得残留其他场景内容）/ 部分权限 /
+ *   失败保留旧数据 / 服务断开 / 未记录 ≠ 新增 / Agent 未启用不得假装已识别。
  *
- * 运行：node scripts/verify_ux_prototype.cjs
- * 截图与结果写入 .claude/agent-sessions/fathom-w2-iss-026/evidence/（不入库）。
+ * 运行：node scripts/verify_ux_prototype.cjs [--evidence-dir <dir>]
+ *   --evidence-dir  截图/日志/结果 JSON 的输出目录（默认为系统临时目录下按 uid
+ *                   隔开的通用任务私有路径，不绑定任何 worker session）。
+ *   每次执行写入 <evidence-dir>/runs/run-<N>/（N 递增，不覆盖历史运行），
+ *   便于同场景 before/after 对照与失败迭代留痕。
  * 退出码：0 全部通过；1 存在失败；2 环境不可用（无浏览器等）。
  */
 "use strict";
 
 const http = require("http");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
-const { chromium } = require("playwright");
+const { execSync } = require("child_process");
+
+/* playwright 解析：先常规 require，失败则回退全局安装位置（不安装任何东西） */
+let chromium = null;
+const PW_CANDIDATES = ["playwright", "/opt/homebrew/lib/node_modules/playwright"];
+for (const cand of PW_CANDIDATES) {
+  try { chromium = require(cand).chromium; break; } catch (e) { /* 下一个 */ }
+}
 
 const PROTO_DIR = path.resolve(__dirname, "..", "prototypes", "ux");
-const EVIDENCE_DIR = path.resolve(__dirname, "..", ".claude", "agent-sessions", "fathom-w2-iss-026", "evidence");
-const RESULTS_JSON = path.join(EVIDENCE_DIR, "verify-results.json");
-const LOG_FILE = path.join(EVIDENCE_DIR, "verify-log.txt");
+
+/* --evidence-dir 参数：默认通用任务私有临时路径（uid 隔离，不绑定 worker session） */
+function parseEvidenceDir(argv) {
+  const idx = argv.indexOf("--evidence-dir");
+  if (idx >= 0 && argv[idx + 1]) return path.resolve(argv[idx + 1]);
+  const eq = argv.find((a) => a.indexOf("--evidence-dir=") === 0);
+  if (eq) return path.resolve(eq.slice("--evidence-dir=".length));
+  return path.join(os.tmpdir(), "fathom-prototype-evidence-" + process.getuid());
+}
+const EVIDENCE_DIR = parseEvidenceDir(process.argv.slice(2));
+
+/* 每次运行独立子目录（run-1、run-2…），历史运行不被覆盖 */
+function nextRunDir(root) {
+  const runsRoot = path.join(root, "runs");
+  fs.mkdirSync(runsRoot, { recursive: true });
+  let max = 0;
+  for (const name of fs.readdirSync(runsRoot)) {
+    const m = /^run-(\d+)$/.exec(name);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return path.join(runsRoot, "run-" + (max + 1));
+}
+const RUN_DIR = nextRunDir(EVIDENCE_DIR);
+const RESULTS_JSON = path.join(RUN_DIR, "verify-results.json");
+const LOG_FILE = path.join(RUN_DIR, "verify-log.txt");
+const MEASURE_JSON = path.join(RUN_DIR, "layout-measurements.json");
+
+function gitHead() {
+  try { return execSync("git rev-parse HEAD", { cwd: path.resolve(__dirname, "..") }).toString().trim(); }
+  catch (e) { return null; }
+}
 
 /* 与 prototypes/ux/app.js 一致的合成数据路径（验证脚本自带副本，避免跨文件依赖） */
 const ROOT = "/Users/演示用户";
@@ -43,6 +84,7 @@ const logLines = [];
 let passCount = 0;
 let failCount = 0;
 const results = [];
+const layoutMeasurements = {};
 
 function line(msg) {
   logLines.push(msg);
@@ -77,8 +119,10 @@ function startServer() {
 }
 
 async function main() {
-  fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
+  fs.mkdirSync(RUN_DIR, { recursive: true });
+  const head = gitHead();
   line("== ISS-026 UX 原型验证 ==");
+  line("输出目录: " + RUN_DIR + (head ? "（head " + head.slice(0, 10) + "）" : ""));
 
   let playwrightErr = null;
   let browser = null;
@@ -91,6 +135,7 @@ async function main() {
   const shots = [];
 
   try {
+    if (!chromium) throw new Error("无法解析 playwright 模块（常规 require 与全局安装位置均失败）");
     try {
       browser = await chromium.launch({ headless: true });
     } catch (e) {
@@ -108,7 +153,7 @@ async function main() {
     page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
 
     async function shot(name) {
-      const p = path.join(EVIDENCE_DIR, name + ".png");
+      const p = path.join(RUN_DIR, name + ".png");
       await page.screenshot({ path: p });
       shots.push(path.basename(p));
     }
@@ -131,6 +176,32 @@ async function main() {
       }));
       check("无横向溢出 " + label, m.doc <= m.vw + 1 && m.body <= m.vw + 1, "doc=" + m.doc + " body=" + m.body + " vw=" + m.vw);
     }
+    /* 关键列布局断言：打开详情后，变化表「现在/变化/状态」无需容器内横向滚动即可见。
+     * 页面整体不溢出不足以证明这一点（r1 审查实测 1220px 下表格视窗 506px、内容 707px）。 */
+    async function keyColumnsVisible(label) {
+      const m = await page.evaluate((bp) => {
+        const wrap = document.querySelector("#page-changes .tbl-wrap");
+        const row = document.querySelector('#page-changes tr[data-path="' + bp + '"]');
+        if (!wrap || !row) return null;
+        const wrapRect = wrap.getBoundingClientRect();
+        const cells = Array.from(row.cells).map((c) => ({
+          head: c.textContent.trim().slice(0, 12),
+          right: Math.round(c.getBoundingClientRect().right),
+          visible: c.getBoundingClientRect().right <= wrapRect.right + 0.5,
+        }));
+        return {
+          wrapClient: wrap.clientWidth,
+          wrapScroll: wrap.scrollWidth,
+          innerOverflow: wrap.scrollWidth - wrap.clientWidth,
+          cells,
+        };
+      }, BUILD_PATH);
+      layoutMeasurements[label] = m;
+      const keyOk = !!m && m.innerOverflow <= 1 && m.cells.slice(1).every((c) => c.visible);
+      check("布局·" + label + " 关键列（之前/现在/变化/状态）无需滚动即可见", keyOk,
+        m ? "tbl-wrap " + m.wrapClient + "/" + m.wrapScroll + "px，最右列右缘 " + (m.cells[m.cells.length - 1] || {}).right : "无表");
+      return m;
+    }
     const bodyText = () => page.evaluate(() => document.body.innerText || "");
 
     /* ===== C1 加载与外壳 ===== */
@@ -152,6 +223,32 @@ async function main() {
     check("总览·走势图声明缺失日留空（不补零）与等价表格", sparkAria.includes("留空") && sparkAria.includes("表格"));
     const volMeta = await page.textContent("#vol-meta");
     check("总览·卷容量缺口标注 09-09", volMeta.includes("09-09") && volMeta.includes("不补零"));
+    /* 图表精修约束：末位 x 轴标签 bbox 不得越出 viewBox（r1 审查发现的裁切） */
+    const sparkClip = await page.$eval('[data-region="volume"] svg.spark', (svg) => {
+      const vb = svg.viewBox.baseVal;
+      const texts = Array.from(svg.querySelectorAll("text"));
+      const last = texts[texts.length - 1];
+      if (!last) return { ok: false, vbW: vb.width, right: -1 };
+      const b = last.getBBox();
+      return { ok: b.x + b.width <= vb.width + 0.5, vbW: vb.width, right: b.x + b.width };
+    });
+    check("图表·末位 x 轴标签不被裁切（bbox 不越出 viewBox）", sparkClip.ok,
+      "right=" + sparkClip.right.toFixed(1) + " / viewBox=" + sparkClip.vbW);
+    await shot("00-overview-1220");
+
+    /* ===== C2.5 场景切换：首启不得残留上一场景结论（r1 审查 B1 回归） ===== */
+    await setScenario("first-launch");
+    await gotoHash("overview");
+    await page.waitForSelector("#onboard:not([hidden])", { timeout: 5000 });
+    const b1 = await page.evaluate(() => {
+      const el = document.querySelector('[data-region="conclusion"]');
+      return { hidden: !el || el.hidden, text: (el && el.innerText ? el.innerText : "").trim() };
+    });
+    check("首启·切换场景后结论区为空/隐藏（不残留旧场景结论）", b1.hidden || b1.text === "", b1.hidden ? "hidden" : JSON.stringify(b1.text.slice(0, 60)));
+    await setScenario("normal");
+    await gotoHash("overview");
+    await page.waitForFunction(() => (document.querySelector('[data-region="conclusion"]') || {}).innerText.indexOf("+2.3 GiB") >= 0, null, { timeout: 5000 });
+    check("首启·切回正常场景结论恢复", true);
 
     /* ===== C3 日常定位旅程（总览 → 变化 → 目录详情，≤3 步） ===== */
     await page.click('[data-journey="locate"]');
@@ -172,10 +269,19 @@ async function main() {
     check("详情·Agent 未启用如实展示", dAgent.includes("未启用"));
     check("全局·不出现“已识别”类虚构结论", !((await bodyText()).includes("已识别")));
 
-    /* 详情右栏几何（≥1200px：右侧栏而非覆盖层） */
-    const dBox = await (await page.$("#detail")).boundingBox();
-    check("详情·1220px 为右侧栏（不超视口，宽约 408）", dBox && dBox.x + dBox.width <= 1220 + 1 && Math.abs(dBox.width - 408) <= 8,
-      dBox ? "x=" + dBox.x + " w=" + dBox.width : "无");
+    /* 详情几何（1220×820）：内容可用宽度不足时必须改为覆盖层，关键列可见 */
+    const dGeom1220 = await page.evaluate(() => {
+      const el = document.querySelector("#detail");
+      const r = el.getBoundingClientRect();
+      return { x: r.x, w: r.width, vw: window.innerWidth, pos: getComputedStyle(el).position };
+    });
+    layoutMeasurements["detail-1220"] = dGeom1220;
+    check("详情·1220px 为全宽覆盖层（左侧贴合侧栏、右侧贴合视口）",
+      dGeom1220.pos === "fixed" && Math.abs(dGeom1220.x + dGeom1220.w - dGeom1220.vw) <= 4,
+      "pos=" + dGeom1220.pos + " x=" + Math.round(dGeom1220.x) + " w=" + Math.round(dGeom1220.w));
+    await keyColumnsVisible("1220 变化页+详情打开");
+    await noOverflow("1220×820 变化页+详情打开");
+    await shot("02-changes-detail-1220");
 
     /* ===== C4 键盘导航与焦点返回 ===== */
     await page.evaluate((p) => { document.querySelector('#page-changes tr[data-path="' + p + '"]').focus(); }, BUILD_PATH);
@@ -203,10 +309,14 @@ async function main() {
     check("长路径·单元格宽度受控（不撑破布局）", longInfo.w > 0 && longInfo.w <= 421, "w=" + longInfo.w.toFixed(1) + " / max 420");
     const dPathCode = await page.$eval("#detail .detail-path code", (el) => ({ t: el.textContent.trim(), title: el.getAttribute("title") }));
     check("长路径·详情路径截断 + title 完整", dPathCode.t.includes("…") && dPathCode.title === LONG_DIR, dPathCode.t);
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => document.body.dataset.detail === "closed", null, { timeout: 5000 });
 
     /* ===== C6 980×640：详情为全宽层，无横向溢出 ===== */
     await page.setViewportSize({ width: 980, height: 640 });
-    /* 跨过 1200 断点会对 #detail 重新应用 0.18s slide-in 入场动画；等动画结束再量几何 */
+    await page.click('#page-changes tr[data-path="' + BUILD_PATH + '"]');
+    await page.waitForFunction(() => document.body.dataset.detail === "open", null, { timeout: 5000 });
+    /* 打开详情会对覆盖层应用入场动画；等动画结束再量几何 */
     await page.waitForFunction(() => {
       const el = document.querySelector("#detail");
       return !el || el.getAnimations().length === 0;
@@ -403,6 +513,30 @@ async function main() {
     await shot("09-980-changes-detail");
     await page.keyboard.press("Escape");
 
+    /* ===== C16.5 1440×900：详情为右侧栏时关键列仍无需滚动即可见 ===== */
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoHash("changes");
+    await page.click('#page-changes tr[data-path="' + BUILD_PATH + '"]');
+    await page.waitForFunction(() => document.body.dataset.detail === "open", null, { timeout: 5000 });
+    await page.waitForFunction(() => {
+      const el = document.querySelector("#detail");
+      return !el || el.getAnimations().length === 0;
+    }, { timeout: 5000 });
+    const dGeom1440 = await page.evaluate(() => {
+      const el = document.querySelector("#detail");
+      const r = el.getBoundingClientRect();
+      return { x: r.x, w: r.width, vw: window.innerWidth, pos: getComputedStyle(el).position };
+    });
+    layoutMeasurements["detail-1440"] = dGeom1440;
+    check("详情·1440px 为右侧栏（宽约 408，不超视口）",
+      dGeom1440.pos !== "fixed" && dGeom1440.x + dGeom1440.w <= dGeom1440.vw + 1 && Math.abs(dGeom1440.w - 408) <= 10,
+      "pos=" + dGeom1440.pos + " x=" + Math.round(dGeom1440.x) + " w=" + Math.round(dGeom1440.w));
+    await keyColumnsVisible("1440 变化页+详情右栏");
+    await noOverflow("1440×900 变化页+详情右栏");
+    await shot("11-1440-changes-detail-rail");
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => document.body.dataset.detail === "closed", null, { timeout: 5000 });
+
     /* ===== C17 运行期无错误 ===== */
     check("全程无 pageerror", pageErrors.length === 0, pageErrors.join("; ").slice(0, 200));
     check("全程无 console error", consoleErrors.length === 0, consoleErrors.join("; ").slice(0, 200));
@@ -424,6 +558,7 @@ async function main() {
     JSON.stringify(
       {
         generated_at: new Date().toISOString(),
+        git_head: head,
         playwright_error: playwrightErr ? String(playwrightErr.message) : null,
         passed: passCount,
         failed: failCount,
@@ -435,14 +570,15 @@ async function main() {
     ) + "\n",
     "utf8"
   );
+  fs.writeFileSync(MEASURE_JSON, JSON.stringify({ generated_at: new Date().toISOString(), git_head: head, measurements: layoutMeasurements }, null, 2) + "\n", "utf8");
   line("结果 JSON: " + RESULTS_JSON);
+  line("布局度量: " + MEASURE_JSON);
   line("日志: " + LOG_FILE);
   if (failCount > 0) process.exitCode = 1;
 }
 
 main().catch((e) => {
   line("验证脚本异常退出：" + (e && e.stack ? e.stack : e));
-  fs.mkdirSync(EVIDENCE_DIR, { recursive: true });
   fs.writeFileSync(LOG_FILE, logLines.join("\n") + "\n异常: " + String(e && e.stack ? e.stack : e) + "\n", "utf8");
   process.exitCode = 1;
 });

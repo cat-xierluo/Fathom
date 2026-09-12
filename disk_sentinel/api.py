@@ -17,16 +17,26 @@ from __future__ import annotations
 import datetime as dt
 import os
 import sqlite3
+import subprocess
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import bigfiles, config, db, reports, scanner
 
-app = FastAPI(title="Disk Sentinel", version="0.1.0")
+app = FastAPI(title="Disk Sentinel", version="0.2.0")
+
+# Tauri 壳的 loader 页（tauri://localhost）需要跨域探测本服务
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["tauri://localhost", "http://tauri.localhost"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 _scan_lock = threading.Lock()
 _scan_state: dict = {"running": False, "started_at": None, "finished_at": None,
@@ -245,6 +255,113 @@ def api_scan():
 @app.get("/api/scan/status")
 def api_scan_status():
     return dict(_scan_state)
+
+
+# ---------- v0.2：目录浏览器 / 日报档案 / Finder 打开 ----------
+
+@app.get("/api/browse")
+def api_browse(path: str | None = None):
+    """目录浏览器：指定目录的直接子目录（最新快照）+ 与前一快照的差值 + 自身趋势。
+
+    对应 DESIGN.md 分布页合同：面包屑下钻 + 行级 Finder 打开。
+    """
+    conn = _get_conn()
+    try:
+        snaps = _latest_snapshots(conn, 2)
+        if not snaps:
+            raise HTTPException(409, "尚无快照，请先扫描")
+        new_sid, old_sid = snaps[0]["id"], (snaps[1]["id"] if len(snaps) > 1 else None)
+        root_path = snaps[0]["root"].rstrip("/")
+        target = path.rstrip("/") if path else root_path
+        if not (target == root_path or target.startswith(root_path + "/")):
+            raise HTTPException(400, f"路径必须在监控根 {root_path} 之内")
+
+        new_entries = reports.load_snapshot(conn, new_sid)
+        old_entries = reports.load_snapshot(conn, old_sid) if old_sid else {}
+
+        prefix = target + "/"
+        children = []
+        for p, size in new_entries.items():
+            if not p.startswith(prefix):
+                continue
+            rest = p[len(prefix):]
+            if "/" not in rest:  # 直接子目录
+                old_size = old_entries.get(p)
+                children.append({
+                    "name": rest,
+                    "path": p,
+                    "size_kb": size,
+                    "delta_kb": (size - old_size) if old_size is not None
+                                else (size if p not in old_entries else None),
+                    "is_new": old_sid is not None and p not in old_entries,
+                })
+        children.sort(key=lambda c: c["size_kb"], reverse=True)
+
+        points = [
+            dict(r)
+            for r in conn.execute(
+                """SELECT s.created_at, e.size_kb FROM entries e
+                   JOIN snapshots s ON s.id = e.snapshot_id
+                   WHERE e.path = ? ORDER BY s.created_at""",
+                (target,),
+            )
+        ]
+        # 面包屑
+        parts = target[len(root_path):].strip("/").split("/") if target != root_path else []
+        crumbs = [{"name": root_path.rsplit("/", 1)[-1] or "/", "path": root_path}]
+        acc = root_path
+        for seg in filter(None, parts):
+            acc = acc + "/" + seg
+            crumbs.append({"name": seg, "path": acc})
+
+        return {
+            "path": target,
+            "size_kb": new_entries.get(target, 0),
+            "delta_kb": (new_entries.get(target, 0) - old_entries.get(target, 0))
+                        if old_sid and target in old_entries else None,
+            "children": children,
+            "trend": points,
+            "crumbs": crumbs,
+            "snapshot_at": snaps[0]["created_at"],
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/reports")
+def api_reports():
+    """历史日报档案列表（reports/*.md，新在前）。"""
+    out = []
+    if config.REPORTS_DIR.exists():
+        for f in sorted(config.REPORTS_DIR.glob("*.md"), reverse=True):
+            out.append({"date": f.stem, "bytes": f.stat().st_size})
+    return {"reports": out}
+
+
+@app.get("/api/reports/{date}")
+def api_report(date: str):
+    if not (len(date) == 10 and date[4] == "-" and date[:4].isdigit()):
+        raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
+    path = config.REPORTS_DIR / f"{date}.md"
+    if not path.is_file():
+        raise HTTPException(404, f"{date} 无日报")
+    return {"date": date, "content": path.read_text(encoding="utf-8")}
+
+
+@app.post("/api/reveal")
+async def api_reveal(request: Request):
+    """在 Finder 中显示指定路径（open -R）。仅允许监控根内的路径。"""
+    body = await request.json()
+    path = str(body.get("path", ""))
+    root = str(config.DEFAULT_ROOT)
+    if not (path == root or path.startswith(root + "/")):
+        raise HTTPException(400, "路径必须在监控根之内")
+    if not os.path.exists(path):
+        raise HTTPException(404, "路径不存在（可能已被移动或删除）")
+    result = subprocess.run(["/usr/bin/open", "-R", path], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise HTTPException(500, f"打开失败：{result.stderr.strip()}")
+    return {"ok": True}
 
 
 # 前端静态资源挂载在最后，避免覆盖 /api 路由

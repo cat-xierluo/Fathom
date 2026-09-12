@@ -7,108 +7,159 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <span class="logo">🛰️</span>
-    <div>
-      <h1>容量哨兵</h1>
-      <p class="sub" id="root-info">加载中…</p>
-    </div>
+<div class="app-shell">
+
+  <!-- 侧边导航 -->
+  <nav class="sidenav" aria-label="主导航">
+    <div class="sidenav-brand">🛰️</div>
+    <a href="#/overview" data-page="overview" class="nav-item" aria-current="page">
+      <span class="nav-icon">📊</span><span class="nav-label">总览</span>
+    </a>
+    <a href="#/changes" data-page="changes" class="nav-item">
+      <span class="nav-icon">📈</span><span class="nav-label">变化</span>
+    </a>
+    <a href="#/browse" data-page="browse" class="nav-item">
+      <span class="nav-icon">🎯</span><span class="nav-label">分布</span>
+    </a>
+    <a href="#/bigfiles" data-page="bigfiles" class="nav-item">
+      <span class="nav-icon">📦</span><span class="nav-label">大文件</span>
+    </a>
+    <div class="sidenav-spacer"></div>
+    <a href="#/settings" data-page="settings" class="nav-item">
+      <span class="nav-icon">⚙️</span><span class="nav-label">设置</span>
+    </a>
+  </nav>
+
+  <!-- 主区 -->
+  <div class="main-area">
+    <header class="topbar">
+      <h1 id="page-title">总览</h1>
+      <div class="topbar-right">
+        <span class="scan-badge" id="scan-badge">--</span>
+        <button id="btn-scan" class="btn primary">立即扫描</button>
+      </div>
+    </header>
+
+    <main class="page-container">
+
+      <!-- ===== 总览 ===== -->
+      <section class="page" id="page-overview">
+        <div class="cards">
+          <div class="card"><p class="card-label">磁盘剩余</p><p class="card-value" id="card-free">--</p></div>
+          <div class="card"><p class="card-label">磁盘已用</p><p class="card-value" id="card-used">--</p></div>
+          <div class="card"><p class="card-label">快照数量</p><p class="card-value" id="card-snaps">--</p></div>
+          <div class="card"><p class="card-label">最近扫描</p><p class="card-value small" id="card-latest">--</p></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>卷容量趋势</h2><p class="hint">每次快照记录的整卷用量</p></div>
+          <div id="chart-volume" class="chart chart-lg"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>今日摘要</h2>
+            <a class="hint link" href="#/changes">查看完整对比 →</a>
+          </div>
+          <div id="overview-summary">加载中…</div>
+        </div>
+      </section>
+
+      <!-- ===== 变化 ===== -->
+      <section class="page hidden" id="page-changes">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>快照对比</h2>
+            <div class="controls">
+              <label>基线 <select id="sel-a"></select></label>
+              <label>对比 <select id="sel-b"></select></label>
+              <button id="btn-diff" class="btn">对比</button>
+            </div>
+          </div>
+          <div class="diff-grid">
+            <div><h3 class="grow">📈 增长最多</h3><div id="chart-grown" class="chart"></div></div>
+            <div><h3 class="shrink">📉 缩减最多</h3><div id="chart-shrunk" class="chart"></div></div>
+          </div>
+          <div class="diff-tables">
+            <div><h3>🆕 新出现的大目录（≥100MB）</h3>
+              <table class="tbl" id="tbl-added"><thead><tr><th>目录</th><th>大小</th></tr></thead><tbody></tbody></table></div>
+            <div><h3>🗑️ 消失的目录</h3>
+              <table class="tbl" id="tbl-removed"><thead><tr><th>目录</th><th>曾占</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>历史日报</h2><p class="hint">每日扫描后自动生成，可回看任意一天</p></div>
+          <div id="report-list" class="report-list">加载中…</div>
+          <div id="report-view" class="report-view hidden"></div>
+        </div>
+      </section>
+
+      <!-- ===== 分布（旭日图 + 目录浏览器） ===== -->
+      <section class="page hidden" id="page-browse">
+        <div class="panel">
+          <div class="panel-head"><h2>当前占用分布</h2><p class="hint">点击扇区在下方目录浏览器中定位</p></div>
+          <div id="chart-sunburst" class="chart chart-lg"></div>
+        </div>
+        <div class="panel" id="browser-panel">
+          <div class="panel-head">
+            <h2>目录浏览器</h2>
+            <div id="browser-meta" class="hint">--</div>
+          </div>
+          <nav class="crumbs" id="crumbs"></nav>
+          <div class="browser-layout">
+            <div class="browser-table-wrap">
+              <table class="tbl" id="tbl-browse">
+                <thead><tr><th>目录</th><th class="num">大小</th><th class="num">较上快照</th><th class="num">占比</th><th></th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="browser-side">
+              <h3 id="browser-trend-title">目录趋势</h3>
+              <div id="chart-browser-trend" class="chart chart-sm"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== 大文件 ===== -->
+      <section class="page hidden" id="page-bigfiles">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>近期大文件</h2>
+            <div class="controls">
+              <label>近 <input type="number" id="bf-days" value="7" min="1" max="90"> 天</label>
+              <label>≥ <input type="number" id="bf-mb" value="100" min="1"> MB</label>
+              <button id="btn-bigfiles" class="btn">查询</button>
+            </div>
+          </div>
+          <table class="tbl" id="tbl-bigfiles">
+            <thead><tr><th class="num">大小</th><th>修改时间</th><th>文件</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ===== 设置 ===== -->
+      <section class="page hidden" id="page-settings">
+        <div class="panel">
+          <div class="panel-head"><h2>运行配置</h2><p class="hint">当前为只读展示，可写配置见路线图</p></div>
+          <table class="tbl" id="settings-table"><tbody></tbody></table>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>服务管理</h2></div>
+          <div class="settings-actions">
+            <p class="hint">定时扫描与常驻服务由 launchd 管理（com.maoscripts.disk-sentinel-*）。</p>
+            <p class="hint">卸载：<code>.venv/bin/python main.py uninstall</code>；重装：<code>install</code>。</p>
+            <p class="hint">数据与日报位于项目目录 data/、reports/（已 gitignore，含全盘路径，勿外传）。</p>
+          </div>
+        </div>
+      </section>
+
+    </main>
   </div>
-  <div class="topbar-right">
-    <span class="scan-badge" id="scan-badge">--</span>
-    <button id="btn-scan" class="btn primary">立即扫描</button>
-  </div>
-</header>
+</div>
 
-<main>
-  <!-- 状态卡 -->
-  <section class="cards" id="cards">
-    <div class="card"><p class="card-label">磁盘剩余</p><p class="card-value" id="card-free">--</p></div>
-    <div class="card"><p class="card-label">磁盘已用</p><p class="card-value" id="card-used">--</p></div>
-    <div class="card"><p class="card-label">快照数量</p><p class="card-value" id="card-snaps">--</p></div>
-    <div class="card"><p class="card-label">最近扫描</p><p class="card-value small" id="card-latest">--</p></div>
-  </section>
-
-  <!-- 卷容量趋势 -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>卷容量趋势</h2>
-      <p class="hint">每次快照记录的整卷用量 · 对应群晖「使用率趋势」</p>
-    </div>
-    <div id="chart-volume" class="chart chart-lg"></div>
-  </section>
-
-  <!-- 快照对比 -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>快照对比</h2>
-      <div class="controls">
-        <label>基线
-          <select id="sel-a"></select>
-        </label>
-        <label>对比
-          <select id="sel-b"></select>
-        </label>
-        <button id="btn-diff" class="btn">对比</button>
-      </div>
-    </div>
-    <div class="diff-grid">
-      <div>
-        <h3 class="grow">📈 增长最多</h3>
-        <div id="chart-grown" class="chart"></div>
-      </div>
-      <div>
-        <h3 class="shrink">📉 缩减最多</h3>
-        <div id="chart-shrunk" class="chart"></div>
-      </div>
-    </div>
-    <div class="diff-tables">
-      <div>
-        <h3>🆕 新出现的大目录（≥100MB）</h3>
-        <table class="tbl" id="tbl-added"><thead><tr><th>目录</th><th>大小</th></tr></thead><tbody></tbody></table>
-      </div>
-      <div>
-        <h3>🗑️ 消失的目录</h3>
-        <table class="tbl" id="tbl-removed"><thead><tr><th>目录</th><th>曾占</th></tr></thead><tbody></tbody></table>
-      </div>
-    </div>
-  </section>
-
-  <!-- 当前占用分布 + 目录趋势 -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>当前占用分布</h2>
-      <p class="hint">点击扇区查看该目录的历史大小趋势 · 内圈为大目录，可下钻</p>
-    </div>
-    <div class="tree-grid">
-      <div id="chart-sunburst" class="chart chart-lg"></div>
-      <div>
-        <h3 id="trend-title">目录趋势（点击左侧扇区选择）</h3>
-        <div id="chart-trend" class="chart"></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- 近期大文件 -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>近期大文件</h2>
-      <div class="controls">
-        <label>近 <input type="number" id="bf-days" value="7" min="1" max="90"> 天</label>
-        <label>≥ <input type="number" id="bf-mb" value="100" min="1"> MB</label>
-        <button id="btn-bigfiles" class="btn">查询</button>
-      </div>
-    </div>
-    <table class="tbl" id="tbl-bigfiles">
-      <thead><tr><th>大小</th><th>修改时间</th><th>文件</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </section>
-</main>
-
-<footer>
-  <p>disk-sentinel · 本地运行 · <a href="/docs" target="_blank">API 文档</a> · 数据不出本机</p>
+<footer class="app-footer">
+  <span>disk-sentinel · 本地运行 · 数据不出本机</span>
+  <a href="/docs" target="_blank">API 文档</a>
 </footer>
 
 <script src="vendor/echarts.min.js"></script>

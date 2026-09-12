@@ -1,0 +1,16 @@
+{
+  "$schema": "http://schema.tauri.app/capabilities.json",
+  "identifier": "default",
+  "description": "主窗口默认权限：本地加载页与 127.0.0.1:7952 远程仪表盘共享",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:7952", "http://localhost:7952"]
+  },
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:event:default"
+  ]
+}

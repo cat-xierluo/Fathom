@@ -85,4 +85,17 @@ du 的累计语义使父目录变化必然包含子目录变化，朴素 Top-N �
 
 ## 部署形态与升级路径
 
-当前为"本地 Web 服务"形态。内核（scanner/reports/bigfiles/db）与壳（api/前端）严格分离，未来如需原生窗口体验，可用 Tauri 包壳指向 `http://127.0.0.1:7952`，内核零改动（见 ROADMAP）。
+三层形态共用同一个 FastAPI 后端与前端（DEC-008）：
+
+```
+launchd（后端生命周期）                     用户入口（UI 壳）
+├─ com.maoscripts.disk-sentinel-scan      ├─ 桌面壳 apps/desktop（Tauri 2，推荐）
+│    每日 12:00 → main.py scan            │    tray 菜单栏 + 原生窗口
+└─ com.maoscripts.disk-sentinel-web       │    loader 页(tauri://localhost) 轮询可达
+     常驻 → main.py serve :7952  ◄────────┼──── 跳转 127.0.0.1:7952
+                                           └─ 任意浏览器（同一 URL）
+```
+
+- 壳不管后端生命周期（无 supervisor，比 Badminton Lab 的 sidecar 模式简一档）
+- 前端通过 `window.__TAURI__` 探测运行环境：壳内推送 tray 状态（剩余 GB）+ 监听 tray-action；浏览器内静默降级
+- 未来如需原生窗口强化，仅动壳与 capability，内核（scanner/reports/db）零改动

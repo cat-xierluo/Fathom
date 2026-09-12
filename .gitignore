@@ -3,11 +3,17 @@ data/
 reports/
 logs/
 
+# 内部研究文档（用户指示：参照项目的研究资料不入 Git）
+docs/research/
+
 # Python
 __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+
+# Rust/Tauri 构建产物
+apps/desktop/src-tauri/target/
 
 # macOS
 .DS_Store

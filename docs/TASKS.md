@@ -178,7 +178,7 @@
   - [ ] 分支差异/基线/相关测试有独立复查记录
   - [ ] running/done/failed 与重启路径可解释；首扫误失败移交 ISS-020
   - [ ] 合并按用户确认执行；文档按最终实际状态回写
-- **证据/接续**：已存在 71fea47；审查时 integration/wave1 含此成果，main 的审查基线未含。领取前查最新 Git。
+- **证据/接续**：[PR #4](https://github.com/cat-xierluo/fathom/pull/4)（rebase 后 76c336c，原 71fea47）：19 passed ×2；独立 reviewer 深度核验陈旧 running 收尾竞态安全（进程内锁身份语义、3600s 对 du 上限 4 倍余量）、旧库无损升级；ACCEPT。剩余问题（进程内锁非全局协调、首扫误失败）按本卡边界移交 ISS-020。
 
 ### ISS-020 · 统一扫描运行与跨进程互斥
 
@@ -296,7 +296,7 @@
   - [ ] 分支测试复跑，失败/转义/长度/静默模式行为可解释
   - [ ] macOS 实际收到内容正确的通知，拒绝权限时有退路
   - [ ] 首扫无日报、零变化、部分覆盖及低空间告警有一致语义
-- **证据/接续**：已有提交 6488cf5（未视为本次已验收）；系统通知实测 NOT_VERIFIED。
+- **证据/接续**：[PR #3](https://github.com/cat-xierluo/fathom/pull/3)（rebase 后 7717754，原 6488cf5）：22 passed ×2（PM + 独立 reviewer 复跑），编排三道门全过，review verdict ACCEPT；系统通知实测仍 NOT_VERIFIED，归本卡验收第 2 条。
 
 ### ISS-008 · 接续 tray 链路与实机验证
 
@@ -307,7 +307,7 @@
   - [ ] 浅/深色下只有预期数量的图标且清晰；菜单状态不是永久启动中
   - [ ] 标题与状态行和后端一致；左键/开窗/扫描/退出实际可用
   - [ ] 隐藏窗口、后端断开、恢复与权限失败有真实行为证据
-- **证据/接续**：已有 27b579f；编译记录不替代菜单栏实测，NOT_VERIFIED。
+- **证据/接续**：[PR #5](https://github.com/cat-xierluo/fathom/pull/5)（rebase 后 53bf4f8，原 27b579f）：cargo build exit 0 ×2；reviewer 核验 capability 最小权限（仅 update_tray_status、window main + 127.0.0.1:7952）；ACCEPT。菜单栏实机三项验收仍 NOT_VERIFIED，归本卡验收框。
 
 ### ISS-009 · 可分发 app 与安装入口
 

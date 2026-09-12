@@ -44,14 +44,45 @@ function escapeHtml(s) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
 }
-function revealInFinder(path) {
-  fetch("/api/reveal", {
+
+/* ---------- 本地写令牌（ISS-022）：仅内存，不进 localStorage/URL ---------- */
+
+let apiToken = null;  // 页面内存持有；后端重启会轮换，403 时自动重新获取
+
+async function getApiToken() {
+  if (apiToken) return apiToken;
+  const res = await fetch("/api/bootstrap");  // 同源受控发放，跨站 Origin 被服务端拒绝
+  if (!res.ok) throw new Error("获取本地写令牌失败");
+  apiToken = (await res.json()).token;
+  return apiToken;
+}
+
+async function apiPost(url, body) {
+  const send = (token) => fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
-  }).then((r) => {
-    if (!r.ok) r.json().then((e) => alert(e.detail || "打开失败"));
+    headers: { "Content-Type": "application/json", "X-Fathom-Token": token },
+    body: body === undefined ? null : JSON.stringify(body),
   });
+  let res = await send(await getApiToken());
+  if (res.status === 403) {  // 令牌失效（如后端已重启）：重新获取后重试一次
+    apiToken = null;
+    res = await send(await getApiToken());
+  }
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    const err = new Error(detail.detail || `${url} -> HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res;
+}
+
+async function revealInFinder(path) {
+  try {
+    await apiPost("/api/reveal", { path });
+  } catch (e) {
+    alert(e.message || "打开失败");
+  }
 }
 
 /* ---------- 路由 ---------- */
@@ -235,7 +266,8 @@ function renderDeltaBars(id, rows, color) {
   chart.setOption({
     tooltip: { trigger: "item", formatter: (p) => {
       const r = p.data.raw;
-      return `${r.path}<br/>${fmtKB(r.old_kb)} → ${fmtKB(r.new_kb)}<br/>变化 ${fmtDelta(r.delta_kb)}`;
+      // tooltip 以 HTML 解释：路径来自扫描数据，必须按文本转义（ISS-022）
+      return `${escapeHtml(r.path)}<br/>${fmtKB(r.old_kb)} → ${fmtKB(r.new_kb)}<br/>变化 ${fmtDelta(r.delta_kb)}`;
     } },
     grid: { left: 150, right: 50, top: 6, bottom: 24 },
     xAxis: { type: "value", axisLabel: { formatter: (v) => fmtBytes(v * 1024) } },
@@ -298,7 +330,7 @@ async function loadTree() {
   if (!t.snapshot_id) return;
   const chart = initChart("chart-sunburst");
   chart.setOption({
-    tooltip: { formatter: (p) => `${p.data.path}<br/>${fmtKB(p.value)}` },
+    tooltip: { formatter: (p) => `${escapeHtml(p.data.path)}<br/>${fmtKB(p.value)}` },
     series: [{
       type: "sunburst", radius: [40, "92%"], nodeClick: "rootToNode",
       data: t.children[0] ? t.children[0].children || [] : [],
@@ -414,8 +446,10 @@ async function triggerScan() {
   const btn = document.getElementById("btn-scan");
   btn.disabled = true;
   try {
-    const r = await fetch("/api/scan", { method: "POST" });
-    if (r.status === 409) alert("已有扫描在进行中");
+    await apiPost("/api/scan");  // 令牌随请求头发送，不进 URL
+  } catch (e) {
+    if (e.status === 409) alert("已有扫描在进行中");
+    else alert(e.message || "扫描启动失败");
   } finally {
     loadStatus();
   }

@@ -33,7 +33,10 @@ def _isolated_db(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client():
-    return TestClient(api.app)
+    """与真实客户端同一合同（ISS-022）：合法 Host + 写令牌，不走测试旁路。"""
+    with TestClient(api.app, base_url=f"http://127.0.0.1:{config.PORT}") as c:
+        c.headers["X-Fathom-Token"] = c.get("/api/bootstrap").json()["token"]
+        yield c
 
 
 def _mock_scan_kernel(monkeypatch, blocker: threading.Event | None = None,

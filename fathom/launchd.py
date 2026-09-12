@@ -1,7 +1,7 @@
 """launchd 任务管理：生成并安装两个 plist。
 
-- scan：每日 SCAN_HOUR 点执行扫描 + 日报（com.maoscripts.disk-sentinel-scan）
-- web ：常驻 FastAPI 服务，崩溃自动拉起（com.maoscripts.disk-sentinel-web）
+- scan：每日 SCAN_HOUR 点执行扫描 + 日报（com.maoscripts.fathom-scan）
+- web ：常驻 FastAPI 服务，崩溃自动拉起（com.maoscripts.fathom-web）
 
 plist 中 ProgramArguments 使用当前 venv 的 python 绝对路径——
 venv 绑定 homebrew Python 3.14，brew 大版本升级后需重建 venv 并重装（见 README 故障排查）。

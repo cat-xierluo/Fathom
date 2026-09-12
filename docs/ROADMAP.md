@@ -1,4 +1,4 @@
-# Disk Sentinel 路线图
+# Fathom 路线图
 
 ## v0.1 · MVP（2026-09-12 完成）
 - 每日快照内核（du -xk + SQLite + 保留策略）

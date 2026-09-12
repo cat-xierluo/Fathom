@@ -1,6 +1,13 @@
 # 变更记录
 
 本文件是用户可见变更的权威记录。格式遵循 legal-skills 的 CHANGELOG 规范。
+（0.2.0 及以前项目名为 disk-sentinel / 容量哨兵，0.3.0 起更名 Fathom，历史条目保留原名。）
+
+## [0.3.0] - 2026-09-12
+
+### 改进
+- **更名 Fathom**：延续 Folia/Funes 的 F 系列命名。fathom（英寻）是水深测量单位，动词意为"测深、弄明白"——双关直击产品要回答的问题："I can't fathom where my disk space went"。涉及：项目目录、Python 包、launchd 标签（com.maoscripts.fathom-*，旧任务自动卸载）、Tauri identifier/productName/crate、全部文档；数据库文件平滑迁移（disk.db → fathom.db，保留首扫基线数据）
+- **UI 全面去 emoji，对齐 Folia 视觉规范**：导航/面板/按钮/日报全部改用内联 SVG 线条图标（lucide 同款 stroke 风格，currentColor 跟随语义色），Markdown 日报标题同步去 emoji
 
 ## [0.2.0] - 2026-09-12
 

@@ -120,7 +120,7 @@ def render_markdown(
 ) -> str:
     """渲染 Markdown 日报。"""
     lines: list[str] = []
-    lines.append(f"# 容量哨兵日报 · {new_meta['created_at'][:10]}")
+    lines.append(f"# Fathom日报 · {new_meta['created_at'][:10]}")
     lines.append("")
     lines.append(
         f"- 对比快照：{old_meta['created_at']} → {new_meta['created_at']}（根：`{new_meta['root']}`）"
@@ -132,7 +132,7 @@ def render_markdown(
         )
     if new_meta["denied_count"]:
         lines.append(
-            f"- ⚠️ 有 {new_meta['denied_count']} 个目录因权限无法统计（如需覆盖 ~/Library 受保护区域，"
+            f"- 注意：有 {new_meta['denied_count']} 个目录因权限无法统计（如需覆盖 ~/Library 受保护区域，"
             f"为运行终端授予「完全磁盘访问权限」）"
         )
     lines.append("")
@@ -152,13 +152,13 @@ def render_markdown(
             )
         lines.append("")
 
-    section("📈 增长最多的目录", diff["grown"])
-    section("📉 缩减最多的目录", diff["shrunk"])
-    section("🆕 新出现的大目录（≥100MB）", diff["added"])
-    section("🗑️ 消失的目录", diff["removed"])
+    section("增长最多的目录", diff["grown"])
+    section("缩减最多的目录", diff["shrunk"])
+    section("新出现的大目录（≥100MB）", diff["added"])
+    section("消失的目录", diff["removed"])
 
     if bigfiles is not None:
-        lines.append(f"## 📦 近期新增/修改的大文件（≥{config.BIGFILE_DEFAULT_MB}MB）")
+        lines.append(f"## 近期新增/修改的大文件（≥{config.BIGFILE_DEFAULT_MB}MB）")
         lines.append("")
         if not bigfiles:
             lines.append("无")
@@ -170,7 +170,7 @@ def render_markdown(
         lines.append("")
 
     lines.append("---")
-    lines.append("*由 disk-sentinel 自动生成*")
+    lines.append("*由 fathom 自动生成*")
     return "\n".join(lines) + "\n"
 
 

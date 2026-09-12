@@ -119,7 +119,7 @@ def cmd_serve(_: argparse.Namespace) -> int:
 
     config.ensure_runtime_dirs()
     uvicorn.run(
-        "disk_sentinel.api:app",
+        "fathom.api:app",
         host=config.HOST,
         port=config.PORT,
         log_level="info",
@@ -129,7 +129,7 @@ def cmd_serve(_: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="disk-sentinel", description="容量哨兵：目录大小历史追踪")
+    parser = argparse.ArgumentParser(prog="fathom", description="Fathom：目录大小历史追踪")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("scan", help="扫描一次并生成日报")

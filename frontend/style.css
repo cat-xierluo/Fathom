@@ -1,4 +1,4 @@
-/* 容量哨兵 v0.2 · 群晖式信息架构（视觉规范见 docs/DESIGN.md） */
+/* Fathom v0.2 · 群晖式信息架构（视觉规范见 docs/DESIGN.md） */
 
 :root {
   --bg: #f5f6f8;
@@ -23,6 +23,18 @@ body {
   font-size: 14px;
 }
 
+/* ===== 图标（内联 SVG，DEC-010：无 emoji） ===== */
+
+.icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: -2px; flex: none;
+}
+.icon svg { width: 100%; height: 100%; display: block; }
+
+.sidenav-brand { display: flex; align-items: center; justify-content: center;
+  margin-bottom: 10px; color: var(--text); }
+.nav-icon { display: flex; align-items: center; justify-content: center; height: 20px; }
+
 /* ===== 应用壳：侧导航 + 主区 ===== */
 
 .app-shell { display: flex; min-height: 100vh; }
@@ -35,7 +47,6 @@ body {
   padding: 14px 0 18px; gap: 6px;
   position: sticky; top: 0; height: 100vh;
 }
-.sidenav-brand { font-size: 26px; margin-bottom: 10px; }
 .sidenav-spacer { flex: 1; }
 .nav-item {
   display: flex; flex-direction: column; align-items: center; gap: 2px;

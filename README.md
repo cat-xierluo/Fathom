@@ -1,4 +1,4 @@
-# 容量哨兵 · Disk Sentinel
+# Fathom · Fathom
 
 macOS 本机的目录容量变化追踪软件——复刻群晖「存储空间分析器」最有价值的能力：**每日扫描，差分出哪个文件夹在悄悄吃掉你的磁盘**。
 
@@ -17,7 +17,7 @@ macOS 本机的目录容量变化追踪软件——复刻群晖「存储空间�
 ## 快速开始
 
 ```bash
-cd ~/Library/Application\ Support/maoscripts/disk-sentinel
+cd ~/Library/Application\ Support/maoscripts/fathom
 .venv/bin/python main.py install    # 安装 launchd：每日 12:00 扫描 + 常驻 Web 服务
 ```
 
@@ -49,7 +49,7 @@ cd ~/Library/Application\ Support/maoscripts/disk-sentinel
 
 | 症状 | 原因与处理 |
 |------|-----------|
-| Web 服务打不开 | `launchctl list \| grep disk-sentinel` 查状态；日志在 `logs/launchd-web.err.log` |
+| Web 服务打不开 | `launchctl list \| grep fathom` 查状态；日志在 `logs/launchd-web.err.log` |
 | launchd 任务失效、报 python 不存在 | Homebrew 大版本升级移除了旧 Python：`python3 -m venv .venv && .venv/bin/pip install -r requirements.txt` 重建后重跑 `install` |
 | 首日看不到对比 | 差分需要 ≥2 个快照；首扫是基线，第二天 12:00 后自动产生首份日报 |
 | 扫描很慢 | 冷缓存全盘约 5-15 分钟属正常（约 1100 万文件），后台执行不影响使用 |
@@ -60,7 +60,7 @@ cd ~/Library/Application\ Support/maoscripts/disk-sentinel
 
 ```bash
 .venv/bin/python -m pytest tests/ -q        # 9 个单元测试
-DISK_SENTINEL_DB=/tmp/x.db .venv/bin/python main.py serve   # 冒烟（不碰生产库）
+FATHOM_DB=/tmp/x.db .venv/bin/python main.py serve   # 冒烟（不碰生产库）
 ```
 
 ## 许可证

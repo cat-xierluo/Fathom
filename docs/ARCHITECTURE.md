@@ -1,4 +1,4 @@
-# Disk Sentinel 架构文档
+# Fathom 架构文档
 
 ## 技术栈
 
@@ -6,7 +6,7 @@
 |---|---|---|
 | 扫描引擎 | 系统 `du -xk`（BSD） | C 级性能，输出天然是"目录→累计大小"；`-x` 不跨挂载点 |
 | 大文件引擎 | 系统 `find -xdev` | 按 mtime 近似"新增/近期写入" |
-| 数据层 | SQLite（stdlib sqlite3） | WAL 模式，单文件 `data/disk.db` |
+| 数据层 | SQLite（stdlib sqlite3） | WAL 模式，单文件 `data/fathom.db` |
 | 服务层 | FastAPI + uvicorn | 只读查询 + 手动扫描触发；自动 OpenAPI 文档 |
 | 前端 | 原生 HTML/JS/CSS + ECharts 5（本地化） | 无构建链，无 npm 依赖 |
 | 调度 | launchd（两个 LaunchAgent） | 每日扫描 + 常驻 Web |
@@ -16,14 +16,14 @@
 ```
 ┌─────────────────────────── launchd ───────────────────────────┐
 │                                                               │
-│  com.maoscripts.disk-sentinel-scan      每日 12:00            │
+│  com.maoscripts.fathom-scan      每日 12:00            │
 │    └─ main.py scan                                            │
 │         ├─ du -xk $HOME ──► 解析（含八进制转义还原）            │
 │         ├─ 快照写入 SQLite（entries ≥10MB；同日覆盖）           │
 │         ├─ 差分 → reports/YYYY-MM-DD.md                       │
 │         └─ prune（35 日 + 12 周）                              │
 │                                                               │
-│  com.maoscripts.disk-sentinel-web       常驻 KeepAlive        │
+│  com.maoscripts.fathom-web       常驻 KeepAlive        │
 │    └─ main.py serve ──► FastAPI :7952                          │
 └───────────────────────────────────────────────────────────────┘
                  │
@@ -81,7 +81,7 @@ du 的累计语义使父目录变化必然包含子目录变化，朴素 Top-N �
 
 - `tests/test_scanner.py`：9 个用例，临时目录造真实文件走完整 du→SQLite→diff 链路；数据库隔离到 tmp（autouse fixture monkeypatch `config.DB_PATH`）
 - 覆盖点：阈值过滤、同日覆盖、UTF-8 八进制转义还原、增长/新增/消失识别、兄弟不折叠、单链下沉、周/日保留策略
-- 冒烟：`DISK_SENTINEL_DB=/tmp/x.db main.py serve` + curl 各端点
+- 冒烟：`FATHOM_DB=/tmp/x.db main.py serve` + curl 各端点
 
 ## 部署形态与升级路径
 
@@ -89,9 +89,9 @@ du 的累计语义使父目录变化必然包含子目录变化，朴素 Top-N �
 
 ```
 launchd（后端生命周期）                     用户入口（UI 壳）
-├─ com.maoscripts.disk-sentinel-scan      ├─ 桌面壳 apps/desktop（Tauri 2，推荐）
+├─ com.maoscripts.fathom-scan      ├─ 桌面壳 apps/desktop（Tauri 2，推荐）
 │    每日 12:00 → main.py scan            │    tray 菜单栏 + 原生窗口
-└─ com.maoscripts.disk-sentinel-web       │    loader 页(tauri://localhost) 轮询可达
+└─ com.maoscripts.fathom-web       │    loader 页(tauri://localhost) 轮询可达
      常驻 → main.py serve :7952  ◄────────┼──── 跳转 127.0.0.1:7952
                                            └─ 任意浏览器（同一 URL）
 ```

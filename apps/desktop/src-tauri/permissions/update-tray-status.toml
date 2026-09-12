@@ -1,0 +1,9 @@
+# Fathom 应用级权限：允许前端页面推送 tray 标题/提示（ISS-008）。
+# tauri-build 默认扫描 src-tauri/permissions/ 目录生成 app ACL manifest，
+# 无需改动 build.rs。本次锁定的 tauri 2.11.5 对远程页面（127.0.0.1:7952 仪表盘）调用
+# 自定义命令必须经 capability 显式授权，本地 loader 页也由此 capability 授权。
+
+[[permission]]
+identifier = "allow-update-tray-status"
+description = "允许前端心跳推送 tray 标题（剩余 GB）与 tooltip。"
+commands.allow = ["update_tray_status"]

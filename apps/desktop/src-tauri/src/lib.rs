@@ -12,6 +12,8 @@ use tauri::{
     Emitter, Manager, WindowEvent,
 };
 
+struct TrayStatusMenu(MenuItem<tauri::Wry>);
+
 /// tray 标题推送：空值隐藏对应元素，超长截断；失败记日志不向调用方扩散。
 #[tauri::command]
 fn update_tray_status(app: tauri::AppHandle, title: String, tooltip: String) {
@@ -37,6 +39,11 @@ fn update_tray_status(app: tauri::AppHandle, title: String, tooltip: String) {
     }
 
     let tooltip = tooltip.trim();
+    if let Some(status) = app.try_state::<TrayStatusMenu>() {
+        if let Err(e) = status.0.set_text(if tooltip.is_empty() { "Fathom" } else { tooltip }) {
+            eprintln!("[tray] 状态菜单更新失败: {e}");
+        }
+    }
     if let Err(e) = tray.set_tooltip(if tooltip.is_empty() { None } else { Some(tooltip) }) {
         eprintln!("[tray] set_tooltip 失败: {e}");
     }
@@ -69,7 +76,12 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "退出 Fathom", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&status, &sep1, &open, &scan, &sep2, &quit])?;
 
+            app.manage(TrayStatusMenu(status));
+
+            // 图标、菜单、事件、状态推送都绑定此唯一 tray。
             let _tray = TrayIconBuilder::with_id("sentinel")
+                .icon(tauri::include_image!("icons/tray.png"))
+                .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .title("…")

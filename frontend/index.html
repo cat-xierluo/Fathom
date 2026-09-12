@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>容量哨兵 · Disk Sentinel</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🛰️</span>
+    <div>
+      <h1>容量哨兵</h1>
+      <p class="sub" id="root-info">加载中…</p>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <span class="scan-badge" id="scan-badge">--</span>
+    <button id="btn-scan" class="btn primary">立即扫描</button>
+  </div>
+</header>
+
+<main>
+  <!-- 状态卡 -->
+  <section class="cards" id="cards">
+    <div class="card"><p class="card-label">磁盘剩余</p><p class="card-value" id="card-free">--</p></div>
+    <div class="card"><p class="card-label">磁盘已用</p><p class="card-value" id="card-used">--</p></div>
+    <div class="card"><p class="card-label">快照数量</p><p class="card-value" id="card-snaps">--</p></div>
+    <div class="card"><p class="card-label">最近扫描</p><p class="card-value small" id="card-latest">--</p></div>
+  </section>
+
+  <!-- 卷容量趋势 -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>卷容量趋势</h2>
+      <p class="hint">每次快照记录的整卷用量 · 对应群晖「使用率趋势」</p>
+    </div>
+    <div id="chart-volume" class="chart chart-lg"></div>
+  </section>
+
+  <!-- 快照对比 -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>快照对比</h2>
+      <div class="controls">
+        <label>基线
+          <select id="sel-a"></select>
+        </label>
+        <label>对比
+          <select id="sel-b"></select>
+        </label>
+        <button id="btn-diff" class="btn">对比</button>
+      </div>
+    </div>
+    <div class="diff-grid">
+      <div>
+        <h3 class="grow">📈 增长最多</h3>
+        <div id="chart-grown" class="chart"></div>
+      </div>
+      <div>
+        <h3 class="shrink">📉 缩减最多</h3>
+        <div id="chart-shrunk" class="chart"></div>
+      </div>
+    </div>
+    <div class="diff-tables">
+      <div>
+        <h3>🆕 新出现的大目录（≥100MB）</h3>
+        <table class="tbl" id="tbl-added"><thead><tr><th>目录</th><th>大小</th></tr></thead><tbody></tbody></table>
+      </div>
+      <div>
+        <h3>🗑️ 消失的目录</h3>
+        <table class="tbl" id="tbl-removed"><thead><tr><th>目录</th><th>曾占</th></tr></thead><tbody></tbody></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 当前占用分布 + 目录趋势 -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>当前占用分布</h2>
+      <p class="hint">点击扇区查看该目录的历史大小趋势 · 内圈为大目录，可下钻</p>
+    </div>
+    <div class="tree-grid">
+      <div id="chart-sunburst" class="chart chart-lg"></div>
+      <div>
+        <h3 id="trend-title">目录趋势（点击左侧扇区选择）</h3>
+        <div id="chart-trend" class="chart"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 近期大文件 -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>近期大文件</h2>
+      <div class="controls">
+        <label>近 <input type="number" id="bf-days" value="7" min="1" max="90"> 天</label>
+        <label>≥ <input type="number" id="bf-mb" value="100" min="1"> MB</label>
+        <button id="btn-bigfiles" class="btn">查询</button>
+      </div>
+    </div>
+    <table class="tbl" id="tbl-bigfiles">
+      <thead><tr><th>大小</th><th>修改时间</th><th>文件</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<footer>
+  <p>disk-sentinel · 本地运行 · <a href="/docs" target="_blank">API 文档</a> · 数据不出本机</p>
+</footer>
+
+<script src="vendor/echarts.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

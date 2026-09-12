@@ -1,6 +1,23 @@
-# Disk Sentinel 决策记录
+# Fathom 决策记录
 
 格式参照 Folia 项目：DEC-XXX 编号，新决策在前。每条含背景/决策/验证/影响。
+（0.2.0 及以前项目名为 disk-sentinel/容量哨兵，DEC-010 起更名 Fathom，历史条目保留原名。）
+
+---
+
+### [DEC-010] - 2026-09-12 - 更名 Fathom + UI 去 emoji（Folia 视觉规范对齐）
+
+**背景**：用户指出两点——①旗下软件均为 F 开头有含义命名（Folia 叶、Funes 记忆之神）；②UI 不得使用 emoji，Folia 与 badminton-lab 均无 emoji（各自 DESIGN.md 有明确视觉规范）。
+
+**决策**：
+1. 定名 **Fathom**（用户四选一拍板：Fathom/Forester/Foresight/Falcon）。fathom 是水深测量单位，动词"测深、弄明白"，双关产品核心问题（磁盘空间去哪了）；
+2. 系统性重命名：目录、Python 包、launchd 标签（旧 disk-sentinel 任务自动卸载，避免双跑）、Tauri crate/identifier/productName；`data/disk.db` 平滑迁移为 `fathom.db`（保留 9-12 基线快照，趋势不断档）；
+3. UI 图标改为**内联 SVG 线条图标**（lucide 风格：24 viewBox、stroke=currentColor、1.5-2px 描边），不引入图标库依赖（无构建链约束）；Markdown 日报的 emoji 标题同步去除，保持产品气质统一；
+4. CHANGELOG/DECISIONS 历史条目保留原名，顶部注记更名。
+
+**验证**：改名后 9 个单元测试通过；服务以新标签运行；前端/壳渲染正常。
+
+**影响**：品牌与 F 系列一致；后续新 UI 元素一律 SVG 线条图标（已写进 DESIGN.md 视觉规范）。
 
 ---
 

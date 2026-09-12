@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import bigfiles, config, db, reports, scanner
 
-app = FastAPI(title="Disk Sentinel", version="0.2.0")
+app = FastAPI(title="Fathom", version="0.2.0")
 
 # Tauri 壳的 loader 页（tauri://localhost）需要跨域探测本服务
 app.add_middleware(

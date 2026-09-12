@@ -6,12 +6,12 @@ import sqlite3
 
 import pytest
 
-from disk_sentinel import config, db, reports, scanner
+from fathom import config, db, reports, scanner
 
 
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path, monkeypatch):
-    """所有测试的数据库写到临时目录，避免污染真实 data/disk.db。"""
+    """所有测试的数据库写到临时目录，避免污染真实 data/fathom.db。"""
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
 
 

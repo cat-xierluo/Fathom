@@ -1,4 +1,4 @@
-# Disk Sentinel 设计规范（v0.2）
+# Fathom 设计规范（v0.2）
 
 > 状态：当前产品 UX / UI 权威入口（含信息架构合同）。方法论参照 badminton-lab/DESIGN.md 的合同分层与单一真值原则；对标基准见内部研究 `docs/research/synology-storage-analyzer.md`。
 
@@ -63,6 +63,14 @@
 | 失败 | 显示错误消息 + "重试"按钮；后端未启动时提示 main.py install |
 | 大量数据 | 表格分页/截断（大文件 topn ≤200；差分 topn ≤100）；路径超长用 title + 截断 |
 | 权限受限 | 如实显示 denied_count 与影响说明，不静默 |
+
+## 图标规范（DEC-010：全应用禁止 emoji）
+
+- 一律使用 **内联 SVG 线条图标**（`frontend/icons.js` 集中管理，lucide 同款风格）
+- 规格：24 viewBox、`fill=none`、`stroke=currentColor`、stroke-width 2、round linecap/linejoin
+- 尺寸：导航 18px、标题内联 14px、品牌锚 26px；颜色跟随语义（`currentColor` 继承文字色）
+- 新增图标只改 `ICON_PATHS`，不在 HTML/JS 里散落 SVG 字符串
+- Markdown 日报同样不使用 emoji 标题（与界面气质统一，对齐 Folia/badminton-lab 规范）
 
 ## 视觉规范（继承 v0.1 令牌）
 

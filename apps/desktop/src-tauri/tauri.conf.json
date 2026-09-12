@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "容量哨兵",
-  "version": "0.2.0",
-  "identifier": "com.maoscripts.disk-sentinel",
+  "productName": "Fathom",
+  "version": "0.3.0",
+  "identifier": "com.maoscripts.fathom",
   "build": {
     "frontendDist": "../frontend-dist"
   },
@@ -16,7 +16,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "容量哨兵",
+        "title": "Fathom",
         "width": 1220,
         "height": 820,
         "minWidth": 980,

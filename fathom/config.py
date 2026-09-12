@@ -1,20 +1,20 @@
-"""disk-sentinel 全局配置。
+"""fathom 全局配置。
 
 所有路径、阈值、端口集中在此，便于调整与测试注入。
-数据库路径可用环境变量 DISK_SENTINEL_DB 覆盖（冒烟测试/多实例场景）。
+数据库路径可用环境变量 FATHOM_DB 覆盖（冒烟测试/多实例场景）。
 """
 
 import os
 from pathlib import Path
 
-# 项目根目录（disk_sentinel/ 的上一级）
+# 项目根目录（fathom/ 的上一级）
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # 运行时目录（均已 gitignore，见 DEC-004）
 DATA_DIR = PROJECT_ROOT / "data"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 LOGS_DIR = PROJECT_ROOT / "logs"
-DB_PATH = Path(os.environ.get("DISK_SENTINEL_DB") or (DATA_DIR / "disk.db"))
+DB_PATH = Path(os.environ.get("FATHOM_DB") or (DATA_DIR / "fathom.db"))
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
 # Web 服务
@@ -35,8 +35,8 @@ BIGFILE_DEFAULT_MB = 100
 
 # launchd
 LAUNCHAGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
-SCAN_LABEL = "com.maoscripts.disk-sentinel-scan"
-WEB_LABEL = "com.maoscripts.disk-sentinel-web"
+SCAN_LABEL = "com.maoscripts.fathom-scan"
+WEB_LABEL = "com.maoscripts.fathom-web"
 SCAN_HOUR = 12                      # 每日 12:00 扫描（避开开机早高峰）
 
 

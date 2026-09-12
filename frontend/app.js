@@ -1,4 +1,4 @@
-/* 容量哨兵前端 v0.2 —— 群晖式信息架构（见 docs/DESIGN.md）
+/* Fathom前端 v0.2 —— 群晖式信息架构（见 docs/DESIGN.md）
  * hash 路由五页：#/overview #/changes #/browse #/bigfiles #/settings
  * Tauri 桥：__TAURI__ 存在时推送 tray 状态、响应 tray-action
  */
@@ -176,13 +176,13 @@ async function loadOverviewSummary() {
     let html = `<p class="hint">对比区间 ${escapeHtml(span)}：</p><table class="tbl">
       <thead><tr><th>方向</th><th>目录</th><th class="num">变化</th><th></th></tr></thead><tbody>`;
     const rows = [
-      ...d.grown.map((r) => ({ ...r, dir: "📈" })),
-      ...d.shrunk.map((r) => ({ ...r, dir: "📉" })),
+      ...d.grown.map((r) => ({ ...r, dir: icon("arrowUpRight", 14) })),
+      ...d.shrunk.map((r) => ({ ...r, dir: icon("arrowDownRight", 14) })),
     ].slice(0, 8);
     rows.forEach((r) => {
       html += `<tr><td>${r.dir}</td><td class="path" title="${escapeHtml(r.path)}">${escapeHtml(shortPath(r.path, 3))}</td>` +
         `<td class="num ${r.delta_kb > 0 ? "delta-grow" : "delta-shrink"}">${fmtDelta(r.delta_kb)}</td>` +
-        `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示">🔍</button></td></tr>`;
+        `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示">"+icon("folderOpen", 14)+"</button></td></tr>`;
     });
     el.innerHTML = html + "</tbody></table>";
     el.querySelectorAll("[data-reveal]").forEach((b) =>
@@ -251,7 +251,7 @@ function fillTwoColTable(id, rows, cols) {
     const [c0, c1] = cols(r);
     tr.innerHTML = `<td class="path" title="${escapeHtml(r.path)}">${escapeHtml(c0)}</td>` +
       `<td class="num">${c1}</td>` +
-      `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}">🔍</button></td>`;
+      `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}">${icon("folderOpen", 14)}</button></td>`;
     tbody.appendChild(tr);
     tr.querySelector("[data-reveal]").addEventListener("click", () => revealInFinder(r.path));
   });
@@ -269,7 +269,7 @@ async function loadReportList() {
       return;
     }
     el.innerHTML = r.reports.map((x) =>
-      `<button class="report-item" data-date="${x.date}">📄 ${x.date}</button>`).join("");
+      `<button class="report-item" data-date="${x.date}">${icon("fileText", 14)} ${x.date}</button>`).join("");
     el.querySelectorAll(".report-item").forEach((b) =>
       b.addEventListener("click", async () => {
         el.querySelectorAll(".report-item").forEach((x) => x.classList.remove("active"));
@@ -334,9 +334,9 @@ async function loadBrowse(path) {
       tr.innerHTML =
         `<td class="dir-name" data-path="${escapeHtml(c.path)}" title="${escapeHtml(c.path)}">${escapeHtml(c.name)}</td>` +
         `<td class="num">${fmtKB(c.size_kb)}</td>` +
-        `<td class="num ${deltaCls}">${c.is_new ? "🆕 " : ""}${fmtDelta(c.delta_kb)}</td>` +
+        `<td class="num ${deltaCls}">${c.is_new ? icon("plus", 12) + " " : ""}${fmtDelta(c.delta_kb)}</td>` +
         `<td class="num">${((c.size_kb / total) * 100).toFixed(1)}%</td>` +
-        `<td><button class="btn-mini" data-reveal="${escapeHtml(c.path)}" title="在 Finder 中显示">🔍</button></td>`;
+        `<td><button class="btn-mini" data-reveal="${escapeHtml(c.path)}" title="在 Finder 中显示">"+icon("folderOpen", 14)+"</button></td>`;
       tbody.appendChild(tr);
       tr.querySelector(".dir-name").addEventListener("click", () => loadBrowse(c.path));
       tr.querySelector("[data-reveal]").addEventListener("click", () => revealInFinder(c.path));
@@ -377,7 +377,7 @@ async function loadBigfiles() {
       `<td class="num">${fmtBytes(f.size)}</td>` +
       `<td style="white-space:nowrap">${f.mtime}</td>` +
       `<td class="path" title="${escapeHtml(f.path)}">${escapeHtml(f.path)}</td>` +
-      `<td><button class="btn-mini" data-reveal="${escapeHtml(f.path)}">🔍</button></td>`;
+      `<td><button class="btn-mini" data-reveal="${escapeHtml(f.path)}">${icon("folderOpen", 14)}</button></td>`;
     tbody.appendChild(tr);
     tr.querySelector("[data-reveal]").addEventListener("click", () => revealInFinder(f.path));
   });
@@ -389,7 +389,7 @@ async function loadSettings() {
   const s = await fetchJSON("/api/status");
   const rows = [
     ["监控根目录", `<code>${escapeHtml(s.root)}</code>`],
-    ["扫描计划", "每日 12:00（launchd：com.maoscripts.disk-sentinel-scan）"],
+    ["扫描计划", "每日 12:00（launchd：com.maoscripts.fathom-scan）"],
     ["快照保留", "近 35 天每日一份 + 更早每周一份（最多 12 周）"],
     ["入库阈值", "目录 ≥ 10MB；差分关注 ≥ 1MB 变化；新增目录 ≥ 100MB"],
     ["服务地址", `http://127.0.0.1:${s.port}（launchd 常驻）`],
@@ -413,6 +413,19 @@ async function triggerScan() {
   }
 }
 
+/* ---------- 静态图标注入（icons.js 提供 icon()，无 emoji —— DEC-010） ---------- */
+
+function mountStaticIcons() {
+  const brand = document.getElementById("brand-icon");
+  if (brand) brand.innerHTML = icon("anchor", 26, "brand-anchor");
+  document.querySelectorAll("[data-icon]").forEach((el) => {
+    el.innerHTML = icon(el.dataset.icon, 18);
+  });
+  document.querySelectorAll("[data-icon-inline]").forEach((el) => {
+    el.innerHTML = icon(el.dataset.iconInline, 14);
+  });
+}
+
 /* ---------- 启动 ---------- */
 
 document.getElementById("btn-scan").addEventListener("click", triggerScan);
@@ -421,6 +434,7 @@ document.getElementById("btn-bigfiles").addEventListener("click", loadBigfiles);
 
 (async function init() {
   try {
+    mountStaticIcons();
     navigate();
     await loadStatus();
     await listenTrayActions();

@@ -3,30 +3,30 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>容量哨兵 · Disk Sentinel</title>
+<title>Fathom</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div class="app-shell">
 
-  <!-- 侧边导航 -->
+  <!-- 侧边导航（图标由 icons.js 注入，无 emoji —— DEC-010） -->
   <nav class="sidenav" aria-label="主导航">
-    <div class="sidenav-brand">🛰️</div>
+    <div class="sidenav-brand" id="brand-icon"></div>
     <a href="#/overview" data-page="overview" class="nav-item" aria-current="page">
-      <span class="nav-icon">📊</span><span class="nav-label">总览</span>
+      <span class="nav-icon" data-icon="gauge"></span><span class="nav-label">总览</span>
     </a>
     <a href="#/changes" data-page="changes" class="nav-item">
-      <span class="nav-icon">📈</span><span class="nav-label">变化</span>
+      <span class="nav-icon" data-icon="activity"></span><span class="nav-label">变化</span>
     </a>
     <a href="#/browse" data-page="browse" class="nav-item">
-      <span class="nav-icon">🎯</span><span class="nav-label">分布</span>
+      <span class="nav-icon" data-icon="pie"></span><span class="nav-label">分布</span>
     </a>
     <a href="#/bigfiles" data-page="bigfiles" class="nav-item">
-      <span class="nav-icon">📦</span><span class="nav-label">大文件</span>
+      <span class="nav-icon" data-icon="fileText"></span><span class="nav-label">大文件</span>
     </a>
     <div class="sidenav-spacer"></div>
     <a href="#/settings" data-page="settings" class="nav-item">
-      <span class="nav-icon">⚙️</span><span class="nav-label">设置</span>
+      <span class="nav-icon" data-icon="settings"></span><span class="nav-label">设置</span>
     </a>
   </nav>
 
@@ -75,14 +75,14 @@
             </div>
           </div>
           <div class="diff-grid">
-            <div><h3 class="grow">📈 增长最多</h3><div id="chart-grown" class="chart"></div></div>
-            <div><h3 class="shrink">📉 缩减最多</h3><div id="chart-shrunk" class="chart"></div></div>
+            <div><h3 class="grow"><span data-icon-inline="arrowUpRight"></span>增长最多</h3><div id="chart-grown" class="chart"></div></div>
+            <div><h3 class="shrink"><span data-icon-inline="arrowDownRight"></span>缩减最多</h3><div id="chart-shrunk" class="chart"></div></div>
           </div>
           <div class="diff-tables">
-            <div><h3>🆕 新出现的大目录（≥100MB）</h3>
-              <table class="tbl" id="tbl-added"><thead><tr><th>目录</th><th>大小</th></tr></thead><tbody></tbody></table></div>
-            <div><h3>🗑️ 消失的目录</h3>
-              <table class="tbl" id="tbl-removed"><thead><tr><th>目录</th><th>曾占</th></tr></thead><tbody></tbody></table></div>
+            <div><h3><span data-icon-inline="plus"></span>新出现的大目录（≥100MB）</h3>
+              <table class="tbl" id="tbl-added"><thead><tr><th>目录</th><th>大小</th><th></th></tr></thead><tbody></tbody></table></div>
+            <div><h3><span data-icon-inline="trash"></span>消失的目录</h3>
+              <table class="tbl" id="tbl-removed"><thead><tr><th>目录</th><th>曾占</th><th></th></tr></thead><tbody></tbody></table></div>
           </div>
         </div>
         <div class="panel">
@@ -146,7 +146,7 @@
         <div class="panel">
           <div class="panel-head"><h2>服务管理</h2></div>
           <div class="settings-actions">
-            <p class="hint">定时扫描与常驻服务由 launchd 管理（com.maoscripts.disk-sentinel-*）。</p>
+            <p class="hint">定时扫描与常驻服务由 launchd 管理（com.maoscripts.fathom-*）。</p>
             <p class="hint">卸载：<code>.venv/bin/python main.py uninstall</code>；重装：<code>install</code>。</p>
             <p class="hint">数据与日报位于项目目录 data/、reports/（已 gitignore，含全盘路径，勿外传）。</p>
           </div>
@@ -158,11 +158,12 @@
 </div>
 
 <footer class="app-footer">
-  <span>disk-sentinel · 本地运行 · 数据不出本机</span>
+  <span>Fathom · 本地运行 · 数据不出本机</span>
   <a href="/docs" target="_blank">API 文档</a>
 </footer>
 
 <script src="vendor/echarts.min.js"></script>
+<script src="icons.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

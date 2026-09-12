@@ -1,4 +1,4 @@
-# Disk Sentinel 待办追踪
+# Fathom 待办追踪
 
 编号规则：ISS-XXX。状态：待处理 / 进行中 / 已完成。
 
@@ -11,7 +11,7 @@
 
 ### ISS-009 · .app 打包（P1）
 - `cargo tauri build`（或 npx @tauri-apps/cli）生成 .app/.dmg；补 bundle 图标（512 应用图标，可从 tray 圆环风格扩展）
-- 安装到 /Applications 或 ~/Applications，启动台/Spotlight 可搜"容量哨兵"
+- 安装到 /Applications 或 ~/Applications，启动台/Spotlight 可搜"Fathom"
 - 验收：不依赖终端即可启动
 
 ### ISS-010 · 桌面壳开机自启（P2）

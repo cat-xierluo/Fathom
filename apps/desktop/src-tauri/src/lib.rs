@@ -1,4 +1,4 @@
-//! 容量哨兵桌面壳：菜单栏常驻 + 主窗口（加载本机 FastAPI 仪表盘）。
+//! Fathom 桌面壳：菜单栏常驻 + 主窗口（加载本机 FastAPI 仪表盘）。
 //!
 //! 设计原则（DEC-007）：
 //! - 壳只负责 UI（tray + 窗口），不管 Python 后端生命周期——后端由 launchd 常驻。
@@ -39,12 +39,12 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let status = MenuItem::with_id(app, "status", "容量哨兵启动中…", false, None::<&str>)?;
+            let status = MenuItem::with_id(app, "status", "Fathom启动中…", false, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
             let scan = MenuItem::with_id(app, "scan", "立即扫描…", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItem::with_id(app, "quit", "退出容量哨兵", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出 Fathom", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&status, &sep1, &open, &scan, &sep2, &quit])?;
 
             let _tray = TrayIconBuilder::with_id("sentinel")
@@ -76,5 +76,5 @@ pub fn run() {
             Ok(())
         })
         .run(tauri::generate_context!())
-        .expect("容量哨兵桌面壳启动失败");
+        .expect("Fathom 桌面壳启动失败");
 }

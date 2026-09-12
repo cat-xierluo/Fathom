@@ -242,7 +242,7 @@
   - [ ] 980×640、1220×820 与长路径布局通过，文字/颜色/键盘可辨
   - [ ] 覆盖真实/未知/权限缺口/Agent 未启用的区别，未来内容按状态出现
   - [ ] 用户评审针对具体产物，反馈回写 DESIGN；不能只产出一张不可操作的静态美图
-- **证据/接续**：Wave 2 已派发，分支 `iss-026-interactive-ux-prototype`、工作区 `~/orca/workspaces/fathom/iss-026-interactive-ux-prototype`；验证尚未完成，运行身份见 ISS-038。尚未执行；不得勾选验收项。
+- **证据/接续**：Wave 2 已派发，分支 `iss-026-interactive-ux-prototype`、工作区 `~/orca/workspaces/fathom/iss-026-interactive-ux-prototype`；验证尚未完成，运行身份见 ISS-038。尚未完成工程和用户验收；不得勾选验收项。
 
 ### ISS-027 · 原生前端模块与状态生命周期
 

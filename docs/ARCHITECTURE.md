@@ -1,106 +1,81 @@
-# Fathom 架构文档
+# Fathom 当前架构
 
-## 技术栈
+**事实基线：main `33e81f9`（v0.3.0 文档版本），2026-09-12 核对。** 本文件只描述该基线代码。其他分支的通知、scan_runs 持久化、tray 补丁尚不计入本基线；合并后由对应任务更新事实。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
 
-| 层 | 技术 | 说明 |
+## 入口与边界
+
+```text
+launchd scan → main.py → cli.cmd_scan ──┐
+                                     ├─ scanner → SQLite
+HTTP POST /api/scan → daemon thread ──┘       └─ reports → Markdown
+launchd web → main.py serve → FastAPI :7952 → frontend/ 五页
+                                               ↑
+Tauri loader → 探测 /api/status → 跳转本地 HTTP ─┘
+前端定期 invoke → Rust tray 标题；tray-action → 前端 → /api/scan
+```
+
+CLI 和 API 的执行流程目前各自实现，只有 API 有进程内 threading.Lock。Tauri 只承担窗口与 tray，不启动或修复后端；关闭窗口隐藏，tray 菜单退出 UI。后台服务需另行通过开发版 `install` 安装，壳与后端生命周期分离。
+
+## 模块与实际行为
+
+| 模块 | 实现 | 已确认局限 |
 |---|---|---|
-| 扫描引擎 | 系统 `du -xk`（BSD） | C 级性能，输出天然是"目录→累计大小"；`-x` 不跨挂载点 |
-| 大文件引擎 | 系统 `find -xdev` | 按 mtime 近似"新增/近期写入" |
-| 数据层 | SQLite（stdlib sqlite3） | WAL 模式，单文件 `data/fathom.db` |
-| 服务层 | FastAPI + uvicorn | 只读查询 + 手动扫描触发；自动 OpenAPI 文档 |
-| 前端 | 原生 HTML/JS/CSS + ECharts 5（本地化） | 无构建链，无 npm 依赖 |
-| 调度 | launchd（两个 LaunchAgent） | 每日扫描 + 常驻 Web |
+| config.py | 常量、项目相对运行目录、HOME 根、127.0.0.1:7952 | 仅 DB 支持 FATHOM_DB，不能隔离其他输出/扫描范围 |
+| db.py | sqlite3、WAL、外键、CREATE TABLE IF NOT EXISTS | 无 schema version/迁移协议；读取也打开可写连接并执行建表 |
+| scanner.py | `/usr/bin/du -xk`，内存捕获并解析，保留 ≥10240 KiB 的 entries | 不校验退出码/根存在；du_seconds 写 0；特殊路径存在误解析 |
+| reports.py | 比较 entries、父子折叠、Markdown，文件名按日期 | 未记录即 added/removed；忽略传入 sid 取全局最新两条；无独立报告状态 |
+| bigfiles.py | `/usr/bin/find -xdev -type f -size +... -mtime -... -print0` 后 stat | 大小为 st_size 逻辑字节；每次请求实时遍历；无超时/去重/失败呈现 |
+| api.py | 查询、扫描线程、reveal，挂载静态文件 | 首扫生成报告报错；写接口无鉴权；根检查仅字符串前缀 |
+| cli.py | scan/report/bigfiles/status/serve/install/uninstall | scan 的首份报告缺基线会被单独捕获，与 API 成功语义不同 |
+| launchd.py | 拼接 XML，安装扫描/常驻 Web 两个 plist | 路径不做 XML 转义；bootstrap 失败只打印，不能可靠表示安装失败 |
+| frontend/ | 原生 HTML/JS/CSS、ECharts、hash 五页 | 请求/状态/页面同文件；部分异常未接；重扫后列表不刷新 |
+| apps/desktop/ | Tauri 2，远端本地 HTTP 页面获 capability | bundle.active=false；无自包含 Python、安装/升级/卸载 UI；tray 实机待验 |
 
-## 系统架构
+## SQLite 与保留事实
 
-```
-┌─────────────────────────── launchd ───────────────────────────┐
-│                                                               │
-│  com.maoscripts.fathom-scan      每日 12:00            │
-│    └─ main.py scan                                            │
-│         ├─ du -xk $HOME ──► 解析（含八进制转义还原）            │
-│         ├─ 快照写入 SQLite（entries ≥10MB；同日覆盖）           │
-│         ├─ 差分 → reports/YYYY-MM-DD.md                       │
-│         └─ prune（35 日 + 12 周）                              │
-│                                                               │
-│  com.maoscripts.fathom-web       常驻 KeepAlive        │
-│    └─ main.py serve ──► FastAPI :7952                          │
-└───────────────────────────────────────────────────────────────┘
-                 │
-                 ▼
-        FastAPI :7952（同一前端，五页仪表盘）
-           ├─ 浏览器 http://127.0.0.1:7952
-           └─ Tauri 桌面壳（tray + 主窗口，loader 轮询可达后跳转，DEC-008）
-```
+| 表 | 字段概要 | 含义 |
+|---|---|---|
+| snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录 |
+| entries | snapshot_id, path, size_kb | 复合主键，WITHOUT ROWID；父目录大小已含子目录 |
+| volume_stats | snapshot_id, total_bytes, free_bytes | 扫描时 statvfs，free 为 f_bavail × f_frsize |
+| scan_runs | id, started_at, finished_at, status, message | 基线中只建表，API 用内存 `_scan_state`；ISS-007 分支已接表 |
 
-## 数据流
+同根同一天的新扫描事务中先删除旧快照再写入新条目和卷统计；事务可回滚 SQL 错误，但 **du 失败目前不会被识别为写入前的失败**。
 
-```
-du -xk ~ ──stdout──► scanner.run_du() ──dict[path, size_kb]──► 过滤 ≥10MB
-  ──► INSERT snapshots + entries + volume_stats（事务）
-  ──► reports.compute_diff(old_entries, new_entries)
-         ├─ grown / shrunk：按 |delta| 排序 + fold_changes 父子折叠
-         ├─ added：new 有 old 无（≥100MB）
-         └─ removed：old 有 new 无
-  ──► render_markdown() ──► reports/YYYY-MM-DD.md
-```
+保留近 35 天每日快照，更早按 ISO 周保留一份；weekly_cutoff 实际从今天向前 12 周计算，总跨度约 84 天，不是“35 天再加 12 周”，更不是旧 DEC-006 所写约 9 个月。周分组当前未按根隔离；支持 `scan --root` 不代表多根产品已经正确。
 
-## 数据库 Schema
+DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长期稳定”属于估算，不能代替持续测量；报告/日志也没有独立保留上限。
 
-```sql
-snapshots(id, created_at, root, dir_count, denied_count, du_seconds, total_kb)
-entries(snapshot_id, path, size_kb)          -- 主键 (snapshot_id, path)，WITHOUT ROWID
-volume_stats(snapshot_id, total_bytes, free_bytes)
-scan_runs(id, started_at, finished_at, status, message)   -- 预留：手动扫描历史
-```
+## 口径
 
-容量估算：每快照仅数千行（≥10MB 目录），单行 ~60B；90 天保留约 10-50MB，对剩余 23GB 的盘不构成负担。
+- du 目录值是累计 KiB，父子不可直接求和。目录测量不是原子文件系统快照，采集期间文件可变化。
+- 卷 free/used 来自 statvfs；监控根默认仅 HOME 且不跨挂载点。卷已用量与 HOME 目录合计不是同一范围。
+- 大文件 st_size 是逻辑大小，与 du 占用、共享块/稀疏文件可能不同。界面当前把 1024 基数标为 KB/MB/GB；目标合同要求明确二进制口径。
+- `denied_count` 只数包含两种英文权限报错的 stderr 行；不是完整的覆盖率，也不能证明未显示的目录被删除。
+- 阈值过滤后缺失可能是小于阈值、首次记录、权限/读取失败或移除。当前差分没有足够元数据区分。
 
-## API 清单
+## HTTP 接口
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/status` | GET | 磁盘剩余、快照数、DB 大小、扫描任务状态 |
-| `/api/snapshots` | GET | 快照列表（含卷容量） |
-| `/api/volume-trend?limit=` | GET | 整卷已用/剩余时间序列 |
-| `/api/trees?snapshot_id=&min_kb=` | GET | 目录嵌套树（旭日图数据），默认最新快照、≥50MB |
-| `/api/diff?a=&b=&topn=` | GET | 两快照差分，默认最近两个 |
-| `/api/trend?path=&limit=` | GET | 单目录历史大小序列 |
-| `/api/bigfiles?days=&min_mb=&topn=` | GET | 近期大文件 |
-| `/api/scan` | POST | 触发后台扫描（409 = 已在进行） |
-| `/api/scan/status` | GET | 扫描任务状态 |
-| `/api/browse?path=` | GET | 目录浏览器数据：指定目录直接子目录（最新快照）+ 较前一快照差值 + 自身趋势（分布页） |
-| `/api/reports` | GET | 历史日报档案列表（reports/*.md，新在前） |
-| `/api/reports/{date}` | GET | 单日日报内容（date 格式 YYYY-MM-DD） |
-| `/api/reveal` | POST | 在 Finder 中显示指定路径（open -R，越界路径 400 拒绝） |
+| 方法 | 端点 | 当前返回/行为 |
+|---|---|---|
+| GET | /api/status | 实时卷容量、根、快照总数、最新元数据、db_bytes、scan、port |
+| GET | /api/snapshots | 全局快照降序列表，含卷统计 |
+| GET | /api/volume-trend?limit= | ASC LIMIT，目前取最早 N 条 |
+| GET | /api/trees?snapshot_id=&min_kb= | 最新/指定快照目录树；默认 ≥51200 KiB；先取所有行，再限 20000 节点 |
+| GET | /api/diff?a=&b=&topn= | b 相对 a；默认全局最近两条；不足两条 409，不存在 404；未校验同根 |
+| GET | /api/trend?path=&limit= | 有该路径记录的历史点；缺失不补点；ASC LIMIT |
+| GET | /api/bigfiles?days=&min_mb=&topn= | 同步遍历，返回 files；上限 200 |
+| POST | /api/scan | 线程启动；同一 API 进程锁冲突 409；成功启动返回 200 |
+| GET | /api/scan/status | 基线内存状态，重启丢失；ISS-007 的 history 参数不属于本基线 |
+| GET | /api/browse?path= | 最新快照子目录、前一快照差值、趋势、面包屑；首次子目录错误地给全量 delta |
+| GET | /api/reports | reports/*.md 文件列表 |
+| GET | /api/reports/{date} | Markdown 原文；日期校验不完整 |
+| POST | /api/reveal | JSON path → 字符串前缀/存在检查 → open -R；未规范化路径 |
 
-## 核心算法：fold_changes 父子折叠
+API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。接口实际合同以后端代码为准，版本同源化归 ISS-037。
 
-du 的累计语义使父目录变化必然包含子目录变化，朴素 Top-N 会被同一条链刷屏。折叠规则：
+## 当前验证覆盖
 
-1. 候选有已入选**祖先**、变化量 ≥ 祖先的 90% → **替换**祖先（单链下沉，更深层更精确）
-2. 候选有已入选祖先、变化量 < 90% → **保留**（兄弟分支；父 +100 = a +33 + b +33 + 其他 +34 时四个都有定位价值）
-3. 候选无入选祖先但有入选**后代** → 残余量（自身 - 同向后代覆盖和）< max(1MB, 自身 10%) 时不入选
+`tests/test_scanner.py` 有 9 个测试，包含真实 du、小目录阈值、同日覆盖、差分及保留。折叠测试中的 `or True` 是恒真断言，原来宣称的单链行为没有被有效验证。此次隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。
 
-## 测试策略
-
-- `tests/test_scanner.py`：9 个用例，临时目录造真实文件走完整 du→SQLite→diff 链路；数据库隔离到 tmp（autouse fixture monkeypatch `config.DB_PATH`）
-- 覆盖点：阈值过滤、同日覆盖、UTF-8 八进制转义还原、增长/新增/消失识别、兄弟不折叠、单链下沉、周/日保留策略
-- 冒烟：`FATHOM_DB=/tmp/x.db main.py serve` + curl 各端点
-
-## 部署形态与升级路径
-
-三层形态共用同一个 FastAPI 后端与前端（DEC-008）：
-
-```
-launchd（后端生命周期）                     用户入口（UI 壳）
-├─ com.maoscripts.fathom-scan      ├─ 桌面壳 apps/desktop（Tauri 2，推荐）
-│    每日 12:00 → main.py scan            │    tray 菜单栏 + 原生窗口
-└─ com.maoscripts.fathom-web       │    loader 页(tauri://localhost) 轮询可达
-     常驻 → main.py serve :7952  ◄────────┼──── 跳转 127.0.0.1:7952
-                                           └─ 任意浏览器（同一 URL）
-```
-
-- 壳不管后端生命周期（无 supervisor，比 Badminton Lab 的 sidecar 模式简一档）
-- 前端通过 `window.__TAURI__` 探测运行环境：壳内推送 tray 状态（剩余 GB）+ 监听 tray-action；浏览器内静默降级
-- 未来如需原生窗口强化，仅动壳与 capability，内核（scanner/reports/db）零改动
+不把现有单元测试、其他分支的提交说明或 cargo build 作为安装、系统通知、权限、tray 与定时任务已经可靠的证据。

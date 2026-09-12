@@ -104,22 +104,28 @@ def main() -> int:
         (config.DEFAULT_ROOT / "sub").mkdir()
         (config.DEFAULT_ROOT / "link-out").symlink_to(outside)
 
-        def fixed_du(_root, _table=None):
-            return _mk_sizes(root, DAY2_SIZES), 0
+        def synth_du(_root, table=DAY2_SIZES):
+            # 合成采集 = 干净完整（full）：退出码 0、stderr 无任何错误行，
+            # 不伪造权限缺口；stub 不执行真实 du，elapsed_seconds 如实记 0.0。
+            # 结构与 fathom.scanner.run_du 当前合同（DuResult）一致，
+            # classify_collection 照常把关，不因 stub 而绕过。
+            return scanner.DuResult(
+                sizes=_mk_sizes(root, table), exit_code=0, denied_count=0,
+                elapsed_seconds=0.0, stderr_tail=(), other_error_count=0)
 
-        scanner.run_du = fixed_du
+        scanner.run_du = synth_du
 
         conn = db.connect()
         try:
             for ago, table in ((1, DAY1_SIZES), (0, DAY2_SIZES)):
-                scanner.run_du = (lambda t: (lambda _r: (_mk_sizes(root, t), 0)))(table)
+                scanner.run_du = (lambda t: (lambda _r: synth_du(_r, t)))(table)
                 sid = scanner.create_snapshot(conn, min_kb=1024)
                 day = (dt.date.today() - dt.timedelta(days=ago)).isoformat()
                 conn.execute("UPDATE snapshots SET created_at=? WHERE id=?",
                              (day + "T10:00:00", sid))
                 conn.commit()
             # 之后的 API 扫描（UI/CLI）统一使用今天的合成输出
-            scanner.run_du = fixed_du
+            scanner.run_du = synth_du
             # 用真实 reports 模块为今天生成一份日报（内容包含恶意文件名）
             reports.write_daily_report(conn, sid)
             sids = [r["id"] for r in conn.execute(

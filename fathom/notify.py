@@ -50,11 +50,19 @@ def build_notification(diff: dict, free_bytes: int | None) -> tuple[str, str, st
     from .reports import human_kb  # 局部导入：reports 顶部 import 本模块，避免循环
 
     grown = diff.get("grown") or []
+    added = diff.get("added") or []
     if grown:
         top = grown[0]  # fold_changes 已按 |delta| 降序输出
         body = f"增长最多：{top.path}（+{human_kb(top.delta_kb)}）"
     else:
-        body = "今日无 1MB 以上的目录增长"
+        body = "已记录目录无 1MB 以上增长"
+    if added:
+        top_added = max(added, key=lambda item: item.delta_kb)
+        body += f"；首次记录大目录：{top_added.path}（{human_kb(top_added.new_kb)}）"
+    # 系统通知只展示摘要；完整路径在日报中查看，换行不能伪造另一段状态。
+    body = " ".join(body.split())
+    if len(body) > 200:
+        body = body[:199] + "…"
     if free_bytes is not None:
         free_gb = free_bytes / 1024**3
         body += f"，剩余 {free_gb:.1f} GB"
@@ -81,7 +89,7 @@ def send_notification(title: str, body: str, sound: str | None = None) -> bool:
     if proc.returncode != 0:
         _log(f"通知被系统拒绝（exit={proc.returncode}）：{proc.stderr.strip()[:300]}")
         return False
-    _log(f"已弹通知：{title} | {body}" + (f" | 声音 {sound}" if sound else ""))
+    _log(f"通知命令已提交（显示结果由系统决定）：{title} | {body}" + (f" | 声音 {sound}" if sound else ""))
     return True
 
 

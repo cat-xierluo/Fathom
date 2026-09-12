@@ -107,7 +107,7 @@ class TestNotifyScanDone:
     def test_writes_success_log(self, osascript):
         notify.notify_scan_done(_diff([reports.DirChange("/a/b", 0, 2048, 2048)]), 20 * 1024**3)
         log = (config.LOGS_DIR / "notify.log").read_text(encoding="utf-8")
-        assert "已弹通知" in log and "/a/b" in log
+        assert "通知命令已提交" in log and "/a/b" in log
 
 
 class TestWiring:
@@ -175,3 +175,17 @@ class TestWiring:
         assert out.exists() and "增长最多的目录" in out.read_text(encoding="utf-8")
         log = (config.LOGS_DIR / "notify.log").read_text(encoding="utf-8")
         assert "通知发送异常" in log
+
+
+def test_first_observed_directory_is_not_hidden():
+    diff = reports.compute_diff({"/tmp/a": 10240},
+                                {"/tmp/a": 10240, "/tmp/new": 204800})
+    _, body, _ = notify.build_notification(diff, 20 * 1024**3)
+    assert "首次记录大目录：/tmp/new（200.0 MB）" in body
+    assert "今日无" not in body
+
+def test_summary_bounds_paths_but_keeps_capacity():
+    diff = _diff([reports.DirChange("/tmp/" + "很长\n" * 200, 0, 2048, 2048)])
+    _, body, _ = notify.build_notification(diff, 5 * 1024**3)
+    assert "\n" not in body and len(body) < 240
+    assert "剩余 5.0 GB" in body

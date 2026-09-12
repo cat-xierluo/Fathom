@@ -33,6 +33,9 @@ KEEP_WEEKLY_WEEKS = 12
 BIGFILE_DEFAULT_DAYS = 7
 BIGFILE_DEFAULT_MB = 100
 
+# 扫描完成通知（ISS-003）：卷剩余低于此 GB 数时通知带声音告警
+FREE_ALERT_GB = 10
+
 # launchd
 LAUNCHAGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 SCAN_LABEL = "com.maoscripts.fathom-scan"

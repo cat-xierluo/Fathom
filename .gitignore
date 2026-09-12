@@ -1,0 +1,13 @@
+# 运行时数据（含全盘目录路径，绝不入库）
+data/
+reports/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# macOS
+.DS_Store

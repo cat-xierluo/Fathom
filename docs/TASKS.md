@@ -37,7 +37,7 @@
 | ISS-014 | 窄屏布局扩展 | P3 | 后续 | DEFERRED | ISS-028 |
 | ISS-015 | 周报与月报 | P3 | M4 | DEFERRED | ISS-021 |
 | ISS-016 | 设置持久化与真实服务反馈 | P1 | M2 | BLOCKED | ISS-010、ISS-025 |
-| ISS-017 | 全项目审查与规划 | P1 | M0 | IN_PROGRESS | — |
+| ISS-017 | 全项目审查与规划 | P1 | M0 | REVIEW | — |
 | ISS-018 | 拒绝无效扫描，保护有效快照 | P0 | M0 | READY | — |
 | ISS-019 | 修正真实 BSD du 路径解析 | P0 | M0 | READY | — |
 | ISS-020 | 统一扫描运行与跨进程互斥 | P0 | M0 | BLOCKED | ISS-007、ISS-018、ISS-025 |
@@ -72,8 +72,8 @@
   - [x] 现状与未来方案分开，原有任务编号及其他分支成果保留
   - [x] 用户追加的开源桌面、UX/UI、依赖识别和 Agent 解释均有落位
   - [x] 基线回归、真实页面及故障注入有证据，文档链接/依赖无断裂
-  - [ ] 私有远端和 PR 已建立，用户保留合并权
-- **证据/接续**：基线 33e81f9；9 passed；隔离后端探针与浏览器交互已执行，详见 docs/plans/2026-09-12-project-review.md。分支 iss-017-project-plan；37 个任务编号/依赖无环/READY 前置/本地链接检查通过；TESTING 中夹具实际启动、重扫与生成 1 份日报通过；doc-curator 通用 context-sync 退出 0（只证明 DEC 同步）。私有远端已初始化，PR 待建立。
+  - [x] 私有远端和 PR 已建立，用户保留合并权
+- **证据/接续**：基线 33e81f9；9 passed；隔离后端探针与浏览器交互已执行，详见 docs/plans/2026-09-12-project-review.md。分支 iss-017-project-plan；37 个任务编号/依赖无环/READY 前置/本地链接检查通过；TESTING 中夹具实际启动、重扫与生成 1 份日报通过；doc-curator 通用 context-sync 退出 0（只证明 DEC 同步）。私有远端已初始化；[PR #1](https://github.com/cat-xierluo/fathom/pull/1) 已建立，状态 REVIEW，等待用户决定合并。工作区因 PR 未合并而保留（RETAINED_WITH_REASON）。
 
 ### ISS-018 · 拒绝无效扫描，保护有效快照
 

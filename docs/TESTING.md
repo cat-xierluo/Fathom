@@ -52,18 +52,22 @@ with TemporaryDirectory(prefix='fathom-ui-') as runtime:
     root = str(config.DEFAULT_ROOT)
     conn = db.connect()
     for ago, size in [(1, 400000), (0, 300000)]:
-        scanner.run_du = lambda _, value=size: (
-            {root: value, root + '/Archive': value - 100000,
-             root + '/Notes': 100000}, 0)
+        scanner.run_du = lambda _, value=size: scanner.DuResult(
+            sizes={root: value, root + '/Archive': value - 100000,
+                   root + '/Notes': 100000},
+            exit_code=0, denied_count=0, elapsed_seconds=0.0,
+            stderr_tail=(), other_error_count=0)
         sid = scanner.create_snapshot(conn)
         day = (dt.date.today() - dt.timedelta(days=ago)).isoformat()
         conn.execute('UPDATE snapshots SET created_at=? WHERE id=?',
                      (day + 'T10:00:00', sid))
         conn.commit()
     conn.close()
-    scanner.run_du = lambda _: (
-        {root: 250000, root + '/Archive': 150000,
-         root + '/Notes': 100000}, 0)
+    scanner.run_du = lambda _: scanner.DuResult(
+        sizes={root: 250000, root + '/Archive': 150000,
+               root + '/Notes': 100000},
+        exit_code=0, denied_count=0, elapsed_seconds=0.0,
+        stderr_tail=(), other_error_count=0)
     # ISS-003 集成后也不得让夹具发真实系统通知。
     try:
         from fathom import notify

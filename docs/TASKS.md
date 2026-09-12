@@ -92,13 +92,15 @@
 
 - **目标**：将用户授权变为可审计的 worker 派发、巡检、独立验收与 PR 收口流程。
 - **范围**：本文策略与执行证据、AGENTS 协作入口；Orca Run/Task/Dispatch、本任务心跳与本地执行回执。
-- **实施边界**：PM 管理工作，不派发独立文档 worker；不代写业务代码。当前 baseline `b4be3330c5dbf37c4bc9c93510dc98e44ce5543a`，策略分支 `iss-038-m0-pm-autopilot`；仓库继续 private。
+- **实施边界**：PM 管理工作，不派发独立文档 worker；不代写业务代码。初始 baseline `b4be3330c5dbf37c4bc9c93510dc98e44ce5543a`；策略已由 PR #7 合入 `6228506`，后续证据分支 `iss-038-wave2-acceptance`；仓库继续 private。
 - **验收**：
   - [x] 授权范围、泳道、独立审查、暂停与撤销规则已落在任务源
   - [x] Wave 2 全部 Task 在任一 worker 启动前建立，收到真实 dispatch/启动证据
   - [x] 周期巡检已启用，交付以 Task/Dispatch 与实测证据核对
   - [ ] 每项验收、PR、剩余条件和资源终态均写回，队列停止时暂停心跳
 - **证据/接续**：Orca Run `run_5457fcebf191` 预建 3 个 Task 后启动，三项 spawn exit 0、dispatch_bind=ok；独立目录/分支均基于 b4be333。ISS-018 → `task_22a2d2b0a4ce` / `ctx_a1487c779f45`；ISS-022 → `task_b2091c808847` / `ctx_90a55ca3a103`；ISS-026 → `task_e8f2228ab015` / `ctx_5cdee2f4a4c1`。Claude Code＋GLM 使用现有配置；派发价值门、身份/隔离/额度/内存/安装禁止与写范围门均通过。额度摘要缺条目经已有采集器重新读取后通过；Python 布局改用任务私有链接复用已有 venv，无安装，失败启动产生的空工作区已精确回收。心跳 `fathom-m0-pm` 为 ACTIVE、每 20 分钟，在当前任务接续。已观察三个绑定终端 running 和模型活动；Orca projection 的 session 状态尚为 missing_status，不能视为业务完成。后续以交付与实际 diff/test 核对，当前全部工程验收未完成。
+
+- **本轮进展**（2026-09-13）：工程交付已建立 PR #8/#9/#10。扫描 R1 review 有合同争议，PM 根据其反例安排修复 `ctx_7d64a70465dc`；API 独立审查 `ctx_5025db3d4616`；UX 独立审查 `ctx_2338b75b61d2`，用户认可流程但要求明显提升视觉。三个初始实现终端及首个 reviewer 终端已精确关闭、lease 已回收；工作区因 PR/用户预览保留。PR 尚未合并，不扩新功能，资源与当前身份持续写入 Git common dir 的 `orchestration/fathom-m0-20260912/active-workers.json`。
 
 ### ISS-017 · 全项目审查与规划
 
@@ -122,7 +124,7 @@
   - [ ] 正常空目录与读取失败可区分；部分覆盖携带质量说明
   - [ ] du_seconds 记录实际耗时，报告错误不改写扫描事实
   - [ ] 真实小目录扫描与故障注入回归通过
-- **证据/接续**：Wave 2 已派发，分支 `iss-018-preserve-valid-snapshots`、工作区 `~/orca/workspaces/fathom/iss-018-preserve-valid-snapshots`；验证尚未完成，运行身份见 ISS-038。反例 AUD-01：原 20000 KiB 被失败 du 的 0 KiB 替换，旧快照消失。
+- **证据/接续**（2026-09-13）：实现交付 [PR #8](https://github.com/cat-xierluo/fathom/pull/8)，固定 head `ce67e282af8dd575e246b664369aa70684539730`；只改 scanner 与新增完整性测试，32 项定向测试自验通过，PM 交付价值门通过。实现 Dispatch 已 succeeded/completed、精确终端已关闭；代码尚未合并。独立 reviewer `fathom-review-018-r1` / `ctx_269acc6aa1e3` 在独立工作区审查；reviewer R1 完成，但 PM 根据 C5O 的实际反例认定非权限错误采集仍会覆盖有效快照，尚不满足本卡；进入 repair episode 1，修复后须重新独立审查。验收框保持未勾。反例 AUD-01：原 20000 KiB 被失败 du 的 0 KiB 替换，旧快照消失。
 
 ### ISS-019 · 修正真实 BSD du 路径解析
 
@@ -170,7 +172,7 @@
   - [ ] reveal 的 ..、符号链接越界、前缀同名根、不存在路径及非对象请求均明确响应；mock 证明确实未调用 open
   - [ ] 恶意文件名在表格/tooltip/报告入口不可生成执行节点；真实浏览器验证
   - [ ] 读取路径/报告的边界明确；凭据不进 URL、日志、前端持久存储；本任务不提供任意 shell API
-- **证据/接续**：Wave 2 已派发，分支 `iss-022-local-api-boundaries`、工作区 `~/orca/workspaces/fathom/iss-022-local-api-boundaries`；验证尚未完成，运行身份见 ISS-038。AUD-06：越界 ../outside 返回 200 并进入 mock open；带外站 Origin 的 scan 返回 200。浏览器跨站限制未被当作已绕过。
+- **证据/接续**（2026-09-13）：[PR #9](https://github.com/cat-xierluo/fathom/pull/9)，head `de7f45f3439df2e781ce24dffec320fb8a62a104`；58 项定向 pytest、31 项真实 Chromium 安全检查与语法检查通过，PM postflight 通过。实现 Dispatch succeeded/completed，精确终端及额度 lease 已回收；独立 reviewer `ctx_5025db3d4616` / `fathom-review-022-r1` 审查中，尚未合并，验收框不提前勾。AUD-06 原反例与合法请求均在临时夹具覆盖；实际 Tauri WebView 尚未验证。
 
 ### ISS-023 · 修复可见数值与快照刷新缺陷
 
@@ -242,7 +244,7 @@
   - [ ] 980×640、1220×820 与长路径布局通过，文字/颜色/键盘可辨
   - [ ] 覆盖真实/未知/权限缺口/Agent 未启用的区别，未来内容按状态出现
   - [ ] 用户评审针对具体产物，反馈回写 DESIGN；不能只产出一张不可操作的静态美图
-- **证据/接续**：Wave 2 已派发，分支 `iss-026-interactive-ux-prototype`、工作区 `~/orca/workspaces/fathom/iss-026-interactive-ux-prototype`；验证尚未完成，运行身份见 ISS-038。尚未完成工程和用户验收；不得勾选验收项。
+- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10)，head `e02488a96d7936dc31aa254ebf9b9feb054668f9`；只交付 `prototypes/ux/` 与验证脚本。首轮长路径/窄窗/权限流程失败后修复，PM 在同步基线后复跑 91 项浏览器检查与语法检查通过，10 张截图，临时验证资源关闭。用户已评审具体原型并反馈“流程可以，但视觉需要明显提升”。用户进一步选择“原生 Mac：克制、精致、轻量”；保留流程，按 [第二轮执行方案](plans/2026-09-13-native-mac-prototype-design.md) 迭代视觉。独立工程验收仍在进行，整卡 IN_PROGRESS，不将反馈当作定稿认可。原 worker 因 CLI 守卫未发 worker_done，最终 turn 已结束；PM fence 为 abandoned 后关闭其精确自建终端并回收 lease，不把运行结算异常伪报成功。裸 push 未经过安全推送门的问题已由 PM 同步基线并重新 safe-push 完整提交链，代码保留。
 
 ### ISS-027 · 原生前端模块与状态生命周期
 

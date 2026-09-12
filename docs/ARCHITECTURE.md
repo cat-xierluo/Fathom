@@ -28,8 +28,9 @@
 └───────────────────────────────────────────────────────────────┘
                  │
                  ▼
-        浏览器 http://127.0.0.1:7952
-        （状态卡 / 卷趋势 / 快照对比 / 旭日图 / 大文件）
+        FastAPI :7952（同一前端，五页仪表盘）
+           ├─ 浏览器 http://127.0.0.1:7952
+           └─ Tauri 桌面壳（tray + 主窗口，loader 轮询可达后跳转，DEC-008）
 ```
 
 ## 数据流
@@ -68,6 +69,10 @@ scan_runs(id, started_at, finished_at, status, message)   -- 预留：手动扫�
 | `/api/bigfiles?days=&min_mb=&topn=` | GET | 近期大文件 |
 | `/api/scan` | POST | 触发后台扫描（409 = 已在进行） |
 | `/api/scan/status` | GET | 扫描任务状态 |
+| `/api/browse?path=` | GET | 目录浏览器数据：指定目录直接子目录（最新快照）+ 较前一快照差值 + 自身趋势（分布页） |
+| `/api/reports` | GET | 历史日报档案列表（reports/*.md，新在前） |
+| `/api/reports/{date}` | GET | 单日日报内容（date 格式 YYYY-MM-DD） |
+| `/api/reveal` | POST | 在 Finder 中显示指定路径（open -R，越界路径 400 拒绝） |
 
 ## 核心算法：fold_changes 父子折叠
 

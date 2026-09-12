@@ -8,6 +8,7 @@
 ### 改进
 - **更名 Fathom**：延续 Folia/Funes 的 F 系列命名。fathom（英寻）是水深测量单位，动词意为"测深、弄明白"——双关直击产品要回答的问题："I can't fathom where my disk space went"。涉及：项目目录、Python 包、launchd 标签（com.maoscripts.fathom-*，旧任务自动卸载）、Tauri identifier/productName/crate、全部文档；数据库文件平滑迁移（disk.db → fathom.db，保留首扫基线数据）
 - **UI 全面去 emoji，对齐 Folia 视觉规范**：导航/面板/按钮/日报全部改用内联 SVG 线条图标（lucide 同款 stroke 风格，currentColor 跟随语义色），Markdown 日报标题同步去 emoji
+- **文档层对齐**（同日补）：README/DESIGN 残留装饰 emoji 清理；DESIGN 版本头升至 v0.3；ARCHITECTURE API 清单补齐 v0.2.0 四个端点（browse/reports/reports/{date}/reveal）并在架构图标注桌面壳入口；ROADMAP v0.3 章节与 0.3.0 实际发布内容对齐；AGENTS 模块速查补 icons.js；清理空的 docs/ux/ 遗留目录
 
 ## [0.2.0] - 2026-09-12
 

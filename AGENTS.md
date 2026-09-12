@@ -19,7 +19,7 @@ Fathom 是 macOS 本机的目录容量变化追踪软件，对标群晖「存储
 
 - 全程使用中文回复与写作
 - 遵循 `docs/ROADMAP.md` 路线图驱动开发
-- 待办事项记录到 `docs/TASKS.md`（ISS-XXX 编号）
+- 待办事项记录到 `docs/TASKS.md`（ISS-XXX 编号）；任务按其开头的推进规范在独立分支进行（`iss-NNN-slug`），验收框全勾 + 验证通过才算完成，合并回 main 需用户确认
 - 重要决策记录到 `docs/DECISIONS.md`（DEC-XXX 编号，含背景/决策/验证/影响）
 - 用户可见变更写入 `CHANGELOG.md`
 - 涉及前端 UI 时遵循 `docs/DESIGN.md`

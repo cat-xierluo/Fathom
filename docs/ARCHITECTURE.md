@@ -1,13 +1,13 @@
 # Fathom 当前架构
 
-**事实基线：main `33e81f9`（v0.3.0 文档版本），2026-09-12 核对。** 本文件只描述该基线代码。其他分支的通知、scan_runs 持久化、tray 补丁尚不计入本基线；合并后由对应任务更新事实。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
+**事实基线：main `2f6079d`（已合并 PR #3/#4/#5，仍为开发版），2026-09-12 核对。** 本文件描述该基线代码；通知显示与原生菜单交互未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
 
 ## 入口与边界
 
 ```text
 launchd scan → main.py → cli.cmd_scan ──┐
                                      ├─ scanner → SQLite
-HTTP POST /api/scan → daemon thread ──┘       └─ reports → Markdown
+HTTP POST /api/scan → daemon thread ──┘       └─ reports → Markdown → notify（尝试系统通知）
 launchd web → main.py serve → FastAPI :7952 → frontend/ 五页
                                                ↑
 Tauri loader → 探测 /api/status → 跳转本地 HTTP ─┘
@@ -24,12 +24,13 @@ CLI 和 API 的执行流程目前各自实现，只有 API 有进程内 threadin
 | db.py | sqlite3、WAL、外键、CREATE TABLE IF NOT EXISTS | 无 schema version/迁移协议；读取也打开可写连接并执行建表 |
 | scanner.py | `/usr/bin/du -xk`，内存捕获并解析，保留 ≥10240 KiB 的 entries | 不校验退出码/根存在；du_seconds 写 0；特殊路径存在误解析 |
 | reports.py | 比较 entries、父子折叠、Markdown，文件名按日期 | 未记录即 added/removed；忽略传入 sid 取全局最新两条；无独立报告状态 |
+| notify.py | 日报写完后尝试 osascript 通知；首次记录目录单列；摘要限长；低空间阈值 10 GB | 显示受系统策略控制；首扫无日报不通知；阈值未与 UI 统一；日志可能含路径 |
 | bigfiles.py | `/usr/bin/find -xdev -type f -size +... -mtime -... -print0` 后 stat | 大小为 st_size 逻辑字节；每次请求实时遍历；无超时/去重/失败呈现 |
-| api.py | 查询、扫描线程、reveal，挂载静态文件 | 首扫生成报告报错；写接口无鉴权；根检查仅字符串前缀 |
+| api.py | 查询、扫描线程、scan_runs 状态持久化、reveal，挂载静态文件 | 首扫生成报告报错；写接口无鉴权；根检查仅字符串前缀 |
 | cli.py | scan/report/bigfiles/status/serve/install/uninstall | scan 的首份报告缺基线会被单独捕获，与 API 成功语义不同 |
 | launchd.py | 拼接 XML，安装扫描/常驻 Web 两个 plist | 路径不做 XML 转义；bootstrap 失败只打印，不能可靠表示安装失败 |
 | frontend/ | 原生 HTML/JS/CSS、ECharts、hash 五页 | 请求/状态/页面同文件；部分异常未接；重扫后列表不刷新 |
-| apps/desktop/ | Tauri 2，远端本地 HTTP 页面获 capability | bundle.active=false；无自包含 Python、安装/升级/卸载 UI；tray 实机待验 |
+| apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行 | bundle.active=false；无自包含 Python、安装/升级/卸载 UI；tray 实机待验 |
 
 ## SQLite 与保留事实
 
@@ -38,7 +39,9 @@ CLI 和 API 的执行流程目前各自实现，只有 API 有进程内 threadin
 | snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录 |
 | entries | snapshot_id, path, size_kb | 复合主键，WITHOUT ROWID；父目录大小已含子目录 |
 | volume_stats | snapshot_id, total_bytes, free_bytes | 扫描时 statvfs，free 为 f_bavail × f_frsize |
-| scan_runs | id, started_at, finished_at, status, message | 基线中只建表，API 用内存 `_scan_state`；ISS-007 分支已接表 |
+| scan_runs | id, started_at, finished_at, status, message | API 写 running/done/failed；done 的 message 为 JSON 结果，failed 为错误；CLI/定时尚不写此表 |
+
+状态恢复仍依赖单 Web 进程约定：锁空闲且记录超过 3600 秒时，在状态读取中收尾为 failed；新扫描持锁时收尾遗留记录。这不能证明其他进程 owner 已退出，多实例共享库不受支持。线程启动失败会释放锁并记录 failed；扫描阶段失败先回滚未提交事务，再独立写入结束态。统一跨进程运行协议归 ISS-020。
 
 同根同一天的新扫描事务中先删除旧快照再写入新条目和卷统计；事务可回滚 SQL 错误，但 **du 失败目前不会被识别为写入前的失败**。
 
@@ -65,8 +68,8 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | GET | /api/diff?a=&b=&topn= | b 相对 a；默认全局最近两条；不足两条 409，不存在 404；未校验同根 |
 | GET | /api/trend?path=&limit= | 有该路径记录的历史点；缺失不补点；ASC LIMIT |
 | GET | /api/bigfiles?days=&min_mb=&topn= | 同步遍历，返回 files；上限 200 |
-| POST | /api/scan | 线程启动；同一 API 进程锁冲突 409；成功启动返回 200 |
-| GET | /api/scan/status | 基线内存状态，重启丢失；ISS-007 的 history 参数不属于本基线 |
+| POST | /api/scan | running 先落库；进程锁冲突 409；成功返回 200 和 run_id；线程启动失败 503 |
+| GET | /api/scan/status?history= | 持久化最新状态，保留原字段并增加 id/status；history=1..100 附 runs，默认不附历史 |
 | GET | /api/browse?path= | 最新快照子目录、前一快照差值、趋势、面包屑；首次子目录错误地给全量 delta |
 | GET | /api/reports | reports/*.md 文件列表 |
 | GET | /api/reports/{date} | Markdown 原文；日期校验不完整 |
@@ -76,6 +79,8 @@ API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。�
 
 ## 当前验证覆盖
 
-`tests/test_scanner.py` 有 9 个测试，包含真实 du、小目录阈值、同日覆盖、差分及保留。折叠测试中的 `or True` 是恒真断言，原来宣称的单链行为没有被有效验证。此次隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。
+当前全量 **36 passed**：原扫描/差分 9 项、通知 15 项、scan_runs 12 项；新增通知摘要、线程启动失败、未提交写事务阻止 failed 落库的回归反例。隔离真实 API 已执行 du、次日报告、通知 stub、运行历史及实际服务重启；首扫仍复现“有快照但报告不足而失败”，归 ISS-020。桌面 cargo build --locked --offline、桥接函数的降级/失败去重/恢复检查通过；原生交互 NOT_VERIFIED。
+
+`tests/test_scanner.py` 的原有 9 个测试包含真实 du、小目录阈值、同日覆盖、差分及保留。折叠测试中的 `or True` 是恒真断言，原来宣称的单链行为没有被有效验证。此次隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。
 
 不把现有单元测试、其他分支的提交说明或 cargo build 作为安装、系统通知、权限、tray 与定时任务已经可靠的证据。

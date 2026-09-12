@@ -1,6 +1,6 @@
 # Fathom 当前任务源
 
-更新：2026-09-12。本轮规划与审查任务为 ISS-017；当前实施阶段 M0。产品方向见 [ROADMAP](ROADMAP.md)，页面合同见 [DESIGN](DESIGN.md)，验证方法见 [TESTING](TESTING.md)。编号永久保留，不复用。
+更新：2026-09-12。规划任务 ISS-017 已完成；本轮接续 Wave 1 审查集成，当前实施阶段 M0。产品方向见 [ROADMAP](ROADMAP.md)，页面合同见 [DESIGN](DESIGN.md)，验证方法见 [TESTING](TESTING.md)。编号永久保留，不复用。
 
 ## 领取与完成规则
 
@@ -14,9 +14,9 @@
 - 通用验证按 TESTING，卡片验收全部满足才进入 REVIEW；真实行为未做写 `NOT_VERIFIED` 并保留未勾项。合并必须用户确认。状态更新同一分支回写，不能直接修改其他工作区或 main。
 - 避免并发改共享 schema/API/app.js；未实际分配并行工作时默认串行。没有可执行项时报告具体阻塞，可继续已授权的独立验证，不凭空建功能。
 
-## 本次审查发现的既有工作
+## 历史来源与本轮集成
 
-审查基线 main=`33e81f9`。复审时 `integration/wave1` 已到 `5fcdf41`，包含 ISS-003/007/008 成果及收口文档，但尚未进入 main；原 worker 分支已清理，接续时用下述已记录提交或集成分支查阅，不要求重建已删除分支。本规划不替它合并或宣称实机验收。
+规划审查基线为 main=`33e81f9`；当时 `integration/wave1@5fcdf41` 含 ISS-003/007/008 的待集成成果。现在经 [PR #3](https://github.com/cat-xierluo/fathom/pull/3)、[PR #4](https://github.com/cat-xierluo/fathom/pull/4)、[PR #5](https://github.com/cat-xierluo/fathom/pull/5) 审查修正后进入主干，旧 integration/worker 分支是否仍存在不影响接续，按 PR 与提交查阅。源码集成不等于系统通知/原生菜单验收完成。本轮源分支和审查工作区保留供 ISS-020/003/008 接续对照（RETAINED_WITH_REASON）。
 
 该集成分支同时使用了 ISS-017/018 编号。为保留历史引用，旧引用必须带分支与提交限定；在规划主干中按内容归入已有任务，不重复立项：
 
@@ -25,7 +25,7 @@
 | `integration/wave1@5fcdf41:ISS-017` | 冒烟 serve 端口冲突、误读生产服务 | ISS-025（运行隔离/端口配置）及 ISS-031（验证入口） |
 | `integration/wave1@5fcdf41:ISS-018` | reveal 的 .. / 符号链接越界 | ISS-022（本地接口边界） |
 
-无分支限定的 ISS-017/018 以本索引“全项目审查与规划/拒绝无效扫描”为准。以后集成 wave1 时按上表迁移文档，保留原始提交中的引用，不以旧任务文件覆盖本任务源。任务总数仍为 37。
+无分支限定的 ISS-017/018 以本索引“全项目审查与规划/拒绝无效扫描”为准。本轮已按上表迁移 wave1 文档；以后引用旧工作时仍按此映射，保留原始提交中的引用，不以旧任务文件覆盖本任务源。任务总数仍为 37。
 
 ## 索引
 
@@ -33,12 +33,12 @@
 |---|---|---|---|---|---|
 | ISS-001 | 真实跨日定时日报验证 | P1 | M1 | WAITING | — |
 | ISS-002 | 权限覆盖与授权说明 | P1 | M1 | WAITING | — |
-| ISS-003 | 接续扫描通知成果 | P2 | M1 | REVIEW_EXTERNAL | ISS-020 |
+| ISS-003 | 接续扫描通知成果 | P2 | M1 | BLOCKED | ISS-020 |
 | ISS-004 | 有依据的清理建议 | P2 | M4 | DEFERRED | ISS-001、ISS-034 |
 | ISS-005 | duc 可选引擎评估 | P3 | 后续 | DEFERRED | ISS-019、ISS-032 |
 | ISS-006 | Tauri 初始桌面壳 | P2 | 历史 | DONE | — |
-| ISS-007 | 接续 scan_runs 实现审查 | P1 | M0 | REVIEW_EXTERNAL | — |
-| ISS-008 | 接续 tray 链路与实机验证 | P1 | M1 | REVIEW_EXTERNAL | — |
+| ISS-007 | 接续 scan_runs 实现审查 | P1 | M0 | DONE | — |
+| ISS-008 | 接续 tray 链路与实机验证 | P1 | M1 | WAITING | — |
 | ISS-009 | 可分发 app 与安装入口 | P1 | M2 | BLOCKED | ISS-018、ISS-019、ISS-020、ISS-022、ISS-025、ISS-029 |
 | ISS-010 | 登录自启与后台计划 | P1 | M2 | BLOCKED | ISS-009、ISS-020 |
 | ISS-011 | 文件类型分布 | P3 | 后续 | DEFERRED | ISS-021、ISS-032 |
@@ -83,7 +83,7 @@
   - [x] 用户追加的开源桌面、UX/UI、依赖识别和 Agent 解释均有落位
   - [x] 基线回归、真实页面及故障注入有证据，文档链接/依赖无断裂
   - [x] 私有远端和 PR 已建立，用户保留合并权
-- **证据/接续**：基线 33e81f9；9 passed；隔离后端探针与浏览器交互已执行，详见 docs/plans/2026-09-12-project-review.md。分支 iss-017-project-plan；37 个任务编号/依赖无环/READY 前置/本地链接检查通过；TESTING 中夹具实际启动、重扫与生成 1 份日报通过；doc-curator 通用 context-sync 退出 0（只证明 DEC 同步）。复审修正：wave1 编号冲突已用限定历史引用映射；验证入口增加实例指纹；复验 9 passed，夹具重扫/日报/清理通过，端口冲突非零退出且向占用服务发送 0 次 POST；用户已明确授权本次 review 与合并。[PR #1](https://github.com/cat-xierluo/fathom/pull/1) 已于 2026-09-12 按用户授权完成审查并 squash 合并到 main，合并提交 `3acf5924cb53134d010cccef510fa6933bee2f38`；GitHub 已确认 MERGED，任务状态 DONE。仓库保持 private。原工作目录仍为 `integration/wave1@5fcdf41`，其业务代码未随本 PR 合并；规划工作区与源分支保留供既有会话接续查阅（RETAINED_WITH_REASON）。
+- **证据/接续**：基线 33e81f9；9 passed；隔离后端探针与浏览器交互已执行，详见 docs/plans/2026-09-12-project-review.md。分支 iss-017-project-plan；37 个任务编号/依赖无环/READY 前置/本地链接检查通过；TESTING 中夹具实际启动、重扫与生成 1 份日报通过；doc-curator 通用 context-sync 退出 0（只证明 DEC 同步）。复审修正：wave1 编号冲突已用限定历史引用映射；验证入口增加实例指纹；复验 9 passed，夹具重扫/日报/清理通过，端口冲突非零退出且向占用服务发送 0 次 POST；用户已明确授权本次 review 与合并。[PR #1](https://github.com/cat-xierluo/fathom/pull/1) 已于 2026-09-12 按用户授权完成审查并 squash 合并到 main，合并提交 `3acf5924cb53134d010cccef510fa6933bee2f38`；GitHub 已确认 MERGED，任务状态 DONE。仓库保持 private。PR #1 合并时尚未包含 `integration/wave1@5fcdf41` 的业务代码；后续集成见本文当前任务证据。规划工作区与源分支保留供既有会话接续查阅（RETAINED_WITH_REASON）。
 
 ### ISS-018 · 拒绝无效扫描，保护有效快照
 
@@ -175,10 +175,10 @@
 - **范围**：既有 iss-007-scan-runs 分支 diff、fathom/api.py、tests/test_scan_runs.py（分支中已有）。
 - **实施边界**：先查实际分支是否已合并，不重复实现。复跑真实首扫及重启路径，不把 mock 的成功 sid 当作首扫成功证据。该分支仍用进程内锁，不能把它认定为全局扫描协调已完成。
 - **验收**：
-  - [ ] 分支差异/基线/相关测试有独立复查记录
-  - [ ] running/done/failed 与重启路径可解释；首扫误失败移交 ISS-020
-  - [ ] 合并按用户确认执行；文档按最终实际状态回写
-- **证据/接续**：已存在 71fea47；审查时 integration/wave1 含此成果，main 的审查基线未含。领取前查最新 Git。
+  - [x] 分支差异/基线/相关测试有独立复查记录
+  - [x] running/done/failed 与重启路径可解释；首扫误失败移交 ISS-020
+  - [x] 合并按用户确认执行；文档按最终实际状态回写
+- **证据/接续**：[PR #4](https://github.com/cat-xierluo/fathom/pull/4) 已按用户授权审查合并。原 76c336c 的两个新增反例先失败后通过：线程启动失败锁泄漏、阶段写事务未回滚导致 failed 无法入库。修复后 21 passed；与 PR #3 组合 36 passed。临时根真实 du/API 首扫留快照但报告不足、次日成功、实际服务进程重启后 done/历史保持均已核对；首扫误失败与多进程 owner 缺失明确归 ISS-020。本卡验收为已有持久化实现审查，不代表 ISS-020 完成。
 
 ### ISS-020 · 统一扫描运行与跨进程互斥
 
@@ -203,7 +203,7 @@
   - [ ] 错误实现会使关键反例变红；没有 or True/无条件跳过伪绿
   - [ ] PR 有核心自动检查，UI/实机未覆盖项仍标 NOT_VERIFIED
   - [ ] 合成数据能跑空库、单快照、两快照与异常页面，不接触生产数据
-- **证据/接续**：AUD-11：9 passed，但 TestFoldChanges 有 assert ... or True；依赖只有下限。
+- **证据/接续**：CI 与依赖固定尚未实施。本轮主干全量 36 passed，仍有 Starlette 对 httpx 与 anyio 旧别名的两条弃用警告，纳入本卡测试依赖升级；不能把本地通过当作已有 CI。
 
 ### ISS-026 · 完整 UX 流程与视觉原型
 
@@ -296,7 +296,7 @@
   - [ ] 分支测试复跑，失败/转义/长度/静默模式行为可解释
   - [ ] macOS 实际收到内容正确的通知，拒绝权限时有退路
   - [ ] 首扫无日报、零变化、部分覆盖及低空间告警有一致语义
-- **证据/接续**：已有提交 6488cf5（未视为本次已验收）；系统通知实测 NOT_VERIFIED。
+- **证据/接续**：[PR #3](https://github.com/cat-xierluo/fathom/pull/3) 已审查修正并合并；24 passed，组合 36 passed。复现并修正新增 200 MB 目录仍提示今日无增长，补摘要限长和准确日志；真实扫描/次日报告/通知 stub 链路通过。命令行 report 不触发通知。系统实际展示、首扫/部分覆盖语义与设置统一尚未完成；本卡 BLOCKED 于 ISS-020，真机通知仍 NOT_VERIFIED。
 
 ### ISS-008 · 接续 tray 链路与实机验证
 
@@ -307,7 +307,7 @@
   - [ ] 浅/深色下只有预期数量的图标且清晰；菜单状态不是永久启动中
   - [ ] 标题与状态行和后端一致；左键/开窗/扫描/退出实际可用
   - [ ] 隐藏窗口、后端断开、恢复与权限失败有真实行为证据
-- **证据/接续**：已有 27b579f；编译记录不替代菜单栏实测，NOT_VERIFIED。
+- **证据/接续**：[PR #5](https://github.com/cat-xierluo/fathom/pull/5) 已审查修正并合并。核对 tauri 2.11.5 源码远程 ACL；补单一 sentinel 实例、显式图标和状态行更新。cargo build --locked --offline 成功；执行真实 JS 桥函数验证无 Tauri 降级、载荷、连续失败去重及恢复后再次告警。已启动并停止本次二进制，但 CUA 未识别未打包进程，未完成原生交互观察；菜单/深浅色/隐藏窗口/断线恢复仍 NOT_VERIFIED，状态 WAITING。
 
 ### ISS-009 · 可分发 app 与安装入口
 

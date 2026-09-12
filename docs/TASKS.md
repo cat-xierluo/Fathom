@@ -21,7 +21,7 @@
 - **范围**：只推进 M0 中已 READY 的 ISS-018/019/022/023/025/026/031。当前先派 Wave 2：ISS-018（scanner）＋ISS-022（API/现有前端安全）＋ISS-026（独立 UX 原型）。不自动开放 M1–M4，不以额度充足扩张任务源。
 - **后继查表**：ISS-018 验收后接 ISS-019；ISS-022 验收后接 ISS-023；这两条泳道收口且无共享写入者后接 ISS-025，再接 ISS-031。每次重读完整卡片和最新基线。ISS-020/021 依赖满足后由 PM 核对并重新拆分范围，未登记新的明确合同前不派。
 - **UX**：ISS-026 原型路径登记为 `prototypes/ux/`，仅合成数据，配套 `scripts/verify_ux_prototype.cjs`。交付具体可点击产物供用户评审；未收到反馈时保持 WAITING，不标 DONE，不自动实装 ISS-028。原型的工程交付可建立 PR，用户评审是本卡关闭条件。
-- **角色/所有权**：实施 worker 只写合同所列工程文件和自己的 session context；PM 独占 TASKS/AGENTS/ARCHITECTURE/DECISIONS/DESIGN/ROADMAP/README/CHANGELOG/TESTING。worker 提供 WRITEBACK_PROPOSAL，由 PM 按事实更新。非平凡实现需要不同 session/dispatch 的 reviewer；固定 40 位 head，不能自审后直接合并。
+- **角色/所有权**：用户于 2026-09-13 再次明确 PM 尽量只做验收、定方向和关键上下文；实现、测试与返修交给 worker，PM 不代写业务代码。实施 worker 只写合同所列工程文件和自己的 session context；PM 独占 TASKS/AGENTS/ARCHITECTURE/DECISIONS/DESIGN/ROADMAP/README/CHANGELOG/TESTING。worker 提供 WRITEBACK_PROPOSAL，由 PM 按事实更新。非平凡实现需要不同 session/dispatch 的 reviewer；固定 40 位 head，不能自审后直接合并。
 - **并发/资源**：本项目最多 3 个活跃 worker（含 reviewer）；待 PM 验收超过 2 项停止新派。scanner、api/app.js、schema/config 分别串行；全量测试全机一次仅一份，worker 只跑所分配回归。采用已有受支持 provider 配置，派发价值、额度、物理内存和写范围门禁均不得绕过。
 - **交付**：每项先反例，再修复及真实入口验证；完成派发价值、交付后、独立审查门禁后，PM 在最新 main 的候选树验证并经唯一 PR 合并。生产扫盘、服务重启、launchd/TCC 修改、依赖安装、签名和公开发布均不在本轮授权内。
 - **巡检**：当前任务定期心跳检查 Orca Task/Dispatch、交付、PR 和资源状态；无变化静默，仅在交付、失败或需要用户输入时通知。Run/Task/Dispatch 及启动回执存于 Git common dir 的 `orchestration/fathom-m0-20260912/`，不入库、不存凭据。心跳是补偿巡检；机器关机/应用退出后的无人值守恢复尚未验证，不宣称 L3。
@@ -124,7 +124,7 @@
   - [ ] 正常空目录与读取失败可区分；部分覆盖携带质量说明
   - [ ] du_seconds 记录实际耗时，报告错误不改写扫描事实
   - [ ] 真实小目录扫描与故障注入回归通过
-- **证据/接续**（2026-09-13）：实现交付 [PR #8](https://github.com/cat-xierluo/fathom/pull/8)，固定 head `ce67e282af8dd575e246b664369aa70684539730`；只改 scanner 与新增完整性测试，32 项定向测试自验通过，PM 交付价值门通过。实现 Dispatch 已 succeeded/completed、精确终端已关闭；代码尚未合并。独立 reviewer `fathom-review-018-r1` / `ctx_269acc6aa1e3` 在独立工作区审查；reviewer R1 完成，但 PM 根据 C5O 的实际反例认定非权限错误采集仍会覆盖有效快照，尚不满足本卡；repair episode 1 已提交 `7e97e72e66b474862d4d37cb71fca88780fdf4b5` 并经 safe-push 更新原 PR，47 项定向测试通过；独立 R2 `ctx_f30d8811d516` 报告 REJECT：真实 BSD du 的错误路径含“Permission denied”但 errno 为 File name too long 时，整行子串分类仍误判为权限部分覆盖；47 项回归通过，独立真实反例失败。第二个窄修复 Task `task_8d9e038a09aa` 已建，结算 reviewer 后启动。验收框保持未勾。反例 AUD-01：原 20000 KiB 被失败 du 的 0 KiB 替换，旧快照消失。
+- **证据/接续**（2026-09-13）：实现交付 [PR #8](https://github.com/cat-xierluo/fathom/pull/8)，固定 head `ce67e282af8dd575e246b664369aa70684539730`；只改 scanner 与新增完整性测试，32 项定向测试自验通过，PM 交付价值门通过。实现 Dispatch 已 succeeded/completed、精确终端已关闭；代码尚未合并。独立 reviewer `fathom-review-018-r1` / `ctx_269acc6aa1e3` 在独立工作区审查；reviewer R1 完成，但 PM 根据 C5O 的实际反例认定非权限错误采集仍会覆盖有效快照，尚不满足本卡；repair episode 1 已提交 `7e97e72e66b474862d4d37cb71fca88780fdf4b5` 并经 safe-push 更新原 PR，47 项定向测试通过；独立 R2 `ctx_f30d8811d516` 报告 REJECT：真实 BSD du 的错误路径含“Permission denied”但 errno 为 File name too long 时，整行子串分类仍误判为权限部分覆盖；47 项回归通过，独立真实反例失败。R2 reviewer 已结算、精确终端/lease回收；第二个窄修复 Task `task_8d9e038a09aa` / `ctx_83eb0813ffe9` 已启动。验收框保持未勾。反例 AUD-01：原 20000 KiB 被失败 du 的 0 KiB 替换，旧快照消失。
 
 ### ISS-019 · 修正真实 BSD du 路径解析
 
@@ -172,7 +172,7 @@
   - [ ] reveal 的 ..、符号链接越界、前缀同名根、不存在路径及非对象请求均明确响应；mock 证明确实未调用 open
   - [ ] 恶意文件名在表格/tooltip/报告入口不可生成执行节点；真实浏览器验证
   - [ ] 读取路径/报告的边界明确；凭据不进 URL、日志、前端持久存储；本任务不提供任意 shell API
-- **证据/接续**（2026-09-13）：[PR #9](https://github.com/cat-xierluo/fathom/pull/9)，head `de7f45f3439df2e781ce24dffec320fb8a62a104`；58 项定向 pytest、31 项真实 Chromium 安全检查与语法检查通过，PM postflight 通过。实现 Dispatch succeeded/completed，精确终端及额度 lease 已回收；独立 reviewer R1 已 REJECT：F1 统一 CSP 导致 /docs 空白；进入修复 episode 1，`ctx_c71e5dc9cea1` 负责修复后再独立审查，尚未合并。AUD-06 原反例与合法请求均在临时夹具覆盖；实际 Tauri WebView 尚未验证。
+- **证据/接续**（2026-09-13）：[PR #9](https://github.com/cat-xierluo/fathom/pull/9)，head `de7f45f3439df2e781ce24dffec320fb8a62a104`；58 项定向 pytest、31 项真实 Chromium 安全检查与语法检查通过，PM postflight 通过。实现 Dispatch succeeded/completed，精确终端及额度 lease 已回收；独立 reviewer R1 已 REJECT：F1 统一 CSP 导致 /docs 空白；修复 episode 1 已提交 `74fc5aee941e1e26e5002eb499529652ea7d403a` 并 safe-push 更新原 PR；68 项定向 pytest 和 39 项 Chromium 检查通过（真实 CDN 文档初始化）。PM 根据保留原记录的最终 head 证据通过 postflight，R2 独立审查 `ctx_f5c159585927` 在途，尚未合并。AUD-06 原反例与合法请求均在临时夹具覆盖；实际 Tauri WebView 尚未验证。
 
 ### ISS-023 · 修复可见数值与快照刷新缺陷
 

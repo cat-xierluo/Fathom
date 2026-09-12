@@ -1,6 +1,6 @@
 # 验证与交付方法
 
-本文件提供可重复的验证入口。具体任务结果只写 [TASKS](TASKS.md)，已知基线反例见 [审查证据](plans/2026-09-12-project-review.md)。本 PR 是规划文档，不自动部署后端或修复下列缺陷。
+本文件提供可重复的验证入口。具体任务结果只写 [TASKS](TASKS.md)，已知基线反例见 [审查证据](plans/2026-09-12-project-review.md)。本文件是验证协议；列出的反例与验收项不代表已修复或已通过。
 
 ## 1. 环境与隔离
 
@@ -14,6 +14,15 @@
 **当前只设置 FATHOM_DB 不足以隔离：** CLI scan/API scan 仍可能扫描 HOME，报告/日志仍在源码工作区，serve 默认仍用生产端口。必须同时隔离 DATA_DIR、DB_PATH、REPORTS_DIR、LOGS_DIR、DEFAULT_ROOT、端口；install/uninstall/权限与真实 Finder 动作另属实机验证。ISS-025 交付后同步本节到正式配置入口。
 
 不复制生产库到仓库，不在报告贴私人路径。数据量测试用合成目录或经用户选择的测试范围。故障测试 mock `open`、通知、launchctl 等系统动作，检查“有没有被调用”，不实际动生产服务。
+
+针对 Wave 1 的回归入口：
+
+```bash
+.venv/bin/python -m pytest tests/test_notification.py tests/test_scan_runs.py -q
+cargo build --locked --offline --manifest-path apps/desktop/src-tauri/Cargo.toml
+```
+
+持久化验收必须补一次真实进程重启：为测试服务选择独立端口、临时根和固定的临时运行目录，先核对实例身份再执行扫描，记录 run_id；停止该测试服务后，以同一临时库重启，再检查结束态与历史。不能把换一个 threading.Lock 的 mock 当作真实重启证据。首扫无报告的当前已知缺陷应单独记录，不能伪造成功结果。通知可以 stub 隔离；原生通知与菜单交互另行实测。
 
 ## 2. 可直接运行的 UI 夹具服务（当前基线）
 

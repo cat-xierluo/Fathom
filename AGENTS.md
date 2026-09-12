@@ -30,8 +30,8 @@
 ## 模块边界
 
 - `fathom/scanner.py`：du 采集、快照与保留策略；`fathom/db.py`：连接和 schema。
-- `fathom/reports.py`：差分及 Markdown；`fathom/bigfiles.py`：近期修改大文件查询。
-- `fathom/api.py`：HTTP 查询和扫描入口；`fathom/cli.py`：CLI；`main.py` 是入口包装。
+- `fathom/reports.py`：差分及 Markdown；`fathom/notify.py`：报告完成后的系统通知尝试；`fathom/bigfiles.py`：近期修改大文件查询。
+- `fathom/api.py`：HTTP 查询、扫描入口和 scan_runs 持久化（目前仅单 Web 进程约定）；`fathom/cli.py`：CLI；`main.py` 是入口包装。
 - `fathom/config.py`：当前常量与路径；`fathom/launchd.py`：开发版后台任务安装。
 - `frontend/`：无构建链 HTML/JS/CSS，ECharts 本地资源。SVG 图标只在 `frontend/icons.js` 集中维护，禁止装饰 emoji。
 - `apps/desktop/`：Tauri 壳；当前依赖独立运行的 FastAPI，不能宣称包已自包含。

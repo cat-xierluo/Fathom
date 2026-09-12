@@ -82,6 +82,24 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'")
 
+# FastAPI 自动文档页（/docs /redoc）模板固定引用外部资源：jsdelivr 的
+# Swagger UI / Redoc 脚本与样式、fastapi.tiangolo.com 图标、redoc 的 Google
+# Fonts；初始化脚本是模板内联的，无 nonce 挂点。统一 _CSP 会把这些全部拒掉，
+# 使文档页成为空页（F1 回归）。因此只对下面三个精确路径（不含任何用户输入）
+# 放行这些固定来源 + 内联初始化；其余响应（前端静态页、/api、404 等）不变。
+# worker-src blob: 供 Swagger UI 自带的语法高亮 Web Worker（页面内生成的
+# 同源代码，非外部来源）。
+_DOCS_CSP = ("default-src 'self'; "
+             "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+             "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net "
+             "https://fonts.googleapis.com; "
+             "font-src 'self' https://fonts.gstatic.com; "
+             "img-src 'self' data: https://fastapi.tiangolo.com "
+             "https://cdn.redoc.ly; "
+             "connect-src 'self'; worker-src 'self' blob:; "
+             "object-src 'none'; base-uri 'self'")
+_DOC_PATHS = frozenset({"/docs", "/redoc", "/openapi.json"})
+
 
 def _trusted_hosts() -> frozenset[str]:
     """本服务 loopback 别名（含端口）。Host 不在其中即视为 rebinding/误连。"""
@@ -101,6 +119,8 @@ async def local_boundary_guard(request: Request, call_next):
     - CORS 中间件在本守卫内层：跨站请求在这里被拒，与“响应是否可读”无关；
     - 无 Origin 的请求（curl/CLI/无 Origin 头的机器客户端）不受 Origin 规则
       限制，但写请求仍需令牌（先 GET /api/bootstrap）；
+    - 文档页（精确 /docs /redoc /openapi.json）的 CSP 用 _DOCS_CSP（FastAPI
+      模板固定 CDN + 内联初始化），其余响应仍用严格 _CSP；
     - 拒绝响应不含令牌或内部路径信息。
     """
     host = request.headers.get("host", "").lower()
@@ -120,7 +140,10 @@ async def local_boundary_guard(request: Request, call_next):
                 status_code=403)
 
     response = await call_next(request)
-    response.headers.setdefault("Content-Security-Policy", _CSP)
+    # 文档页（精确匹配，路径不经用户输入）用文档兼容 CSP，其余一律严格 _CSP
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        _DOCS_CSP if request.url.path in _DOC_PATHS else _CSP)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     return response
 

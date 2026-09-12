@@ -352,6 +352,43 @@ class TestStaticSecurityHeaders:
         assert r.status_code == 403
 
 
+# ---------- 文档页独立 CSP（F1 修复：统一 CSP 曾使 /docs 空页） ----------
+
+
+class TestDocsPageCSP:
+    """/docs /redoc /openapi.json 三个精确路径用文档兼容 CSP（FastAPI 模板
+    固定 jsdelivr CDN 资源 + 内联初始化，无 nonce 挂点）；其余路径——含相邻、
+    前缀相似与编码变体——保持严格 _CSP；文档页不豁免 Host/Origin 守卫。"""
+
+    def test_docs_pages_use_docs_csp(self, client):
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            r = client.get(path)
+            assert r.status_code == 200, path
+            csp = r.headers["Content-Security-Policy"]
+            assert "https://cdn.jsdelivr.net" in csp, path  # 模板固定 CDN
+            assert "script-src 'self' 'unsafe-inline'" in csp, path  # 内联初始化
+            assert "font-src 'self' https://fonts.gstatic.com" in csp, path
+            assert "worker-src 'self' blob:" in csp, path  # Swagger UI 高亮 worker
+            assert "object-src 'none'" in csp and "base-uri 'self'" in csp, path
+            assert r.headers["X-Content-Type-Options"] == "nosniff", path
+
+    def test_openapi_json_describes_app(self, client):
+        body = client.get("/openapi.json").json()
+        assert body["info"]["title"] == "Fathom"
+        assert "/api/scan" in body["paths"] and "/api/reveal" in body["paths"]
+
+    @pytest.mark.parametrize("path", ["/", "/api/status", "/docsx", "/docs/",
+                                      "/redocs", "/openapi.jsonx", "/docs%2f"])
+    def test_other_paths_keep_strict_csp(self, client, path):
+        """精确匹配边界：任意其他路径（含相似/编码变体）响应仍是原严格 _CSP。"""
+        r = client.get(path)
+        assert r.headers.get("Content-Security-Policy") == api._CSP, path
+
+    def test_docs_evil_origin_rejected(self, client):
+        r = client.get("/docs", headers={"origin": EVIL_ORIGIN})
+        assert r.status_code == 403
+
+
 # ---------- JSON 基础形状 ----------
 
 

@@ -10,6 +10,9 @@
  * 3. 用 Playwright 真实 Chromium 走合法页面操作（总览/变化/日报/分布/
  *    立即扫描/Finder 按钮），并验证恶意文件名在表格与 ECharts tooltip 中
  *    只作为文本出现、不生成执行节点；
+ * 3.5 文档页边界（F1 修复回归面）：/docs /redoc /openapi.json 用独立 CSP
+ *    （FastAPI 模板固定 jsdelivr CDN + 内联初始化），其余路径严格 CSP 不变；
+ *    真实 Chromium 实测文档页“渲染并初始化”而非仅检查 CSP 字符串；
  * 4. finally 关闭浏览器与夹具进程，复核端口已释放，输出 JSON 结果摘要；
  *    退出码 0=全部通过。
  */
@@ -17,6 +20,7 @@
 
 const { spawn } = require("child_process");
 const http = require("http");
+const https = require("https");
 const path = require("path");
 
 const REPO = path.resolve(__dirname, "..");
@@ -59,7 +63,7 @@ function rawReq({ method = "GET", path: urlPath, headers = {}, body = null, port
         res.on("end", () => {
           let json = null;
           try { json = JSON.parse(data); } catch (_) { /* 非 JSON */ }
-          resolve({ status: res.statusCode, text: data, json });
+          resolve({ status: res.statusCode, text: data, json, headers: res.headers });
         });
       });
     req.on("error", reject);
@@ -73,6 +77,87 @@ const jpost = (port, p, obj, headers = {}) =>
 
 // macOS 临时目录 /var 实为 /private/var 符号链接：服务端 reveal 记录的是规范化路径
 const canon = (p) => p.replace(/^\/private(\/var\/)/, "/var/");
+
+// ---------- 文档页（F1）辅助：CDN 探测 + 离线 route 夹具 ----------
+// cdn.jsdelivr.net 是 FastAPI 文档模板固定的资源源；探测用于选择验证模式。
+function cdnReachable(timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const req = https.request(
+      "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
+      { method: "GET", timeout: timeoutMs },
+      (res) => { resolve(res.statusCode === 200); res.resume(); req.destroy(); });
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.on("error", () => resolve(false));
+    req.end();
+  });
+}
+
+// 离线兜底：本地替换 FastAPI 模板引用的全部外部资源。只能证明“CSP 允许这些
+// 固定来源 + 内联初始化真实执行”，不能证明真实 Swagger/Redoc 资源可用。
+const FAVICON_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64");
+const STUB_SWAGGER_JS = `
+window.SwaggerUIBundle = function (opts) {
+  window.__docsInit = { url: opts.url };
+  fetch(opts.url).then((r) => r.json()).then((spec) => {
+    window.__docsSpec = { title: spec.info && spec.info.title,
+                          paths: Object.keys(spec.paths || {}) };
+    const el = document.querySelector(opts.dom_id || "#swagger-ui");
+    if (el) el.innerHTML = "<h1>" + (spec.info ? spec.info.title : "") + "</h1>" +
+      "<ul>" + Object.keys(spec.paths || {}).map((p) => "<li>" + p + "</li>").join("") + "</ul>";
+  });
+  return { initOAuth: function () {} };
+};
+window.SwaggerUIBundle.presets = { apis: {} };
+window.SwaggerUIBundle.SwaggerUIStandalonePreset = {};
+`;
+const STUB_REDOC_JS = `
+(function () {
+  const el = document.querySelector("redoc");
+  const url = el && el.getAttribute("spec-url");
+  window.__redocInit = { url: url };
+  fetch(url).then((r) => r.json()).then((spec) => {
+    el.innerHTML = "<h1>" + (spec.info ? spec.info.title : "") + "</h1>" +
+      "<ul>" + Object.keys(spec.paths || {}).map((p) => "<li>" + p + "</li>").join("") + "</ul>";
+  });
+})();
+`;
+
+async function installDocsStubs(page) {
+  await page.route(/https:\/\/cdn\.jsdelivr\.net\//, (route) => {
+    const u = route.request().url();
+    if (u.includes("swagger-ui-bundle.js")) {
+      return route.fulfill({ status: 200, contentType: "application/javascript", body: STUB_SWAGGER_JS });
+    }
+    if (u.includes("redoc.standalone.js")) {
+      return route.fulfill({ status: 200, contentType: "application/javascript", body: STUB_REDOC_JS });
+    }
+    if (u.endsWith(".css")) {
+      return route.fulfill({ status: 200, contentType: "text/css", body: "/* route-stub */" });
+    }
+    return route.fulfill({ status: 200, contentType: "application/octet-stream", body: "" });
+  });
+  await page.route(/https:\/\/fastapi\.tiangolo\.com\//, (route) =>
+    route.fulfill({ status: 200, contentType: "image/png", body: FAVICON_PNG }));
+  await page.route(/https:\/\/fonts\.googleapis\.com\//, (route) =>
+    route.fulfill({ status: 200, contentType: "text/css", body: "/* route-stub */" }));
+  await page.route(/https:\/\/fonts\.gstatic\.com\//, (route) =>
+    route.fulfill({ status: 200, contentType: "font/woff2", body: Buffer.alloc(0) }));
+}
+
+const swaggerReady = (page) => page.evaluate(() => {
+  const su = document.querySelector("#swagger-ui");
+  return su && su.textContent.includes("Fathom") && su.innerHTML.length > 200
+    ? { domLen: su.innerHTML.length, initVia: window.__docsInit ? "route-stub" : "real-bundle" }
+    : null;
+});
+const redocReady = (page) => page.evaluate(() => {
+  const el = document.querySelector("redoc");
+  return el && el.textContent.includes("Fathom") && el.innerHTML.length > 200
+    ? { domLen: el.innerHTML.length, initVia: window.__redocInit ? "route-stub" : "real-bundle" }
+    : null;
+});
 
 async function main() {
   // ---------- 1. 启动夹具并核对唯一身份 ----------
@@ -104,6 +189,7 @@ async function main() {
     `fixture_id=${identity.fixture_id.slice(0, 8)}…`);
 
   let browser = null;
+  let docsSummary = null;
   try {
     // ---------- 2. 恶意 Host / Origin / 无凭据写入 / reveal 越界（原始 HTTP） ----------
     const staticBadHost = await rawReq({ path: "/", port, headers: { Host: "evil.example" } });
@@ -302,6 +388,110 @@ async function main() {
     const cspViolations = consoleErrors.filter((t) => /Content Security Policy|Refused to/i.test(t));
     record("no-csp-violations", cspViolations.length === 0, cspViolations.slice(0, 2).join("; "));
     record("no-unexpected-dialogs", dialogs.length === 0, dialogs.join("; "));
+
+    // ---------- 3.5 文档页边界（F1 修复回归面） ----------
+    // /docs /redoc /openapi.json 用独立 CSP（模板固定 jsdelivr CDN + 内联初始化），
+    // 其余路径严格 CSP 不变。先做响应头/守卫的原始断言，再真实 Chromium 渲染。
+    const cspOf = (r) => (r.headers && r.headers["content-security-policy"]) || "";
+    const docsHdr = await rawReq({ path: "/docs", port });
+    const redocHdr = await rawReq({ path: "/redoc", port });
+    const oapiHdr = await rawReq({ path: "/openapi.json", port });
+    record("docs-paths-use-docs-csp",
+      [docsHdr, redocHdr, oapiHdr].every((r) => r.status === 200 &&
+        cspOf(r).includes("https://cdn.jsdelivr.net") &&
+        cspOf(r).includes("'unsafe-inline'") &&
+        r.headers["x-content-type-options"] === "nosniff"),
+      `status=[${[docsHdr, redocHdr, oapiHdr].map((r) => r.status)}] csp=/docs:${cspOf(docsHdr).slice(0, 80)}…`);
+
+    const idxHdr = await rawReq({ path: "/", port });
+    const apiHdr = await rawReq({ path: "/api/status", port });
+    record("main-app-csp-unchanged-strict",
+      !cspOf(idxHdr).includes("cdn.jsdelivr.net") &&
+        cspOf(idxHdr) === cspOf(apiHdr) && cspOf(apiHdr).includes("script-src 'self'"),
+      `index==api_status=${cspOf(idxHdr) === cspOf(apiHdr)}`);
+
+    const nearPaths = ["/docsx", "/docs/", "/redocs", "/openapi.jsonx", "/docs%2f"];
+    const nearResp = [];
+    for (const p of nearPaths) nearResp.push(await rawReq({ path: p, port }));
+    record("docs-csp-exact-path-only",
+      nearResp.every((r) => !cspOf(r).includes("cdn.jsdelivr.net")),
+      `paths=${JSON.stringify(nearPaths.map((p, i) => [p, nearResp[i].status]))}`);
+
+    const docsBadHost = await rawReq({ path: "/docs", port, headers: { Host: "evil.example" } });
+    const docsEvilOrigin = await rawReq({ path: "/docs", port, headers: { Origin: "http://evil.example" } });
+    record("docs-still-host-origin-gated",
+      docsBadHost.status === 403 && docsEvilOrigin.status === 403,
+      `badHost=${docsBadHost.status} evilOrigin=${docsEvilOrigin.status}`);
+
+    // 真实 Chromium：文档页实际渲染 + 初始化（Swagger UI / Redoc 从 openapi.json
+    // 生成可见 DOM），而非仅检查 CSP 字符串。CDN 不可达时以本地 route 夹具替换
+    // 外部资源重试——该模式只证明策略/初始化兼容，真实 CDN 资源标记未验证。
+    const docsPage = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const docsErrors = [];
+    docsPage.on("console", (m) => { if (m.type() === "error") docsErrors.push(m.text()); });
+    docsPage.on("pageerror", (e) => docsErrors.push(`pageerror: ${e.message}`));
+
+    const cdnOk = await cdnReachable();
+    let stubsInstalled = false;
+    if (!cdnOk) { await installDocsStubs(docsPage); stubsInstalled = true; }
+
+    async function renderDocsPage(docsPath, readyFn, what) {
+      const errFrom = docsErrors.length;  // 只看本页本次尝试新增的报错
+      const newRefusal = () => docsErrors.slice(errFrom)
+        .find((t) => /Content Security Policy|Refused to/i.test(t));
+      try {
+        await docsPage.goto(base + docsPath, { waitUntil: "load", timeout: 60000 });
+        const v = await waitUntil(() => readyFn(docsPage), 15000, what);
+        return { ok: true, via: stubsInstalled ? "route-stub" : "real-cdn", ...v };
+      } catch (e) {
+        const refusal = newRefusal();
+        if (refusal) return { ok: false, reason: "csp-refused", detail: refusal.slice(0, 160) };
+        // CSP 未拒绝而初始化失败：网络不可达/中途抖动，用本地 route 夹具复验
+        // 策略/初始化兼容性（真实 CDN 资源可用性不在该模式证明范围内）
+        if (cdnOk) {
+          try {
+            await installDocsStubs(docsPage);
+            stubsInstalled = true;
+            await docsPage.goto(base + docsPath, { waitUntil: "load", timeout: 60000 });
+            const v = await waitUntil(() => readyFn(docsPage), 15000, `${what}（route 夹具重试）`);
+            return { ok: true, via: "route-stub-after-cdn-failed", ...v };
+          } catch (e2) {
+            const r2 = newRefusal();
+            return { ok: false, reason: r2 ? "csp-refused" : "timeout",
+                     detail: String(r2 || e2.message || e2).slice(0, 160) };
+          }
+        }
+        return { ok: false, reason: "timeout", detail: String(e.message || e).slice(0, 160) };
+      }
+    }
+
+    const swagger = await renderDocsPage("/docs", swaggerReady, "/docs Swagger 初始化");
+    record("docs-swagger-initializes", swagger.ok,
+      swagger.ok
+        ? `via=${swagger.via} domLen=${swagger.domLen}${swagger.via !== "real-cdn" ? "（CDN 不可达：真实 Swagger 资源 NOT_VERIFIED）" : ""}`
+        : `reason=${swagger.reason} ${swagger.detail || ""}`);
+    const redoc = await renderDocsPage("/redoc", redocReady, "/redoc 渲染");
+    record("redoc-initializes", redoc.ok,
+      redoc.ok
+        ? `via=${redoc.via} domLen=${redoc.domLen}${redoc.via !== "real-cdn" ? "（CDN 不可达：真实 Redoc 资源 NOT_VERIFIED）" : ""}`
+        : `reason=${redoc.reason} ${redoc.detail || ""}`);
+
+    const oapiBrowser = await docsPage.evaluate(async () => {
+      const r = await fetch("/openapi.json");
+      const j = await r.json().catch(() => null);
+      return { ok: r.ok, title: j && j.info && j.info.title,
+               paths: j ? Object.keys(j.paths || {}) : [] };
+    });
+    record("docs-openapi-json-readable",
+      oapiBrowser.ok && oapiBrowser.title === "Fathom" &&
+        oapiBrowser.paths.includes("/api/scan") && oapiBrowser.paths.includes("/api/reveal"),
+      `title=${oapiBrowser.title} paths=${oapiBrowser.paths.length}`);
+
+    const docsViolations = docsErrors.filter((t) => /Content Security Policy|Refused to/i.test(t));
+    record("docs-pages-no-csp-violations", docsViolations.length === 0,
+      docsViolations.slice(0, 2).join("; ").slice(0, 200));
+    docsSummary = { cdn_reachable: cdnOk, swagger: swagger, redoc: redoc,
+                    console_errors: docsErrors.length };
   } finally {
     // ---------- 5. 清理并复核 ----------
     if (browser) {
@@ -332,6 +522,7 @@ async function main() {
     failed: failed.length,
     checks,
     fixture: { pid: child.pid, port, fixture_id: identity.fixture_id },
+    docs: docsSummary,
   }, null, 2) + "\n");
 }
 

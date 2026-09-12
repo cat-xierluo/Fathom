@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fathom · UX 原型（ISS-026）</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body data-scenario="normal" data-detail="closed">
+<noscript><p class="noscript-note">此原型需要启用 JavaScript 才能交互。</p></noscript>
+
+<!-- 原型演示横幅：合成数据声明 + 演示场景切换。仅用于评审，产品界面不含此横幅。 -->
+<div class="proto-banner" role="region" aria-label="原型演示控制">
+  <span class="proto-tag">UX 原型</span>
+  <span class="proto-note">全部为合成数据 · 不连接真实扫描服务 · ISS-026 评审用</span>
+  <label class="proto-scene">演示场景
+    <select id="scenario-select" aria-label="切换演示场景（仅原型）">
+      <option value="normal">正常（两快照）</option>
+      <option value="single">单快照（基线已建立）</option>
+      <option value="first-launch">首次启动（空库）</option>
+      <option value="partial">部分权限（读取受限）</option>
+      <option value="failed">扫描失败（保留旧数据）</option>
+      <option value="offline">服务断开</option>
+    </select>
+  </label>
+  <span class="proto-note proto-note-tail">切换状态用于评审，产品不含此控件</span>
+</div>
+
+<div class="app-shell">
+
+  <!-- 侧边导航：≥1200px 展开为带文字导航；980–1199px 紧凑模式 -->
+  <nav class="sidenav" aria-label="主导航">
+    <div class="brand">
+      <span data-icon="anchor" data-icon-size="20"></span>
+      <span class="brand-name">Fathom</span>
+    </div>
+    <a class="nav-item" href="#/overview" data-page="overview">
+      <span class="nav-icon" data-icon="gauge"></span><span class="nav-label">总览</span>
+    </a>
+    <a class="nav-item" href="#/changes" data-page="changes">
+      <span class="nav-icon" data-icon="activity"></span><span class="nav-label">变化</span>
+    </a>
+    <a class="nav-item" href="#/browse" data-page="browse">
+      <span class="nav-icon" data-icon="pie"></span><span class="nav-label">分布</span>
+    </a>
+    <a class="nav-item" href="#/bigfiles" data-page="bigfiles">
+      <span class="nav-icon" data-icon="fileText"></span><span class="nav-label">大文件</span>
+    </a>
+    <div class="nav-spacer"></div>
+    <a class="nav-item" href="#/settings" data-page="settings">
+      <span class="nav-icon" data-icon="settings"></span><span class="nav-label">设置</span>
+    </a>
+    <div class="nav-foot">0.3.0 · 原型</div>
+  </nav>
+
+  <div class="main-area">
+    <header class="topbar">
+      <h1 id="page-title">总览</h1>
+      <div class="topbar-right">
+        <span id="status-chip" class="status-chip" data-scan-state="idle">--</span>
+        <button id="btn-scan" class="btn btn-primary">扫描</button>
+      </div>
+    </header>
+
+    <main class="workbench" id="workbench">
+      <div class="page-stack">
+
+        <!-- ===== 总览：数据时间/质量 → 变化结论 → Top 变化 → 卷容量 → 扫描状态 ===== -->
+        <section class="page" id="page-overview" aria-label="总览">
+          <div class="quality-line" data-region="quality"></div>
+          <div class="conclusion" data-region="conclusion"></div>
+
+          <!-- 首次启动向导（仅空库场景显示，覆盖下方常规区域） -->
+          <div id="onboard" class="onboard" data-step="0" hidden>
+            <div class="onboard-card" data-region="onboard-body"></div>
+          </div>
+
+          <div class="ov-rest" id="ov-rest">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>最近变化</h2>
+                <a class="link-muted" href="#/changes">查看变化 →</a>
+              </div>
+              <div data-region="top-changes"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>卷容量与走势</h2>
+                <span class="hint" id="vol-meta"></span>
+              </div>
+              <div data-region="volume"></div>
+              <details class="tbl-toggle">
+                <summary>以表格查看走势</summary>
+                <div data-region="volume-table"></div>
+              </details>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><h2>最近扫描</h2></div>
+              <div data-region="scan-note"></div>
+            </section>
+          </div>
+        </section>
+
+        <!-- ===== 变化：区间可比性 → 净变化口径 → 可排序变化表 → 详情 → 报告档案 ===== -->
+        <section class="page" id="page-changes" aria-label="变化" hidden>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>目录变化</h2>
+              <div class="controls">
+                <label class="ctl">区间
+                  <select id="range-a" aria-label="基线日期"></select>
+                  <span class="ctl-sep">→</span>
+                  <select id="range-b" aria-label="对比日期"></select>
+                </label>
+                <input id="changes-search" class="ctl-input" type="search"
+                       placeholder="搜索目录" aria-label="搜索目录">
+              </div>
+            </div>
+            <p class="hint-line" data-region="diff-meta"></p>
+            <div class="net-line" data-region="net-line"></div>
+            <div class="tbl-wrap">
+              <table class="tbl" id="changes-table" data-region="changes-table">
+                <thead>
+                  <tr>
+                    <th scope="col"><button class="th-sort" data-sort="path">目录</button></th>
+                    <th scope="col" class="num"><button class="th-sort" data-sort="prev">之前</button></th>
+                    <th scope="col" class="num"><button class="th-sort" data-sort="curr">现在</button></th>
+                    <th scope="col" class="num"><button class="th-sort" data-sort="delta">变化</button></th>
+                    <th scope="col">状态</th>
+                  </tr>
+                </thead>
+                <tbody data-region="changes-body"></tbody>
+              </table>
+            </div>
+            <p class="hint-line">列表包含父子目录，行值不可相加为净变化；“未记录”不等于新增或删除。</p>
+          </section>
+          <div class="secondary-entry">
+            <button id="btn-reports" class="btn">查看历史报告</button>
+            <span class="hint">选中任意一行后，在目录详情中查看该目录的趋势、证据与操作。</span>
+          </div>
+          <section class="panel" id="reports-panel" hidden>
+            <div class="panel-head">
+              <h2>历史报告</h2>
+              <button id="btn-reports-close" class="btn btn-ghost">收起</button>
+            </div>
+            <div data-region="reports"></div>
+          </section>
+        </section>
+
+        <!-- ===== 分布：快照/根 → 面包屑 → 占比与子目录表 → 目录详情 ===== -->
+        <section class="page" id="page-browse" aria-label="分布" hidden>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>容量分布</h2>
+              <span class="hint" data-region="browse-meta"></span>
+            </div>
+            <nav class="crumbs" id="crumbs" data-region="crumbs" aria-label="目录路径"></nav>
+            <div class="share" data-region="share"></div>
+            <div class="tbl-wrap">
+              <table class="tbl" id="browse-table" data-region="browse-table">
+                <thead>
+                  <tr>
+                    <th scope="col">目录</th>
+                    <th scope="col" class="num">大小</th>
+                    <th scope="col" class="num">较上快照</th>
+                    <th scope="col" class="num">占比</th>
+                    <th scope="col"><span class="visually-hidden">操作</span></th>
+                  </tr>
+                </thead>
+                <tbody data-region="browse-body"></tbody>
+              </table>
+            </div>
+            <p class="hint-line" data-region="browse-note"></p>
+          </section>
+        </section>
+
+        <!-- ===== 大文件：条件 → 显式查询 → 状态与更新时间 → 文件表 ===== -->
+        <section class="page" id="page-bigfiles" aria-label="大文件" hidden>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>近期修改的大文件</h2>
+              <div class="controls">
+                <label class="ctl">近 <input id="bf-days" class="ctl-input ctl-input-narrow" type="number" value="7" min="1" max="90" aria-label="天数"> 天</label>
+                <label class="ctl">≥ <input id="bf-mb" class="ctl-input ctl-input-narrow" type="number" value="100" min="1" aria-label="最小大小 MB"> MiB</label>
+                <button id="btn-bf" class="btn">查询</button>
+              </div>
+            </div>
+            <p class="hint-line" data-region="bf-status"></p>
+            <div class="tbl-wrap" data-region="bf-table"></div>
+          </section>
+        </section>
+
+        <!-- ===== 设置：范围权限 → 计划/后台 → 数据版本 → 诊断 → 智能分析 ===== -->
+        <section class="page" id="page-settings" aria-label="设置" hidden>
+          <section class="panel" id="set-perm">
+            <div class="panel-head"><h2>监控范围与权限</h2></div>
+            <div data-region="perm"></div>
+          </section>
+          <section class="panel" id="set-service">
+            <div class="panel-head"><h2>扫描计划与后台服务</h2></div>
+            <div data-region="service"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>数据与版本</h2></div>
+            <div data-region="data"></div>
+          </section>
+          <section class="panel" id="set-diag">
+            <div class="panel-head"><h2>诊断与卸载</h2></div>
+            <div data-region="diag"></div>
+          </section>
+          <section class="panel" id="set-agent">
+            <div class="panel-head">
+              <h2>智能分析（可选）</h2>
+              <span class="hint">远期功能 · 当前未启用</span>
+            </div>
+            <div data-region="agent"></div>
+          </section>
+        </section>
+
+      </div>
+
+      <!-- 目录详情：跨页共享。≥1200px 为右侧栏；980–1199px 为全宽层，Esc 关闭后焦点返回原行 -->
+      <aside class="detail" id="detail" data-region="detail" aria-label="目录详情" hidden>
+        <!--内容由 app.js 渲染 -->
+      </aside>
+    </main>
+  </div>
+</div>
+
+<div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

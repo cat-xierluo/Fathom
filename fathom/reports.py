@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config
+from . import config, notify
 
 
 @dataclass
@@ -191,8 +191,12 @@ def write_daily_report(conn: sqlite3.Connection, sid: int) -> Path:
         ).fetchone()
         return (r["total_bytes"], r["free_bytes"]) if r else None
 
-    md = render_markdown(diff, old_meta, new_meta, vol(old_meta["id"]), vol(new_meta["id"]))
+    new_vol = vol(new_meta["id"])
+    md = render_markdown(diff, old_meta, new_meta, vol(old_meta["id"]), new_vol)
     out = config.REPORTS_DIR / f"{new_meta['created_at'][:10]}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(md, encoding="utf-8")
+    # 通知放在日报落盘之后，且 notify 自吞全部异常：通知失败不影响日报（ISS-003）。
+    # CLI scan 与 API 手动扫描都经过本函数，两路自动覆盖。
+    notify.notify_scan_done(diff, new_vol[1] if new_vol else None)
     return out

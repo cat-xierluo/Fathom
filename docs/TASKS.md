@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。下一项默认 **ISS-019**，API/前端泳道为 **ISS-023**。ISS-026（UX 原型）、ISS-029（安装实验）允许 M0 提前验证，不等跨日观察；当前先等待 ISS-026 的最终视觉反馈，再开启下一波工程派发。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。数据泳道下一项为 **ISS-019**，API/前端泳道为 **ISS-023**，发行基础泳道为 **ISS-029** 与 **ISS-031**。ISS-026（UX 原型）、ISS-029（安装实验）允许 M0 提前验证，不等跨日观察；第三轮视觉签名与发行基础可在不争用同一文件时并行。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -18,12 +18,12 @@
 
 授权来源：用户在本任务中明确要求“review 合并”，并追加“后续可以自动化推进了吗，你作为 pm 按照 multi-agent-orchestration 去派发对应的 worker”。PM 可在下列范围内派发、验证、创建私有仓库 PR，并在独立审查通过后合并；不逐波重复确认。用户说“暂停自动推进”即停止新派发，先安全收口在途工作；发生一次越界操作即回退逐波确认。
 
-- **范围**：只推进 M0 中已 READY 的 ISS-018/019/022/023/025/026/031。当前先派 Wave 2：ISS-018（scanner）＋ISS-022（API/现有前端安全）＋ISS-026（独立 UX 原型）。不自动开放 M1–M4，不以额度充足扩张任务源。
-- **后继查表**：ISS-018 验收后接 ISS-019；ISS-022 验收后接 ISS-023；这两条泳道收口且无共享写入者后接 ISS-025，再接 ISS-031。每次重读完整卡片和最新基线。ISS-020/021 依赖满足后由 PM 核对并重新拆分范围，未登记新的明确合同前不派。
+- **范围**：2026-09-13 用户追加授权将当前开发线收敛为 v0.3.0 可分发版本，并要求 PM 派 worker 研究/推进 release、Apple 签名公证与应用内更新。自动推进覆盖 M0 已 READY 的 ISS-019/023/025/026/029/031，以及依赖满足后通往 v0.3.0 的 ISS-009/010/016/027/028/030/037/040/041；仍须逐卡通过前置和验收，不因发布目标跳阶段。转公开、公开 Release、向外部测试者发送产物仍是最终人工门。
+- **后继查表**：数据/API 泳道按 ISS-019、ISS-023、ISS-025 → ISS-020/021/024 推进；发行泳道先并行 ISS-029 与 ISS-031，再按 ISS-009/010、ISS-027/028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线；共享 Cargo/Tauri/frontend/release 文件的任务串行。
 - **UX**：ISS-026 原型路径登记为 `prototypes/ux/`，仅合成数据，配套 `scripts/verify_ux_prototype.cjs`。交付具体可点击产物供用户评审；未收到反馈时保持 WAITING，不标 DONE，不自动实装 ISS-028。原型的工程交付可建立 PR，用户评审是本卡关闭条件。
 - **角色/所有权**：用户于 2026-09-13 再次明确 PM 尽量只做验收、定方向和关键上下文；实现、测试与返修交给 worker，PM 不代写业务代码。实施 worker 只写合同所列工程文件和自己的 session context；PM 独占 TASKS/AGENTS/ARCHITECTURE/DECISIONS/DESIGN/ROADMAP/README/CHANGELOG/TESTING。worker 提供 WRITEBACK_PROPOSAL，由 PM 按事实更新。非平凡实现需要不同 session/dispatch 的 reviewer；固定 40 位 head，不能自审后直接合并。
 - **并发/资源**：本项目最多 3 个活跃 worker（含 reviewer）；待 PM 验收超过 2 项停止新派。scanner、api/app.js、schema/config 分别串行；全量测试全机一次仅一份，worker 只跑所分配回归。采用已有受支持 provider 配置，派发价值、额度、物理内存和写范围门禁均不得绕过。
-- **交付**：每项先反例，再修复及真实入口验证；完成派发价值、交付后、独立审查门禁后，PM 在最新 main 的候选树验证并经唯一 PR 合并。生产扫盘、服务重启、launchd/TCC 修改、依赖安装、签名和公开发布均不在本轮授权内。
+- **交付**：每项先反例，再修复及真实入口验证；完成派发价值、交付后、独立审查门禁后，PM 在最新 main 的候选树验证并经唯一 PR 合并。允许在隔离环境准备依赖锁、私有 draft Release、Fathom 专用 updater 密钥配置和签名/公证工作流；不得扫描生产 HOME、注册生产服务、提交/回显密钥、把 GitHub PAT 嵌入客户端或自动公开仓库/Release。Apple 账户材料齐备后才能执行真实签名公证。
 - **巡检**：当前任务定期心跳检查 Orca Task/Dispatch、交付、PR 和资源状态；无变化静默，仅在交付、失败或需要用户输入时通知。Run/Task/Dispatch 及启动回执存于 Git common dir 的 `orchestration/fathom-m0-20260912/`，不入库、不存凭据。心跳是补偿巡检；机器关机/应用退出后的无人值守恢复尚未验证，不宣称 L3。
 - **失败/暂停**：内部可修复验收失败最多 2 个修复 episode，之后暂停该项；缺用户输入/外部依赖、身份/head 不可证明、意外范围冲突立即暂停相关项。内存不足按技能隔轮重试，连续 3 轮正式暂停。无合法 READY 组合、资源未结算或用户叫停时停止新派并报告；不能通过放宽验收恢复。
 - **完成/撤销**：上述已授权队列交付或全部进入明确 WAITING/BLOCKED 后暂停本任务心跳，汇报 PR、验证、未完成项和资源终态。来源分支/worktree 仅在精确交付与生命周期核对后清理；待用户 UX 评审的产物明确保留。
@@ -39,7 +39,7 @@
 | `integration/wave1@5fcdf41:ISS-017` | 冒烟 serve 端口冲突、误读生产服务 | ISS-025（运行隔离/端口配置）及 ISS-031（验证入口） |
 | `integration/wave1@5fcdf41:ISS-018` | reveal 的 .. / 符号链接越界 | ISS-022（本地接口边界） |
 
-无分支限定的 ISS-017/018 以本索引“全项目审查与规划/拒绝无效扫描”为准。本轮已按上表迁移 wave1 文档；以后引用旧工作时仍按此映射，保留原始提交中的引用，不以旧任务文件覆盖本任务源。当前任务编号已扩展至 ISS-039。
+无分支限定的 ISS-017/018 以本索引“全项目审查与规划/拒绝无效扫描”为准。本轮已按上表迁移 wave1 文档；以后引用旧工作时仍按此映射，保留原始提交中的引用，不以旧任务文件覆盖本任务源。当前任务编号已扩展至 ISS-041。
 
 ## 索引
 
@@ -53,7 +53,7 @@
 | ISS-006 | Tauri 初始桌面壳 | P2 | 历史 | DONE | — |
 | ISS-007 | 接续 scan_runs 实现审查 | P1 | M0 | DONE | — |
 | ISS-008 | 接续 tray 链路与实机验证 | P1 | M1 | WAITING | — |
-| ISS-009 | 可分发 app 与安装入口 | P1 | M2 | BLOCKED | ISS-018、ISS-019、ISS-020、ISS-022、ISS-025、ISS-029 |
+| ISS-009 | 可分发 app 与安装入口 | P1 | M2 | BLOCKED | ISS-018、ISS-019、ISS-020、ISS-022、ISS-025、ISS-029、ISS-031 |
 | ISS-010 | 登录自启与后台计划 | P1 | M2 | BLOCKED | ISS-009、ISS-020 |
 | ISS-011 | 文件类型分布 | P3 | 后续 | DEFERRED | ISS-021、ISS-032 |
 | ISS-012 | 重复文件检测 | P3 | 后续 | DEFERRED | ISS-032 |
@@ -70,20 +70,22 @@
 | ISS-023 | 修复可见数值与快照刷新缺陷 | P1 | M0 | READY | — |
 | ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | BLOCKED | ISS-021 |
 | ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | READY | — |
-| ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | WAITING | — |
+| ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | IN_PROGRESS | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | BLOCKED | ISS-023 |
 | ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | BLOCKED | ISS-021、ISS-024、ISS-026、ISS-027 |
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | READY | — |
-| ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025 |
+| ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
 | ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | READY | — |
 | ISS-032 | 资源预算、大文件查询与诊断 | P1 | M1 | BLOCKED | ISS-020、ISS-025 |
-| ISS-033 | 外部内测与开放发布验收 | P1 | M3 | BLOCKED | ISS-001、ISS-002、ISS-003、ISS-008、ISS-024、ISS-028、ISS-030、ISS-032、ISS-037 |
+| ISS-033 | 外部内测与开放发布验收 | P1 | M3 | BLOCKED | ISS-001、ISS-002、ISS-003、ISS-008、ISS-024、ISS-028、ISS-030、ISS-032、ISS-037、ISS-040、ISS-041 |
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
 | ISS-036 | 目录打标与智能变化解读 | P2 | M4 | DEFERRED | ISS-028、ISS-035 |
 | ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | BLOCKED | ISS-029、ISS-031 |
 | ISS-038 | PM 自动推进与监督接续 | P1 | M0 | IN_PROGRESS | — |
 | ISS-039 | 扫描结果合同与安全浏览器夹具兼容 | P0 | M0 | DONE | ISS-018、ISS-022 |
+| ISS-040 | 应用内更新与双架构更新清单 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-028、ISS-031 |
+| ISS-041 | 双架构签名、公证与 Release CI | P1 | M2 | BLOCKED | ISS-037、ISS-040 |
 
 ## 任务卡
 
@@ -99,9 +101,11 @@
   - [x] Wave 2 全部 Task 在任一 worker 启动前建立，收到真实 dispatch/启动证据
   - [x] 周期巡检已启用，交付以 Task/Dispatch 与实测证据核对
   - [ ] 每项验收、PR、剩余条件和资源终态均写回，队列停止时暂停心跳
-- **证据/接续**：Orca Run `run_5457fcebf191` 预建 3 个 Task 后启动，三项 spawn exit 0、dispatch_bind=ok；独立目录/分支均基于 b4be333。ISS-018 → `task_22a2d2b0a4ce` / `ctx_a1487c779f45`；ISS-022 → `task_b2091c808847` / `ctx_90a55ca3a103`；ISS-026 → `task_e8f2228ab015` / `ctx_5cdee2f4a4c1`。Claude Code＋GLM 使用现有配置；派发价值门、身份/隔离/额度/内存/安装禁止与写范围门均通过。额度摘要缺条目经已有采集器重新读取后通过；Python 布局改用任务私有链接复用已有 venv，无安装，失败启动产生的空工作区已精确回收。心跳 `fathom-m0-pm` 为 ACTIVE、每 20 分钟，在当前任务接续。工程交付、修复与独立 reviewer 均以固定 head 和实测证据核对；当前无活跃 worker，PR #10 等待用户最终视觉复评。
+- **证据/接续**：Orca Run `run_5457fcebf191` 预建 3 个 Task 后启动，三项 spawn exit 0、dispatch_bind=ok；独立目录/分支均基于 b4be333。ISS-018 → `task_22a2d2b0a4ce` / `ctx_a1487c779f45`；ISS-022 → `task_b2091c808847` / `ctx_90a55ca3a103`；ISS-026 → `task_e8f2228ab015` / `ctx_5cdee2f4a4c1`。Claude Code＋GLM 使用现有配置；派发价值门、身份/隔离/额度/内存/安装禁止与写范围门均通过。额度摘要缺条目经已有采集器重新读取后通过；Python 布局改用任务私有链接复用已有 venv，无安装，失败启动产生的空工作区已精确回收。心跳 `fathom-m0-pm` 为 ACTIVE、每 20 分钟，在当前任务接续。工程交付、修复与独立 reviewer 均以固定 head 和实测证据核对。ISS-026 第三轮视觉 worker 为 `task_5b1cbbc4e39e` / `ctx_ad5906418b9e`，基线固定 PR #10 head `30391ed5`；当前正在实现，尚未验收。
 
-- **本轮进展**（2026-09-13）：PR #9/ISS-022 已经独立 R2 ACCEPT，并以 main `597a302` 集成关闭；PR #8/ISS-018 在两轮真实反例修复后，经最终 R5 ACCEPT，连同 ISS-039 夹具兼容修复以 main `4f2cf5b` 集成关闭。最终组合候选通过 134 pytest 与 39 项 Chromium/API 安全检查。PR #10/ISS-026 已完成第二轮原生 Mac 视觉提升并经独立 UX R2 ACCEPT，99/99 浏览器检查、13 张截图和 15/15 视口页面无横向溢出；仍等待用户对具体预览的最终视觉复评，因此转为 WAITING。全部已结算 worker/reviewer 终端和 lease 均精确关闭；资源与当前身份持续写入 Git common dir 的 `orchestration/fathom-m0-20260912/active-workers.json`。
+- **本轮进展**（2026-09-13）：PR #9/ISS-022 已经独立 R2 ACCEPT，并以 main `597a302` 集成关闭；PR #8/ISS-018 在两轮真实反例修复后，经最终 R5 ACCEPT，连同 ISS-039 夹具兼容修复以 main `4f2cf5b` 集成关闭。最终组合候选通过 134 pytest 与 39 项 Chromium/API 安全检查。PR #10/ISS-026 第二轮原生 Mac 视觉经独立 UX R2 ACCEPT，取得 99/99 浏览器检查、13 张截图和 15/15 视口页面无横向溢出；用户复评认可流程、图标与优雅程度，并要求继续增加个人特色，因此第三轮按“测深/等深线＋深度环”推进。已结算的 worker/reviewer 终端和 lease 均精确关闭；当前 R3 资源与身份持续写入 Git common dir 的 `orchestration/fathom-m0-20260912/active-workers.json`。
+
+- **v0.3 发行接续**（2026-09-13）：用户授权把当前开发线收敛为 v0.3.0，并要求研究/推进 GitHub Release、密钥、Apple 签名公证与应用内更新。两个只读审查分别核对 Fathom main `8e7c07b` 与 Folia：共同确认生产 UI、self-contained helper、bundle、版本统一、CI、updater、Developer ID/公证均未完成；Folia 只可借鉴 updater 与双架构 draft Release 结构。新任务 ISS-040/041 和 [发行方案](plans/2026-09-13-v0.3-release-design.md) 已登记；下一波发行基础只允许 ISS-029/031，真实签名与公开发布等待依赖及具体候选。
 
 ### ISS-017 · 全项目审查与规划
 
@@ -240,12 +244,13 @@
 
 - **目标**：新克隆能运行有判别力的回归，已验证结果与提交绑定。
 - **范围**：requirements.txt、拟新增开发依赖/锁定清单、tests/、拟新增 .github/workflows/、TESTING。
-- **实施边界**：先固定实际兼容 Python/依赖集合、分开运行/开发依赖；保留 Cargo.lock。macOS job 运行 BSD du 真实路径测试，纯算法测试可另用其他系统。新增匿名 fixture/API/浏览器 smoke 命令，删除恒真断言，不固定缺陷为期望行为。CI 默认不安装 launchd、不扫 HOME、不需要签名秘密。
+- **实施边界**：先固定实际兼容 Python/依赖集合、分开运行/开发依赖；保留 Cargo.lock，并固定 Python、Rust 与 Tauri CLI 的构建版本。macOS job 运行 BSD du 真实路径测试，纯算法测试可另用其他系统；为后续发行分别提供 Apple Silicon 与 Intel 原生 runner 基础，不能在 arm64 runner 上假装冻结 x86 Python helper。新增匿名 fixture/API/浏览器 smoke 命令，删除恒真断言，不固定缺陷为期望行为。CI 默认不安装 launchd、不扫 HOME、不需要签名秘密，也不创建 Release。
 - **验收**：
   - [ ] 新克隆依声明步骤能运行测试；环境版本与命令记录
   - [ ] 错误实现会使关键反例变红；没有 or True/无条件跳过伪绿
   - [ ] PR 有核心自动检查，UI/实机未覆盖项仍标 NOT_VERIFIED
   - [ ] 合成数据能跑空库、单快照、两快照与异常页面，不接触生产数据
+  - [ ] Apple Silicon 与 Intel job 的架构、工具链和锁定安装可核查，任一平台失败不能被跳过或吞掉
 - **证据/接续**：CI 与依赖固定尚未实施。当前 main 候选全量 134 pytest 通过，仍有 Starlette 对 httpx 与 anyio 旧别名的两条弃用警告，纳入本卡测试依赖升级；不能把本地通过当作已有 CI。
 
 ### ISS-026 · 完整 UX 流程与视觉原型
@@ -258,7 +263,7 @@
   - [x] 980×640、1220×820 与长路径布局通过，文字/颜色/键盘可辨
   - [x] 覆盖真实/未知/权限缺口/Agent 未启用的区别，未来内容按状态出现
   - [ ] 用户评审针对具体产物，反馈回写 DESIGN；不能只产出一张不可操作的静态美图
-- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10) 已更新至 head `30391ed5e60587b1ed88d7039fc7cc1d9047a9e1` 并同步当时 main。用户首轮反馈“流程可以，但视觉需要明显提升”，进一步选择“原生 Mac：克制、精致、轻量”。视觉二轮交付 `94c94393b96e86411c53c71b40f183f898d4a0bd` 修复首启残留结论、1220 详情关键列挤压和走势末位标签裁切；worker 99/99 浏览器门禁通过。独立 UX R2 同样取得 99/99、13 张截图、三视口×五页 15/15 无页面横向溢出，固定视觉 head 结论 ACCEPT、无阻塞发现；未执行的自编冗余探针已如实记录，不冒充证据。更新后的可点击预览继续在 `http://127.0.0.1:60664`，等待用户第二轮视觉复评；因此第四项保持未勾，整卡为 WAITING，PR 不自动合并或实装生产 UI。
+- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10) 当前 head `30391ed5e60587b1ed88d7039fc7cc1d9047a9e1`。第二轮视觉已由 worker 和独立 UX R2 分别取得 99/99 浏览器检查、13 张截图和 15/15 视口页面无横向溢出。用户复评认为“总体已经好非常多”“比较优雅”，流程和图标没有问题，但仍偏中规中矩，希望增加个人特色。PM 将第三轮方向收敛为来自 Fathom 名字的“测深/等深线＋深度环”视觉签名，保持原生 Mac 的克制、精致、轻量，不改变现有旅程或实装生产 UI；第三轮 worker 与独立 reviewer 开始后整卡转回 IN_PROGRESS，第四项仍待用户对更新原型确认。
 
 ### ISS-027 · 原生前端模块与状态生命周期
 
@@ -300,12 +305,13 @@
 
 - **目标**：在没有 Homebrew/Python 的测试账户证明可行安装架构，再锁定发行方案。
 - **范围**：apps/desktop/、隔离的 helper 打包/注册实验、目标方案。
-- **实施边界**：读取交付方案三选项；先打包最小 Python helper，与 Tauri/后台服务建立身份/版本握手。验证只读 app 资源、端口冲突、SMAppService/替代路径与 TCC 归属。不得给生产 launchd 注册同名服务；实验用独立 bundle ID、端口、数据根。
+- **实施边界**：读取交付方案三选项；先在当前宿主架构选择并冻结 Python helper 方式，证明打包方法、身份、版本与健康握手可行，并写出 arm64/x86_64 各自在原生 runner 复验的方案；本卡不修改 CI，也不声称已证明另一架构。验证只读 app 资源、固定/动态端口、未知进程占用、SMAppService/替代路径与 TCC 授权主体。不得给生产 launchd 注册同名服务；实验用独立 bundle ID、端口、数据根。
 - **验收**：
   - [ ] 新账户运行不依赖开发者 venv/绝对路径，断网能首启
   - [ ] 后台唯一所有者明确，退出/崩溃/重启/登录语义可实测
   - [ ] 安装路径含空格/中文/& 可用；服务无权限/端口占用给恢复动作
-  - [ ] 记录选型 DEC、支持矩阵、冻结打包依赖及未解决阻塞；失败时不推进 ISS-009 的发行验收
+  - [ ] 当前宿主架构 helper 的 `file`、断网启动、`--version`/health、退出与崩溃行为有可复查证据；另一架构明确标为待 ISS-041 复验
+  - [ ] 记录选型 DEC、双架构复验计划、冻结打包依赖、端口策略、服务/TCC 身份及未解决阻塞；失败时不推进 ISS-009 的发行验收
 - **证据/接续**：当前只有 bundle.active=false 的开发壳；仅 cargo build 不证明可分发。
 
 ### ISS-001 · 真实跨日定时日报验证
@@ -356,7 +362,7 @@
 
 - **目标**：产出不依赖终端和开发机路径的 app/DMG。
 - **范围**：apps/desktop/、打包脚本、安装引导、README。
-- **实施边界**：按 ISS-029 已验证方案打包 helper/静态资源，版本统一；安装前核查后台服务身份/版本。新账户与真实下载产物各测，开发者机器拷贝能运行不算唯一证据。应用图标与资源许可可追踪。
+- **实施边界**：按 ISS-029 已验证方案打包 helper/静态资源，版本统一；安装前核查后台服务身份/版本。内嵌 helper、framework 与资源采用只读布局并纳入后续 nested codesign；提供完整 macOS iconset/icns。新账户与真实下载产物各测，开发者机器拷贝能运行不算唯一证据。应用图标与资源许可可追踪。
 - **验收**：
   - [ ] 无 Python/Rust/Homebrew 测试账户从安装进入首扫与分布
   - [ ] 关闭/退出行为正确；后台未就绪可恢复且不要求 main.py install
@@ -391,25 +397,52 @@
 
 - **目标**：更新与卸载可预测，不因替换 app 丢失历史或留下幽灵服务。
 - **范围**：发行维护流程、迁移工具、后台服务、README/TESTING。
-- **实施边界**：演练旧开发版→发行版、发行版 N→N+1；识别旧服务后经用户操作迁移，避免双运行。备份用 SQLite backup 或停写一致副本；失败可恢复到可运行版本。普通卸载保留数据，删数据另有明确预览确认。
+- **实施边界**：演练旧开发版→发行版、发行版 N→N+1；识别旧服务后经用户操作迁移，避免双运行。private draft 产物由 PM/CI 以仓库身份下载，默认通过仅隔离测试机可达的本机/私网 HTTPS 与受信测试证书提供已签名更新包和 manifest；客户端始终不携带 GitHub token。若必须使用外部 staging，先把具体资产、URL、访问范围和自动失效时间交用户批准。更新前先停止新写入、让旧 helper 退出并做 SQLite 一致备份；替换后校验 app/helper 版本握手。迁移、签名或启动失败必须回到可运行旧版与旧数据。普通卸载保留数据，删数据另有明确预览确认。
 - **验收**：
   - [ ] N→N+1 成功；迁移失败/磁盘不足/中途退出保留可恢复旧数据
   - [ ] 卸载后无后台残留/端口占用；重新安装可恢复保留历史
   - [ ] 未知旧 schema/较新 schema 拒绝危险操作；恢复流程真实执行
+  - [ ] 使用 ISS-041 的真实 draft 产物验证下载中断、签名拒绝、helper 未退出与新 helper 握手失败均不会留下半升级状态
+  - [ ] 测试 HTTPS 源只含签名发行资产，无源码、凭据或用户数据；本机/私网源测试后关闭并记录资源终态，外部 staging 未获用户批准不得创建
   - [ ] 不把删除数据库或关闭系统安全保护作为解决方案
 - **证据/接续**：尚未执行；不得勾选验收项。
 
 ### ISS-037 · 版本、依赖来源与开源准备
 
-- **目标**：明确每个分发组件的版本与来源，为用户选择开源许可准备具体方案。
+- **目标**：建立分发组件的单一版本源与来源清单，为 release 构建和用户选择开源许可准备具体方案。
 - **范围**：版本定义、依赖/资源清单、拟新增 LICENSE/NOTICE/贡献与安全说明。
-- **实施边界**：消除 API 0.2/包 0.2/应用 0.3 漂移；锁定 Python/Rust/前端 vendored 依赖并保留许可证/来源。先做兼容性清单和可评审的许可证选项，再请用户选；本任务不自动转公开或购买签名服务。
+- **实施边界**：为 v0.3.0 建立单一版本源和 fail-closed 校验，消除 API 0.2/包 0.1/Cargo 0.2/Tauri 0.3 漂移；锁定 Python/Rust/前端 vendored 依赖并保留许可证/来源，生成可复查的 SBOM 或等价依赖清单及第三方 notices。先做兼容性清单和可评审的许可证选项，再请用户选；本任务不自动转公开或购买签名服务。
 - **验收**：
-  - [ ] 版本在 API/UI/app/发布产物一致且可追溯提交
+  - [ ] Python/API/UI/Tauri/Cargo 从单一版本源或等价生成/校验规则得到一致版本；任一代码或预发行配置漂移时校验器必红
   - [ ] 依赖与图标等资源来源及必要 notice 齐全
   - [ ] 用户选定许可证后才落入 LICENSE；未选择则保持任务未完成
   - [ ] 贡献/漏洞反馈与匿名诊断说明可供外部用户理解
 - **证据/接续**：尚未执行；不得勾选验收项。
+
+### ISS-040 · 应用内更新与双架构更新清单
+
+- **目标**：让已安装的 v0.3.0 能在应用内安全检查、下载并安装后续版本，失败不影响本地基础功能或扫描历史。
+- **范围**：Tauri updater 插件/最小 capability、Rust 更新协调模块、设置页更新状态、双架构 `latest.json` 生成与专用测试。
+- **实施边界**：Fathom 使用独立 updater keypair；公钥进入应用配置，私钥和密码只进入 GitHub Secrets 与仓库外加密备份。更新由可信 Rust 壳掌控，不给当前回环远程页面宽泛 updater 权限。启动后延迟检查、用户确认安装并明确重启；不静默更新。生产更新源必须为 HTTPS 匿名可读；仓库保持 private 时只允许夹具或隔离测试机可达的本机/私网 HTTPS 内部 RC，生产 endpoint 保持关闭或指向独立公开制品源，禁止在客户端内嵌 GitHub PAT。
+- **验收**：
+  - [ ] updater 签名校验不可关闭；篡改包、公钥不匹配、离线和超时均有明确且可恢复结果
+  - [ ] `latest.json` 同时含 `darwin-aarch64` 与 `darwin-x86_64` 的 HTTPS URL 和内联 signature；缺任一平台 fail closed
+  - [ ] 在隔离夹具中验证检查、进度、失败重试，以及 helper 停写退出、一致备份、替换、重启与版本握手的协调协议；不把夹具冒充真实安装升级
+  - [ ] 自动检查失败不阻塞启动、浏览历史或手动扫描；reduced motion、键盘和状态反馈符合 DESIGN
+- **证据/接续**：NOT_VERIFIED。Folia 的 updater 状态机和清单聚合结构可借鉴，但不得复用其私钥、Gitee 分发或宽泛 CSP/capability。私有 GitHub Release 不能作为普通用户匿名更新源。
+
+### ISS-041 · 双架构签名、公证与 Release CI
+
+- **目标**：从固定提交生成 Apple Silicon 与 Intel 的自包含、Developer ID 签名、Apple 公证并 stapled 的 v0.3.0 候选包，以 draft Release 供最终验收。
+- **范围**：`.github/workflows/release.yml`、发行校验脚本、macOS entitlements/iconset、Tauri bundle/updater artifact 配置；不改业务功能。
+- **实施边界**：分别在原生 arm64 与 Intel runner 冻结 Python helper 和构建 thin app/DMG。非特权 build job 只给 `contents: read`；任何能读取 signing/updater secrets 或持有 write token 的 job，其全部 `uses:` 均固定完整 commit SHA，不混入可移动 `@vN` action，并使用临时 keychain 与临时 p8 文件。仅最终聚合/发布 job 给最小 `contents: write`。Tauri updater 签名与 Apple codesign/notarization 是两套独立信任链，均须通过。先建 draft，两个架构 DMG、updater tar.gz、`.sig`、checksums 与完整 `latest.json` 齐全才允许进入公开发布人工门。
+- **验收**：
+  - [ ] tag 与 Python/API/Tauri/Cargo/产物版本完全一致，不一致在上传前失败
+  - [ ] arm64 与 x86_64 均通过 `codesign --verify --deep --strict --verbose=2`、`spctl --assess --type execute -vv` 与 `xcrun stapler validate`
+  - [ ] Apple 公证日志成功，嵌套 helper 与 framework 均使用 hardened runtime、secure timestamp 并由预期身份签名
+  - [ ] draft Release 产物、架构、checksum、updater signature 和 manifest 交叉核对；任一缺失保持 draft/失败
+  - [ ] 从 GitHub 实际下载、保留 quarantine 的干净账户能启动；公开 Release 与仓库可见性只在用户审阅具体候选后执行
+- **证据/接续**：NOT_VERIFIED。所需凭据名称与保管规则见 v0.3 发行方案；当前仓库 Secrets 为 0，本机 `security find-identity -v -p codesigning` 为 0 个有效身份，未找到 `FathomNotary` keychain profile。
 
 ### ISS-033 · 外部内测与开放发布验收
 

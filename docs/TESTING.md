@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前 pytest 门禁是 **179**，变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -47,7 +47,7 @@ GitHub CI 设计为在原生 Apple Silicon 与 Intel runner 上分别执行 pyte
 cargo build --locked --offline --manifest-path apps/desktop/src-tauri/Cargo.toml
 ```
 
-持久化验收必须补一次真实进程重启：为测试服务选择独立端口、临时根和固定的临时运行目录，先核对实例身份再执行扫描，记录 run_id；停止该测试服务后，以同一临时库重启，再检查结束态与历史。不能把换一个 threading.Lock 的 mock 当作真实重启证据。首扫无报告的当前已知缺陷应单独记录，不能伪造成功结果。通知可以 stub 隔离；原生通知与菜单交互另行实测。
+持久化验收必须补一次真实进程重启：为测试服务选择独立端口、临时根和固定的临时运行目录，先核对实例身份再执行扫描，记录 run_id；停止该测试服务后，以同一临时库重启，再检查结束态与历史。不能把换一个 threading.Lock 的 mock 当作真实重启证据。首扫无对比日报时应验证 snapshot_id 已持久化、整体状态 done 且 `report_status=not_available`；不能伪造日报。通知可以 stub 隔离；原生通知与菜单交互另行实测。
 
 ## 2. 可直接运行的 UI 夹具服务（当前基线）
 

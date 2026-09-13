@@ -1,11 +1,11 @@
 # Fathom 当前任务源
 
-更新：2026-09-13。规划任务 ISS-017 已完成；当前在 M0 自动推进与 UX 原型评审阶段。产品方向见 [ROADMAP](ROADMAP.md)，页面合同见 [DESIGN](DESIGN.md)，验证方法见 [TESTING](TESTING.md)。编号永久保留，不复用。
+更新：2026-09-13。M0 可信基线继续收敛；旧 PM 自动巡检已暂停，UX 原型与 Logo 分别等待用户确认。产品方向见 [ROADMAP](ROADMAP.md)，页面合同见 [DESIGN](DESIGN.md)，验证方法见 [TESTING](TESTING.md)。编号永久保留，不复用。
 
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-019/023/025 已完成；数据/API 泳道当前为 **ISS-020/021**，前端泳道为 **ISS-027**，发行基础继续 **ISS-029**。ISS-026（UX 原型）、ISS-029（安装实验）允许 M0 提前验证，不等跨日观察；第三轮视觉签名与发行基础可在不争用同一文件时并行。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。新 PM 的默认下一项是 **P0 ISS-021**，完成后接 ISS-024；ISS-027 可并行，但会修改 `frontend/`。ISS-029 下一切片会修改 api/cli/config，应避免与 ISS-021/024 争用。ISS-026 与 ISS-045 是两个独立人工视觉门，均不得自动越过。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -18,14 +18,14 @@
 
 授权来源：用户在本任务中明确要求“review 合并”，并追加“后续可以自动化推进了吗，你作为 pm 按照 multi-agent-orchestration 去派发对应的 worker”。PM 可在下列范围内派发、验证、创建私有仓库 PR，并在独立审查通过后合并；不逐波重复确认。用户说“暂停自动推进”即停止新派发，先安全收口在途工作；发生一次越界操作即回退逐波确认。
 
-- **范围**：2026-09-13 用户追加授权将当前开发线收敛为 v0.3.0 可分发版本，并要求 PM 派 worker 研究/推进 release、Apple 签名公证与应用内更新。ISS-019/023/025/031 已完成；自动推进当前覆盖 ISS-020/021/026/027/029，以及依赖满足后通往 v0.3.0 的 ISS-009/010/016/024/028/030/032/037/040/041；独立验收发现且会让这些门禁假绿的阻断缺陷可先登记为聚焦修复卡（当前为 ISS-042/043）。仍须逐卡通过前置和验收，不因发布目标跳阶段。转公开、公开 Release、向外部测试者发送产物仍是最终人工门。
-- **后继查表**：ISS-019/023/025 已完成，当前 READY 为 ISS-020/021/027；ISS-024 等 ISS-021，ISS-032 等 ISS-020。发行泳道继续 ISS-029，再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线；共享 Cargo/Tauri/frontend/release 文件的任务串行。
+- **范围**：2026-09-13 用户追加授权将当前开发线收敛为 v0.3.0 可分发版本，并要求 PM 派 worker 研究/推进 release、Apple 签名公证与应用内更新。ISS-019/023/025/031 已完成；自动推进当前覆盖 ISS-020/021/026/027/029，以及依赖满足后通往 v0.3.0 的 ISS-009/010/016/024/028/030/032/037/040/041；独立验收发现且会让这些门禁假绿的阻断缺陷可先登记为聚焦修复卡（当前已含 ISS-042/043/044/046）。仍须逐卡通过前置和验收，不因发布目标跳阶段。转公开、公开 Release、向外部测试者发送产物仍是最终人工门。
+- **后继查表**：ISS-020 已完成。新 PM 默认先做 P0 ISS-021，再做 ISS-024；ISS-027 可并行但占用 `frontend/`。ISS-032 已 READY。ISS-029 下一切片占用 api/cli/config，须与 ISS-021/024 串行；完成后再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线。
 - **UX**：ISS-026 原型路径登记为 `prototypes/ux/`，仅合成数据，配套 `scripts/verify_ux_prototype.cjs`。交付具体可点击产物供用户评审；未收到反馈时保持 WAITING，不标 DONE，不自动实装 ISS-028。原型的工程交付可建立 PR，用户评审是本卡关闭条件。
 - **角色/所有权**：用户于 2026-09-13 再次明确 PM 尽量只做验收、定方向和关键上下文；实现、测试与返修交给 worker，PM 不代写业务代码。实施 worker 只写合同所列工程文件和自己的 session context；PM 独占 TASKS/AGENTS/ARCHITECTURE/DECISIONS/DESIGN/ROADMAP/README/CHANGELOG/TESTING。worker 提供 WRITEBACK_PROPOSAL，由 PM 按事实更新。非平凡实现需要不同 session/dispatch 的 reviewer；固定 40 位 head，不能自审后直接合并。
 - **并发/资源**：本项目最多 3 个活跃 worker（含 reviewer）；待 PM 验收超过 2 项停止新派。scanner、api/app.js、schema/config 分别串行；全量测试全机一次仅一份，worker 只跑所分配回归。采用已有受支持 provider 配置，派发价值、额度、物理内存和写范围门禁均不得绕过。
 - **交付**：每项先反例，再修复及真实入口验证；完成派发价值、交付后、独立审查门禁后，PM 在最新 main 的候选树验证并经唯一 PR 合并。允许在隔离环境准备依赖锁、私有 draft Release、Fathom 专用 updater 密钥配置和签名/公证工作流；不得扫描生产 HOME、注册生产服务、提交/回显密钥、把 GitHub PAT 嵌入客户端或自动公开仓库/Release。Apple 账户材料齐备后才能执行真实签名公证。
 - **临时本地合并门禁（2026-09-13）**：用户确认 GitHub Actions 当前无额度，授权本轮及额度恢复前以“最新 main 上固定候选 + 本地全量与真实入口验证 + 独立 fixed-head reviewer + PM exact-head 核对”替代普通云端 CI 后合并。云端 job 在执行步骤前因 billing 拒绝时必须记为 `NOT_RUN` 并保留原因，不能称为通过；不得因此降低 x86_64 冻结、Tauri GUI、Developer ID 签名、Apple 公证、stapling、隔离安装或真实更新的发行矩阵门禁。额度恢复后重新启用普通 CI；规则见 DEC-018。
-- **巡检**：当前任务定期心跳检查 Orca Task/Dispatch、交付、PR 和资源状态；无变化静默，仅在交付、失败或需要用户输入时通知。Run/Task/Dispatch 及启动回执存于 Git common dir 的 `orchestration/fathom-m0-20260912/`，不入库、不存凭据。心跳是补偿巡检；机器关机/应用退出后的无人值守恢复尚未验证，不宣称 L3。
+- **巡检与交接**：旧心跳 `fathom-m0-pm` 已暂停。新 PM 只依赖仓库内本文与权威文档接手，不依赖旧对话或 Git common dir 的私有 orchestration 状态；如需恢复自动化，由用户明确要求或新 PM 建立一个唯一 owner，禁止两个 PM 同时派发或合并。
 - **失败/暂停**：内部可修复验收失败最多 2 个修复 episode，之后暂停该项；缺用户输入/外部依赖、身份/head 不可证明、意外范围冲突立即暂停相关项。内存不足按技能隔轮重试，连续 3 轮正式暂停。无合法 READY 组合、资源未结算或用户叫停时停止新派并报告；不能通过放宽验收恢复。
 - **完成/撤销**：上述已授权队列交付或全部进入明确 WAITING/BLOCKED 后暂停本任务心跳，汇报 PR、验证、未完成项和资源终态。来源分支/worktree 仅在精确交付与生命周期核对后清理；待用户 UX 评审的产物明确保留。
 
@@ -40,7 +40,7 @@
 | `integration/wave1@5fcdf41:ISS-017` | 冒烟 serve 端口冲突、误读生产服务 | ISS-025（运行隔离/端口配置）及 ISS-031（验证入口） |
 | `integration/wave1@5fcdf41:ISS-018` | reveal 的 .. / 符号链接越界 | ISS-022（本地接口边界） |
 
-无分支限定的 ISS-017/018 以本索引“全项目审查与规划/拒绝无效扫描”为准。本轮已按上表迁移 wave1 文档；以后引用旧工作时仍按此映射，保留原始提交中的引用，不以旧任务文件覆盖本任务源。当前任务编号已扩展至 ISS-043。
+无分支限定的 ISS-017/018 以本索引“全项目审查与规划/拒绝无效扫描”为准。本轮已按上表迁移 wave1 文档；以后引用旧工作时仍按此映射，保留原始提交中的引用，不以旧任务文件覆盖本任务源。当前任务编号已扩展至 ISS-046。
 
 ## 索引
 
@@ -48,13 +48,13 @@
 |---|---|---|---|---|---|
 | ISS-001 | 真实跨日定时日报验证 | P1 | M1 | WAITING | — |
 | ISS-002 | 权限覆盖与授权说明 | P1 | M1 | WAITING | — |
-| ISS-003 | 接续扫描通知成果 | P2 | M1 | BLOCKED | ISS-020 |
+| ISS-003 | 接续扫描通知成果 | P2 | M1 | WAITING | ISS-020 |
 | ISS-004 | 有依据的清理建议 | P2 | M4 | DEFERRED | ISS-001、ISS-034 |
 | ISS-005 | duc 可选引擎评估 | P3 | 后续 | DEFERRED | ISS-019、ISS-032 |
 | ISS-006 | Tauri 初始桌面壳 | P2 | 历史 | DONE | — |
 | ISS-007 | 接续 scan_runs 实现审查 | P1 | M0 | DONE | — |
 | ISS-008 | 接续 tray 链路与实机验证 | P1 | M1 | WAITING | — |
-| ISS-009 | 可分发 app 与安装入口 | P1 | M2 | BLOCKED | ISS-018、ISS-019、ISS-020、ISS-022、ISS-025、ISS-029、ISS-031 |
+| ISS-009 | 可分发 app 与安装入口 | P1 | M2 | BLOCKED | ISS-018、ISS-019、ISS-020、ISS-022、ISS-025、ISS-029、ISS-031、ISS-045 |
 | ISS-010 | 登录自启与后台计划 | P1 | M2 | BLOCKED | ISS-009、ISS-020 |
 | ISS-011 | 文件类型分布 | P3 | 后续 | DEFERRED | ISS-021、ISS-032 |
 | ISS-012 | 重复文件检测 | P3 | 后续 | DEFERRED | ISS-032 |
@@ -65,34 +65,73 @@
 | ISS-017 | 全项目审查与规划 | P1 | M0 | DONE | — |
 | ISS-018 | 拒绝无效扫描，保护有效快照 | P0 | M0 | DONE | — |
 | ISS-019 | 修正真实 BSD du 路径解析 | P0 | M0 | DONE | — |
-| ISS-020 | 统一扫描运行与跨进程互斥 | P0 | M0 | READY | ISS-007、ISS-018、ISS-025 |
+| ISS-020 | 统一扫描运行与跨进程互斥 | P0 | M0 | DONE | ISS-007、ISS-018、ISS-025 |
 | ISS-021 | 同口径差分与缺失语义 | P0 | M0 | READY | ISS-025 |
 | ISS-022 | 本地 API 与渲染边界 | P0 | M0 | DONE | — |
 | ISS-023 | 修复可见数值与快照刷新缺陷 | P1 | M0 | DONE | — |
 | ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | BLOCKED | ISS-021 |
 | ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | DONE | — |
-| ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | IN_PROGRESS | — |
+| ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | WAITING | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | READY | ISS-023 |
 | ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | BLOCKED | ISS-021、ISS-024、ISS-026、ISS-027 |
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | IN_PROGRESS | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
 | ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | DONE | — |
-| ISS-032 | 资源预算、大文件查询与诊断 | P1 | M1 | BLOCKED | ISS-020、ISS-025 |
+| ISS-032 | 资源预算、大文件查询与诊断 | P1 | M1 | READY | ISS-020、ISS-025 |
 | ISS-033 | 外部内测与开放发布验收 | P1 | M3 | BLOCKED | ISS-001、ISS-002、ISS-003、ISS-008、ISS-024、ISS-028、ISS-030、ISS-032、ISS-037、ISS-040、ISS-041 |
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
 | ISS-036 | 目录打标与智能变化解读 | P2 | M4 | DEFERRED | ISS-028、ISS-035 |
-| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | BLOCKED | ISS-029、ISS-031 |
-| ISS-038 | PM 自动推进与监督接续 | P1 | M0 | IN_PROGRESS | — |
+| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | BLOCKED | ISS-029、ISS-031、ISS-045 |
+| ISS-038 | PM 自动推进与监督接续 | P1 | M0 | DONE | — |
 | ISS-039 | 扫描结果合同与安全浏览器夹具兼容 | P0 | M0 | DONE | ISS-018、ISS-022 |
 | ISS-040 | 应用内更新与双架构更新清单 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-028、ISS-031 |
 | ISS-041 | 双架构签名、公证与 Release CI | P1 | M2 | BLOCKED | ISS-037、ISS-040 |
 | ISS-042 | 修复父子变化折叠的 topn 提前截断 | P0 | M0 | DONE | — |
 | ISS-043 | 同步 pytest 精确数量门禁 | P0 | M0 | DONE | — |
+| ISS-044 | 同步扫描协调后的 pytest 精确门禁 | P0 | M0 | DONE | ISS-020 |
+| ISS-045 | Fathom Logo 与应用图标资产 | P1 | M1 | WAITING | — |
+| ISS-046 | 修复 pytest 入口的缺失解释器变量边界 | P0 | M0 | DONE | — |
 
 ## 任务卡
 
 字段合同：目标 → 范围 → 实施边界 → 验收 → 证据。优先级/阶段/状态/依赖以索引为唯一来源。验收框仅在取得证据后勾选。
+
+### ISS-046 · 修复 pytest 入口的缺失解释器变量边界
+
+- **目标**：标准 pytest 入口在解释器缺失或路径含恶意字面文本时，稳定输出原路径并安全失败，不因变量名边界产生乱码 `unbound variable`。
+- **范围**：`scripts/ci_pytest.sh` 的缺失解释器错误分支及判别性 shell 回归。
+- **实施边界**：只给变量引用加明确边界并验证字面路径；不改变 179 项精确数量、不执行传入路径、不放宽源码身份或 pytest 结果门禁。
+- **验收**：
+  - [x] 基线缺少默认 `.runtime/bin/python` 时复现乱码 `unbound variable`，候选改为清楚错误并退出 1
+  - [x] 缺失路径及含 shell 元字符的恶意字面路径均原样呈现、安全退出 1，不发生命令替换或副作用
+  - [x] 有效解释器运行标准入口通过 179/179；`bash -n`、shellcheck 与 diff-check 通过
+  - [x] 独立 reviewer 在固定 head 给出 ACCEPT
+- **证据/接续**（2026-09-13）：候选 `704ada64e34a0f083c27b9e71fccc87ec7a431fa` 经独立 fixed-head review ACCEPT，[PR #27](https://github.com/cat-xierluo/fathom/pull/27) squash 合并为 main `a57d7fd78562711adb1d6688731df593bf30b8b9`。基线复现 `py�: unbound variable`；候选对默认缺失解释器和恶意字面路径均安全退出 1，有效路径通过 179/179，Bash 语法、shellcheck 与 diff-check 均通过。GitHub Actions 因账户额度未执行，记 `NOT_RUN`。
+
+### ISS-045 · Fathom Logo 与应用图标资产
+
+- **目标**：把用户选定的 Fathom 寓意转化为可追溯、可构建并在 macOS 各入口清晰显示的品牌资产。
+- **范围**：确认后新增 canonical SVG、PNG/iconset/icns、独立单色 tray、构建生成脚本，以及必要的 DESIGN/来源与许可记录。
+- **实施边界**：这是与 PR #10/ISS-026 原型视觉确认不同的第二个人工门。仓库外现有 A/B/C 概念板仅供选择；PM 推荐“A 的深度环骨架＋B 的一层轻微不规则等深线”。用户尚未确认，选择前不把概念稿或派生资产写入仓库，也不把它当作发行资产。
+- **验收**：
+  - [ ] 用户明确选择方向，选择与取舍回写 DESIGN
+  - [ ] 生成 canonical SVG，以及 1024/512/256/128/32/16 PNG、完整 iconset/icns；生成脚本可重复运行并核对像素与 alpha
+  - [ ] 独立单色 template tray 在 18/22pt 深浅菜单栏清晰，不直接缩小彩色 App Icon
+  - [ ] Dock、Finder、Launchpad、Spotlight 与实际打包 app 实测；小尺寸轮廓、圆角安全区及对比度可辨
+  - [ ] 原始设计、字体/图形/工具来源和许可可追踪，ISS-009/037 可直接消费
+- **证据/接续**：`NOT_VERIFIED`。概念板位于仓库外，不是项目资产。等待用户选择 A/B/C 或确认推荐混合方向后转 READY。
+
+### ISS-044 · 同步扫描协调后的 pytest 精确门禁
+
+- **目标**：ISS-020 新增测试后，把 fail-closed pytest 数量门禁从 168 精确同步到 179。
+- **范围**：`scripts/ci_pytest.sh`、`.github/workflows/ci.yml` 的数量、步骤名称与错误说明。
+- **实施边界**：只同步真实数量，不修改测试、不放宽为区间或最低数量；保留 ISS-043/PR #23 与 ISS-031/PR #16 的 168/144 历史证据。
+- **验收**：
+  - [x] 旧期望 168 对实际 179 非零退出；默认期望 179 全量通过
+  - [x] 显式覆盖 178/180 均非零退出，门禁仍 fail closed
+  - [x] Bash 语法、workflow YAML、diff-check 通过，独立 fixed-head reviewer ACCEPT
+- **证据/接续**（2026-09-13）：候选 `9c7a716dfc6b72ea38488820a5e9b1d49c4f5094` 经独立 fixed-head review ACCEPT，[PR #26](https://github.com/cat-xierluo/fathom/pull/26) squash 合并为 main `14c57451937007003e646c80f8ab1d94ee609b1d`。标准入口 179/179 通过，178/180 反例均退出 1；云端因账户额度未执行，记 `NOT_RUN`。
 
 ### ISS-043 · 同步 pytest 精确数量门禁
 
@@ -119,19 +158,15 @@
 
 ### ISS-038 · PM 自动推进与监督接续
 
-- **目标**：将用户授权变为可审计的 worker 派发、巡检、独立验收与 PR 收口流程。
-- **范围**：本文策略与执行证据、AGENTS 协作入口；Orca Run/Task/Dispatch、本任务心跳与本地执行回执。
-- **实施边界**：PM 管理工作、维护关键共享上下文，不代写业务代码；实现、测试与返修交给 worker，文档可由独立只读 reviewer 复核。初始 baseline `b4be3330c5dbf37c4bc9c93510dc98e44ce5543a`；策略已由 PR #7 合入 `6228506`，后续证据分支 `iss-038-wave2-acceptance`；仓库继续 private。
+- **目标**：让没有本对话历史的新 PM 只读仓库即可安全接手，不重复已交付工作或形成双 PM。
+- **范围**：本文与 AGENTS 的接手入口、共享权威文档、已交付/等待/阻塞状态及本轮资源终态。
+- **实施边界**：PM 只定方向、维护关键上下文、独立验收与 PR 收口；实现、测试、返修交 worker。私有 Run/Task/Dispatch 记录不是接手前置，不创建第二套队列或状态快照。
 - **验收**：
-  - [x] 授权范围、泳道、独立审查、暂停与撤销规则已落在任务源
-  - [x] Wave 2 全部 Task 在任一 worker 启动前建立，收到真实 dispatch/启动证据
-  - [x] 周期巡检已启用，交付以 Task/Dispatch 与实测证据核对
-  - [ ] 每项验收、PR、剩余条件和资源终态均写回，队列停止时暂停心跳
-- **证据/接续**：Orca Run `run_5457fcebf191` 预建 3 个 Task 后启动，三项 spawn exit 0、dispatch_bind=ok；独立目录/分支均基于 b4be333。ISS-018 → `task_22a2d2b0a4ce` / `ctx_a1487c779f45`；ISS-022 → `task_b2091c808847` / `ctx_90a55ca3a103`；ISS-026 → `task_e8f2228ab015` / `ctx_5cdee2f4a4c1`。Claude Code＋GLM 使用现有配置；派发价值门、身份/隔离/额度/内存/安装禁止与写范围门均通过。额度摘要缺条目经已有采集器重新读取后通过；Python 布局改用任务私有链接复用已有 venv，无安装，失败启动产生的空工作区已精确回收。心跳 `fathom-m0-pm` 为 ACTIVE、每 20 分钟，在当前任务接续。工程交付、修复与独立 reviewer 均以固定 head 和实测证据核对。ISS-026 第三轮视觉 worker 为 `task_5b1cbbc4e39e` / `ctx_ad5906418b9e`，基线固定 PR #10 head `30391ed5`；当前正在实现，尚未验收。
-
-- **本轮进展**（2026-09-13）：PR #9/ISS-022 已经独立 R2 ACCEPT，并以 main `597a302` 集成关闭；PR #8/ISS-018 在两轮真实反例修复后，经最终 R5 ACCEPT，连同 ISS-039 夹具兼容修复以 main `4f2cf5b` 集成关闭。最终组合候选通过 134 pytest 与 39 项 Chromium/API 安全检查。PR #10/ISS-026 第二轮原生 Mac 视觉经独立 UX R2 ACCEPT，取得 99/99 浏览器检查、13 张截图和 15/15 视口页面无横向溢出；用户复评认可流程、图标与优雅程度，并要求继续增加个人特色，因此第三轮按“测深/等深线＋深度环”推进。已结算的 worker/reviewer 终端和 lease 均精确关闭；当前 R3 资源与身份持续写入 Git common dir 的 `orchestration/fathom-m0-20260912/active-workers.json`。
-
-- **v0.3 发行接续**（2026-09-13）：用户授权把当前开发线收敛为 v0.3.0，并要求研究/推进 GitHub Release、密钥、Apple 签名公证与应用内更新。两个只读审查分别核对 Fathom main `8e7c07b` 与 Folia：共同确认生产 UI、self-contained helper、bundle、版本统一、updater、Developer ID/公证均未完成；Folia 只可借鉴 updater 与双架构 draft Release 结构。ISS-031 已建立普通 CI 入口，ISS-029 完成第一阶段技术验证；两项上下文经 [PR #18](https://github.com/cat-xierluo/fathom/pull/18) 本地文档/链接/doc-curator 核验后合并为 `fc1cf91`。新任务 ISS-040/041 和 [发行方案](plans/2026-09-13-v0.3-release-design.md) 已登记；真实签名与公开发布等待依赖及具体候选。
+  - [x] 授权范围、独立审查、本地临时门禁、暂停与人工门写入仓库
+  - [x] 已合并任务、开放 PR、fixed head、未验证范围与下一 READY 项可由仓库和远端复核
+  - [x] 任务索引/卡片、依赖、链接、架构、测试与设计事实一致
+  - [x] 旧 `fathom-m0-pm` 心跳已暂停；恢复时要求唯一 owner，禁止双 PM
+- **证据/接续**（2026-09-13）：旧 PM 已完成 ISS-018/019/020/022/023/025/031/039/042/043/044/046 的独立审查与合并收口；`fathom-m0-pm` 实际状态为 PAUSED。新 PM 必须先读 AGENTS → 本文件完整卡片 → 对应权威文档，再核对 `origin/main`、开放 PR 与所有 worktree。不得依赖旧对话或私有 `orchestration/`，不得重做 PR #17/ISS-029 技术 spike、PR #10/ISS-026 R3 或已合并任务。若恢复自动化，应由用户明确要求或新 PM 建立唯一 owner。
 
 ### ISS-017 · 全项目审查与规划
 
@@ -191,7 +226,7 @@
   - [ ] 保留 horizon 与文案一致；同日替换仅针对同数据集有效快照
   - [ ] topn=1 的单链折叠能选最具体贡献者，恒真断言移除；列表不作为净增量求和
   - [ ] 日报对自身有明确 a/b ID，首扫无报告不是异常
-- **证据/接续**：AUD-04/05/12；该任务若需广泛迁移，先按迁移→差分→查询拆子卡并保持前置，不一次吞入其他模块重构。
+- **证据/接续**：AUD-04/05/12。PR #25 已完成一项局部基础：`write_daily_report(conn, sid)` 现在按传入 sid 查找同根前驱；后续 worker 不得重做该选择逻辑。ISS-021 仍需完成 dataset/阈值/质量元数据、按数据集保留、未记录语义和同日替换边界，因此保持 READY。若需广泛迁移，先按迁移→差分→查询拆子卡，不一次吞入其他模块重构。
 
 ### ISS-022 · 本地 API 与渲染边界
 
@@ -256,15 +291,15 @@
 ### ISS-020 · 统一扫描运行与跨进程互斥
 
 - **目标**：API/CLI/定时入口共享一个运行生命周期，重复触发不并发写入。
-- **范围**：拟新增 fathom 扫描协调模块，api.py、cli.py、scanner.py、db.py 与相关测试。
+- **范围**：`fathom/scan_coordinator.py`、api.py、cli.py、scanner.py、db.py、launchd.py、reports.py 与相关测试。
 - **实施边界**：读取目标方案状态合同；使用 OS 锁或带 owner/心跳的数据库租约，扫描期间不持有长 SQLite 写事务。完成快照、报告、保留、通知分阶段；首扫有效但无报告是成功。守护线程退出/超时必须回收 du 并正确结束运行。
 - **验收**：
-  - [ ] 两个独立进程同时触发仅一个进入 du，其余收到明确 busy；服务重启不误杀仍存活 owner
-  - [ ] 空库经真实 API 首扫完成并返回 snapshot_id，第二日产生报告；CLI/定时同合同
-  - [ ] 报告失败/通知失败不抹掉快照；扫描失败留上次有效数据
-  - [ ] 异常/取消/退出后锁与子进程均释放；状态历史同时覆盖 CLI/API/定时
-  - [ ] 真实多进程与故障测试通过，不能仅 monkeypatch threading.Lock
-- **证据/接续**：AUD-03/10；首次扫描 API 返回 error=至少需要两个快照，同时数据库已有 1 个快照。
+  - [x] 两个独立进程同时触发仅一个进入 du，其余收到明确 busy；服务重启不误杀仍存活 owner
+  - [x] 空库经真实 API 首扫完成并返回 snapshot_id，第二日产生报告；CLI/定时同合同
+  - [x] 报告失败/通知失败不抹掉快照；扫描失败留上次有效数据
+  - [x] 异常/取消/退出后锁与子进程均释放；状态历史同时覆盖 CLI/API/定时
+  - [x] 真实多进程与故障测试通过，不能仅 monkeypatch threading.Lock
+- **证据/接续**（2026-09-13）：候选 `d58913419b0ac001d14219f931f73dd811da3038` 经独立 fixed-head review ACCEPT，[PR #25](https://github.com/cat-xierluo/fathom/pull/25) squash 合并为 main `5822d1dd51029500df89fb6a531364a270d08fff`。34/34 专项、179/179 全量 pytest、39/39 浏览器/API 检查通过；真实多进程竞争、API 空库首扫、CLI/定时来源、v1→v2 迁移、报告/通知故障和 SIGTERM/超时回收均已验证。`flock` 是 owner 真值，不读取或终止外部 PID；分阶段状态在 `scan_run_details`。实际 Tauri WebView、生产 launchd 跨日运行、系统通知展示、x86_64 发行 helper、签名公证仍 `NOT_VERIFIED`。
 
 ### ISS-031 · 可复现测试与 CI 入口
 
@@ -282,14 +317,14 @@
 ### ISS-026 · 完整 UX 流程与视觉原型
 
 - **目标**：用可点击原型验证总览→变化→目录详情与首次启动/失败恢复。
-- **范围**：docs/DESIGN.md，拟新增独立合成数据原型（路径在任务开始时登记）。
+- **范围**：docs/DESIGN.md、`prototypes/ux/` 独立合成数据原型及其验证脚本。
 - **实施边界**：按 DESIGN 合同做桌面原型，先表达信息层级/工作流再细化视觉；真实可点的导航、目录选择、状态切换。原型不接生产 API，不假装智能识别已实现。拿具体原型给用户评审，记录取舍后交 ISS-028。
 - **验收**：
   - [x] 首次启动、日常定位、失败恢复三个流程能走通，最多三步定位到证据
   - [x] 980×640、1220×820 与长路径布局通过，文字/颜色/键盘可辨
   - [x] 覆盖真实/未知/权限缺口/Agent 未启用的区别，未来内容按状态出现
   - [ ] 用户评审针对具体产物，反馈回写 DESIGN；不能只产出一张不可操作的静态美图
-- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10) 当前 head `30391ed5e60587b1ed88d7039fc7cc1d9047a9e1`。第二轮视觉已由 worker 和独立 UX R2 分别取得 99/99 浏览器检查、13 张截图和 15/15 视口页面无横向溢出。用户复评认为“总体已经好非常多”“比较优雅”，流程和图标没有问题，但仍偏中规中矩，希望增加个人特色。PM 将第三轮方向收敛为来自 Fathom 名字的“测深/等深线＋深度环”视觉签名，保持原生 Mac 的克制、精致、轻量，不改变现有旅程或实装生产 UI；第三轮 worker 与独立 reviewer 开始后整卡转回 IN_PROGRESS，第四项仍待用户对更新原型确认。
+- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10) 实际 head 为 `a564e5e1287f89bf2719964a7339110923433a18`。第三轮“测深/等深线＋深度环”工程已通过 114/114 原型检查、13 张截图和独立 fixed-head review ACCEPT；它只修改合成数据原型，不是生产前端。当前唯一缺口是用户对该具体原型的主观视觉确认，因此本卡保持 WAITING，不能自动合并 PR #10、标 DONE 或启动 ISS-028 实装。Logo/App Icon 方向另见 ISS-045，是第二个人工门。
 
 ### ISS-027 · 原生前端模块与状态生命周期
 
@@ -338,7 +373,7 @@
   - [ ] 安装路径含空格/中文/& 可用；服务无权限/端口占用给恢复动作
   - [ ] 当前宿主架构 helper 的 `file`、断网启动、`--version`/health、退出与崩溃行为有可复查证据；另一架构明确标为待 ISS-041 复验
   - [x] 记录选型 DEC、双架构复验计划、冻结打包依赖、端口策略、服务/TCC 身份及未解决阻塞；失败时不推进 ISS-009 的发行验收
-- **证据/接续**：[PR #17](https://github.com/cat-xierluo/fathom/pull/17) 合并为 `7aef239`，独立 fixed-head review ACCEPT，GitHub 双架构 CI 五项通过。当前 arm64 合同原型 18/18：0600 discovery、token 脱敏、身份匹配清理、8 进程唯一 owner、动态端口让位和未知占用零击杀；PyInstaller 6.22.3 onedir A/B 均生成 arm64 Mach-O，并固定 G1/G2/G3/G6 生产缺口。冻结 smoke 为 11 pass / 0 fail / 3 blocked：本机 7952 被未知 PID 占用，按合同未触碰，健康、Host 守卫和 SIGTERM 尚未完成。干净账户断网首启、x86_64 冻结、TCC/后台服务和完整 app 仍 `NOT_VERIFIED`；本卡保持 IN_PROGRESS，ISS-009 不进入发行验收。选型见 DEC-017，复验计划见 `apps/desktop/experiments/iss029/findings.md`。
+- **证据/接续**：[PR #17](https://github.com/cat-xierluo/fathom/pull/17) 合并为 `7aef239`，独立 fixed-head review ACCEPT，GitHub 双架构 CI 五项通过。当前 arm64 合同原型 18/18：0600 discovery、token 脱敏、身份匹配清理、8 进程唯一 owner、动态端口让位和未知占用零击杀；PyInstaller 6.22.3 onedir A/B 均生成 arm64 Mach-O，并固定 G1/G2/G3/G6 生产缺口。冻结 smoke 为 11 pass / 0 fail / 3 blocked：本机 7952 被未知 PID 占用，按合同未触碰，健康、Host 守卫和 SIGTERM 尚未完成。干净账户断网首启、x86_64 冻结、TCC/后台服务和完整 app 仍 `NOT_VERIFIED`；本卡保持 IN_PROGRESS，ISS-009 不进入发行验收。选型见 DEC-017，复验计划见 `apps/desktop/experiments/iss029/findings.md`。 下一切片必须基于最新 main，在生产路径关闭 G1/G2/G3/G6，完成冻结 helper 的 `/health` 身份、Host 守卫、SIGTERM、动态端口、clean-account 与唯一 owner；与 ISS-020 的 `scan_coordinator`/flock 合同对齐。不得重做已合并 spike，不得触碰当前占用 7952 的未知 PID；x86_64 留 ISS-041。
 
 ### ISS-001 · 真实跨日定时日报验证
 
@@ -371,7 +406,7 @@
   - [ ] 分支测试复跑，失败/转义/长度/静默模式行为可解释
   - [ ] macOS 实际收到内容正确的通知，拒绝权限时有退路
   - [ ] 首扫无日报、零变化、部分覆盖及低空间告警有一致语义
-- **证据/接续**：[PR #3](https://github.com/cat-xierluo/fathom/pull/3) 已审查修正并合并；24 passed，组合 36 passed。复现并修正新增 200 MB 目录仍提示今日无增长，补摘要限长和准确日志；真实扫描/次日报告/通知 stub 链路通过。命令行 report 不触发通知。系统实际展示、首扫/部分覆盖语义与设置统一尚未完成；本卡 BLOCKED 于 ISS-020，真机通知仍 NOT_VERIFIED。
+- **证据/接续**：[PR #3](https://github.com/cat-xierluo/fathom/pull/3) 已审查修正并合并；24 passed，组合 36 passed。复现并修正新增 200 MB 目录仍提示今日无增长，补摘要限长和准确日志；真实扫描/次日报告/通知 stub 链路通过。命令行 report 不触发通知。ISS-020 已统一首扫/部分覆盖与入口生命周期；系统实际展示、拒绝通知权限及设置阈值统一仍 `NOT_VERIFIED`。本卡因需要真实 macOS 通知与权限环境保持 WAITING；具备可观察通知的实机窗口并明确允许验证后再转 READY。
 
 ### ISS-008 · 接续 tray 链路与实机验证
 

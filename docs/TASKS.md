@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-019/023/025 已完成，接续时先按依赖刷新 ISS-020/021/024/027/032；发行基础继续 ISS-029。ISS-026（UX 原型）、ISS-029（安装实验）允许 M0 提前验证，不等跨日观察；第三轮视觉签名与发行基础可在不争用同一文件时并行。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-019/023/025 已完成；数据/API 泳道当前为 **ISS-020/021**，前端泳道为 **ISS-027**，发行基础继续 **ISS-029**。ISS-026（UX 原型）、ISS-029（安装实验）允许 M0 提前验证，不等跨日观察；第三轮视觉签名与发行基础可在不争用同一文件时并行。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -18,8 +18,8 @@
 
 授权来源：用户在本任务中明确要求“review 合并”，并追加“后续可以自动化推进了吗，你作为 pm 按照 multi-agent-orchestration 去派发对应的 worker”。PM 可在下列范围内派发、验证、创建私有仓库 PR，并在独立审查通过后合并；不逐波重复确认。用户说“暂停自动推进”即停止新派发，先安全收口在途工作；发生一次越界操作即回退逐波确认。
 
-- **范围**：2026-09-13 用户追加授权将当前开发线收敛为 v0.3.0 可分发版本，并要求 PM 派 worker 研究/推进 release、Apple 签名公证与应用内更新。自动推进覆盖 M0 已 READY 的 ISS-019/023/025/026/029/031，以及依赖满足后通往 v0.3.0 的 ISS-009/010/016/027/028/030/037/040/041；独立验收发现且会让这些门禁假绿的阻断缺陷可先登记为聚焦修复卡（当前为 ISS-042）。仍须逐卡通过前置和验收，不因发布目标跳阶段。转公开、公开 Release、向外部测试者发送产物仍是最终人工门。
-- **后继查表**：数据/API 泳道按 ISS-019、ISS-023、ISS-025 → ISS-020/021/024 推进；发行泳道先并行 ISS-029 与 ISS-031，再按 ISS-009/010、ISS-027/028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线；共享 Cargo/Tauri/frontend/release 文件的任务串行。
+- **范围**：2026-09-13 用户追加授权将当前开发线收敛为 v0.3.0 可分发版本，并要求 PM 派 worker 研究/推进 release、Apple 签名公证与应用内更新。ISS-019/023/025/031 已完成；自动推进当前覆盖 ISS-020/021/026/027/029，以及依赖满足后通往 v0.3.0 的 ISS-009/010/016/024/028/030/032/037/040/041；独立验收发现且会让这些门禁假绿的阻断缺陷可先登记为聚焦修复卡（当前为 ISS-042）。仍须逐卡通过前置和验收，不因发布目标跳阶段。转公开、公开 Release、向外部测试者发送产物仍是最终人工门。
+- **后继查表**：ISS-019/023/025 已完成，当前 READY 为 ISS-020/021/027；ISS-024 等 ISS-021，ISS-032 等 ISS-020。发行泳道继续 ISS-029，再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线；共享 Cargo/Tauri/frontend/release 文件的任务串行。
 - **UX**：ISS-026 原型路径登记为 `prototypes/ux/`，仅合成数据，配套 `scripts/verify_ux_prototype.cjs`。交付具体可点击产物供用户评审；未收到反馈时保持 WAITING，不标 DONE，不自动实装 ISS-028。原型的工程交付可建立 PR，用户评审是本卡关闭条件。
 - **角色/所有权**：用户于 2026-09-13 再次明确 PM 尽量只做验收、定方向和关键上下文；实现、测试与返修交给 worker，PM 不代写业务代码。实施 worker 只写合同所列工程文件和自己的 session context；PM 独占 TASKS/AGENTS/ARCHITECTURE/DECISIONS/DESIGN/ROADMAP/README/CHANGELOG/TESTING。worker 提供 WRITEBACK_PROPOSAL，由 PM 按事实更新。非平凡实现需要不同 session/dispatch 的 reviewer；固定 40 位 head，不能自审后直接合并。
 - **并发/资源**：本项目最多 3 个活跃 worker（含 reviewer）；待 PM 验收超过 2 项停止新派。scanner、api/app.js、schema/config 分别串行；全量测试全机一次仅一份，worker 只跑所分配回归。采用已有受支持 provider 配置，派发价值、额度、物理内存和写范围门禁均不得绕过。
@@ -65,14 +65,14 @@
 | ISS-017 | 全项目审查与规划 | P1 | M0 | DONE | — |
 | ISS-018 | 拒绝无效扫描，保护有效快照 | P0 | M0 | DONE | — |
 | ISS-019 | 修正真实 BSD du 路径解析 | P0 | M0 | DONE | — |
-| ISS-020 | 统一扫描运行与跨进程互斥 | P0 | M0 | BLOCKED | ISS-007、ISS-018、ISS-025 |
-| ISS-021 | 同口径差分与缺失语义 | P0 | M0 | BLOCKED | ISS-025 |
+| ISS-020 | 统一扫描运行与跨进程互斥 | P0 | M0 | READY | ISS-007、ISS-018、ISS-025 |
+| ISS-021 | 同口径差分与缺失语义 | P0 | M0 | READY | ISS-025 |
 | ISS-022 | 本地 API 与渲染边界 | P0 | M0 | DONE | — |
 | ISS-023 | 修复可见数值与快照刷新缺陷 | P1 | M0 | DONE | — |
 | ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | BLOCKED | ISS-021 |
 | ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | DONE | — |
 | ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | IN_PROGRESS | — |
-| ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | BLOCKED | ISS-023 |
+| ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | READY | ISS-023 |
 | ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | BLOCKED | ISS-021、ISS-024、ISS-026、ISS-027 |
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | IN_PROGRESS | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
@@ -165,7 +165,7 @@
   - [x] 读写配置不依赖 cwd；应用资源只读场景可运行
   - [x] 旧 schema/损坏库/迁移失败/较新 schema 有明确行为，不删库重建
   - [x] 备份包含 WAL 一致状态；迁移失败旧库可恢复；配置实际值可供后续 API 查询
-- **证据/接续**（2026-09-13）：[PR #19](https://github.com/cat-xierluo/fathom/pull/19) 最终候选 `7cee7c1542f037eb67f2c183720f2966df39b3ab` 经独立 fixed-head review ACCEPT，squash 合并为 main `4408d7e`。20 项定向测试、164 项全量 pytest 与 39/39 浏览器/API 检查通过；五组真实探针覆盖无关 cwd 和含空格/中文/`&` 路径的 CLI/API 隔离、端口占用、v0 库及并发迁移、WAL 一致 0600 备份、只读资源指纹。损坏、较新版本与伪造同列异约束 schema 均拒绝，不删库重建；运行配置实际值由状态 API 返回且不含令牌/凭据。GitHub Actions 因账户额度在 job 步骤前拒绝，记 `NOT_RUN`；实际冻结 helper/Tauri 只读 `.app`、x86_64、真实旧用户库、磁盘满/掉电仍 `NOT_VERIFIED`。
+- **证据/接续**（2026-09-13）：[PR #19](https://github.com/cat-xierluo/fathom/pull/19) 的实现内容在 head `5344dd4abf73760e3c303d0879661a5f1ee8e713` 经独立 fixed-head review ACCEPT；rebase 后最终候选 `7cee7c1542f037eb67f2c183720f2966df39b3ab` 内容等价，并完成 worker 与 PM 本地验证，squash 合并为 main `4408d7e`。20 项定向测试、164 项全量 pytest 与 39/39 浏览器/API 检查通过；五组真实探针覆盖无关 cwd 和含空格/中文/`&` 路径的 CLI/API 隔离、端口占用、v0 库及并发迁移、WAL 一致 0600 备份、只读资源指纹。损坏、较新版本与伪造同列异约束 schema 均拒绝，不删库重建；运行配置实际值由状态 API 返回且不含令牌/凭据。GitHub Actions 因账户额度在 job 步骤前拒绝，记 `NOT_RUN`；实际冻结 helper/Tauri 只读 `.app`、x86_64、真实旧用户库、磁盘满/掉电仍 `NOT_VERIFIED`。
 
 ### ISS-021 · 同口径差分与缺失语义
 

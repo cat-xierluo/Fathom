@@ -176,7 +176,7 @@ class TestFoldChanges:
 
         assert [c.path for c in out] == ["/r", "/r/a/deep"]
 
-    def test_replacement_preserves_delta_order_at_capacity(self):
+    def test_replacement_preserves_final_delta_order(self):
         changes = [
             reports.DirChange("/r", 0, 100_000, 100_000),
             reports.DirChange("/other", 0, 99_900, 99_900),
@@ -190,7 +190,48 @@ class TestFoldChanges:
             ("/r/a", 99_800),
         ]
 
-    def test_topn_bounds_ancestor_checks_for_large_input(self, monkeypatch):
+    def test_replacement_does_not_discard_higher_ranked_independent_path(self):
+        changes = [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/independent", 0, 95_000, 95_000),
+            reports.DirChange("/r/a", 0, 91_000, 91_000),
+        ]
+
+        out = reports.fold_changes(changes, topn=1)
+
+        assert [c.path for c in out] == ["/independent"]
+
+    def test_descendant_covered_sum_preserves_residual_folding(self):
+        changes = [
+            reports.DirChange("/r/a", 0, 2_000, 2_000),
+            reports.DirChange("/r", 0, 1_900, 1_900),
+        ]
+
+        out = reports.fold_changes(changes, topn=10)
+
+        assert [c.path for c in out] == ["/r/a"]
+
+    def test_directory_prefix_does_not_match_similar_name(self):
+        changes = [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/result", 0, 99_800, 99_800),
+        ]
+
+        out = reports.fold_changes(changes, topn=10)
+
+        assert [c.path for c in out] == ["/r", "/result"]
+
+    def test_root_path_can_be_replaced_by_precise_child(self):
+        changes = [
+            reports.DirChange("/", 0, 100_000, 100_000),
+            reports.DirChange("/r", 0, 99_800, 99_800),
+        ]
+
+        out = reports.fold_changes(changes, topn=1)
+
+        assert [c.path for c in out] == ["/r"]
+
+    def test_large_input_avoids_pairwise_ancestor_checks(self, monkeypatch):
         original_is_ancestor = reports._is_ancestor
         ancestor_checks = 0
 
@@ -212,7 +253,7 @@ class TestFoldChanges:
             "/independent-1",
             "/independent-2",
         ]
-        assert ancestor_checks < len(changes) * 4
+        assert ancestor_checks == 0
 
 
 class TestPrune:

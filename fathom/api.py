@@ -33,9 +33,7 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 
 from __future__ import annotations
 
-import datetime as dt
 import hmac
-import json
 import logging
 import os
 import re
@@ -50,7 +48,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import bigfiles, config, db, reports, scanner
+from . import bigfiles, config, db, reports, scan_coordinator
 
 app = FastAPI(title="Fathom", version="0.2.0")
 
@@ -64,6 +62,8 @@ app.add_middleware(
 
 logger = logging.getLogger(__name__)
 _scan_lock = threading.Lock()
+_active_scan: scan_coordinator.ScanSession | None = None
+_active_scan_thread: threading.Thread | None = None
 
 # ---------- 本地边界合同（ISS-022） ----------
 
@@ -148,11 +148,6 @@ async def local_boundary_guard(request: Request, call_next):
     return response
 
 
-# 扫描状态持久化（ISS-007）：三态入 scan_runs 表，/api/scan/status 与 /api/status
-# 改查表，服务重启后状态不丢。陈旧 running 判定：du 全盘实测 5-15 分钟（DEC-002），
-# 超过 1 小时仍未结束即视为上次进程中断，在状态读取时收尾为 failed。
-SCAN_STALE_SECONDS = 3600
-
 # 树接口单次返回的目录上限（防止极端情况下响应过大）
 TREE_MAX_NODES = 20000
 
@@ -167,79 +162,9 @@ def _latest_snapshots(conn: sqlite3.Connection, n: int = 2) -> list[sqlite3.Row]
     ).fetchall()
 
 
-def _finalize_running_runs(
-    conn: sqlite3.Connection, max_age_seconds: float | None = None
-) -> int:
-    """把遗留的 running 记录收尾为 failed，返回收尾条数（不提交，由调用方 commit）。
-
-    - max_age_seconds=None：收尾全部。仅限调用方已持有 _scan_lock 的路径——
-      单 Web 进程约定下视为遗留；不能识别其他进程 owner（ISS-020）；
-    - 否则只收尾 started_at 早于该时长的（状态读取路径的超时判定）。
-    """
-    now = dt.datetime.now().isoformat(timespec="seconds")
-    if max_age_seconds is None:
-        cur = conn.execute(
-            "UPDATE scan_runs SET status='failed', finished_at=?, "
-            "message='服务退出，扫描中断' WHERE status='running'",
-            (now,),
-        )
-    else:
-        cutoff = (
-            dt.datetime.now() - dt.timedelta(seconds=max_age_seconds)
-        ).isoformat(timespec="seconds")
-        cur = conn.execute(
-            "UPDATE scan_runs SET status='failed', finished_at=?, message=? "
-            "WHERE status='running' AND started_at <= ?",
-            (now, f"扫描超时：超过 {int(max_age_seconds) // 60} 分钟未完成，视为服务中断", cutoff),
-        )
-    return cur.rowcount
-
-
 def _latest_scan_state(conn: sqlite3.Connection) -> dict:
-    """scan_runs 最新一条 -> 扫描状态（原内存态形状，新增 id/status 字段）。
-
-    本进程持有 _scan_lock 时扫描确在进行，running 如实上报；锁空闲而表中仍有
-    running 按单 Web 进程约定视为遗留，超过 SCAN_STALE_SECONDS 即收尾（重启后"如实报告或
-    超时收尾"的判定就在这里）。
-    """
-    if not _scan_lock.locked():
-        if _finalize_running_runs(conn, SCAN_STALE_SECONDS):
-            conn.commit()
-    row = conn.execute("SELECT * FROM scan_runs ORDER BY id DESC LIMIT 1").fetchone()
-    if row is None:
-        return {"id": None, "status": None, "running": False, "started_at": None,
-                "finished_at": None, "result": None, "error": None}
-    result, error = None, None
-    if row["status"] == "done":
-        if row["message"]:
-            try:
-                result = json.loads(row["message"])
-            except ValueError:
-                result = None  # 异常数据不让状态接口 500
-    elif row["status"] == "failed":
-        error = row["message"]
-    return {
-        "id": row["id"],
-        "status": row["status"],
-        "running": row["status"] == "running",
-        "started_at": row["started_at"],
-        "finished_at": row["finished_at"],
-        "result": result,
-        "error": error,
-    }
-
-
-def _set_run_status(run_id: int, status: str, message: str | None) -> None:
-    """更新一条 scan_runs 的结束态（done/failed），独立连接，供后台线程收尾。"""
-    conn = _get_conn()
-    try:
-        conn.execute(
-            "UPDATE scan_runs SET status=?, message=?, finished_at=? WHERE id=?",
-            (status, message, dt.datetime.now().isoformat(timespec="seconds"), run_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    """扫描状态来自跨入口生命周期详情；读取本身不推断 owner 已死亡。"""
+    return scan_coordinator.latest_scan_state(conn)
 
 
 @app.get("/api/status")
@@ -424,57 +349,50 @@ def api_bootstrap():
 
 @app.post("/api/scan")
 def api_scan():
+    global _active_scan, _active_scan_thread
     if not _scan_lock.acquire(blocking=False):
         return JSONResponse({"ok": False, "message": "已有扫描在进行中"}, status_code=409)
-
-    conn = None
     try:
-        conn = _get_conn()
-        # 仅在单 Web 进程约定下恢复遗留记录；跨进程 owner 由 ISS-020 补齐
-        _finalize_running_runs(conn)
-        cur = conn.execute(
-            "INSERT INTO scan_runs(started_at, status) VALUES (?, 'running')",
-            (dt.datetime.now().isoformat(timespec="seconds"),),
+        session = scan_coordinator.start_scan(source="api")
+        _active_scan = session
+        run_id = session.run_id
+    except scan_coordinator.ScanBusyError as exc:
+        _scan_lock.release()
+        return JSONResponse(
+            {"ok": False, "message": "已有扫描在进行中", "owner": {
+                "source": exc.owner.get("source"),
+                "started_at": exc.owner.get("started_at"),
+            }},
+            status_code=409,
         )
-        run_id = cur.lastrowid
-        conn.commit()
     except Exception:
         _scan_lock.release()
         raise
-    finally:
-        if conn is not None:
-            conn.close()
 
     def _run():
-        conn = None
+        global _active_scan, _active_scan_thread
         try:
-            conn = _get_conn()
-            sid = scanner.create_snapshot(conn)
-            report_path = reports.write_daily_report(conn, sid)
-            pruned = scanner.prune_snapshots(conn)
-            _set_run_status(run_id, "done", json.dumps(
-                {"snapshot_id": sid, "report": str(report_path), "pruned": pruned},
-                ensure_ascii=False))
+            session.execute()
         except Exception as exc:  # noqa: BLE001 - 状态需如实回传前端
-            if conn is not None:
-                conn.rollback()  # 先释放失败阶段的写事务，独立连接才能记录 failed
-            try:
-                _set_run_status(run_id, "failed", str(exc))
-            except Exception:
-                logger.exception("扫描失败状态无法持久化：run_id=%s", run_id)
+            logger.info("扫描结束：run_id=%s, result=%r", run_id, exc)
         finally:
-            if conn is not None:
-                conn.close()
+            _active_scan = None
+            _active_scan_thread = None
             _scan_lock.release()
 
     try:
-        threading.Thread(target=_run, daemon=True).start()
+        thread = threading.Thread(target=_run, daemon=False, name=f"fathom-scan-{run_id}")
+        _active_scan_thread = thread
+        thread.start()
     except Exception as exc:
         try:
-            _set_run_status(run_id, "failed", f"扫描线程启动失败：{exc}")
+            session._finish("failed", f"扫描线程启动失败：{exc}")
         except Exception:
             logger.exception("线程启动失败状态无法持久化：run_id=%s", run_id)
         finally:
+            session.lease.release()
+            _active_scan = None
+            _active_scan_thread = None
             _scan_lock.release()
         return JSONResponse({"ok": False, "message": "扫描线程启动失败", "run_id": run_id},
                             status_code=503)
@@ -489,14 +407,30 @@ def api_scan_status(history: int = Query(0, ge=0, le=100)):
         state = _latest_scan_state(conn)
         if history:
             rows = conn.execute(
-                "SELECT id, started_at, finished_at, status, message FROM scan_runs "
-                "ORDER BY id DESC LIMIT ?",
+                "SELECT r.id, r.started_at, r.finished_at, r.status, r.message, "
+                "d.source, d.phase, d.snapshot_id, d.report_status, "
+                "d.notification_status, d.pruned_count FROM scan_runs r "
+                "LEFT JOIN scan_run_details d ON d.run_id=r.id "
+                "ORDER BY r.id DESC LIMIT ?",
                 (history,),
             ).fetchall()
             state["runs"] = [dict(r) for r in rows]
         return state
     finally:
         conn.close()
+
+
+def _shutdown_scan() -> None:
+    """服务只取消并回收自己创建的 du；从不读取/终止外部 owner PID。"""
+    session = _active_scan
+    thread = _active_scan_thread
+    if session is not None:
+        session.cancel()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=8)
+
+
+app.router.add_event_handler("shutdown", _shutdown_scan)
 
 
 # ---------- v0.2：目录浏览器 / 日报档案 / Finder 打开 ----------

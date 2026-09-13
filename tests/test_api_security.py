@@ -22,7 +22,7 @@ import threading
 import pytest
 from fastapi.testclient import TestClient
 
-from fathom import api, config, db
+from fathom import api, config, db, scan_coordinator
 
 EVIL_ORIGIN = "http://evil.example"
 TAURI_LOADER_ORIGIN = "tauri://localhost"
@@ -84,10 +84,13 @@ def root_fs():
 
 
 def _mock_scan_kernel(monkeypatch) -> None:
-    monkeypatch.setattr(api.scanner, "create_snapshot", lambda conn, *a, **k: 9001)
-    monkeypatch.setattr(api.reports, "write_daily_report",
-                        lambda conn, sid: "/tmp/fake.md")
-    monkeypatch.setattr(api.scanner, "prune_snapshots", lambda conn: 0)
+    monkeypatch.setattr(scan_coordinator.scanner, "create_snapshot",
+                        lambda conn, *a, **k: 9001)
+    monkeypatch.setattr(scan_coordinator.reports, "write_daily_report",
+                        lambda conn, sid, **kwargs: "/tmp/fake.md")
+    monkeypatch.setattr(scan_coordinator.reports, "notify_for_snapshot",
+                        lambda conn, sid: True)
+    monkeypatch.setattr(scan_coordinator.scanner, "prune_snapshots", lambda conn: 0)
 
 
 def _scan_run_count() -> int:

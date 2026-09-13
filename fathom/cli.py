@@ -13,33 +13,60 @@
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import socket
 import sys
 from pathlib import Path
 
-from . import bigfiles, config, db, launchd, reports, scanner
+from . import bigfiles, config, db, launchd, reports, scan_coordinator
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
     config.ensure_runtime_dirs()
+    root = Path(args.root).expanduser() if args.root else config.DEFAULT_ROOT
+    source = args.source
+    if source is None:
+        source = (
+            "scheduled"
+            if os.environ.get("XPC_SERVICE_NAME") == config.SCAN_LABEL
+            else "cli"
+        )
+    print(f"开始扫描 {root} ……（1100 万文件量级可能需要 5-15 分钟）")
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    def _cancel_on_sigterm(_signum, _frame):
+        raise scan_coordinator.ScanCancelledError("收到 SIGTERM，扫描已取消")
+    signal.signal(signal.SIGTERM, _cancel_on_sigterm)
+    try:
+        _run_id, result = scan_coordinator.run_scan(source=source, root=root)
+    except scan_coordinator.ScanBusyError:
+        print("已有扫描在进行中，本次未进入 du", file=sys.stderr)
+        return 2
+    except (scan_coordinator.ScanCancelledError, KeyboardInterrupt):
+        print("扫描已取消，子进程与扫描锁已回收", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"扫描失败：{exc}", file=sys.stderr)
+        return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+
     conn = db.connect()
     try:
-        root = Path(args.root).expanduser() if args.root else config.DEFAULT_ROOT
-        print(f"开始扫描 {root} ……（1100 万文件量级可能需要 5-15 分钟）")
-        sid = scanner.create_snapshot(conn, root)
-        pruned = scanner.prune_snapshots(conn)
+        sid = result["snapshot_id"]
         snap = conn.execute("SELECT * FROM snapshots WHERE id = ?", (sid,)).fetchone()
         print(
             f"完成：快照 #{sid}，目录 {snap['dir_count']} 个"
             f"（无权限 {snap['denied_count']}），总量 {snap['total_kb'] // 1024 // 1024} GB"
         )
-        if pruned:
-            print(f"已清理 {pruned} 个过期快照")
-        try:
-            path = reports.write_daily_report(conn, sid)
-            print(f"日报已生成：{path}")
-        except ValueError:
+        if result["pruned"]:
+            print(f"已清理 {result['pruned']} 个过期快照")
+        if result["report"]:
+            print(f"日报已生成：{result['report']}")
+        elif result["report_status"] == "not_available":
             print("当前只有 1 个快照，明天此时可生成首份对比日报")
+        for warning in result["warnings"]:
+            print(f"提示：{warning}", file=sys.stderr)
     finally:
         conn.close()
     return 0
@@ -154,6 +181,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("scan", help="扫描一次并生成日报")
     p.add_argument("--root", help="扫描根路径（默认 $HOME）")
+    p.add_argument("--source", choices=("cli", "scheduled"),
+                   help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser("report", help="对比最近两个快照输出日报")

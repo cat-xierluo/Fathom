@@ -16,10 +16,11 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from fathom import api, config, db
+from fathom import api, config, db, scan_coordinator
 
 EMPTY_STATE = {"id": None, "status": None, "running": False, "started_at": None,
-               "finished_at": None, "result": None, "error": None}
+               "finished_at": None, "result": None, "error": None,
+               "source": None, "phase": None}
 
 
 @pytest.fixture(autouse=True)
@@ -50,10 +51,11 @@ def _mock_scan_kernel(monkeypatch, blocker: threading.Event | None = None,
             raise RuntimeError("du 模拟失败")
         return 4321
 
-    monkeypatch.setattr(api.scanner, "create_snapshot", fake_create_snapshot)
-    monkeypatch.setattr(api.reports, "write_daily_report",
-                        lambda conn, sid: "/tmp/fake-report.md")
-    monkeypatch.setattr(api.scanner, "prune_snapshots", lambda conn: 2)
+    monkeypatch.setattr(scan_coordinator.scanner, "create_snapshot", fake_create_snapshot)
+    monkeypatch.setattr(scan_coordinator.reports, "write_daily_report",
+                        lambda conn, sid, **kwargs: "/tmp/fake-report.md")
+    monkeypatch.setattr(scan_coordinator.reports, "notify_for_snapshot", lambda conn, sid: True)
+    monkeypatch.setattr(scan_coordinator.scanner, "prune_snapshots", lambda conn: 2)
 
 
 def _wait_until(pred, timeout: float = 5.0, interval: float = 0.02) -> bool:
@@ -112,8 +114,11 @@ class TestLifecycle:
         st = client.get("/api/scan/status").json()
         assert st["running"] is False
         assert st["finished_at"] and st["error"] is None
-        assert st["result"] == {"snapshot_id": 4321,
-                                "report": "/tmp/fake-report.md", "pruned": 2}
+        assert st["result"] == {
+            "snapshot_id": 4321, "report": "/tmp/fake-report.md", "pruned": 2,
+            "report_status": "written", "notification_status": "submitted",
+            "warnings": [], "source": "api",
+        }
 
     def test_failed(self, client, monkeypatch):
         _mock_scan_kernel(monkeypatch, fail=True)
@@ -154,21 +159,20 @@ class TestRestartRecovery:
         st = client.get("/api/scan/status").json()
         assert st["running"] is True and st["status"] == "running"
 
-    def test_stale_running_finalized_on_read(self, client):
-        """started_at 超过上限：读取时收尾为 failed，且落库可查。"""
-        rid = _insert_run("running", _iso(api.SCAN_STALE_SECONDS + 60))
+    def test_stale_running_not_finalized_on_read(self, client):
+        """只读状态不能因墙钟超时猜测跨进程 owner 已死亡。"""
+        rid = _insert_run("running", _iso(3660))
 
         st = client.get("/api/scan/status").json()
-        assert st["running"] is False
-        assert st["status"] == "failed"
-        assert "中断" in st["error"]
-        assert st["finished_at"]
+        assert st["running"] is True
+        assert st["status"] == "running"
+        assert st["finished_at"] is None
 
         conn = db.connect()
         try:
             row = conn.execute(
                 "SELECT * FROM scan_runs WHERE id=?", (rid,)).fetchone()
-            assert row["status"] == "failed"  # 收尾已持久化，历次记录可查
+            assert row["status"] == "running"
         finally:
             conn.close()
 
@@ -184,7 +188,7 @@ class TestRestartRecovery:
         runs = client.get("/api/scan/status?history=10").json()["runs"]
         assert len(runs) == 2
         assert runs[0]["status"] == "done"    # 新扫描（id 大在前）
-        assert runs[1]["status"] == "failed"  # 遗留 running 被收尾
+        assert runs[1]["status"] == "interrupted"  # 取得全局锁后安全收尾遗留 owner
 
 
 class TestHistoryAndRobustness:
@@ -291,9 +295,9 @@ def test_partial_write_failure_can_persist_failed_state(client, monkeypatch):
     def broken_prune(conn):
         conn.execute("UPDATE snapshots SET total_kb=0")
         raise RuntimeError("prune interrupted after write")
-    monkeypatch.setattr(api.scanner, "prune_snapshots", broken_prune)
+    monkeypatch.setattr(scan_coordinator.scanner, "prune_snapshots", broken_prune)
     assert client.post("/api/scan").status_code == 200
     assert _wait_until(lambda: not api._scan_lock.locked(), timeout=8)
     state = client.get("/api/scan/status").json()
-    assert state["status"] == "failed"
-    assert "prune interrupted" in state["error"]
+    assert state["status"] == "done"
+    assert any("prune interrupted" in item for item in state["result"]["warnings"])

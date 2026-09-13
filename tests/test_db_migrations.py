@@ -67,10 +67,11 @@ def test_partial_known_v0_schema_is_completed(tmp_path):
 
     conn = db.connect(path)
     try:
-        assert db.schema_version(conn) == 1
+        assert db.schema_version(conn) == db.SCHEMA_VERSION
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-        assert tables == {"snapshots", "entries", "volume_stats", "scan_runs"}
+        assert tables == {"snapshots", "entries", "volume_stats", "scan_runs",
+                          "scan_run_details"}
         assert conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 1
     finally:
         conn.close()

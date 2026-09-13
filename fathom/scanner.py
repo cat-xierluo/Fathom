@@ -31,7 +31,10 @@ import datetime as dt
 import os
 import sqlite3
 import subprocess
+import signal
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,6 +66,26 @@ class InvalidScanError(RuntimeError):
 
     抛出时数据库没有任何写入，当日旧快照不受影响。
     """
+
+
+class ScanInterruptedError(RuntimeError):
+    """扫描被自己的调用方取消或超过 du 安全时限。"""
+
+
+_DU_CONTEXT = threading.local()
+
+
+@contextmanager
+def du_process_context(
+    *, inherited_fd: int, cancel_event: threading.Event, timeout_seconds: float = 3600
+):
+    """只把本次扫描锁传给本任务创建的 du，并提供协作式取消。"""
+    previous = getattr(_DU_CONTEXT, "value", None)
+    _DU_CONTEXT.value = (inherited_fd, cancel_event, timeout_seconds)
+    try:
+        yield
+    finally:
+        _DU_CONTEXT.value = previous
 
 
 @dataclass(frozen=True)
@@ -185,18 +208,65 @@ def run_du(root: Path) -> DuResult:
     stderr_tail 截尾。
     """
     started = time.monotonic()
-    proc = subprocess.run(
-        ["/usr/bin/du", "-xk", str(root)],
-        capture_output=True,
-    )
+    inherited_fd = None
+    cancel_event = None
+    context = getattr(_DU_CONTEXT, "value", None)
+    if context is not None:
+        inherited_fd, cancel_event, timeout_seconds = context
+    if context is None:
+        # 保留扫描器作为库被直接调用时的原合同；产品入口全部经协调器进入下支。
+        completed = subprocess.run(
+            ["/usr/bin/du", "-xk", str(root)], capture_output=True
+        )
+        stdout, stderr_raw, returncode = (
+            completed.stdout, completed.stderr, completed.returncode
+        )
+    else:
+        proc = subprocess.Popen(
+            ["/usr/bin/du", "-xk", str(root)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            pass_fds=(inherited_fd,),
+        )
+        deadline = started + timeout_seconds
+        try:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ScanInterruptedError("扫描已取消")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ScanInterruptedError(
+                        f"du 超过 {timeout_seconds:g} 秒安全时限"
+                    )
+                try:
+                    stdout, stderr_raw = proc.communicate(timeout=min(0.2, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        except BaseException:
+            # start_new_session=True 使 pgid 只属于本任务创建的 du；绝不按外部 PID 杀进程。
+            if proc.poll() is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                    proc.wait(timeout=3)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    if proc.poll() is None:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        proc.wait()
+            raise
+        returncode = proc.returncode
     elapsed = time.monotonic() - started
-    sizes, path_error_count, path_error_sample = _parse_du_stdout(proc.stdout)
+    sizes, path_error_count, path_error_sample = _parse_du_stdout(stdout)
     invalid_path_count, invalid_path_sample = _validate_du_paths(sizes, root)
     if invalid_path_count:
         path_error_count += invalid_path_count
         if not path_error_sample:
             path_error_sample = invalid_path_sample
-    stderr = _as_bytes(proc.stderr).decode("utf-8", errors="replace")
+    stderr = _as_bytes(stderr_raw).decode("utf-8", errors="replace")
     denied = 0
     other_error_count = 0
     other_error_sample = ""
@@ -211,7 +281,7 @@ def run_du(root: Path) -> DuResult:
                 other_error_sample = line
     return DuResult(
         sizes=sizes,
-        exit_code=proc.returncode,
+        exit_code=returncode,
         denied_count=denied,
         elapsed_seconds=elapsed,
         stderr_tail=tuple(stderr.splitlines()[-4:]),

@@ -257,12 +257,15 @@ def render_markdown(
     return "\n".join(lines) + "\n"
 
 
-def write_daily_report(conn: sqlite3.Connection, sid: int) -> Path:
-    """对比最近两个快照生成日报文件，返回路径。"""
+def _report_inputs(conn: sqlite3.Connection, sid: int):
     snaps = conn.execute(
-        "SELECT * FROM snapshots ORDER BY created_at DESC, id DESC LIMIT 2"
+        "SELECT * FROM snapshots WHERE root=(SELECT root FROM snapshots WHERE id=?) "
+        "AND (created_at < (SELECT created_at FROM snapshots WHERE id=?) "
+        "OR (created_at = (SELECT created_at FROM snapshots WHERE id=?) AND id <= ?)) "
+        "ORDER BY created_at DESC, id DESC LIMIT 2",
+        (sid, sid, sid, sid),
     ).fetchall()
-    if len(snaps) < 2:
+    if len(snaps) < 2 or snaps[0]["id"] != sid:
         raise ValueError("至少需要两个快照才能生成对比报告")
 
     new_meta, old_meta = snaps[0], snaps[1]
@@ -275,11 +278,30 @@ def write_daily_report(conn: sqlite3.Connection, sid: int) -> Path:
         return (r["total_bytes"], r["free_bytes"]) if r else None
 
     new_vol = vol(new_meta["id"])
-    md = render_markdown(diff, old_meta, new_meta, vol(old_meta["id"]), new_vol)
+    return diff, old_meta, new_meta, vol(old_meta["id"]), new_vol
+
+
+def write_daily_report(
+    conn: sqlite3.Connection, sid: int, *, notify_after_write: bool = True
+) -> Path:
+    """对比指定快照与同根前一快照生成日报文件，返回路径。
+
+    ``notify_after_write=False`` 供统一协调器把报告和通知分阶段记录；默认值
+    保持既有直接调用合同。
+    """
+    diff, old_meta, new_meta, old_vol, new_vol = _report_inputs(conn, sid)
+    md = render_markdown(diff, old_meta, new_meta, old_vol, new_vol)
     out = config.REPORTS_DIR / f"{new_meta['created_at'][:10]}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(md, encoding="utf-8")
     # 通知放在日报落盘之后，且 notify 自吞全部异常：通知失败不影响日报（ISS-003）。
     # CLI scan 与 API 手动扫描都经过本函数，两路自动覆盖。
-    notify.notify_scan_done(diff, new_vol[1] if new_vol else None)
+    if notify_after_write:
+        notify.notify_scan_done(diff, new_vol[1] if new_vol else None)
     return out
+
+
+def notify_for_snapshot(conn: sqlite3.Connection, sid: int) -> bool:
+    """为已成功写入日报的指定快照尝试通知，不修改报告或快照。"""
+    diff, _old_meta, _new_meta, _old_vol, new_vol = _report_inputs(conn, sid)
+    return notify.notify_scan_done(diff, new_vol[1] if new_vol else None)

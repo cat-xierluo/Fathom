@@ -1,0 +1,254 @@
+"""ISS-025：单一运行配置、CLI/API 隔离及端口冲突。"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import socket
+import sqlite3
+import subprocess
+import sys
+import time
+from urllib.request import urlopen
+
+import pytest
+
+from fathom import config
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+MAIN = REPO_ROOT / "main.py"
+
+
+def _clean_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for name in (
+        "FATHOM_RUNTIME_MODE", "FATHOM_RUNTIME_DIR", "FATHOM_SCAN_ROOT",
+        "FATHOM_PORT", "FATHOM_RESOURCE_DIR", "FATHOM_DB",
+    ):
+        env.pop(name, None)
+    return env
+
+
+def _unused_port() -> int:
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+    finally:
+        sock.close()
+
+
+def test_explicit_runtime_root_derives_every_writable_path(tmp_path):
+    runtime = tmp_path / "runtime"
+    scan_root = tmp_path / "synthetic-root"
+    resources = tmp_path / "read-only-resources"
+    value = config.RuntimeConfig.from_env({
+        "FATHOM_RUNTIME_DIR": str(runtime),
+        "FATHOM_SCAN_ROOT": str(scan_root),
+        "FATHOM_RESOURCE_DIR": str(resources),
+        "FATHOM_PORT": "18799",
+    }, project_root=tmp_path / "source", home=tmp_path / "fake-home")
+
+    assert value.runtime_dir == runtime
+    assert value.data_dir == runtime / "data"
+    assert value.db_path == runtime / "data" / "fathom.db"
+    assert value.reports_dir == runtime / "reports"
+    assert value.logs_dir == runtime / "logs"
+    assert value.scan_root == scan_root
+    assert value.frontend_dir == resources / "frontend"
+    assert value.port == 18799
+    assert value.public_values()["runtime_dir"] == str(runtime)
+
+
+def test_release_default_uses_application_support_not_resources(tmp_path):
+    home = tmp_path / "home"
+    resources = tmp_path / "Fathom.app" / "Contents" / "Resources"
+    value = config.RuntimeConfig.from_env({
+        "FATHOM_RUNTIME_MODE": "release",
+        "FATHOM_RESOURCE_DIR": str(resources),
+    }, project_root=tmp_path / "source", home=home)
+
+    assert value.runtime_dir == home / "Library" / "Application Support" / "Fathom"
+    assert value.resource_dir == resources
+    assert not str(value.db_path).startswith(str(resources))
+
+
+def test_mode_override_changes_default_runtime_root(tmp_path):
+    home = Path.home()
+    value = config.RuntimeConfig.from_env(
+        {}, project_root=tmp_path / "source", home=home
+    ).with_overrides(mode="release")
+    assert value.runtime_dir == home / "Library" / "Application Support" / "Fathom"
+    assert value.db_path == value.runtime_dir / "data" / "fathom.db"
+
+
+def test_legacy_fathom_db_now_isolates_all_writes(tmp_path):
+    legacy_db = tmp_path / "isolated" / "custom.db"
+    value = config.RuntimeConfig.from_env(
+        {"FATHOM_DB": str(legacy_db)},
+        project_root=tmp_path / "source",
+        home=tmp_path / "home",
+    )
+
+    assert value.runtime_dir == legacy_db.parent
+    assert value.db_path == legacy_db
+    for path in (value.data_dir, value.reports_dir, value.logs_dir):
+        assert path.is_relative_to(value.runtime_dir)
+    assert value.with_overrides().db_path == legacy_db
+
+
+def test_invalid_relative_path_port_and_split_db_fail_closed(tmp_path):
+    with pytest.raises(config.ConfigurationError, match="绝对路径"):
+        config.RuntimeConfig.from_env(
+            {"FATHOM_RUNTIME_DIR": "relative"}, project_root=tmp_path, home=tmp_path
+        )
+    with pytest.raises(config.ConfigurationError, match="1..65535"):
+        config.RuntimeConfig.from_env(
+            {"FATHOM_PORT": "0"}, project_root=tmp_path, home=tmp_path
+        )
+    with pytest.raises(config.ConfigurationError, match="必须位于"):
+        config.RuntimeConfig.from_env({
+            "FATHOM_RUNTIME_DIR": str(tmp_path / "runtime"),
+            "FATHOM_DB": str(tmp_path / "outside.db"),
+        }, project_root=tmp_path, home=tmp_path)
+
+
+def test_runtime_directory_creation_never_touches_resource_tree(tmp_path):
+    runtime = tmp_path / "runtime"
+    resources = tmp_path / "readonly"
+    resources.mkdir()
+    resources.chmod(0o555)
+    value = config.RuntimeConfig.from_env({
+        "FATHOM_RUNTIME_DIR": str(runtime),
+        "FATHOM_RESOURCE_DIR": str(resources),
+    }, project_root=tmp_path / "source", home=tmp_path / "home")
+    before = list(resources.iterdir())
+
+    config.ensure_runtime_dirs(value)
+
+    assert [value.data_dir, value.reports_dir, value.logs_dir] == [
+        runtime / "data", runtime / "reports", runtime / "logs"
+    ]
+    assert all(path.is_dir() for path in (value.data_dir, value.reports_dir, value.logs_dir))
+    assert list(resources.iterdir()) == before
+
+
+def test_cli_scan_from_unrelated_cwd_stays_inside_explicit_runtime(tmp_path):
+    runtime = tmp_path / "runtime"
+    scan_root = tmp_path / "synthetic-root"
+    unrelated = tmp_path / "unrelated-cwd"
+    scan_root.mkdir()
+    unrelated.mkdir()
+    (scan_root / "small.txt").write_text("synthetic", encoding="utf-8")
+    port = _unused_port()
+
+    proc = subprocess.run(
+        [sys.executable, str(MAIN), "--runtime-dir", str(runtime),
+         "--scan-root", str(scan_root), "--port", str(port), "scan"],
+        cwd=unrelated,
+        env=_clean_env(),
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    db_path = runtime / "data" / "fathom.db"
+    assert db_path.is_file()
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute("SELECT root FROM snapshots").fetchone()[0] == str(scan_root)
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    finally:
+        conn.close()
+    assert not list(unrelated.iterdir())
+    assert not (scan_root / "data").exists()
+    assert not (scan_root / "reports").exists()
+    assert not (scan_root / "logs").exists()
+
+
+def test_real_api_reports_effective_runtime_values_from_unrelated_cwd(tmp_path):
+    runtime = tmp_path / "runtime"
+    scan_root = tmp_path / "synthetic-root"
+    unrelated = tmp_path / "unrelated-cwd"
+    resources = tmp_path / "read-only-resources"
+    frontend = resources / "frontend"
+    frontend.mkdir(parents=True)
+    (frontend / "index.html").write_text("<!doctype html><title>isolated</title>")
+    frontend.chmod(0o555)
+    resources.chmod(0o555)
+    scan_root.mkdir()
+    unrelated.mkdir()
+    port = _unused_port()
+    proc = subprocess.Popen(
+        [sys.executable, str(MAIN), "--runtime-dir", str(runtime),
+         "--scan-root", str(scan_root), "--port", str(port),
+         "--resource-dir", str(resources), "serve"],
+        cwd=unrelated,
+        env=_clean_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        body = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                with urlopen(f"http://127.0.0.1:{port}/api/status", timeout=0.5) as response:
+                    body = json.load(response)
+                    break
+            except OSError:
+                time.sleep(0.05)
+        assert body is not None, (proc.poll(), proc.stderr.read() if proc.poll() is not None else "")
+        assert body["root"] == str(scan_root)
+        assert body["port"] == port
+        assert body["runtime"] == {
+            "mode": "development",
+            "runtime_dir": str(runtime),
+            "data_dir": str(runtime / "data"),
+            "reports_dir": str(runtime / "reports"),
+            "logs_dir": str(runtime / "logs"),
+            "db_path": str(runtime / "data" / "fathom.db"),
+            "scan_root": str(scan_root),
+            "resource_dir": str(resources),
+            "frontend_dir": str(frontend),
+            "host": "127.0.0.1",
+            "port": port,
+            "schema_version": 1,
+        }
+        with urlopen(f"http://127.0.0.1:{port}/", timeout=1) as response:
+            assert b"isolated" in response.read()
+        assert not list(unrelated.iterdir())
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+def test_occupied_port_exits_nonzero_without_touching_owner(tmp_path):
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(MAIN), "--runtime-dir", str(tmp_path / "runtime"),
+             "--scan-root", str(tmp_path), "--port", str(port), "serve"],
+            cwd=tmp_path,
+            env=_clean_env(),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert proc.returncode == 3
+        assert "已被占用" in proc.stderr and "未触碰占用进程" in proc.stderr
+        assert listener.getsockname()[1] == port
+    finally:
+        listener.close()

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 from pathlib import Path
 
@@ -109,6 +110,7 @@ def cmd_status(_: argparse.Namespace) -> int:
         db_size = config.DB_PATH.stat().st_size / 1024 / 1024 if config.DB_PATH.exists() else 0
         print(f"数据库大小：{db_size:.1f} MB（{config.DB_PATH}）")
         print(f"Web 界面：http://{config.HOST}:{config.PORT}")
+        print(f"运行根：{config.get_runtime_config().runtime_dir}")
     finally:
         conn.close()
     return 0
@@ -118,6 +120,19 @@ def cmd_serve(_: argparse.Namespace) -> int:
     import uvicorn
 
     config.ensure_runtime_dirs()
+    # 先用相同地址做无副作用的占用检查；绝不向占用者发请求或信号。
+    # 发行版的身份探测/动态让位属 ISS-009/029，本卡固定端口冲突退 3。
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((config.HOST, config.PORT))
+    except OSError as exc:
+        print(
+            f"端口 {config.HOST}:{config.PORT} 已被占用，未触碰占用进程：{exc}",
+            file=sys.stderr,
+        )
+        return 3
+    finally:
+        probe.close()
     uvicorn.run(
         "fathom.api:app",
         host=config.HOST,
@@ -130,6 +145,11 @@ def cmd_serve(_: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fathom", description="Fathom ：目录大小历史追踪")
+    parser.add_argument("--runtime-dir", help="可写运行根（data/reports/logs 均由此派生）")
+    parser.add_argument("--scan-root", help="默认受监控根（API/status/scan 共用）")
+    parser.add_argument("--port", type=int, help="回环 HTTP 端口")
+    parser.add_argument("--resource-dir", help="只读前端资源根")
+    parser.add_argument("--runtime-mode", choices=("development", "release"))
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("scan", help="扫描一次并生成日报")
@@ -159,6 +179,13 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=lambda a: (launchd.uninstall(), 0)[1])
 
     args = parser.parse_args(argv)
+    config.configure(
+        runtime_dir=args.runtime_dir,
+        scan_root=args.scan_root,
+        port=args.port,
+        resource_dir=args.resource_dir,
+        mode=args.runtime_mode,
+    )
     return args.func(args)
 
 

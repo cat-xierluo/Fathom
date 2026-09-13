@@ -1,49 +1,274 @@
-"""fathom 全局配置。
+"""Fathom 运行配置。
 
-所有路径、阈值、端口集中在此，便于调整与测试注入。
-数据库路径可用环境变量 FATHOM_DB 覆盖（冒烟测试/多实例场景）。
+所有可写路径从一个运行根派生，避免发行后把数据写进只读的
+``.app``/PyInstaller 资源目录。环境变量是 helper、CLI 和 API 的共同入口：
+
+``FATHOM_RUNTIME_MODE``
+    ``development``（默认，运行根为源码根）或 ``release``（默认运行
+    根为 ``~/Library/Application Support/Fathom``）。
+``FATHOM_RUNTIME_DIR``
+    显式运行根；``data/``、``reports/``、``logs/`` 全部由此派生。
+``FATHOM_SCAN_ROOT`` / ``FATHOM_PORT``
+    受监控根和回环 HTTP 端口。
+``FATHOM_RESOURCE_DIR``
+    只读应用资源根；默认为 PyInstaller ``_MEIPASS`` 或源码根。
+
+``FATHOM_DB`` 仅作旧入口兼容：未指定运行根时，它的父目录成为运行
+根，不再出现“只隔离 DB，其他仍写源码树”的半隔离状态。
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
 import os
 from pathlib import Path
+import sys
+from typing import Mapping
 
-# 项目根目录（fathom/ 的上一级）
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-# 运行时目录（均已 gitignore，见 DEC-004）
-DATA_DIR = PROJECT_ROOT / "data"
-REPORTS_DIR = PROJECT_ROOT / "reports"
-LOGS_DIR = PROJECT_ROOT / "logs"
-DB_PATH = Path(os.environ.get("FATHOM_DB") or (DATA_DIR / "fathom.db"))
-FRONTEND_DIR = PROJECT_ROOT / "frontend"
-
-# Web 服务
 HOST = "127.0.0.1"
-PORT = 7952
 
-# 扫描
-DEFAULT_ROOT = Path.home()          # 默认扫描整个用户主目录
-MIN_DIR_KB = 10 * 1024              # 只记录 >= 10MB 的目录（DEC-005）
 
-# 快照保留策略：近 35 天保留每日快照，更早的每周保留 1 份，最多 12 周（DEC-006）
+class ConfigurationError(ValueError):
+    """运行配置无效；调用方应终止启动，不用隐式默认继续。"""
+
+
+def _absolute_path(raw: str | os.PathLike[str], *, name: str) -> Path:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ConfigurationError(f"{name} 必须是绝对路径：{path}")
+    return path.resolve(strict=False)
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _port(raw: str | int) -> int:
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError(f"FATHOM_PORT 必须是整数：{raw!r}") from exc
+    if not 1 <= value <= 65535:
+        raise ConfigurationError(f"FATHOM_PORT 必须在 1..65535：{value}")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeConfig:
+    """单一运行配置快照；所有路径均为规范化绝对路径。"""
+
+    mode: str
+    project_root: Path
+    resource_dir: Path
+    frontend_dir: Path
+    runtime_dir: Path
+    data_dir: Path
+    reports_dir: Path
+    logs_dir: Path
+    db_path: Path
+    scan_root: Path
+    host: str
+    port: int
+
+    @classmethod
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        *,
+        project_root: Path = PROJECT_ROOT,
+        home: Path | None = None,
+    ) -> "RuntimeConfig":
+        env = os.environ if environ is None else environ
+        project_root = _absolute_path(project_root, name="project_root")
+        home = _absolute_path(home or Path.home(), name="home")
+        mode = env.get("FATHOM_RUNTIME_MODE", "development").strip().lower()
+        if mode not in {"development", "release"}:
+            raise ConfigurationError(
+                "FATHOM_RUNTIME_MODE 只能是 development 或 release"
+            )
+
+        legacy_db_raw = env.get("FATHOM_DB")
+        runtime_raw = env.get("FATHOM_RUNTIME_DIR")
+        if runtime_raw:
+            runtime_dir = _absolute_path(runtime_raw, name="FATHOM_RUNTIME_DIR")
+        elif legacy_db_raw:
+            # 旧变量升级为完整隔离语义：所有运行写入都收敛到 DB 父目录。
+            runtime_dir = _absolute_path(legacy_db_raw, name="FATHOM_DB").parent
+        elif mode == "release":
+            runtime_dir = home / "Library" / "Application Support" / "Fathom"
+        else:
+            runtime_dir = project_root
+
+        data_dir = runtime_dir / "data"
+        if legacy_db_raw:
+            db_path = _absolute_path(legacy_db_raw, name="FATHOM_DB")
+            if not _is_within(db_path, runtime_dir):
+                raise ConfigurationError(
+                    f"FATHOM_DB 必须位于 FATHOM_RUNTIME_DIR 内：{db_path}"
+                )
+        else:
+            db_path = data_dir / "fathom.db"
+
+        frozen_resource = getattr(sys, "_MEIPASS", None)
+        resource_dir = _absolute_path(
+            env.get("FATHOM_RESOURCE_DIR") or frozen_resource or project_root,
+            name="FATHOM_RESOURCE_DIR",
+        )
+        scan_root = _absolute_path(
+            env.get("FATHOM_SCAN_ROOT") or home,
+            name="FATHOM_SCAN_ROOT",
+        )
+        return cls(
+            mode=mode,
+            project_root=project_root,
+            resource_dir=resource_dir,
+            frontend_dir=resource_dir / "frontend",
+            runtime_dir=runtime_dir,
+            data_dir=data_dir,
+            reports_dir=runtime_dir / "reports",
+            logs_dir=runtime_dir / "logs",
+            db_path=db_path,
+            scan_root=scan_root,
+            host=HOST,
+            port=_port(env.get("FATHOM_PORT", "7952")),
+        )
+
+    def with_overrides(
+        self,
+        *,
+        runtime_dir: Path | str | None = None,
+        scan_root: Path | str | None = None,
+        port: int | str | None = None,
+        resource_dir: Path | str | None = None,
+        mode: str | None = None,
+    ) -> "RuntimeConfig":
+        target_mode = self.mode if mode is None else mode.strip().lower()
+        if target_mode not in {"development", "release"}:
+            raise ConfigurationError("mode 只能是 development 或 release")
+        mode_changes_default = mode is not None and target_mode != self.mode
+        if runtime_dir is not None:
+            target_runtime = _absolute_path(runtime_dir, name="runtime_dir")
+        elif mode_changes_default:
+            target_runtime = (
+                Path.home() / "Library" / "Application Support" / "Fathom"
+                if target_mode == "release"
+                else self.project_root
+            )
+        else:
+            target_runtime = self.runtime_dir
+        target_resource = (
+            self.resource_dir
+            if resource_dir is None
+            else _absolute_path(resource_dir, name="resource_dir")
+        )
+        # 运行根/模式未改时保留 from_env 已解析的兼容 DB 路径；
+        # 否则 CLI 的空覆盖会意外丢掉 FATHOM_DB。
+        preserve_paths = runtime_dir is None and not mode_changes_default
+        data_dir = self.data_dir if preserve_paths else target_runtime / "data"
+        reports_dir = self.reports_dir if preserve_paths else target_runtime / "reports"
+        logs_dir = self.logs_dir if preserve_paths else target_runtime / "logs"
+        db_path = self.db_path if preserve_paths else data_dir / "fathom.db"
+        return replace(
+            self,
+            mode=target_mode,
+            runtime_dir=target_runtime,
+            data_dir=data_dir,
+            reports_dir=reports_dir,
+            logs_dir=logs_dir,
+            db_path=db_path,
+            scan_root=(
+                self.scan_root
+                if scan_root is None
+                else _absolute_path(scan_root, name="scan_root")
+            ),
+            resource_dir=target_resource,
+            frontend_dir=target_resource / "frontend",
+            port=self.port if port is None else _port(port),
+        )
+
+    def public_values(self) -> dict[str, str | int]:
+        """返回可供 API 查询的实际值（不含令牌或凭据）。"""
+        return {
+            "mode": self.mode,
+            "runtime_dir": str(self.runtime_dir),
+            "data_dir": str(self.data_dir),
+            "reports_dir": str(self.reports_dir),
+            "logs_dir": str(self.logs_dir),
+            "db_path": str(self.db_path),
+            "scan_root": str(self.scan_root),
+            "resource_dir": str(self.resource_dir),
+            "frontend_dir": str(self.frontend_dir),
+            "host": self.host,
+            "port": self.port,
+        }
+
+
+_ACTIVE = RuntimeConfig.from_env()
+
+
+def _publish_compatibility_values(value: RuntimeConfig) -> None:
+    """更新历史模块常量；生产配置真值仍是 ``_ACTIVE``。"""
+    global DATA_DIR, REPORTS_DIR, LOGS_DIR, DB_PATH, FRONTEND_DIR, DEFAULT_ROOT, PORT
+    DATA_DIR = value.data_dir
+    REPORTS_DIR = value.reports_dir
+    LOGS_DIR = value.logs_dir
+    DB_PATH = value.db_path
+    FRONTEND_DIR = value.frontend_dir
+    DEFAULT_ROOT = value.scan_root
+    PORT = value.port
+
+
+_publish_compatibility_values(_ACTIVE)
+
+
+def get_runtime_config() -> RuntimeConfig:
+    return _ACTIVE
+
+
+def configure(
+    *,
+    runtime_dir: Path | str | None = None,
+    scan_root: Path | str | None = None,
+    port: int | str | None = None,
+    resource_dir: Path | str | None = None,
+    mode: str | None = None,
+) -> RuntimeConfig:
+    """在打开任何运行资源前应用显式的进程级 CLI/helper 覆盖。"""
+    global _ACTIVE
+    _ACTIVE = _ACTIVE.with_overrides(
+        runtime_dir=runtime_dir,
+        scan_root=scan_root,
+        port=port,
+        resource_dir=resource_dir,
+        mode=mode,
+    )
+    _publish_compatibility_values(_ACTIVE)
+    return _ACTIVE
+
+
+def ensure_runtime_dirs(value: RuntimeConfig | None = None) -> None:
+    """创建可写运行目录；绝不创建或修改资源目录。"""
+    current = value or _ACTIVE
+    for directory in (current.data_dir, current.reports_dir, current.logs_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+
+# 快照保留策略与通知阈值（非运行路径）
+MIN_DIR_KB = 10 * 1024
 KEEP_DAILY_DAYS = 35
 KEEP_WEEKLY_WEEKS = 12
-
-# 大文件查询默认值
 BIGFILE_DEFAULT_DAYS = 7
 BIGFILE_DEFAULT_MB = 100
-
-# 扫描完成通知（ISS-003）：卷剩余低于此 GB 数时通知带声音告警
 FREE_ALERT_GB = 10
 
-# launchd
+# launchd 仍是开发版遗留入口；ISS-025 不安装/卸载它。
 LAUNCHAGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 SCAN_LABEL = "com.maoscripts.fathom-scan"
 WEB_LABEL = "com.maoscripts.fathom-web"
-SCAN_HOUR = 12                      # 每日 12:00 扫描（避开开机早高峰）
-
-
-def ensure_runtime_dirs() -> None:
-    """创建运行时目录（幂等）。"""
-    for d in (DATA_DIR, REPORTS_DIR, LOGS_DIR):
-        d.mkdir(parents=True, exist_ok=True)
+SCAN_HOUR = 12

@@ -45,8 +45,9 @@ def fold_changes(changes: list[DirChange], topn: int = 25) -> list[DirChange]:
     - 候选无入选祖先、但有入选后代：残余量（自身变化减去同向后代已覆盖部分）
       不足 10% 或 1MB 时不入选（变化已被后代表达）。
 
-    ``topn`` 只限制完成父子折叠后的最终输出；必须遍历全部候选，后续更精确的
-    子目录才有机会替换先入选的父目录。
+    必须遍历全部候选，后续更精确的子目录才有机会替换先入选的父目录；但
+    ``selected`` 始终不超过 ``topn``，满额后只接受这种替换，避免候选量大时
+    中间结果无界增长。
     """
     if topn <= 0:
         return []
@@ -55,14 +56,21 @@ def fold_changes(changes: list[DirChange], topn: int = 25) -> list[DirChange]:
     for c in sorted(changes, key=lambda x: abs(x.delta_kb), reverse=True):
         if c.delta_kb == 0:
             continue
-        ancestor = next((s for s in selected if _is_ancestor(s.path, c.path)), None)
+        ancestor = max(
+            (s for s in selected if _is_ancestor(s.path, c.path)),
+            key=lambda s: len(s.path.rstrip("/")),
+            default=None,
+        )
         if ancestor is not None:
             if abs(c.delta_kb) >= abs(ancestor.delta_kb) * 0.9:
                 selected.remove(ancestor)
+                # c 按 |delta| 降序遍历，必不大于其他已选项；追加即可保持顺序。
                 selected.append(c)
-            else:
+            elif len(selected) < topn:
                 selected.append(c)
         else:
+            if len(selected) >= topn:
+                continue
             covered = sum(
                 abs(s.delta_kb)
                 for s in selected
@@ -71,7 +79,7 @@ def fold_changes(changes: list[DirChange], topn: int = 25) -> list[DirChange]:
             residual = abs(c.delta_kb) - covered
             if covered == 0 or residual >= max(1024, abs(c.delta_kb) * 0.1):
                 selected.append(c)
-    return selected[:topn]
+    return selected
 
 
 def compute_diff(

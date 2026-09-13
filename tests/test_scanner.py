@@ -165,6 +165,55 @@ class TestFoldChanges:
 
         assert [c.path for c in out] == ["/r-0", "/r-1", "/r-2"]
 
+    def test_nearest_ancestor_is_replaced_in_multilevel_chain(self):
+        changes = [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/r/a", 0, 80_000, 80_000),
+            reports.DirChange("/r/a/deep", 0, 75_000, 75_000),
+        ]
+
+        out = reports.fold_changes(changes, topn=10)
+
+        assert [c.path for c in out] == ["/r", "/r/a/deep"]
+
+    def test_replacement_preserves_delta_order_at_capacity(self):
+        changes = [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/other", 0, 99_900, 99_900),
+            reports.DirChange("/r/a", 0, 99_800, 99_800),
+        ]
+
+        out = reports.fold_changes(changes, topn=2)
+
+        assert [(c.path, c.delta_kb) for c in out] == [
+            ("/other", 99_900),
+            ("/r/a", 99_800),
+        ]
+
+    def test_topn_bounds_ancestor_checks_for_large_input(self, monkeypatch):
+        original_is_ancestor = reports._is_ancestor
+        ancestor_checks = 0
+
+        def counted_is_ancestor(a, b):
+            nonlocal ancestor_checks
+            ancestor_checks += 1
+            return original_is_ancestor(a, b)
+
+        monkeypatch.setattr(reports, "_is_ancestor", counted_is_ancestor)
+        changes = [
+            reports.DirChange(f"/independent-{index}", 0, 8_000 - index, 8_000 - index)
+            for index in range(8_000)
+        ]
+
+        out = reports.fold_changes(changes, topn=3)
+
+        assert [c.path for c in out] == [
+            "/independent-0",
+            "/independent-1",
+            "/independent-2",
+        ]
+        assert ancestor_checks < len(changes) * 4
+
 
 class TestPrune:
     def _insert(self, conn: sqlite3.Connection, day: str) -> int:

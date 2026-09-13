@@ -1,0 +1,13 @@
+# Fathom 测试/开发依赖（ISS-031）
+#
+# 用法（可复现安装，CI 与本地同一入口）：
+#   pip install -r requirements-dev.txt -c constraints.txt
+#
+# 直接依赖审计：
+#   tests/**                -> pytest
+#   fastapi.testclient      -> httpx（TestClient 的传输层，tests 间接必需）
+# 运行时依赖经 -r requirements.txt 引入，不在此重复。
+pytest>=9.1,<10
+httpx>=0.28,<0.29
+
+-r requirements.txt

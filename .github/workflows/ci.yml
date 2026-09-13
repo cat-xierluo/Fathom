@@ -1,0 +1,163 @@
+# Fathom CI（ISS-031：可复现测试与 CI 入口）
+#
+# 设计边界（对应任务卡与 v0.3 发行方案）：
+# - 全部检查在 macOS 原生 runner 上运行：scanner 依赖 BSD du 的真实路径
+#   行为；Apple Silicon（arm64）与 Intel（x86_64）各自独立 job 并显式
+#   断言 uname -m，任一平台失败都会让整个 workflow 失败（无跳过、无
+#   continue-on-error）。Intel 不用 arm64 交叉 target 冒充。
+# - 依赖安装走分层锁定：requirements-dev.txt（直接依赖区间）+
+#   constraints.txt（全闭包 == 精确版本）；Cargo 用 --locked --offline；
+#   Python/Node/Rust/Playwright 版本号在 env 固定。
+# - 无 secret、无签名、无 Release、无 artifact；第三方 action 一律固定
+#   完整 commit SHA（SHA 取自 api.github.com git/ref/tags，2026-09-13）。
+# - 不安装 launchd、不扫 HOME：pytest/夹具全部使用合成临时根
+#   （tests/** 与 scripts/security_fixture_server.py 的既有隔离合同）。
+#
+# 未纳入（诚实声明）：Tauri CLI 版本固定——当前没有任何 CI 步骤调用
+# tauri build（bundle.active=false），空固定只会制造假象；发行 CI
+# （ISS-041）启用 tauri 构建时必须同步固定并复验。
+# Chromium 仅在 arm64 job 驱动（JS 行为与架构无关）；Intel 侧 Python
+# 环境由 pytest job 覆盖，浏览器栈 Intel 运行未验证。
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 已验证基线（2026-09-13，本地 macOS 15 arm64 / Python 3.14.6）：
+  # 144 pytest、39 API/浏览器检查、cargo locked offline build。
+  PYTHON_VERSION: "3.14.6"
+  NODE_VERSION: "22.22.3"
+  RUST_VERSION: "1.88.0"
+  PLAYWRIGHT_VERSION: "1.61.1"
+  EXPECTED_PYTEST_PASSED: "144"
+  EXPECTED_BROWSER_PASSED: "39"
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, arch: arm64 }
+          - { os: macos-15-intel, arch: x86_64 }
+    steps:
+      - name: 断言原生 runner 架构 ${{ matrix.arch }}
+        run: |
+          echo "uname -m = $(uname -m)"
+          sw_vers
+          [ "$(uname -m)" = "${{ matrix.arch }}" ]
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: 'false'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装锁定依赖（venv + constraints）
+        run: |
+          python -m venv "$RUNNER_TEMP/fathom-venv"
+          "$RUNNER_TEMP/fathom-venv/bin/python" --version
+          "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
+            -r requirements-dev.txt -c constraints.txt
+
+      - name: pytest（断言 144 项通过）
+        env:
+          FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
+        run: bash scripts/ci_pytest.sh
+
+  api-browser-checks:
+    name: API/浏览器检查（arm64）
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: 断言原生 runner 架构 arm64
+        run: |
+          echo "uname -m = $(uname -m)"
+          sw_vers
+          [ "$(uname -m)" = "arm64" ]
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: 'false'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装锁定依赖（venv + constraints）
+        run: |
+          python -m venv "$RUNNER_TEMP/fathom-venv"
+          "$RUNNER_TEMP/fathom-venv/bin/python" --version
+          "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
+            -r requirements-dev.txt -c constraints.txt
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: 安装锁定版本 Playwright 与 chromium
+        run: |
+          node --version
+          npm --version
+          mkdir -p "$RUNNER_TEMP/pw"
+          cd "$RUNNER_TEMP/pw"
+          npm install "playwright@${PLAYWRIGHT_VERSION}"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" --version
+
+      - name: API/浏览器 39 项检查（断言计数）
+        env:
+          FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
+          NODE_PATH: ${{ runner.temp }}/pw/node_modules
+          PLAYWRIGHT_BIN: ${{ runner.temp }}/pw/node_modules/.bin/playwright
+          PW_INSTALL: '1'
+        run: bash scripts/ci_browser_checks.sh
+
+  cargo-locked:
+    name: cargo locked offline（${{ matrix.arch }}）
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, arch: arm64 }
+          - { os: macos-15-intel, arch: x86_64 }
+    steps:
+      - name: 断言原生 runner 架构 ${{ matrix.arch }}
+        run: |
+          echo "uname -m = $(uname -m)"
+          sw_vers
+          [ "$(uname -m)" = "${{ matrix.arch }}" ]
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: 'false'
+
+      - name: 固定 Rust 工具链 ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustc --version
+          cargo --version
+          [ "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION" ]
+
+      - name: Cargo.lock 锁定离线构建
+        env:
+          CARGO_PREFETCH: '1'
+        run: bash scripts/ci_cargo_locked.sh

@@ -12,8 +12,9 @@
   或 (b) 可证明仅权限受限的部分采集（根记录存在、大小非负、非信号终止，
   且 stderr 全量错误行均为权限类；兼容 BSD du 对 000 子目录的 exit=1 部分覆盖
   与空根 0）。信号终止（负退出码）、非权限/混合错误、退出码非零但无权限证据、
-  负数/无效大小等解析无效证据，不能因根记录存在而豁免：一律在进入事务前抛
-  InvalidScanError，当日旧 snapshot/entries/volume_stats 原样保留，错误不吞。
+  负数/无效大小、歧义或不可解码路径等解析无效证据，不能因根记录存在而
+  豁免：一律在进入事务前抛 InvalidScanError，当日旧
+  snapshot/entries/volume_stats 原样保留，错误不吞。
   错误分类判据是 run_du 时点对 stderr 全量的逐行计数（存于 DuResult），
   stderr_tail 只是截尾显示，不得作为判据（会遗漏前部错误）；逐行只认
   errno 消息段（行内最后一个 ": " 之后）与权限文案的精确相等，出错
@@ -28,7 +29,6 @@ from __future__ import annotations
 
 import datetime as dt
 import os
-import re
 import sqlite3
 import subprocess
 import time
@@ -36,9 +36,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config
-
-# BSD du 对文件名中的非打印字符输出八进制转义（如 \346\226\207），tab 也会被转义
-_OCTAL_RE = re.compile(r"\\([0-7]{1,3})")
 
 # stderr 权限类错误消息（BSD du errno 文案，英文、大小写敏感）。
 # 分类判据是每行最后一个 ": " 之后的 errno 消息段与集合的精确相等，
@@ -81,6 +78,8 @@ class DuResult:
     other_error_count  stderr 全量中非权限错误行数（错误分类判据，
                        ISS-018 合同修订新增；默认 0 兼容既有构造方）
     other_error_sample 首条非权限错误行，仅诊断用
+    path_error_count   stdout 中无法无歧义解析的路径记录数；非零时采集无效
+    path_error_sample  首条路径解析错误，仅诊断用
     """
 
     sizes: dict[str, int]
@@ -90,45 +89,91 @@ class DuResult:
     stderr_tail: tuple[str, ...] = ()
     other_error_count: int = 0
     other_error_sample: str = ""
+    path_error_count: int = 0
+    path_error_sample: str = ""
 
     def stderr_hint(self) -> str:
         return self.stderr_tail[-1] if self.stderr_tail else ""
 
 
-def unescape_du_path(raw: str) -> str:
-    """还原 BSD du 输出路径中被转义的字符。
+def _as_bytes(stream: bytes | str) -> bytes:
+    """规范 subprocess 输出类型；str 分支只兼容既有测试注入。"""
+    return stream if isinstance(stream, bytes) else stream.encode("utf-8")
 
-    连续的八进制转义（如 \\346\\226\\207）是一个多字节 UTF-8 字符被逐字节
-    转义的结果，必须先收集字节再整体 decode，不能逐个 chr()。
+
+def _parse_du_stdout(stdout: bytes | str) -> tuple[dict[str, int], int, str]:
+    """解析 BSD ``du -xk`` 的原始字节输出。
+
+    macOS 15 的 BSD du 会逐字节输出路径，并不会把反斜杠、tab 或 UTF-8
+    字符做 shell/C 风格转义。因此路径必须原样严格解码，不能猜测反转义。
+    首个 tab 是大小与路径的分隔符，后续 tab 属于合法文件名；换行同时是
+    du 唯一的记录分隔符，文件名中的换行无法无歧义表达，会产生不完整的
+    物理行并记为 path_error，交给采集质量判定整体拒绝。
     """
-    out: list[str] = []
-    pending_bytes: list[int] = []
-    i = 0
+    sizes: dict[str, int] = {}
+    error_count = 0
+    error_sample = ""
 
-    def _flush() -> None:
-        if pending_bytes:
-            out.append(bytes(pending_bytes).decode("utf-8", errors="replace"))
-            pending_bytes.clear()
+    def reject(record: bytes, reason: str) -> None:
+        nonlocal error_count, error_sample
+        error_count += 1
+        if not error_sample:
+            error_sample = f"{reason}: {record[:160]!r}"
 
-    while i < len(raw):
-        ch = raw[i]
-        if ch == "\\" and i + 1 < len(raw):
-            nxt = raw[i + 1]
-            if nxt in ("\\", "t", "n"):
-                _flush()
-                out.append({"t": "\t", "n": "\n", "\\": "\\"}[nxt])
-                i += 2
-                continue
-            m = _OCTAL_RE.match(raw, i)
-            if m:
-                pending_bytes.append(int(m.group(1), 8))
-                i = m.end()
-                continue
-        _flush()
-        out.append(ch)
-        i += 1
-    _flush()
-    return "".join(out)
+    raw = _as_bytes(stdout)
+    records = raw.split(b"\n")
+    if records and records[-1] == b"":
+        records.pop()
+    for record in records:
+        size_raw, sep, path_raw = record.partition(b"\t")
+        if not sep or not path_raw:
+            reject(record, "记录缺少大小/路径分隔")
+            continue
+        try:
+            size_kb = int(size_raw)
+        except ValueError:
+            reject(record, "大小不是整数")
+            continue
+        try:
+            path = path_raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            reject(record, "路径不是有效 UTF-8")
+            continue
+        if path in sizes:
+            reject(record, "路径记录重复")
+            continue
+        sizes[path] = size_kb
+    return sizes, error_count, error_sample
+
+
+def _validate_du_paths(sizes: dict[str, int], root: Path) -> tuple[int, str]:
+    """拒绝不在扫描根内或已无法确认为目录的解析结果。
+
+    这层校验使含换行的恶意/巧合路径即使后半段长得像另一条合法 du 记录，
+    也不能静默注入根外路径或文件路径。扫描期间恰好消失的目录同样保守视为
+    本次采集质量不足；Fathom 不把竞态后的不可复核路径写入事实快照。
+    """
+    root_str = str(root)
+    root_prefix = root_str.rstrip("/")
+    if not root_prefix:
+        root_prefix = "/"
+    error_count = 0
+    error_sample = ""
+    for path in sizes:
+        within_root = (
+            path.startswith("/") if root_prefix == "/"
+            else path == root_prefix or path.startswith(root_prefix + "/")
+        )
+        if not within_root:
+            reason = "解析路径越出扫描根"
+        elif not os.path.isdir(path):
+            reason = "解析路径无法确认为目录"
+        else:
+            continue
+        error_count += 1
+        if not error_sample:
+            error_sample = f"{reason}: {path!r}"
+    return error_count, error_sample
 
 
 def run_du(root: Path) -> DuResult:
@@ -143,24 +188,19 @@ def run_du(root: Path) -> DuResult:
     proc = subprocess.run(
         ["/usr/bin/du", "-xk", str(root)],
         capture_output=True,
-        text=True,
-        errors="replace",
     )
     elapsed = time.monotonic() - started
-    sizes: dict[str, int] = {}
-    for line in proc.stdout.splitlines():
-        size_str, sep, path = line.partition("\t")
-        if not sep or not path:
-            continue
-        try:
-            size_kb = int(size_str)
-        except ValueError:
-            continue
-        sizes[unescape_du_path(path)] = size_kb
+    sizes, path_error_count, path_error_sample = _parse_du_stdout(proc.stdout)
+    invalid_path_count, invalid_path_sample = _validate_du_paths(sizes, root)
+    if invalid_path_count:
+        path_error_count += invalid_path_count
+        if not path_error_sample:
+            path_error_sample = invalid_path_sample
+    stderr = _as_bytes(proc.stderr).decode("utf-8", errors="replace")
     denied = 0
     other_error_count = 0
     other_error_sample = ""
-    for line in proc.stderr.splitlines():
+    for line in stderr.splitlines():
         if not line.strip():
             continue
         if _errno_message_segment(line) in _PERMISSION_MESSAGES:
@@ -174,9 +214,11 @@ def run_du(root: Path) -> DuResult:
         exit_code=proc.returncode,
         denied_count=denied,
         elapsed_seconds=elapsed,
-        stderr_tail=tuple(proc.stderr.splitlines()[-4:]),
+        stderr_tail=tuple(stderr.splitlines()[-4:]),
         other_error_count=other_error_count,
         other_error_sample=other_error_sample,
+        path_error_count=path_error_count,
+        path_error_sample=path_error_sample,
     )
 
 
@@ -188,10 +230,10 @@ def classify_collection(result: DuResult, root_str: str) -> str:
     2. partial：根记录存在、大小非负、非信号终止，且 stderr 全量错误行均为
        权限类（denied_count>0、other_error_count=0）。兼容 BSD du 对 000
        子目录 exit=1 的部分覆盖与空根 0。
-    以下情形不能因根记录存在而豁免，一律抛 InvalidScanError：根记录缺失、
-    任意负数大小（含根）、信号终止（负退出码）、非权限或混合错误、退出码
-    非零但无权限证据（无法证明仅权限受限）。错误分类取自 run_du 时点对
-    stderr 全量的计数，不使用截尾 stderr_tail。
+    以下情形不能因根记录存在而豁免，一律抛 InvalidScanError：路径输出歧义、
+    解码失败或越界，根记录缺失，任意负数大小（含根），信号终止（负退出码），
+    非权限或混合错误，退出码非零但无权限证据（无法证明仅权限受限）。错误
+    分类取自 run_du 时点的结构化计数，不使用截尾 stderr_tail。
     """
     if root_str not in result.sizes:
         hint = f"；du stderr：{result.stderr_hint()}" if result.stderr_hint() else ""
@@ -221,6 +263,13 @@ def classify_collection(result: DuResult, root_str: str) -> str:
         raise InvalidScanError(
             f"du 采集无效：stderr 含非权限错误 {result.other_error_count} 行{sample}，"
             "只有可证明仅权限受限的部分采集才被接受。"
+            "已拒绝本次写入，当日旧快照保持不变"
+        )
+    if result.path_error_count > 0:
+        sample = f"（如 {result.path_error_sample}）" if result.path_error_sample else ""
+        raise InvalidScanError(
+            f"du 采集无效：stdout 含不可无歧义解析的路径记录 "
+            f"{result.path_error_count} 行{sample}。"
             "已拒绝本次写入，当日旧快照保持不变"
         )
     if result.exit_code != 0 and result.denied_count == 0:
@@ -263,8 +312,9 @@ def create_snapshot(
 
     min_kb 可在测试中注入小值；生产使用 config.MIN_DIR_KB。
 
-    采集无效（缺根记录/空输出、信号终止、非权限或混合错误、负数大小、
-    退出码非零但无权限证据）时抛 InvalidScanError，数据库不做任何写入，
+    采集无效（歧义/不可解码路径、缺根记录/空输出、信号终止、非权限或
+    混合错误、负数大小、退出码非零但无权限证据）时抛 InvalidScanError，
+    数据库不做任何写入，
     当日旧快照原样保留；可证明仅权限受限且根记录有效时按部分覆盖落库
     （denied_count 记录缺口数量）。du_seconds 记录本次采集实测耗时。
     """

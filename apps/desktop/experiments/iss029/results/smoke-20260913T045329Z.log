@@ -1,0 +1,16 @@
+== ISS-029 冻结冒烟 RUN_ID=20260913T045329Z ==
+[blocked] smoke-install-authorization :: policy=deny_by_default 且 authorized_commands 未含本脚本所需精确命令；按合同不安装、不冒充自包含
+
+==================== 向 PM 申请的精确安装授权（REQUEST） ====================
+工具/版本      : pyinstaller==6.22.3（见 requirements-runtime-build.txt）
+运行时依赖     : requirements-runtime.txt（fastapi==0.141.1, uvicorn==0.52.4）
+官方兼容依据   : PyPI 官方元数据（2026-09-13 查询）：pyinstaller 6.22.3 requires_python '>=3.8,<3.16'，
+                 官方描述支持 macOS 10.15+、Python 3.8-3.15，非交叉编译器（目标架构原生构建）
+目标环境       : task-local venv /Users/maoking/orca/workspaces/fathom/iss-029-self-contained-runtime/apps/desktop/experiments/iss029/.venv-build（不写全局、不进 PATH；已 gitignore）
+磁盘预估       : venv+构建 ≈ 400-700MB，全部位于 /Users/maoking/orca/workspaces/fathom/iss-029-self-contained-runtime/apps/desktop/experiments/iss029 下
+精确命令 1     : python3 -m venv /Users/maoking/orca/workspaces/fathom/iss-029-self-contained-runtime/apps/desktop/experiments/iss029/.venv-build
+精确命令 2     : /Users/maoking/orca/workspaces/fathom/iss-029-self-contained-runtime/apps/desktop/experiments/iss029/.venv-build/bin/pip install --no-input -r /Users/maoking/orca/workspaces/fathom/iss-029-self-contained-runtime/requirements-runtime-build.txt -r /Users/maoking/orca/workspaces/fathom/iss-029-self-contained-runtime/requirements-runtime.txt
+清理           : rm -rf '/Users/maoking/orca/workspaces/fathom/iss-029-self-contained-runtime/apps/desktop/experiments/iss029/.venv-build' '/Users/maoking/orca/workspaces/fathom/iss-029-self-contained-runtime/apps/desktop/experiments/iss029/build'（可完全回滚，不影响仓库与系统）
+授权方式       : 把上述两条精确命令写入 /Users/maoking/orca/workspaces/fathom/iss-029-self-contained-runtime/.claude/agent-sessions/fathom-release-iss-029/INSTALL_AUTHORIZATION.json 的 authorized_commands，
+                 并将 policy 改离 deny_by_default 后重跑本脚本
+==========================================================================

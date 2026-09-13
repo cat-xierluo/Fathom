@@ -1,0 +1,139 @@
+{
+  "schema": "fathom.iss029.experiment-results.v1",
+  "run_id": "20260913T045303Z",
+  "verdict": "PASS",
+  "failed": 0,
+  "passed": 21,
+  "host_note": "仅证明当前 arm64 宿主；x86_64 待 ISS-041 原生 runner 复验",
+  "no_install_note": "本实验零第三方依赖安装；冻结冒烟见 build_helper_smoke.sh",
+  "env": {
+    "uname": "Darwin Macbook-Pro-3.local 24.6.0 Darwin Kernel Version 24.6.0: Mon Jan 19 22:00:55 PST 2026; root:xnu-11417.140.69.708.3~1/RELEASE_ARM64_T6000 arm64",
+    "machine": "arm64",
+    "macos_product_version": "15.7.4",
+    "macos_build": "24G517",
+    "cpu": "Apple M1 Max",
+    "python3_path": "/opt/homebrew/bin/python3",
+    "python3_version": "Python 3.14.6",
+    "python3_base_prefix": "/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14",
+    "venv_module": "ok",
+    "pyinstaller_import": "not-installed",
+    "nuitka_import": "not-installed",
+    "tools": {
+      "file": "/usr/bin/file",
+      "curl": "/usr/bin/curl",
+      "lsof": "/usr/sbin/lsof",
+      "codesign": "/usr/bin/codesign",
+      "otool": "/usr/bin/otool",
+      "pgrep": "/usr/bin/pgrep",
+      "shasum": "/usr/bin/shasum",
+      "seq": "/usr/bin/seq"
+    }
+  },
+  "cases": [
+    {
+      "name": "env-gate-arm64",
+      "status": "pass",
+      "detail": "uname -m = arm64"
+    },
+    {
+      "name": "env-gate-python3",
+      "status": "pass",
+      "detail": "Python 3.14.6 @ /opt/homebrew/bin/python3（base_prefix=/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14）"
+    },
+    {
+      "name": "env-installer-absence",
+      "status": "pass",
+      "detail": "PyInstaller=not-installed、Nuitka=not-installed：本实验零安装；冻结冒烟由 build_helper_smoke.sh fail-closed 处理"
+    },
+    {
+      "name": "env-synthetic-root",
+      "status": "pass",
+      "detail": "全部数据根位于合成临时根 /var/folders/7s/_tq1mtjx4kn8t408rf8x86nm0000gn/T//fathom-iss029.ffsm1c；资源目录：/var/folders/7s/_tq1mtjx4kn8t408rf8x86nm0000gn/T//fathom-iss029.ffsm1c/app/Fathom 实验 & Helper 目录"
+    },
+    {
+      "name": "C0-usage-exit-2",
+      "status": "pass",
+      "detail": "缺 --data-dir → argparse 退出码 2"
+    },
+    {
+      "name": "C1-version-identity",
+      "status": "pass",
+      "detail": "含空格/中文/& 目录下 --version 身份 JSON 正确（machine=arm64）"
+    },
+    {
+      "name": "C2-health-identity",
+      "status": "pass",
+      "detail": "/health 200 且身份/协议/端口/pid 字段正确"
+    },
+    {
+      "name": "C2-discovery-file",
+      "status": "pass",
+      "detail": "discovery 原子写入：port=17963 pid=74030"
+    },
+    {
+      "name": "C2-host-guard",
+      "status": "pass",
+      "detail": "非 loopback Host=403；localhost 别名=200"
+    },
+    {
+      "name": "C2-loopback-only",
+      "status": "pass",
+      "detail": "仅监听 127.0.0.1:17963（Python  74030 maoking    3u  IPv4 0x4d867d495cb8d819      0t0  TCP 127.0.0.1:17963 (LISTEN)）"
+    },
+    {
+      "name": "C2-404-unknown-path",
+      "status": "pass",
+      "detail": "未知路径 404"
+    },
+    {
+      "name": "C3-shutdown-token",
+      "status": "pass",
+      "detail": "错令牌 403；正确令牌优雅退出 0 且 discovery 已清理"
+    },
+    {
+      "name": "C4-sigterm",
+      "status": "pass",
+      "detail": "SIGTERM 优雅退出 0，discovery 清理"
+    },
+    {
+      "name": "C4-sigint",
+      "status": "pass",
+      "detail": "SIGINT 优雅退出 0，discovery 清理"
+    },
+    {
+      "name": "C5-unknown-occupier-fallback",
+      "status": "pass",
+      "detail": "端口 17963 被未知进程占用 → 让位 17964；占用进程存活未受任何信号"
+    },
+    {
+      "name": "C6-ports-exhausted-exit-3",
+      "status": "pass",
+      "detail": "5 个候选端口全被未知进程占用 → 退出码 3；占用者全部存活；未写 discovery"
+    },
+    {
+      "name": "C7-single-owner-exit-4",
+      "status": "pass",
+      "detail": "同服务健康实例在跑 → 第二实例退出码 4；原实例不受影响"
+    },
+    {
+      "name": "C8a-crash-sigkill",
+      "status": "pass",
+      "detail": "SIGKILL 崩溃 shell 报 137；discovery 残留为 stale"
+    },
+    {
+      "name": "C8b-stale-takeover",
+      "status": "pass",
+      "detail": "检测 stale(pid 已死)后接管同端口并改写 discovery（instance 轮换）"
+    },
+    {
+      "name": "C9-resources-readonly",
+      "status": "pass",
+      "detail": "含空格/中文/& 的可执行目录全文指纹未变化（helper 零写入自身目录）"
+    },
+    {
+      "name": "Z1-resource-reclaim",
+      "status": "pass",
+      "detail": "无残留进程、实验端口全部释放"
+    }
+  ]
+}

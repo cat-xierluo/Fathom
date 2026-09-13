@@ -1,0 +1,4 @@
+== ISS-029 无安装实验 RUN_ID=20260913T044605Z work=/var/folders/7s/_tq1mtjx4kn8t408rf8x86nm0000gn/T//fathom-iss029.7NAL0u ==
+[pass] env-gate-arm64 :: uname -m = arm64
+[pass] env-gate-python3 :: Python 3.14.6 @ /opt/homebrew/bin/python3（base_prefix=/opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14）
+[pass] env-installer-absence :: PyInstaller=not-installed、Nuitka=not-installed：本实验零安装；冻结冒烟由 build_helper_smoke.sh fail-closed 处理

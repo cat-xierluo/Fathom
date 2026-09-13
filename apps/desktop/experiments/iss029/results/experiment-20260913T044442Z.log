@@ -1,0 +1,2 @@
+== ISS-029 无安装实验 RUN_ID=20260913T044442Z work=/var/folders/7s/_tq1mtjx4kn8t408rf8x86nm0000gn/T//fathom-iss029.gS544m ==
+[pass] env-gate-arm64 :: uname -m = arm64

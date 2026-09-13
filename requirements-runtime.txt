@@ -1,0 +1,12 @@
+# ISS-029 发行 helper 运行时直接依赖 pin 提案（PROPOSAL——同
+# requirements-runtime-build.txt，安装需 PM 批准；未批准不得安装）。
+#
+# 版本依据（2026-09-13 查询 PyPI 官方元数据）：
+# - fastapi 0.141.1：requires_python ">=3.10"
+# - uvicorn 0.52.4：requires_python ">=3.10"
+# 当前宿主 Python 3.14.6 满足两者；ISS-031 在 CI 锁定最终解释器版本时
+# 应连同传递依赖一起生成完整 lock 快照（pip freeze）作为冻结证据。
+#
+# httpx/pytest 仅测试用，不进入发行运行时。
+fastapi==0.141.1
+uvicorn==0.52.4

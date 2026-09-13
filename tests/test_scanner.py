@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -34,17 +35,104 @@ def sample_tree(tmp_path):
     return tmp_path
 
 
-class TestUnescape:
-    def test_plain(self):
-        assert scanner.unescape_du_path("/Users/maoking/文档") == "/Users/maoking/文档"
+class TestBSDDuPaths:
+    def test_real_du_round_trips_supported_special_names(self, tmp_path):
+        names = [
+            r"literal\t",
+            "actual\ttab",
+            "中文",
+            r"octal\123",
+            r"utf8-look\346\226\207",
+        ]
+        for name in names:
+            (tmp_path / name).mkdir()
 
-    def test_octal(self):
-        # "文" 的 UTF-8 字节 e6 96 87 -> \350\226\207 形式
-        assert scanner.unescape_du_path("/a\\346\\226\\207/b") == "/a文/b"
+        result = scanner.run_du(tmp_path)
 
-    def test_tab_and_backslash(self):
-        assert scanner.unescape_du_path("/a\\tb") == "/a\tb"
-        assert scanner.unescape_du_path("/a\\\\b") == "/a\\b"
+        assert result.exit_code == 0
+        assert result.path_error_count == 0
+        assert len(result.sizes) == len(names) + 1
+        for name in names:
+            assert str(tmp_path / name) in result.sizes
+        assert str(tmp_path / "literal\t") not in result.sizes
+        assert str(tmp_path / "octalS") not in result.sizes
+
+    def test_real_du_newline_name_is_rejected_as_ambiguous(self, tmp_path):
+        (tmp_path / "ordinary").mkdir()
+        conn = db.connect()
+        try:
+            sid = scanner.create_snapshot(conn, tmp_path, min_kb=0)
+            before = [tuple(row) for row in conn.execute(
+                "SELECT id, created_at, root, dir_count, denied_count, "
+                "du_seconds, total_kb FROM snapshots ORDER BY id"
+            )]
+            before_entries = [tuple(row) for row in conn.execute(
+                "SELECT snapshot_id, path, size_kb FROM entries ORDER BY path"
+            )]
+
+            (tmp_path / "line\nbreak").mkdir()
+            result = scanner.run_du(tmp_path)
+
+            assert result.exit_code == 0
+            assert result.path_error_count >= 1
+            with pytest.raises(scanner.InvalidScanError, match="不可无歧义解析"):
+                scanner.classify_collection(result, str(tmp_path))
+            with pytest.raises(scanner.InvalidScanError, match="不可无歧义解析"):
+                scanner.create_snapshot(conn, tmp_path, min_kb=0)
+            assert [tuple(row) for row in conn.execute(
+                "SELECT id, created_at, root, dir_count, denied_count, "
+                "du_seconds, total_kb FROM snapshots ORDER BY id"
+            )] == before
+            assert [tuple(row) for row in conn.execute(
+                "SELECT snapshot_id, path, size_kb FROM entries ORDER BY path"
+            )] == before_entries
+            assert conn.execute("SELECT id FROM snapshots").fetchone()[0] == sid
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize(
+        "stdout, reason",
+        [
+            (b"4\t/tmp/ok\ncontinuation\n8\t/tmp\n", "记录缺少"),
+            (b"4\t/tmp/\xff\n8\t/tmp\n", "UTF-8"),
+            (b"4\t/tmp/same\n8\t/tmp/same\n12\t/tmp\n", "重复"),
+            (b"4\t/escaped-root\n8\t/tmp\n", "越出"),
+        ],
+    )
+    def test_malformed_or_undecodable_output_is_structured_quality_error(
+        self, monkeypatch, stdout, reason
+    ):
+        fake = scanner.subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=stdout, stderr=b""
+        )
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake)
+
+        result = scanner.run_du(Path("/tmp"))
+
+        assert result.path_error_count >= 1
+        assert reason in result.path_error_sample
+        with pytest.raises(scanner.InvalidScanError, match="stdout"):
+            scanner.classify_collection(result, "/tmp")
+
+    def test_record_shaped_newline_continuation_cannot_inject_file_path(
+        self, tmp_path, monkeypatch
+    ):
+        decoy = tmp_path / "not-a-directory"
+        decoy.write_bytes(b"x")
+        fake = scanner.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=f"4\t{decoy}\n8\t{tmp_path}\n".encode(),
+            stderr=b"",
+        )
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake)
+
+        result = scanner.run_du(tmp_path)
+
+        assert result.path_error_count == 1
+        assert "无法确认为目录" in result.path_error_sample
+        with pytest.raises(scanner.InvalidScanError, match="不可无歧义解析"):
+            scanner.classify_collection(result, str(tmp_path))
 
 
 class TestSnapshot:

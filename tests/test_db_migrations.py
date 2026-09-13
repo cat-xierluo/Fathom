@@ -108,6 +108,36 @@ def test_migration_failure_rolls_back_and_leaves_recoverable_backup(tmp_path, mo
         recovery.close()
 
 
+def test_incomplete_migration_cannot_commit_version_or_partial_schema(tmp_path, monkeypatch):
+    path = tmp_path / "partial.db"
+    legacy = _legacy_database(path, only_snapshots=True)
+    legacy.close()
+    monkeypatch.setitem(db._MIGRATIONS, 0, lambda conn: None)
+
+    with pytest.raises(db.MigrationError, match="原库已回滚"):
+        db.connect(path)
+
+    raw = sqlite3.connect(path)
+    try:
+        assert raw.execute("PRAGMA user_version").fetchone()[0] == 0
+        tables = {r[0] for r in raw.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        assert tables == {"snapshots"}
+        assert raw.execute("SELECT total_kb FROM snapshots").fetchone()[0] == 42
+    finally:
+        raw.close()
+
+    backups = _backups(path)
+    assert len(backups) == 1
+    recovery = sqlite3.connect(backups[0])
+    try:
+        assert recovery.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert recovery.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert recovery.execute("SELECT total_kb FROM snapshots").fetchone()[0] == 42
+    finally:
+        recovery.close()
+
+
 def test_corrupt_database_is_not_deleted_or_rebuilt(tmp_path):
     path = tmp_path / "corrupt.db"
     original = b"not a sqlite database\x00private-data"

@@ -200,6 +200,9 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
                 if locked_version == 0:
                     _MIGRATIONS[0](conn)
                     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                    # 结构和版本是同一迁移单元：必须在 commit 前验证，
+                    # 否则失败会留下“标成 v1 但缺表”且不可重试的半成品。
+                    _validate_schema(conn, allow_missing=False)
                 elif locked_version != SCHEMA_VERSION:
                     raise UnsupportedSchemaVersion(
                         f"迁移竞争后 schema={locked_version}，当前支持 {SCHEMA_VERSION}"
@@ -207,12 +210,11 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
                 conn.commit()
             except Exception as exc:
                 conn.rollback()
-                if isinstance(exc, DatabaseOpenError):
+                if isinstance(exc, UnsupportedSchemaVersion):
                     raise
                 raise MigrationError(
                     f"数据库 v0→v{SCHEMA_VERSION} 迁移失败；原库已回滚，备份已保留：{exc}"
                 ) from exc
-            _validate_schema(conn, allow_missing=False)
         else:  # pragma user_version 不会为负，保留 fail-closed 防御。
             raise UnsupportedSchemaVersion(f"不支持的数据库 schema={version}")
 

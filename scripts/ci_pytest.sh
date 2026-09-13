@@ -31,7 +31,7 @@ trap 'rm -f "$out"' EXIT
 # 只认最终摘要行的通过数；空库误跑（"no tests ran"）会因拿不到计数而失败。
 passed="$(grep -oE '[0-9]+ passed' "$out" | tail -1 | grep -oE '[0-9]+')"
 if [ "$passed" != "$expected" ]; then
-  echo "pytest 通过数 $passed != 期望 $expected；计数变化需同步 EXPECTED_PYTEST_PASSED 并在任务卡留证据" >&2
+  printf '%s\n' "pytest 通过数 ${passed} != 期望 ${expected}；计数变化需同步 EXPECTED_PYTEST_PASSED 并在任务卡留证据" >&2
   exit 1
 fi
-echo "pytest: $passed passed (expected $expected)"
+printf 'pytest: %s passed (expected %s)\n' "$passed" "$expected"

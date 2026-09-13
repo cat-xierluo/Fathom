@@ -24,8 +24,8 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 |---|---|---|
 | config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口 | 尚无持久化设置 UI；release 模式只定义路径合同，不证明 `.app` 已自包含 |
 | db.py | sqlite3、WAL、外键、schema v2；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 支持 v0/v1→v2；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
-| scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 返回质量与拥有的子进程句柄，支持取消/超时回收；有效采集才替换同日快照 | 无法无歧义映射/解码时拒绝采集；数据库只持久化 denied_count/du_seconds，详细质量尚未入库 |
-| reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown，文件名按日期 | 未记录即 added/removed；忽略传入 sid 取全局最新两条；报告状态由协调器单独记录 |
+| scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 只承载采集结果、退出码、耗时与质量字段；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同日快照 | 无法无歧义映射/解码时拒绝采集；数据库只持久化 denied_count/du_seconds，详细质量尚未入库 |
+| reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown；按传入 sid 查找同根前驱 | 未记录仍表达为 added/removed；dataset/阈值/质量语义尚待 ISS-021，报告状态由协调器单独记录 |
 | notify.py | 日报写完后尝试 osascript 通知；首次记录目录单列；摘要限长；低空间阈值 10 GB | 显示受系统策略控制；首扫无日报不通知；阈值未与 UI 统一；日志可能含路径 |
 | bigfiles.py | `/usr/bin/find -xdev -type f -size +... -mtime -... -print0` 后 stat | 大小为 st_size 逻辑字节；每次请求实时遍历；无超时/去重/失败呈现 |
 | scan_coordinator.py | API/CLI/定时统一扫描；`flock`、owner 元数据、分阶段状态、首扫/故障/取消语义 | 生产 launchd 跨日与发行 helper 生命周期仍待对应任务实测 |
@@ -44,7 +44,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 | snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录 |
 | entries | snapshot_id, path, size_kb | 复合主键，WITHOUT ROWID；父目录大小已含子目录 |
 | volume_stats | snapshot_id, total_bytes, free_bytes | 扫描时 statvfs，free 为 f_bavail × f_frsize |
-| scan_runs | id, started_at, finished_at, status, message | API/CLI/定时统一写 running/done/failed；done message 保留兼容结果，failed 为错误 |
+| scan_runs | id, started_at, finished_at, status, message | API/CLI/定时统一写 running/done/failed/interrupted；done message 保留兼容结果，failed/interrupted 为错误或取消原因 |
 | scan_run_details | run_id, source, phase, owner_*, heartbeat_at, snapshot_id, report/notification 状态, pruned_count, warnings | schema v2 的一对一阶段详情；来源为 api/cli/scheduled，快照成功与报告/通知结果分开 |
 
 协调器取得 `flock` 后才把遗留 running 记录收尾为 failed；无法取得锁时返回 busy 并只展示非权威 owner 元数据，不以 PID 或超时推断 owner 已死。扫描、报告、通知和保留逐阶段提交，首扫保存有效快照且 `report_status=not_available` 时整体成功；报告/通知失败作为警告，不抹掉快照。API shutdown、CLI SIGTERM/KeyboardInterrupt 与超时只回收本次会话拥有的 `du`，最后释放锁。

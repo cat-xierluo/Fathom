@@ -18,19 +18,30 @@ function fmtBytes(bytes) {
 }
 function fmtKB(kb) { return fmtBytes((kb || 0) * 1024); }
 function fmtDelta(kb) {
-  if (kb == null) return "新";
-  const sign = kb > 0 ? "+" : "";
-  return sign + fmtKB(Math.abs(kb)).replace("-", "");
+  if (kb == null) return "—";
+  if (kb === 0) return fmtKB(0);
+  const sign = kb > 0 ? "+" : "−";
+  return sign + fmtKB(Math.abs(kb));
 }
 function shortPath(p, segments = 2) {
   const parts = p.split("/").filter(Boolean);
   return "/" + parts.slice(-segments).join("/");
 }
 async function fetchJSON(url, opts) {
-  const res = await fetch(url, opts);
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (cause) {
+    const err = new Error("无法连接本地服务");
+    err.status = 0;
+    err.cause = cause;
+    throw err;
+  }
   if (!res.ok) {
     const detail = await res.json().catch(() => "");
-    throw new Error(detail.detail || `${url} -> HTTP ${res.status}`);
+    const err = new Error(detail.detail || `${url} -> HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
@@ -208,26 +219,46 @@ async function loadOverviewSummary() {
   try {
     const d = await fetchJSON("/api/diff?topn=5");
     const span = d.b.created_at.slice(5, 10) + " vs " + d.a.created_at.slice(5, 10);
-    if (!d.grown.length && !d.shrunk.length) {
+    const measured = d.grown.length + d.shrunk.length;
+    const unrecorded = d.added.length + d.removed.length;
+    if (!measured && !unrecorded) {
       el.innerHTML = `<p class="hint">${escapeHtml(span)} 期间没有 ≥1MB 的目录变化。</p>`;
       return;
     }
-    let html = `<p class="hint">对比区间 ${escapeHtml(span)}：</p><table class="tbl">
+    const summary = !measured
+      ? `${span} 仅发现 ${unrecorded} 个新增或未记录目录，缺少可比基线，不能判断为“无变化”。`
+      : `对比区间 ${span}：`;
+    let html = `<p class="hint">${escapeHtml(summary)}</p><table class="tbl">
       <thead><tr><th>方向</th><th>目录</th><th class="num">变化</th><th></th></tr></thead><tbody>`;
     const rows = [
-      ...d.grown.map((r) => ({ ...r, dir: icon("arrowUpRight", 14) })),
-      ...d.shrunk.map((r) => ({ ...r, dir: icon("arrowDownRight", 14) })),
+      ...d.grown.map((r) => ({ ...r, dir: icon("arrowUpRight", 14), value: fmtDelta(r.delta_kb), cls: "delta-grow" })),
+      ...d.shrunk.map((r) => ({ ...r, dir: icon("arrowDownRight", 14), value: fmtDelta(r.delta_kb), cls: "delta-shrink" })),
+      ...d.added.map((r) => ({ ...r, dir: icon("plus", 14), value: `—（现有 ${fmtKB(r.new_kb)}）`, cls: "" })),
+      ...d.removed.map((r) => ({ ...r, dir: icon("trash", 14), value: `—（曾有 ${fmtKB(r.old_kb)}）`, cls: "" })),
     ].slice(0, 8);
     rows.forEach((r) => {
       html += `<tr><td>${r.dir}</td><td class="path" title="${escapeHtml(r.path)}">${escapeHtml(shortPath(r.path, 3))}</td>` +
-        `<td class="num ${r.delta_kb > 0 ? "delta-grow" : "delta-shrink"}">${fmtDelta(r.delta_kb)}</td>` +
-        `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示">"+icon("folderOpen", 14)+"</button></td></tr>`;
+        `<td class="num ${r.cls}">${r.value}</td>` +
+        `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td></tr>`;
     });
-    el.innerHTML = html + "</tbody></table>";
+    if (measured && unrecorded) {
+      html += `</tbody></table><p class="hint">另有 ${unrecorded} 个新增或未记录目录，不计作可测量净变化。</p>`;
+    } else {
+      html += "</tbody></table>";
+    }
+    el.innerHTML = html;
     el.querySelectorAll("[data-reveal]").forEach((b) =>
       b.addEventListener("click", () => revealInFinder(b.dataset.reveal)));
   } catch (e) {
-    el.innerHTML = `<p class="hint">${escapeHtml(e.message)}——需要至少两个快照（明天起可用）。</p>`;
+    let message;
+    if (e.status === 409) {
+      message = "还不能比较：需要两个不同日期的有效快照。已有一个快照时，基线已经建立；分布现在可用。";
+    } else if (e.status === 0) {
+      message = "无法连接本地服务，最近变化暂不可用。请确认 Fathom 服务正在运行后重试。";
+    } else {
+      message = `最近变化加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}。上次有效数据不代表本次无变化。`;
+    }
+    el.innerHTML = `<p class="hint">${escapeHtml(message)}</p>`;
   }
 }
 
@@ -376,7 +407,7 @@ async function loadBrowse(path) {
         `<td class="num">${fmtKB(c.size_kb)}</td>` +
         `<td class="num ${deltaCls}">${c.is_new ? icon("plus", 12) + " " : ""}${fmtDelta(c.delta_kb)}</td>` +
         `<td class="num">${((c.size_kb / total) * 100).toFixed(1)}%</td>` +
-        `<td><button class="btn-mini" data-reveal="${escapeHtml(c.path)}" title="在 Finder 中显示">"+icon("folderOpen", 14)+"</button></td>`;
+        `<td><button class="btn-mini" data-reveal="${escapeHtml(c.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td>`;
       tbody.appendChild(tr);
       tr.querySelector(".dir-name").addEventListener("click", () => loadBrowse(c.path));
       tr.querySelector("[data-reveal]").addEventListener("click", () => revealInFinder(c.path));

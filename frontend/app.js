@@ -5,7 +5,10 @@
 "use strict";
 
 const charts = {};
-const state = { page: "overview", browsePath: null };
+const state = { page: "overview", browsePath: null, scanWasRunning: false };
+let scanPollTimer = null;
+let snapshotSelectionRevision = 0;
+const requestGenerations = new Map();
 
 /* ---------- 工具 ---------- */
 
@@ -18,25 +21,50 @@ function fmtBytes(bytes) {
 }
 function fmtKB(kb) { return fmtBytes((kb || 0) * 1024); }
 function fmtDelta(kb) {
-  if (kb == null) return "新";
-  const sign = kb > 0 ? "+" : "";
-  return sign + fmtKB(Math.abs(kb)).replace("-", "");
+  if (kb == null) return "—";
+  if (kb === 0) return fmtKB(0);
+  const sign = kb > 0 ? "+" : "−";
+  return sign + fmtKB(Math.abs(kb));
 }
 function shortPath(p, segments = 2) {
   const parts = p.split("/").filter(Boolean);
   return "/" + parts.slice(-segments).join("/");
 }
 async function fetchJSON(url, opts) {
-  const res = await fetch(url, opts);
+  let res;
+  try {
+    res = await fetch(url, opts);
+  } catch (cause) {
+    const err = new Error("无法连接本地服务");
+    err.status = 0;
+    err.cause = cause;
+    throw err;
+  }
   if (!res.ok) {
     const detail = await res.json().catch(() => "");
-    throw new Error(detail.detail || `${url} -> HTTP ${res.status}`);
+    const err = new Error(detail.detail || `${url} -> HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
   return res.json();
 }
 function initChart(id) {
   if (!charts[id]) charts[id] = echarts.init(document.getElementById(id));
   return charts[id];
+}
+function resetChart(id) {
+  if (charts[id]) {
+    charts[id].dispose();
+    delete charts[id];
+  }
+  document.getElementById(id).replaceChildren();
+}
+function showChartMessage(id, message) {
+  resetChart(id);
+  const p = document.createElement("p");
+  p.className = "hint";
+  p.textContent = message;
+  document.getElementById(id).appendChild(p);
 }
 window.addEventListener("resize", () => Object.values(charts).forEach((c) => c.resize()));
 function escapeHtml(s) {
@@ -103,18 +131,58 @@ function navigate() {
   document.getElementById("page-title").textContent = PAGE_TITLES[state.page];
 
   // 页面激活时懒加载对应数据（图表在隐藏容器中初始化拿不到宽度）
-  if (state.page === "overview") { loadVolumeTrend(); loadOverviewSummary(); }
+  if (state.page === "overview") { runQuietly(loadVolumeTrend(), "卷容量趋势"); loadOverviewSummary(); }
   if (state.page === "changes") { loadSnapshotsForDiff(); loadReportList(); }
-  if (state.page === "browse") { loadTree(); loadBrowse(state.browsePath); }
-  if (state.page === "bigfiles") loadBigfiles();
-  if (state.page === "settings") loadSettings();
+  if (state.page === "browse") { runQuietly(loadTree(), "占用分布"); loadBrowse(state.browsePath); }
+  if (state.page === "bigfiles") runQuietly(loadBigfiles(), "大文件");
+  if (state.page === "settings") runQuietly(loadSettings(), "设置");
 }
 window.addEventListener("hashchange", navigate);
+
+function runQuietly(promise, label) {
+  Promise.resolve(promise).catch((e) => console.warn(`${label}加载失败：`, e));
+}
+
+function beginRequest(domain, { pageScoped = true } = {}) {
+  const generation = (requestGenerations.get(domain) || 0) + 1;
+  requestGenerations.set(domain, generation);
+  const page = state.page;
+  return {
+    current: () => requestGenerations.get(domain) === generation &&
+      (!pageScoped || state.page === page),
+  };
+}
+
+function invalidateRequest(domain) {
+  requestGenerations.set(domain, (requestGenerations.get(domain) || 0) + 1);
+}
+
+function scheduleScanStatusPoll() {
+  if (scanPollTimer != null) return;
+  scanPollTimer = setTimeout(async () => {
+    scanPollTimer = null;
+    try { await loadStatus(); } catch (e) { console.warn("扫描状态轮询失败：", e); }
+  }, 5000);
+}
 
 /* ---------- 状态卡与顶栏 ---------- */
 
 async function loadStatus() {
-  const s = await fetchJSON("/api/status");
+  const request = beginRequest("status", { pageScoped: false });
+  const badge = document.getElementById("scan-badge");
+  const btn = document.getElementById("btn-scan");
+  let s;
+  try {
+    s = await fetchJSON("/api/status");
+  } catch (e) {
+    if (!request.current()) return null;
+    badge.textContent = e.status === 0 ? "服务未连接" : "状态加载失败";
+    badge.classList.remove("running");
+    btn.disabled = false;
+    if (state.scanWasRunning) scheduleScanStatusPoll();
+    throw e;
+  }
+  if (!request.current()) return null;
   const free = s.disk.free_bytes, total = s.disk.total_bytes;
   const used = total - free;
 
@@ -132,23 +200,28 @@ async function loadStatus() {
   document.getElementById("card-latest").textContent = latest
     ? latest.created_at.replace("T", " ") : "尚无快照";
 
-  const badge = document.getElementById("scan-badge");
-  const btn = document.getElementById("btn-scan");
+  const wasRunning = state.scanWasRunning;
+  state.scanWasRunning = Boolean(s.scan.running);
   if (s.scan.running) {
     badge.textContent = "扫描进行中…"; badge.classList.add("running"); btn.disabled = true;
-    setTimeout(() => { loadStatus().then(refreshData); }, 5000);
+    scheduleScanStatusPoll();
   } else {
+    if (scanPollTimer != null) clearTimeout(scanPollTimer);
+    scanPollTimer = null;
     badge.textContent = s.scan.finished_at
       ? `上次扫描 ${s.scan.finished_at.replace("T", " ")}` : "未手动扫描过";
     badge.classList.remove("running"); btn.disabled = false;
+    if (wasRunning) runQuietly(refreshData(), "扫描结果");
   }
   pushTrayStatus(free, s.snapshot_count, latest);
 }
 
 function refreshData() {
-  if (state.page === "overview") { loadVolumeTrend(); loadOverviewSummary(); }
-  if (state.page === "changes") { loadSnapshotsForDiff(); loadReportList(); }
-  if (state.page === "browse") loadBrowse(state.browsePath);
+  const jobs = [];
+  if (state.page === "overview") jobs.push(loadVolumeTrend(), loadOverviewSummary());
+  if (state.page === "changes") jobs.push(loadSnapshotsForDiff(), loadReportList());
+  if (state.page === "browse") jobs.push(loadTree(), loadBrowse(state.browsePath));
+  return Promise.allSettled(jobs);
 }
 
 /* ---------- Tauri 桥 ---------- */
@@ -184,80 +257,202 @@ async function listenTrayActions() {
 /* ---------- 总览页 ---------- */
 
 async function loadVolumeTrend() {
-  const rows = await fetchJSON("/api/volume-trend");
-  const chart = initChart("chart-volume");
-  const xs = rows.map((r) => r.created_at.slice(5, 16).replace("T", " "));
-  chart.setOption({
-    tooltip: { trigger: "axis" },
-    legend: { data: ["已用", "剩余"], top: 0 },
-    grid: { left: 70, right: 20, top: 30, bottom: 28 },
-    xAxis: { type: "category", data: xs },
-    yAxis: { type: "value", axisLabel: { formatter: (v) => fmtBytes(v) }, scale: true },
-    series: [
-      { name: "已用", type: "line", smooth: true, symbolSize: 5, symbol: "circle",
-        data: rows.map((r) => r.total_bytes - r.free_bytes),
-        areaStyle: { opacity: 0.12 }, itemStyle: { color: "#2f6fed" } },
-      { name: "剩余", type: "line", smooth: true, symbol: "none",
-        data: rows.map((r) => r.free_bytes), itemStyle: { color: "#2e9e5b" } },
-    ],
-  }, true);
+  const request = beginRequest("volumeTrend");
+  try {
+    const rows = await fetchJSON("/api/volume-trend");
+    if (!request.current()) return;
+    if (!rows.length) {
+      showChartMessage("chart-volume", "尚无快照；完成首次扫描后显示容量趋势。");
+      return;
+    }
+    const chart = initChart("chart-volume");
+    const xs = rows.map((r) => r.created_at.slice(5, 16).replace("T", " "));
+    chart.setOption({
+      tooltip: { trigger: "axis" },
+      legend: { data: ["已用", "剩余"], top: 0 },
+      grid: { left: 70, right: 20, top: 30, bottom: 28 },
+      xAxis: { type: "category", data: xs },
+      yAxis: { type: "value", axisLabel: { formatter: (v) => fmtBytes(v) }, scale: true },
+      series: [
+        { name: "已用", type: "line", smooth: true, symbolSize: 5, symbol: "circle",
+          data: rows.map((r) => r.total_bytes - r.free_bytes),
+          areaStyle: { opacity: 0.12 }, itemStyle: { color: "#2f6fed" } },
+        { name: "剩余", type: "line", smooth: true, symbol: "none",
+          data: rows.map((r) => r.free_bytes), itemStyle: { color: "#2e9e5b" } },
+      ],
+    }, true);
+  } catch (e) {
+    if (!request.current()) return;
+    showChartMessage("chart-volume", e.status === 0
+      ? "无法连接本地服务，容量趋势暂不可用。"
+      : `容量趋势加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);
+  }
 }
 
 async function loadOverviewSummary() {
+  const request = beginRequest("overviewSummary");
   const el = document.getElementById("overview-summary");
   try {
     const d = await fetchJSON("/api/diff?topn=5");
+    if (!request.current()) return;
     const span = d.b.created_at.slice(5, 10) + " vs " + d.a.created_at.slice(5, 10);
-    if (!d.grown.length && !d.shrunk.length) {
+    const measured = d.grown.length + d.shrunk.length;
+    const unrecorded = d.added.length + d.removed.length;
+    if (!measured && !unrecorded) {
       el.innerHTML = `<p class="hint">${escapeHtml(span)} 期间没有 ≥1MB 的目录变化。</p>`;
       return;
     }
-    let html = `<p class="hint">对比区间 ${escapeHtml(span)}：</p><table class="tbl">
+    const summary = !measured
+      ? `${span} 仅发现 ${unrecorded} 个新增或未记录目录，缺少可比基线，不能判断为“无变化”。`
+      : `对比区间 ${span}：`;
+    let html = `<p class="hint">${escapeHtml(summary)}</p><table class="tbl">
       <thead><tr><th>方向</th><th>目录</th><th class="num">变化</th><th></th></tr></thead><tbody>`;
     const rows = [
-      ...d.grown.map((r) => ({ ...r, dir: icon("arrowUpRight", 14) })),
-      ...d.shrunk.map((r) => ({ ...r, dir: icon("arrowDownRight", 14) })),
+      ...d.grown.map((r) => ({ ...r, dir: icon("arrowUpRight", 14), value: fmtDelta(r.delta_kb), cls: "delta-grow" })),
+      ...d.shrunk.map((r) => ({ ...r, dir: icon("arrowDownRight", 14), value: fmtDelta(r.delta_kb), cls: "delta-shrink" })),
+      ...d.added.map((r) => ({ ...r, dir: icon("plus", 14), value: `—（现有 ${fmtKB(r.new_kb)}）`, cls: "" })),
+      ...d.removed.map((r) => ({ ...r, dir: icon("trash", 14), value: `—（曾有 ${fmtKB(r.old_kb)}）`, cls: "" })),
     ].slice(0, 8);
     rows.forEach((r) => {
       html += `<tr><td>${r.dir}</td><td class="path" title="${escapeHtml(r.path)}">${escapeHtml(shortPath(r.path, 3))}</td>` +
-        `<td class="num ${r.delta_kb > 0 ? "delta-grow" : "delta-shrink"}">${fmtDelta(r.delta_kb)}</td>` +
-        `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示">"+icon("folderOpen", 14)+"</button></td></tr>`;
+        `<td class="num ${r.cls}">${r.value}</td>` +
+        `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td></tr>`;
     });
-    el.innerHTML = html + "</tbody></table>";
+    if (measured && unrecorded) {
+      html += `</tbody></table><p class="hint">另有 ${unrecorded} 个新增或未记录目录，不计作可测量净变化。</p>`;
+    } else {
+      html += "</tbody></table>";
+    }
+    el.innerHTML = html;
     el.querySelectorAll("[data-reveal]").forEach((b) =>
       b.addEventListener("click", () => revealInFinder(b.dataset.reveal)));
   } catch (e) {
-    el.innerHTML = `<p class="hint">${escapeHtml(e.message)}——需要至少两个快照（明天起可用）。</p>`;
+    if (!request.current()) return;
+    let message;
+    if (e.status === 409) {
+      message = "还不能比较：需要两个不同日期的有效快照。已有一个快照时，基线已经建立；分布现在可用。";
+    } else if (e.status === 0) {
+      message = "无法连接本地服务，最近变化暂不可用。请确认 Fathom 服务正在运行后重试。";
+    } else {
+      message = `最近变化加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}。上次有效数据不代表本次无变化。`;
+    }
+    el.innerHTML = `<p class="hint">${escapeHtml(message)}</p>`;
   }
 }
 
 /* ---------- 变化页 ---------- */
 
-async function loadSnapshotsForDiff() {
-  const snaps = await fetchJSON("/api/snapshots");
-  const selA = document.getElementById("sel-a"), selB = document.getElementById("sel-b");
-  if (!selA.options.length) {  // 已填过则保留用户选择
-    snaps.forEach((s, i) => {
-      const label = `#${s.id} ${s.created_at.slice(0, 16).replace("T", " ")}`;
-      selA.add(new Option(label, s.id));
-      selB.add(new Option(label, s.id));
-      if (i === 1) selA.value = s.id;
-      if (i === 0) selB.value = s.id;
-    });
-  }
-  if (snaps.length >= 2) loadDiff();
-  else document.getElementById("chart-grown").innerHTML = "";
+function setDiffStatus(message) {
+  document.getElementById("diff-status").textContent = message;
 }
 
-async function loadDiff() {
+function setDiffControlsEnabled(enabled) {
+  document.getElementById("sel-a").disabled = !enabled;
+  document.getElementById("sel-b").disabled = !enabled;
+  document.getElementById("btn-diff").disabled = !enabled;
+}
+
+function clearDiffResults() {
+  ["chart-grown", "chart-shrunk"].forEach((id) => {
+    if (charts[id]) charts[id].clear();
+    else document.getElementById(id).replaceChildren();
+  });
+  ["tbl-added", "tbl-removed"].forEach((id) => {
+    document.querySelector(`#${id} tbody`).innerHTML =
+      '<tr><td colspan="3" class="hint">暂无可比较数据</td></tr>';
+  });
+}
+
+function replaceSnapshotOptions(select, snaps) {
+  const options = snaps.map((s) => {
+    const label = `#${s.id} ${s.created_at.slice(0, 16).replace("T", " ")}`;
+    return new Option(label, String(s.id));
+  });
+  select.replaceChildren(...options);
+}
+
+async function loadSnapshotsForDiff({ notice = "" } = {}) {
+  const request = beginRequest("snapshots");
+  invalidateRequest("diff");
+  const selA = document.getElementById("sel-a"), selB = document.getElementById("sel-b");
+  const previousA = selA.value, previousB = selB.value;
+  const selectionRevision = snapshotSelectionRevision;
+  let snaps;
+  try {
+    snaps = await fetchJSON("/api/snapshots");
+  } catch (e) {
+    if (!request.current()) return;
+    invalidateRequest("diff");
+    clearDiffResults();
+    setDiffControlsEnabled(false);
+    setDiffStatus(e.status === 0
+      ? "无法连接本地服务，快照列表暂不可用。"
+      : `快照列表加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);
+    return;
+  }
+  if (!request.current()) return;
+
+  const ids = snaps.map((s) => String(s.id));
+  const selectedA = snapshotSelectionRevision === selectionRevision ? previousA : selA.value;
+  const selectedB = snapshotSelectionRevision === selectionRevision ? previousB : selB.value;
+  const validA = ids.includes(selectedA), validB = ids.includes(selectedB);
+  let nextB = validB ? selectedB : (ids[0] || "");
+  let nextA = validA && selectedA !== nextB
+    ? selectedA : (ids.find((id) => id !== nextB) || "");
+
+  replaceSnapshotOptions(selA, snaps);
+  replaceSnapshotOptions(selB, snaps);
+  selA.value = nextA;
+  selB.value = nextB;
+
+  const fellBack = Boolean((selectedA && !validA) || (selectedB && !validB));
+  if (snaps.length < 2) {
+    invalidateRequest("diff");
+    clearDiffResults();
+    setDiffControlsEnabled(false);
+    setDiffStatus(snaps.length === 1
+      ? "基线已建立；需要另一个不同日期的有效快照才能比较，分布现在可用。"
+      : "尚无快照，请先扫描建立基线。");
+    return;
+  }
+
+  const fallbackNotice = notice || (fellBack
+    ? "所选快照已更新或不再可用，已切换到最近有效快照。"
+    : "");
+  setDiffControlsEnabled(true);
+  await loadDiff({ retryOnMissing: false, successMessage: fallbackNotice });
+}
+
+async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
+  const request = beginRequest("diff");
   const a = document.getElementById("sel-a").value;
   const b = document.getElementById("sel-b").value;
   if (!a || !b) return;
-  const d = await fetchJSON(`/api/diff?a=${a}&b=${b}`);
-  renderDeltaBars("chart-grown", d.grown, "#d64545");
-  renderDeltaBars("chart-shrunk", d.shrunk, "#2e9e5b");
-  fillTwoColTable("tbl-added", d.added, (r) => [r.path, fmtKB(r.new_kb)]);
-  fillTwoColTable("tbl-removed", d.removed, (r) => [r.path, fmtKB(r.old_kb)]);
+  setDiffStatus("正在加载快照对比…");
+  try {
+    const d = await fetchJSON(`/api/diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+    if (!request.current()) return;
+    renderDeltaBars("chart-grown", d.grown, "#d64545");
+    renderDeltaBars("chart-shrunk", d.shrunk, "#2e9e5b");
+    fillTwoColTable("tbl-added", d.added, (r) => [r.path, fmtKB(r.new_kb)]);
+    fillTwoColTable("tbl-removed", d.removed, (r) => [r.path, fmtKB(r.old_kb)]);
+    setDiffStatus(successMessage || `正在对比快照 #${a} → #${b}`);
+  } catch (e) {
+    if (!request.current()) return;
+    if (e.status === 404 && retryOnMissing) {
+      clearDiffResults();
+      await loadSnapshotsForDiff({ notice: "所选快照已更新或不再可用，已切换到最近有效快照。" });
+      return;
+    }
+    clearDiffResults();
+    if (e.status === 409) {
+      setDiffStatus("还不能比较：需要两个不同日期的有效快照。");
+    } else if (e.status === 0) {
+      setDiffStatus("无法连接本地服务，快照对比暂不可用。");
+    } else {
+      setDiffStatus(`快照对比加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);
+    }
+  }
 }
 
 function renderDeltaBars(id, rows, color) {
@@ -270,12 +465,12 @@ function renderDeltaBars(id, rows, color) {
       return `${escapeHtml(r.path)}<br/>${fmtKB(r.old_kb)} → ${fmtKB(r.new_kb)}<br/>变化 ${fmtDelta(r.delta_kb)}`;
     } },
     grid: { left: 150, right: 50, top: 6, bottom: 24 },
-    xAxis: { type: "value", axisLabel: { formatter: (v) => fmtBytes(v * 1024) } },
+    xAxis: { type: "value", axisLabel: { formatter: (v) => fmtDelta(v) } },
     yAxis: { type: "category", data: top.map((r) => shortPath(r.path, 2)),
       axisLabel: { fontSize: 11, width: 140, overflow: "truncate" } },
     series: [{ type: "bar", data: top.map((r) => ({ value: r.delta_kb, raw: r })),
       itemStyle: { color, borderRadius: [0, 3, 3, 0] },
-      label: { show: true, position: "right", fontSize: 11, formatter: (p) => fmtKB(p.value) } }],
+      label: { show: true, position: "right", fontSize: 11, formatter: (p) => fmtDelta(p.value) } }],
   }, true);
 }
 
@@ -291,7 +486,7 @@ function fillTwoColTable(id, rows, cols) {
     const [c0, c1] = cols(r);
     tr.innerHTML = `<td class="path" title="${escapeHtml(r.path)}">${escapeHtml(c0)}</td>` +
       `<td class="num">${c1}</td>` +
-      `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}">${icon("folderOpen", 14)}</button></td>`;
+      `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td>`;
     tbody.appendChild(tr);
     tr.querySelector("[data-reveal]").addEventListener("click", () => revealInFinder(r.path));
   });
@@ -300,10 +495,15 @@ function fillTwoColTable(id, rows, cols) {
 /* ---------- 历史日报 ---------- */
 
 async function loadReportList() {
+  const request = beginRequest("reportList");
+  invalidateRequest("reportContent");
   const el = document.getElementById("report-list");
   const view = document.getElementById("report-view");
+  view.classList.add("hidden");
+  view.replaceChildren();
   try {
     const r = await fetchJSON("/api/reports");
+    if (!request.current()) return;
     if (!r.reports.length) {
       el.innerHTML = '<p class="hint">还没有日报——首次扫描后，从下一次扫描起每天自动生成。</p>';
       return;
@@ -312,13 +512,24 @@ async function loadReportList() {
       `<button class="report-item" data-date="${x.date}">${icon("fileText", 14)} ${x.date}</button>`).join("");
     el.querySelectorAll(".report-item").forEach((b) =>
       b.addEventListener("click", async () => {
+        const contentRequest = beginRequest("reportContent");
         el.querySelectorAll(".report-item").forEach((x) => x.classList.remove("active"));
         b.classList.add("active");
-        const c = await fetchJSON(`/api/reports/${b.dataset.date}`);
-        view.classList.remove("hidden");
-        view.innerHTML = `<pre>${escapeHtml(c.content)}</pre>`;
+        try {
+          const c = await fetchJSON(`/api/reports/${b.dataset.date}`);
+          if (!contentRequest.current()) return;
+          view.classList.remove("hidden");
+          view.innerHTML = `<pre>${escapeHtml(c.content)}</pre>`;
+        } catch (e) {
+          if (!contentRequest.current()) return;
+          view.classList.remove("hidden");
+          view.innerHTML = `<p class="hint">${escapeHtml(e.status === 0
+            ? "无法连接本地服务，日报暂不可用。"
+            : `日报加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`)}</p>`;
+        }
       }));
   } catch (e) {
+    if (!request.current()) return;
     el.innerHTML = `<p class="hint">${escapeHtml(e.message)}</p>`;
   }
 }
@@ -326,29 +537,43 @@ async function loadReportList() {
 /* ---------- 分布页：旭日图 + 目录浏览器 ---------- */
 
 async function loadTree() {
-  const t = await fetchJSON("/api/trees?min_kb=51200");
-  if (!t.snapshot_id) return;
-  const chart = initChart("chart-sunburst");
-  chart.setOption({
-    tooltip: { formatter: (p) => `${escapeHtml(p.data.path)}<br/>${fmtKB(p.value)}` },
-    series: [{
-      type: "sunburst", radius: [40, "92%"], nodeClick: "rootToNode",
-      data: t.children[0] ? t.children[0].children || [] : [],
-      label: { fontSize: 11, minAngle: 8, hideOverlap: true },
-      levels: [{}, { r0: 40, r: "55%" }, { r0: "55%", r: "75%" }, { r0: "75%", r: "92%" }],
-    }],
-  }, true);
-  chart.off("click");
-  chart.on("click", (p) => {
-    if (p.data && p.data.path) loadBrowse(p.data.path);
-  });
+  const request = beginRequest("tree");
+  try {
+    const t = await fetchJSON("/api/trees?min_kb=51200");
+    if (!request.current()) return;
+    if (!t.snapshot_id) {
+      showChartMessage("chart-sunburst", "尚无快照；完成首次扫描后显示占用分布。");
+      return;
+    }
+    const chart = initChart("chart-sunburst");
+    chart.setOption({
+      tooltip: { formatter: (p) => `${escapeHtml(p.data.path)}<br/>${fmtKB(p.value)}` },
+      series: [{
+        type: "sunburst", radius: [40, "92%"], nodeClick: "rootToNode",
+        data: t.children[0] ? t.children[0].children || [] : [],
+        label: { fontSize: 11, minAngle: 8, hideOverlap: true },
+        levels: [{}, { r0: 40, r: "55%" }, { r0: "55%", r: "75%" }, { r0: "75%", r: "92%" }],
+      }],
+    }, true);
+    chart.off("click");
+    chart.on("click", (p) => {
+      if (p.data && p.data.path) loadBrowse(p.data.path);
+    });
+  } catch (e) {
+    if (!request.current()) return;
+    showChartMessage("chart-sunburst", e.status === 0
+      ? "无法连接本地服务，占用分布暂不可用。"
+      : `占用分布加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);
+  }
 }
 
 async function loadBrowse(path) {
+  const request = beginRequest("browse");
   const tbody = document.querySelector("#tbl-browse tbody");
   const meta = document.getElementById("browser-meta");
   try {
     const b = await fetchJSON(`/api/browse${path ? "?path=" + encodeURIComponent(path) : ""}`);
+    if (!request.current()) return;
     state.browsePath = b.path;
 
     // 面包屑
@@ -370,13 +595,14 @@ async function loadBrowse(path) {
     const total = b.size_kb || 1;
     b.children.forEach((c) => {
       const tr = document.createElement("tr");
-      const deltaCls = c.delta_kb == null ? "" : (c.delta_kb > 0 ? "delta-grow" : "delta-shrink");
+      const deltaCls = c.delta_kb == null || c.delta_kb === 0
+        ? "" : (c.delta_kb > 0 ? "delta-grow" : "delta-shrink");
       tr.innerHTML =
         `<td class="dir-name" data-path="${escapeHtml(c.path)}" title="${escapeHtml(c.path)}">${escapeHtml(c.name)}</td>` +
         `<td class="num">${fmtKB(c.size_kb)}</td>` +
         `<td class="num ${deltaCls}">${c.is_new ? icon("plus", 12) + " " : ""}${fmtDelta(c.delta_kb)}</td>` +
         `<td class="num">${((c.size_kb / total) * 100).toFixed(1)}%</td>` +
-        `<td><button class="btn-mini" data-reveal="${escapeHtml(c.path)}" title="在 Finder 中显示">"+icon("folderOpen", 14)+"</button></td>`;
+        `<td><button class="btn-mini" data-reveal="${escapeHtml(c.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td>`;
       tbody.appendChild(tr);
       tr.querySelector(".dir-name").addEventListener("click", () => loadBrowse(c.path));
       tr.querySelector("[data-reveal]").addEventListener("click", () => revealInFinder(c.path));
@@ -394,6 +620,7 @@ async function loadBrowse(path) {
         areaStyle: { opacity: 0.12 }, itemStyle: { color: "#2f6fed" } }],
     }, true);
   } catch (e) {
+    if (!request.current()) return;
     meta.textContent = "";
     tbody.innerHTML = `<tr><td colspan="5" class="hint">${escapeHtml(e.message)}</td></tr>`;
   }
@@ -402,10 +629,21 @@ async function loadBrowse(path) {
 /* ---------- 大文件页 ---------- */
 
 async function loadBigfiles() {
+  const request = beginRequest("bigfiles");
   const days = document.getElementById("bf-days").value || 7;
   const mb = document.getElementById("bf-mb").value || 100;
-  const r = await fetchJSON(`/api/bigfiles?days=${days}&min_mb=${mb}&topn=200`);
   const tbody = document.querySelector("#tbl-bigfiles tbody");
+  let r;
+  try {
+    r = await fetchJSON(`/api/bigfiles?days=${days}&min_mb=${mb}&topn=200`);
+  } catch (e) {
+    if (!request.current()) return;
+    tbody.innerHTML = `<tr><td colspan="4" class="hint">${escapeHtml(e.status === 0
+      ? "无法连接本地服务，大文件查询暂不可用。"
+      : `大文件查询失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`)}</td></tr>`;
+    return;
+  }
+  if (!request.current()) return;
   tbody.innerHTML = "";
   if (!r.files.length) {
     tbody.innerHTML = `<tr><td colspan="4" style="color:var(--muted)">近 ${days} 天没有 ≥ ${mb}MB 的文件修改</td></tr>`;
@@ -426,7 +664,19 @@ async function loadBigfiles() {
 /* ---------- 设置页 ---------- */
 
 async function loadSettings() {
-  const s = await fetchJSON("/api/status");
+  const request = beginRequest("settings");
+  const tbody = document.querySelector("#settings-table tbody");
+  let s;
+  try {
+    s = await fetchJSON("/api/status");
+  } catch (e) {
+    if (!request.current()) return;
+    tbody.innerHTML = `<tr><td colspan="2" class="hint">${escapeHtml(e.status === 0
+      ? "无法连接本地服务，设置状态暂不可用。"
+      : `设置状态加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`)}</td></tr>`;
+    return;
+  }
+  if (!request.current()) return;
   const rows = [
     ["监控根目录", `<code>${escapeHtml(s.root)}</code>`],
     ["扫描计划", "每日 12:00（launchd：com.maoscripts.fathom-scan）"],
@@ -436,7 +686,7 @@ async function loadSettings() {
     ["数据库", `${escapeHtml(String(s.db_bytes / 1024 / 1024))} MB · data/disk.db`],
     ["桌面壳", "apps/desktop（Tauri 菜单栏 + 主窗口）"],
   ];
-  document.querySelector("#settings-table tbody").innerHTML = rows.map((r) =>
+  tbody.innerHTML = rows.map((r) =>
     `<tr><td style="width:140px;color:var(--muted)">${r[0]}</td><td>${r[1]}</td></tr>`).join("");
 }
 
@@ -447,11 +697,12 @@ async function triggerScan() {
   btn.disabled = true;
   try {
     await apiPost("/api/scan");  // 令牌随请求头发送，不进 URL
+    state.scanWasRunning = true;
   } catch (e) {
     if (e.status === 409) alert("已有扫描在进行中");
     else alert(e.message || "扫描启动失败");
   } finally {
-    loadStatus();
+    try { await loadStatus(); } catch (e) { console.warn("扫描后状态加载失败：", e); }
   }
 }
 
@@ -471,8 +722,16 @@ function mountStaticIcons() {
 /* ---------- 启动 ---------- */
 
 document.getElementById("btn-scan").addEventListener("click", triggerScan);
-document.getElementById("btn-diff").addEventListener("click", loadDiff);
+document.getElementById("btn-diff").addEventListener("click", () => loadDiff());
 document.getElementById("btn-bigfiles").addEventListener("click", loadBigfiles);
+["sel-a", "sel-b"].forEach((id) => {
+  document.getElementById(id).addEventListener("change", () => {
+    snapshotSelectionRevision += 1;
+    invalidateRequest("diff");
+    clearDiffResults();
+    setDiffStatus("快照选择已更改，点击“对比”加载结果。");
+  });
+});
 
 (async function init() {
   try {

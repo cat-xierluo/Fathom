@@ -35,7 +35,9 @@ def _scan_plist(main_py: Path, python: str) -> str:
         "    <key>ProgramArguments</key>\n    <array>\n"
         f"        <string>{python}</string>\n"
         f"        <string>{main_py}</string>\n"
-        "        <string>scan</string>\n    </array>\n"
+        "        <string>scan</string>\n"
+        "        <string>--source</string>\n"
+        "        <string>scheduled</string>\n    </array>\n"
     )
     xml += (
         "    <key>StartCalendarInterval</key>\n    <dict>\n"

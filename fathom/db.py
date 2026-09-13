@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE snapshots (
@@ -43,6 +43,20 @@ _SCHEMA_STATEMENTS = (
         status      TEXT NOT NULL,
         message     TEXT
     )""",
+    """CREATE TABLE scan_run_details (
+        run_id              INTEGER PRIMARY KEY REFERENCES scan_runs(id) ON DELETE CASCADE,
+        source              TEXT NOT NULL,
+        phase               TEXT NOT NULL,
+        owner_id            TEXT NOT NULL,
+        owner_pid           INTEGER NOT NULL,
+        owner_started       TEXT NOT NULL,
+        heartbeat_at        TEXT NOT NULL,
+        snapshot_id         INTEGER,
+        report_status       TEXT,
+        report_path         TEXT,
+        notification_status TEXT,
+        pruned_count        INTEGER
+    )""",
 )
 
 # Kept as a readable schema reference for tests and diagnostics.
@@ -69,6 +83,14 @@ _EXPECTED_TABLE_INFO = {
         ("finished_at", "TEXT", 0, 0), ("status", "TEXT", 1, 0),
         ("message", "TEXT", 0, 0),
     ),
+    "scan_run_details": (
+        ("run_id", "INTEGER", 0, 1), ("source", "TEXT", 1, 0),
+        ("phase", "TEXT", 1, 0), ("owner_id", "TEXT", 1, 0),
+        ("owner_pid", "INTEGER", 1, 0), ("owner_started", "TEXT", 1, 0),
+        ("heartbeat_at", "TEXT", 1, 0), ("snapshot_id", "INTEGER", 0, 0),
+        ("report_status", "TEXT", 0, 0), ("report_path", "TEXT", 0, 0),
+        ("notification_status", "TEXT", 0, 0), ("pruned_count", "INTEGER", 0, 0),
+    ),
 }
 
 _EXPECTED_FOREIGN_KEYS = {
@@ -76,10 +98,16 @@ _EXPECTED_FOREIGN_KEYS = {
     "entries": (("snapshots", "snapshot_id", "id", "NO ACTION", "CASCADE", "NONE"),),
     "volume_stats": (("snapshots", "snapshot_id", "id", "NO ACTION", "CASCADE", "NONE"),),
     "scan_runs": (),
+    "scan_run_details": (
+        ("scan_runs", "run_id", "id", "NO ACTION", "CASCADE", "NONE"),
+    ),
 }
 
-_EXPECTED_WITHOUT_ROWID = {"snapshots": 0, "entries": 1, "volume_stats": 0, "scan_runs": 0}
+_EXPECTED_WITHOUT_ROWID = {"snapshots": 0, "entries": 1, "volume_stats": 0, "scan_runs": 0,
+                           "scan_run_details": 0}
 _EXPECTED_AUTOINCREMENT = {"snapshots", "scan_runs"}
+
+_V1_TABLES = frozenset({"snapshots", "entries", "volume_stats", "scan_runs"})
 
 
 class DatabaseOpenError(RuntimeError):
@@ -153,13 +181,16 @@ def _check_integrity(conn: sqlite3.Connection, *, label: str) -> None:
         raise DatabaseOpenError(f"{label} 完整性检查失败：{detail}")
 
 
-def _validate_schema(conn: sqlite3.Connection, *, allow_missing: bool) -> None:
+def _validate_schema(
+    conn: sqlite3.Connection, *, allow_missing: bool, version: int = SCHEMA_VERSION
+) -> None:
     tables = _user_tables(conn)
-    unknown = tables - set(_EXPECTED_TABLE_INFO)
+    expected_tables = set(_EXPECTED_TABLE_INFO) if version == 2 else set(_V1_TABLES)
+    unknown = tables - expected_tables
     if unknown:
         raise DatabaseOpenError(f"数据库包含未知未版本化表：{', '.join(sorted(unknown))}")
     if not allow_missing:
-        missing = set(_EXPECTED_TABLE_INFO) - tables
+        missing = expected_tables - tables
         if missing:
             raise DatabaseOpenError(f"schema {SCHEMA_VERSION} 缺少表：{', '.join(sorted(missing))}")
     for table in tables:
@@ -191,11 +222,27 @@ def _create_missing_tables(conn: sqlite3.Connection) -> None:
 
 def _migrate_v0(conn: sqlite3.Connection) -> None:
     """把可识别的无版本开发库提升为 v1；不改写既有业务行。"""
-    _validate_schema(conn, allow_missing=True)
-    _create_missing_tables(conn)
+    has_v2_detail = "scan_run_details" in _user_tables(conn)
+    _validate_schema(conn, allow_missing=True, version=2 if has_v2_detail else 1)
+    existing = _user_tables(conn)
+    for table, statement in zip(_EXPECTED_TABLE_INFO, _SCHEMA_STATEMENTS, strict=True):
+        if table in _V1_TABLES and table not in existing:
+            conn.execute(statement)
 
 
-_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {0: _migrate_v0}
+def _migrate_v1(conn: sqlite3.Connection) -> None:
+    """为统一扫描生命周期增加一对一详情表，保留旧 scan_runs 合同。"""
+    if "scan_run_details" in _user_tables(conn):
+        _validate_schema(conn, allow_missing=False, version=2)
+    else:
+        _validate_schema(conn, allow_missing=False, version=1)
+        conn.execute(_SCHEMA_STATEMENTS[-1])
+
+
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    0: _migrate_v0,
+    1: _migrate_v1,
+}
 
 
 @contextmanager
@@ -249,20 +296,26 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
             )
         if version == SCHEMA_VERSION:
             _validate_schema(conn, allow_missing=False)
-        elif version == 0:
+        elif version < SCHEMA_VERSION:
             _check_integrity(conn, label="数据库")
             tables = _user_tables(conn)
             # 空文件/新库不含用户数据，无需生成无意义的迁移备份。
             if tables:
-                _validate_schema(conn, allow_missing=True)
+                preflight_version = (
+                    2 if "scan_run_details" in tables else max(version, 1)
+                )
+                _validate_schema(conn, allow_missing=(version == 0),
+                                 version=preflight_version)
                 _consistent_backup(conn, path, version)
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 # 获取写锁后重新读取；另一进程可能已在等待期间完成迁移。
                 locked_version = schema_version(conn)
-                if locked_version == 0:
-                    _MIGRATIONS[0](conn)
-                    conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                if locked_version < SCHEMA_VERSION:
+                    while locked_version < SCHEMA_VERSION:
+                        _MIGRATIONS[locked_version](conn)
+                        locked_version += 1
+                        conn.execute(f"PRAGMA user_version={locked_version}")
                     # 结构和版本是同一迁移单元：必须在 commit 前验证，
                     # 否则失败会留下“标成 v1 但缺表”且不可重试的半成品。
                     _validate_schema(conn, allow_missing=False)
@@ -276,7 +329,8 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
                 if isinstance(exc, UnsupportedSchemaVersion):
                     raise
                 raise MigrationError(
-                    f"数据库 v0→v{SCHEMA_VERSION} 迁移失败；原库已回滚，备份已保留：{exc}"
+                    f"数据库 v{version}→v{SCHEMA_VERSION} 迁移失败；"
+                    f"原库已回滚，备份已保留：{exc}"
                 ) from exc
         else:  # pragma user_version 不会为负，保留 fail-closed 防御。
             raise UnsupportedSchemaVersion(f"不支持的数据库 schema={version}")

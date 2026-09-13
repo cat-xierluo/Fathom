@@ -14,7 +14,7 @@ from urllib.request import urlopen
 
 import pytest
 
-from fathom import config
+from fathom import config, db
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 MAIN = REPO_ROOT / "main.py"
@@ -165,7 +165,7 @@ def test_cli_scan_from_unrelated_cwd_stays_inside_explicit_runtime(tmp_path):
     conn = sqlite3.connect(db_path)
     try:
         assert conn.execute("SELECT root FROM snapshots").fetchone()[0] == str(scan_root)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     finally:
         conn.close()
     assert not list(unrelated.iterdir())
@@ -224,7 +224,7 @@ def test_real_api_reports_effective_runtime_values_from_unrelated_cwd(tmp_path):
             "frontend_dir": str(frontend),
             "host": "127.0.0.1",
             "port": port,
-            "schema_version": 1,
+            "schema_version": db.SCHEMA_VERSION,
         }
         with urlopen(f"http://127.0.0.1:{port}/", timeout=1) as response:
             assert b"isolated" in response.read()

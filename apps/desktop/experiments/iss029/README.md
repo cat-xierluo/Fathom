@@ -9,7 +9,7 @@
 ## 怎么跑
 
 ```sh
-bash scripts/build_helper_experiment.sh   # 无安装合同实验（零第三方依赖，21 项断言）
+bash scripts/build_helper_experiment.sh   # 无安装合同实验（零第三方依赖，18 项断言）
 bash scripts/build_helper_smoke.sh        # 冻结冒烟（未授权时 exit 3 打印精确请求；授权后冻结+断言）
 ```
 
@@ -23,7 +23,7 @@ bash scripts/build_helper_smoke.sh        # 冻结冒烟（未授权时 exit 3 �
 | `helper_contract.py` | 合同原型 helper（纯 stdlib）：长期 `flock`、`--version`、`/health`、回环端口、0600 discovery、结构化退出与崩溃接管 |
 | `verify_contract.py` | 合同验证器：隔离临时根、并发启动、进程身份跟踪、原子文件与泄漏反例 |
 | `freeze_entry.py` | 冻结冒烟入口（包装生产 `fathom.cli`；仅实验用） |
-| `.claude/agent-sessions/fathom-release-iss-029/evidence/` | 当前会话运行证据；被 Git 忽略，原始日志不提交 |
+| `results/` | 默认运行证据；由本目录版本化 `.gitignore` 忽略，原始日志不提交 |
 | `build/`、`.venv-build/` | 构建产物与 task-local venv（gitignore，不入库） |
 
 ## 已证明（当前 arm64 宿主）

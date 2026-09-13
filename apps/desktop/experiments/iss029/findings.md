@@ -4,8 +4,8 @@
 0 fail / 3 项因生产端口 7952 被占用而 blocked（G6 实证，未杀占用者）
 日期：2026-09-13 · 会话 fathom-release-iss-029
 基线：`origin/main@50a87d9d6b3e5da6adf326622a9730c9ba429533`
-证据：运行证据位于自身 `.claude/agent-sessions/fathom-release-iss-029/evidence/`
-并由 Git 忽略；仓库只保留可复跑脚本与确定性结论，避免提交本机路径、PID、
+证据：默认运行证据位于本实验目录 `results/`，由同目录版本化 `.gitignore`
+忽略；仓库只保留可复跑脚本与确定性结论，避免提交本机路径、PID、
 控制令牌或重复原始日志。
 范围声明：本文只做当前宿主技术验证，不实现 ISS-009/010/040/041；
 共享文档（TASKS/DECISIONS/ARCHITECTURE 等）由 PM 独占回写（见 §10 草案）。

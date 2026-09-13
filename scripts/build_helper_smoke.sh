@@ -23,7 +23,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXP_DIR="$ROOT/apps/desktop/experiments/iss029"
-RESULTS_DIR="${FATHOM_ISS029_EVIDENCE_DIR:-$ROOT/.claude/agent-sessions/fathom-release-iss-029/evidence/smoke}"
+RESULTS_DIR="${FATHOM_ISS029_EVIDENCE_DIR:-$EXP_DIR/results/smoke}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 JSON_OUT="$RESULTS_DIR/smoke-$RUN_ID.json"
 LOG_OUT="$RESULTS_DIR/smoke-$RUN_ID.log"

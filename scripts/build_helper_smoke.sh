@@ -14,8 +14,8 @@
 #
 # 用法：bash scripts/build_helper_smoke.sh
 # 退出码：0 冒烟全过；1 验证失败（fail closed）；3 依赖未授权（BLOCKED）。
-# 产物：apps/desktop/experiments/iss029/results/smoke-<RUN_ID>.{json,log}
-#       （构建产物在 apps/desktop/experiments/iss029/build/，已 gitignore，不入库）
+# 产物：会话 evidence 目录下 smoke-<RUN_ID>.{json,log}；不进入 Git。
+#       （构建产物在 apps/desktop/experiments/iss029/build/，已 gitignore）
 #
 # bash 3.2 兼容。
 
@@ -23,7 +23,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXP_DIR="$ROOT/apps/desktop/experiments/iss029"
-RESULTS_DIR="$EXP_DIR/results"
+RESULTS_DIR="${FATHOM_ISS029_EVIDENCE_DIR:-$ROOT/.claude/agent-sessions/fathom-release-iss-029/evidence/smoke}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 JSON_OUT="$RESULTS_DIR/smoke-$RUN_ID.json"
 LOG_OUT="$RESULTS_DIR/smoke-$RUN_ID.log"
@@ -44,51 +44,87 @@ mkdir -p "$RESULTS_DIR"
 CASES_JSONL="$(mktemp "${TMPDIR:-/tmp}/iss029-smoke-cases.XXXXXX")"
 FAILED=0
 PASSED=0
+BLOCKED=0
 
 log() { printf '%s\n' "$*" | tee -a "$LOG_OUT" >&2; }
 
-record() { # record <name> <pass|fail|blocked> <detail>
-  python3 - "$1" "$2" "$3" >> "$CASES_JSONL" <<'PYEOF'
+record() { # record <name> <pass|fail|blocked> <detail> [assertion|preparation]
+  python3 - "$1" "$2" "$3" "${4:-assertion}" >> "$CASES_JSONL" <<'PYEOF'
 import json, sys
 print(json.dumps({"name": sys.argv[1], "status": sys.argv[2],
-                  "detail": sys.argv[3]}, ensure_ascii=False))
+                  "detail": sys.argv[3], "kind": sys.argv[4]}, ensure_ascii=False))
 PYEOF
-  if [ "$2" = "fail" ]; then FAILED=$((FAILED + 1)); else PASSED=$((PASSED + 1)); fi
+  case "$2" in
+    pass) PASSED=$((PASSED + 1)) ;;
+    fail) FAILED=$((FAILED + 1)) ;;
+    blocked) BLOCKED=$((BLOCKED + 1)) ;;
+    *) log "[internal] 未知状态：$2"; exit 70 ;;
+  esac
   log "[$2] $1 :: $3"
 }
 
 summarize() { # summarize <verdict>
-  python3 - "$CASES_JSONL" "$JSON_OUT" "$RUN_ID" "$FAILED" "$PASSED" "$1" "$PIN_PYINSTALLER" <<'PYEOF'
+  python3 - "$CASES_JSONL" "$JSON_OUT" "$RUN_ID" "$FAILED" "$PASSED" "$BLOCKED" "$1" "$PIN_PYINSTALLER" <<'PYEOF'
 import json, sys
 cases = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
-verdict = sys.argv[6] or ("PASS" if int(sys.argv[4]) == 0 else "FAIL")
+verdict = sys.argv[7] or ("PASS" if int(sys.argv[4]) == 0 and int(sys.argv[6]) == 0 else "FAIL")
 out = {
     "schema": "fathom.iss029.smoke-results.v1",
     "run_id": sys.argv[3],
     "verdict": verdict,
     "failed": int(sys.argv[4]),
     "passed": int(sys.argv[5]),
-    "pin_pyinstaller": sys.argv[7],
+    "blocked": int(sys.argv[6]),
+    "pin_pyinstaller": sys.argv[8],
     "host_note": "仅证明当前 arm64 宿主；x86_64 待 ISS-041 原生 runner 复验",
     "cases": cases,
 }
 with open(sys.argv[2], "w", encoding="utf-8") as f:
     json.dump(out, f, ensure_ascii=False, indent=2)
 print(json.dumps({"verdict": verdict, "passed": out["passed"],
-                  "failed": out["failed"], "results_file": sys.argv[2]},
+                  "failed": out["failed"], "blocked": out["blocked"],
+                  "results_file": sys.argv[2]},
                  ensure_ascii=False))
 PYEOF
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/fathom-iss029-smoke.XXXXXX")"
-PIDS_FILE="$WORK/pids"
+PIDS_FILE="$WORK/processes"
 : > "$PIDS_FILE"
+process_identity() { ps -o lstart= -o command= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//' || true; }
+stable_process_identity() {
+  local pid="$1" previous="" current="" i
+  for i in $(seq 1 30); do
+    current="$(process_identity "$pid")"
+    if [ -n "$current" ] && [ "$current" = "$previous" ]; then printf '%s' "$current"; return 0; fi
+    previous="$current"; sleep 0.05
+  done
+  return 1
+}
+register_process() {
+  local identity
+  identity="$(stable_process_identity "$1")" || return 1
+  printf '%s|%s\n' "$1" "$identity" >> "$PIDS_FILE"
+}
+forget_process() {
+  awk -F '|' -v target="$1" '$1 != target { print }' "$PIDS_FILE" > "$PIDS_FILE.next"
+  mv "$PIDS_FILE.next" "$PIDS_FILE"
+}
+signal_tracked() {
+  local wanted_pid="$1" wanted_signal="$2" line tracked_pid tracked_identity current_identity
+  line="$(awk -F '|' -v target="$wanted_pid" '$1 == target { print; exit }' "$PIDS_FILE")"
+  [ -n "$line" ] || return 1
+  tracked_pid="${line%%|*}"; tracked_identity="${line#*|}"
+  current_identity="$(process_identity "$tracked_pid")"
+  [ -n "$current_identity" ] && [ "$current_identity" = "$tracked_identity" ] || return 1
+  kill -"$wanted_signal" "$tracked_pid" 2>/dev/null
+}
 cleanup() {
-  local p
+  local line p
   if [ -s "$PIDS_FILE" ]; then
-    while read -r p; do kill -TERM "$p" 2>/dev/null || true; done < "$PIDS_FILE"
+    while IFS= read -r line; do p="${line%%|*}"; signal_tracked "$p" TERM || true; done < "$PIDS_FILE"
     sleep 1
-    while read -r p; do kill -KILL "$p" 2>/dev/null || true; done < "$PIDS_FILE"
+    while IFS= read -r line; do p="${line%%|*}"; signal_tracked "$p" KILL || true; done < "$PIDS_FILE"
   fi
   rm -rf "$WORK"
 }
@@ -113,6 +149,7 @@ wait_exit() { # wait_exit <pid> [timeout_s] → WAIT_CODE
       wait "$pid" 2>/dev/null
       WAIT_CODE=$?
       set -e
+      forget_process "$pid"
       return 0
     fi
     sleep 0.25
@@ -128,7 +165,7 @@ if [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c 'import PyInstaller' >/dev
   GOT="$("$VENV/bin/python" -c 'import PyInstaller; print(PyInstaller.__version__)' 2>/dev/null || true)"
   if [ "$GOT" = "$PIN_PYINSTALLER" ]; then
     VENV_READY=yes
-    record "smoke-venv-ready" pass "task-local venv 已含 pyinstaller ${GOT}（与 pin 一致），跳过安装"
+    record "smoke-venv-ready" pass "task-local venv 已含 pinned PyInstaller，跳过安装" preparation
   else
     record "smoke-venv-ready" fail "venv 内 pyinstaller=${GOT} 与 pin ${PIN_PYINSTALLER} 不一致"
   fi
@@ -186,7 +223,7 @@ if [ "$VENV_READY" != "yes" ]; then
 fi
 # 依赖锁快照（只读，不升级任何包）：ISS-031 CI lock 的对照证据
 "$VENV/bin/pip" freeze > "$RESULTS_DIR/smoke-$RUN_ID.freeze.lock" 2>>"$LOG_OUT" || true
-record "smoke-freeze-lock" pass "pip freeze 快照见 smoke-${RUN_ID}.freeze.lock"
+record "smoke-freeze-lock" pass "已生成依赖锁快照（准备证据，不代表运行时行为）" preparation
 
 # ---------------------------------------------------------------- 冻结 A：无 hidden-import（G1 反例）
 mkdir -p "$BUILD_DIR"
@@ -197,7 +234,7 @@ log "[freeze A] 不带 --hidden-import fathom.api（预期 serve 反例）……
   --distpath "$BUILD_DIR/distA" --workpath "$BUILD_DIR/workA" --specpath "$BUILD_DIR" \
   "$EXP_DIR/freeze_entry.py" >> "$LOG_OUT" 2>&1
 BIN_A="$BUILD_DIR/distA/fathom-helper-exp-a/fathom-helper-exp-a"
-record "freeze-a-built" pass "onedir 构建完成：${BIN_A}"
+record "freeze-a-built" pass "对照 onedir 构建完成（准备步骤）" preparation
 
 CODE=0
 (cd "$WORK" && FATHOM_DB="$WORK/smoke-db/fathom.db" "$BIN_A" serve) >> "$LOG_OUT" 2>&1 || CODE=$?
@@ -220,7 +257,7 @@ log "[freeze B] 带 --hidden-import fathom.api ……"
   --distpath "$BUILD_DIR/distB" --workpath "$BUILD_DIR/workB" --specpath "$BUILD_DIR" \
   "$EXP_DIR/freeze_entry.py" >> "$LOG_OUT" 2>&1
 BIN_B="$BUILD_DIR/distB/fathom-helper-exp-b/fathom-helper-exp-b"
-record "freeze-b-built" pass "onedir 构建完成：${BIN_B}"
+record "freeze-b-built" pass "带显式导入的 onedir 构建完成（准备步骤）" preparation
 
 # ---------------------------------------------------------------- Mach-O / otool 证据
 FILE_OUT="$(file "$BIN_B")"
@@ -230,7 +267,7 @@ else
   record "smoke-file-arm64" fail "${FILE_OUT}"
 fi
 otool -L "$BIN_B" > "$RESULTS_DIR/smoke-$RUN_ID.otool-L.txt" 2>&1 || true
-record "smoke-otool-L" pass "动态依赖清单见 smoke-${RUN_ID}.otool-L.txt（arm64 本机验证；无交叉架构声明）"
+record "smoke-otool-L" pass "已生成动态依赖清单（准备证据；无交叉架构声明）" preparation
 
 # ---------------------------------------------------------------- G3 反例：生产 CLI 无 --version
 CODE=0
@@ -247,6 +284,7 @@ fi
 # 任何进程占用（含本机开发 launchd web 服务），绝不杀占用者：
 # 记为 G6（固定端口无让位/身份探测）实证，serve 类用例转 blocked。
 PORT_OCCUPIER="$(lsof -tiTCP:7952 -sTCP:LISTEN 2>/dev/null || true)"
+PORT_OCCUPIER_BEFORE="$PORT_OCCUPIER"
 
 NASTY="$WORK/app/Fathom 冒烟 & Helper 目录"
 mkdir -p "$NASTY"
@@ -256,7 +294,7 @@ mkdir -p "$WORK/smoke-db"
 
 if [ -n "$PORT_OCCUPIER" ]; then
   record "smoke-g6-fixed-port-collision" pass \
-    "实证 G6：生产 serve 固定绑定 7952 且无端口让位/身份探测；当前被 pid=${PORT_OCCUPIER} 占用，按合同不杀占用者"
+    "实证 G6：生产 serve 固定绑定 7952 且无端口让位/身份探测；按合同不杀占用者"
   # 即便绑定失败，cmd_serve 的 ensure_runtime_dirs() 也先于 uvicorn.run 执行：
   # 仍可无侵入地取得 G2（冻结树内建运行时目录）与 G6（绑定失败路径）实证
   CODE=0
@@ -264,11 +302,12 @@ if [ -n "$PORT_OCCUPIER" ]; then
     >> "$LOG_OUT" 2>&1 || CODE=$?
   sleep 1
   OCC_STILL="$(lsof -tiTCP:7952 -sTCP:LISTEN 2>/dev/null || true)"
-  if grep -qE "Address already in use|Errno 48|\[Errno 48\]" "$LOG_OUT"; then
+  if grep -qE "Address already in use|Errno 48|\[Errno 48\]" "$LOG_OUT" \
+     && [ "$OCC_STILL" = "$PORT_OCCUPIER_BEFORE" ]; then
     record "smoke-g6-runtime-bind-failure" pass \
-      "冻结 serve 在 7952 绑定失败退出（exit=${CODE}）：固定端口无让位的运行时实证；占用者 pid=${OCC_STILL:-?} 全程未受影响"
+      "冻结 serve 在 7952 绑定失败退出（exit=${CODE}）；占用者 PID 集合前后完全一致"
   else
-    record "smoke-g6-runtime-bind-failure" fail "未捕获预期 bind 失败日志（exit=${CODE}）"
+    record "smoke-g6-runtime-bind-failure" fail "bind 失败日志或占用者 PID 前后一致断言未满足（exit=${CODE}）"
   fi
   RUNTIME_DIRS="$(find "$NASTY" -maxdepth 2 -type d \( -name data -o -name reports -o -name logs \) | sort | tr '\n' ' ')"
   if [ -n "$RUNTIME_DIRS" ]; then
@@ -289,7 +328,7 @@ CODE=0
 (cd "$NASTY" && FATHOM_DB="$WORK/smoke-db/fathom.db" "$BIN_N" serve) \
   >> "$LOG_OUT" 2>&1 &
 SERVE_PID=$!
-echo "$SERVE_PID" >> "$PIDS_FILE"
+register_process "$SERVE_PID"
 
 if wait_http "http://127.0.0.1:7952/api/status" 30; then
   record "smoke-serve-nasty-path" pass "含空格/中文/& 目录下冻结 serve 就绪（127.0.0.1:7952/api/status 200）"
@@ -315,7 +354,7 @@ else
 fi
 
 # SIGTERM 优雅退出
-kill -TERM "$SERVE_PID" 2>/dev/null || true
+signal_tracked "$SERVE_PID" TERM || true
 if wait_exit "$SERVE_PID" 15 && [ "$WAIT_CODE" -eq 0 ]; then
   record "smoke-sigterm-frozen" pass "冻结 serve 对 SIGTERM 优雅退出 0（uvicorn 停机路径）"
 else

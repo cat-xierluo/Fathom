@@ -1,12 +1,12 @@
 # ISS-029 技术验证发现与选型建议
 
-状态：当前宿主（arm64）验证完成；冻结冒烟已获 PM 授权执行——14 pass /
+状态：当前宿主（arm64）验证完成；冻结冒烟——11 pass /
 0 fail / 3 项因生产端口 7952 被占用而 blocked（G6 实证，未杀占用者）
 日期：2026-09-13 · 会话 fathom-release-iss-029
 基线：`origin/main@50a87d9d6b3e5da6adf326622a9730c9ba429533`
-证据：[results/](results/)（experiment 最新 20260913T050439Z 21/21 PASS；
-smoke 授权轮 20260913T050248Z PARTIAL_BLOCKED_PORT_7952；
-更早的 20260913T044957Z/045329Z 两轮为授权前 fail-closed 记录）
+证据：运行证据位于自身 `.claude/agent-sessions/fathom-release-iss-029/evidence/`
+并由 Git 忽略；仓库只保留可复跑脚本与确定性结论，避免提交本机路径、PID、
+控制令牌或重复原始日志。
 范围声明：本文只做当前宿主技术验证，不实现 ISS-009/010/040/041；
 共享文档（TASKS/DECISIONS/ARCHITECTURE 等）由 PM 独占回写（见 §10 草案）。
 
@@ -18,15 +18,15 @@ smoke 授权轮 20260913T050248Z PARTIAL_BLOCKED_PORT_7952；
    onedir 冻结（A/B 对照），`file` 确认 Mach-O 64-bit executable arm64，
    `otool -L` 与 pip freeze 锁快照均已落盘。
 2. **发行 helper 的进程合同已在本机 arm64 用纯 stdlib 原型完整证明**
-   （21/21 断言，results/experiment-20260913T050439Z.json）：身份/版本面、
-   health+Host 守卫、回环端口+让位、未知占用零击杀、单一所有者、
-   结构化退出码、崩溃 stale 接管、含空格/中文/& 路径、资源只读、全回收。
+   （18 pass / 0 fail / 0 blocked）：身份/版本面、health+Host 守卫、0600
+   discovery、令牌不泄漏、未知占用 PID 不变、并发单 owner、结构化退出码、
+   崩溃与损坏记录接管、替换记录不误删、资源只读和身份匹配回收。
 3. **生产 fathom 包直接冻结的缺口 G1/G2/G3/G6 已获运行时实证**（冻结
    产物级，见 §3 证据列）：字符串导入不被分析、运行时目录写进 bundle、
    无 --version 身份面、固定端口无让位策略。G4/G5/G7 为分析确认。
    生产修改不在本卡授权写入范围，已整理为 ISS-009 前置改造清单交 PM。
 4. 冒烟 3 项用例（健康 serve、冻结产物 Host 守卫、冻结产物 SIGTERM）
-   被 7952 端口占用（pid 6026，未识别/未触碰）阻塞——这本身是 G6 的
+   被 7952 端口的未识别占用者阻塞——这本身是 G6 的
    运行时实证，也是 G6 修复优先级的直接依据。
 
 ## 2. 主机环境证据（experiment results env 块）
@@ -38,16 +38,16 @@ smoke 授权轮 20260913T050248Z PARTIAL_BLOCKED_PORT_7952；
 - PyInstaller / Nuitka：全局 Python 均未安装（env.pyinstaller_import=
   not-installed）；冻结冒烟使用 PM 授权的 task-local venv
   `apps/desktop/experiments/iss029/.venv-build`（pyinstaller 6.22.3，
-  gitignore 不入库，锁快照见 results/smoke-20260913T050248Z.freeze.lock）
+  gitignore 不入库；锁快照只留在会话 evidence）
 - 工具齐备：file/curl/lsof/codesign/otool/pgrep/shasum
-- 本机 7952（生产开发端口）冒烟时未被占用（smoke 日志无占用记录）；
-  合同实验全程使用独立端口段 17963-17967
+- 本机 7952（生产开发端口）冒烟时被未识别进程占用；脚本断言运行前后
+  占用 PID 集合完全一致。合同实验动态选择独立的连续高位端口段。
 
 ## 3. 生产 helper 冻结缺口清单（审查基线 50a87d9d）
 
 | # | 缺口 | 位置 | 影响 | 证据状态 |
 |---|---|---|---|---|
-| G1 | `uvicorn.run("fathom.api:app", ...)` 字符串导入不被 PyInstaller 静态分析 | `fathom/cli.py` cmd_serve | 冻结产物 serve 启动即无法导入 fathom.api；需 `--hidden-import fathom.api` 或改为对象导入 `uvicorn.run(api.app)` | **运行时实证**（freeze A 反例 vs freeze B 通过；smoke-20260913T050248Z） |
+| G1 | `uvicorn.run("fathom.api:app", ...)` 字符串导入不被 PyInstaller 静态分析 | `fathom/cli.py` cmd_serve | 冻结产物 serve 启动即无法导入 fathom.api；需 `--hidden-import fathom.api` 或改为对象导入 `uvicorn.run(api.app)` | **运行时实证**（freeze A 反例 vs freeze B 通过） |
 | G2 | 运行时目录跟着 `PROJECT_ROOT=Path(__file__).parent.parent` 走，冻结后在 bundle 内创建 `data/reports/logs` | `fathom/config.py` | 违反「app 资源只读、用户数据写 Application Support」；`FATHOM_DB` 只隔离 DB 不隔离三个目录 | **运行时实证**（冻结树 `_internal/{data,logs,reports}` 实际生成；同上 smoke 结果） |
 | G3 | CLI 无 `--version`/身份面 | `fathom/cli.py` | app 壳无法在启动前后校验 helper 身份与版本（发行方案要求） | **运行时实证**（冻结产物 `--version` 退出码 2；同上） |
 | G4 | API 无 `/health` 身份端点：`/api/status` 不含 service/protocol_version | `fathom/api.py` | 端口被占时无法做「同服务身份探测」，只能 HTTP 200 猜测——发行方案明令禁止 | 分析确认 |
@@ -62,13 +62,14 @@ smoke 授权轮 20260913T050248Z PARTIAL_BLOCKED_PORT_7952；
 - 端口：默认 7963 + `--port-range N` 依序让位；仅绑 127.0.0.1（C2 断言
   非 0.0.0.0）；候选被「非本服务」占用→记录 pid 并让位（C5）；全部被占
   →退出码 3、零击杀、不写 discovery（C6）。
-- 单一所有者：探测到同 service+协议的健康实例→第二实例退出码 4（C7）。
+- 单一所有者：同一数据根由全生命周期 `fcntl.flock` 关闭检查—绑定竞争；
+  8 个并发启动最多一个 owner，其余退出码 4（C7）。
 - health：`GET /health` 200 JSON 含身份/pid/port/uptime；Host 非 loopback
   别名→403（与生产 api.py 守卫同构，C2）。
-- 受控停机：`POST /shutdown` 需 discovery 文件内随机 token，错令牌 403；
-  SIGTERM/SIGINT→优雅退出 0 并删 discovery（C3/C4）。
-- 崩溃语义：SIGKILL→shell 137、discovery 残留；下次启动按 pid 存活检测
-  接管同端口并轮换 instance_id（C8a/C8b）——app 壳崩溃恢复依据。
+- 受控停机：`POST /shutdown` 需 0600 discovery 内随机 token，错令牌 403；
+  token 不进 stdout/stderr；优雅退出只在 pid+instance_id+token 匹配时删记录。
+- 崩溃语义：SIGKILL 由内核释放锁并留下 discovery；下次锁持有者接管。
+  损坏记录可安全接管，外部替换的记录不会被旧实例退出流程删除。
 - 数据边界：唯一写入 `--data-dir`（必填、无 HOME 默认）；含空格/中文/&
   的可执行目录全文指纹零变化（C9）；结束后进程/端口零残留（Z1）。
 - 退出码合同：0 优雅 / 2 用法 / 3 端口耗尽 / 4 单所有者 / 70 内部 /
@@ -97,7 +98,7 @@ macOS 10.15+；fastapi 0.141.1 / uvicorn 0.52.4 均 `>=3.10`（本机
   绝不「HTTP 200 就当自己人」，绝不杀未知占用进程。
 - discovery 文件（Application Support 数据根内）承载 port/pid/token/
   instance_id；app 壳读它完成启动握手与受控停机。
-- 单一所有者：第二实例退出码 4；崩溃由 pid 存活检测接管。
+- 单一所有者：长期进程锁使第二实例退出码 4；崩溃由锁释放后接管。
 
 ## 7. 服务唯一所有者与 TCC 授权主体方向（决策归 PM/ISS-010）
 
@@ -125,10 +126,9 @@ macOS 10.15+；fastapi 0.141.1 / uvicorn 0.52.4 均 `>=3.10`（本机
 
 - ~~BLOCKED：PyInstaller 安装授权~~ **已解决**（2026-09-13 PM 批准并执行
   两条精确命令，task-local `.venv-build`，pyinstaller 6.22.3 与 pin 一致；
-  未安装/升级其他依赖）。授权前两轮 fail-closed 记录保留于 results/
-  （20260913T044957Z、045329Z）。
+  未安装/升级其他依赖）。
 - **当前 blocked（环境性，非依赖）**：冒烟 3 项用例（健康 serve、冻结产物
-  Host 守卫、冻结产物 SIGTERM）——7952 被未识别进程 pid 6026 占用；按合同
+  Host 守卫、冻结产物 SIGTERM）——7952 被未识别进程占用；按合同
   不杀不碰，等待 G6 修复（端口让位）或占用方消失后重跑
   `bash scripts/build_helper_smoke.sh` 即可补齐。
 - NOT_VERIFIED：断网首启、无 Python/Homebrew 的干净账户（需真断网与
@@ -144,7 +144,7 @@ macOS 10.15+；fastapi 0.141.1 / uvicorn 0.52.4 均 `>=3.10`（本机
 > helper 冻结方式；helper 进程合同按 iss029 原型固化：--version 身份面、
 > /health 身份探测、回环默认端口+让位段、未知占用零击杀（退 3）、单一
 > 所有者（退 4）、token 受控停机与 SIGTERM/SIGINT 退 0、崩溃 stale 由
-> pid 存活检测接管、数据仅写 Application Support 数据根。
+> 全生命周期进程锁与身份匹配接管、数据仅写 Application Support 数据根。
 > 生产改造前置（ISS-009 前完成）：G1 hidden-import/对象导入、G2 冻结
 > 感知数据根（建议 FATHOM_DATA_ROOT，三目录+DB 同源）、G3/G4 身份面、
 > G5 单一版本源、G6/G7 按上述合同实现。所有者先取 app 派生（方案 A），

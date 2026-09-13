@@ -16,27 +16,28 @@
   只绑定 127.0.0.1，绝不绑定 0.0.0.0。
 - 未知占用不杀：候选端口被「非本服务」进程占用时只记录并让位到下一端口；
   全部被占时退出码 3，不向占用进程发任何信号。
-- 单一所有者：发现同 service 且协议版本一致的健康实例在跑时，第二个实例
-  退出码 4，绝不并行第二份。
+- 单一所有者：同一数据根由长期持有的 ``fcntl.flock`` 串行化检查、绑定与
+  服务生命周期；第二个实例退出码 4，绝不并行第二份。
 - health：GET /health 返回 200 JSON（含 service/protocol_version/
   helper_version/pid/port/uptime_s）；Host 头不是本机 loopback 别名时 403
   （与 fathom/api.py 的本地边界合同同构）。
 - 受控停机：POST /shutdown 必须带 discovery 文件里的随机 control token；
   令牌错误 403。SIGTERM/SIGINT 优雅退出码 0，并删除 discovery 文件。
-- 崩溃（SIGKILL）留下 stale discovery 文件；下一次启动按 pid 存活检测
-  接管，这是 app 壳恢复崩溃的依据。
+- 崩溃（SIGKILL）由内核释放锁并留下 stale discovery；下一次锁持有者
+  接管。优雅退出只在 pid+instance_id+token 仍匹配时删除自身记录。
 - 退出码合同：0 优雅停止；2 CLI 用法错误（argparse）；3 候选端口全部
   被未知进程占用；4 同服务健康实例已在运行（单一所有者）；70 内部错误；
   被信号杀死时 shell 报 128+signum（如 SIGKILL=137）。
 - 数据只写 ``--data-dir`` 指定的显式目录（实验用合成临时根）；除该目录
   与 stderr 外零写入，不写自身所在目录。
 
-Python 3.9+ 兼容（CI/本地系统 Python 覆盖面优先）。
+Python 3.10+ 兼容（与 requirements-runtime.txt 的发行下限一致）。
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hmac
 import json
 import os
@@ -61,6 +62,7 @@ HELPER_VERSION = "0.0.1-iss029"
 DEFAULT_PORT = 7963
 DEFAULT_PORT_RANGE = 5          # 候选端口 7963..7967
 DISCOVERY_FILENAME = "helper-instance.json"
+LOCK_FILENAME = "helper-instance.lock"
 
 # 退出码合同（结构化退出）
 EXIT_OK = 0
@@ -150,8 +152,38 @@ class HelperState:
         self.discovery_path = data_dir / DISCOVERY_FILENAME
 
 
+class OwnershipLock:
+    """由 serve 全生命周期持有的进程锁，关闭 discovery 检查/绑定竞争。"""
+
+    def __init__(self, fd: int, path: Path):
+        self.fd = fd
+        self.path = path
+
+    @classmethod
+    def acquire(cls, data_dir: Path):
+        data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = data_dir / LOCK_FILENAME
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        os.fchmod(fd, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return None
+        return cls(fd, path)
+
+    def close(self) -> None:
+        if self.fd < 0:
+            return
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.fd)
+            self.fd = -1
+
+
 def write_discovery(state: HelperState) -> None:
-    """原子写 discovery 文件（tmp + rename），供 app 壳发现端口与令牌。"""
+    """以 0600 原子写 discovery，且不把控制令牌写到 stdout/stderr。"""
     record = {
         "service": SERVICE_ID,
         "protocol_version": PROTOCOL_VERSION,
@@ -163,16 +195,46 @@ def write_discovery(state: HelperState) -> None:
         "started_at": time.time(),
     }
     state.data_dir.mkdir(parents=True, exist_ok=True)
-    tmp = state.discovery_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, state.discovery_path)
+    tmp = state.data_dir / (".%s.%d.%s.tmp" % (
+        DISCOVERY_FILENAME, os.getpid(), uuid.uuid4().hex))
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = -1
+            json.dump(record, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, state.discovery_path)
+        os.chmod(state.discovery_path, 0o600)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def remove_discovery(state: HelperState) -> None:
+    """只删除仍属于当前实例的 discovery，避免退出时删掉接管者记录。"""
     try:
-        state.discovery_path.unlink()
-    except FileNotFoundError:
-        pass
+        record = json.loads(state.discovery_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return
+    if not isinstance(record, dict):
+        return
+    expected = {
+        "pid": os.getpid(),
+        "instance_id": state.instance_id,
+        "control_token": state.control_token,
+    }
+    if all(record.get(key) == value for key, value in expected.items()):
+        try:
+            state.discovery_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def make_handler(state: HelperState, server_ref: dict):
@@ -244,14 +306,17 @@ def _request_stop(server) -> None:
 def check_stale_ownership(data_dir: Path) -> int | None:
     """启动前的 stale discovery 检查。
 
-    - 记录属于「活着的本服务实例」→ 返回 EXIT_SINGLE_OWNER（不重复启动）；
-    - pid 已死/记录损坏 → 视作崩溃残留，打印接管日志，返回 None 继续启动。
+    本函数只在进程持有长期锁时调用：记录属于仍健康的旧版无锁实例时返回
+    EXIT_SINGLE_OWNER；pid 已死或记录损坏则安全接管。
     """
     stale = data_dir / DISCOVERY_FILENAME
     if not stale.exists():
         return None
+    record = None
     try:
         record = json.loads(stale.read_text(encoding="utf-8"))
+        if not isinstance(record, dict):
+            raise ValueError("discovery root is not an object")
         old_pid = int(record.get("pid", 0))
         old_port = int(record.get("port", 0))
         live = (record.get("service") == SERVICE_ID and old_pid > 0
@@ -259,11 +324,14 @@ def check_stale_ownership(data_dir: Path) -> int | None:
                 and probe_health(old_port)[0] == "ours")
     except Exception:  # noqa: BLE001 - 坏记录视作崩溃残留
         live = False
-    if live:
-        _emit({"event": "single-owner-stale-check", "already_running": record})
+    if live and isinstance(record, dict):
+        # discovery 含控制令牌；只输出公开身份字段。
+        public = {key: record.get(key) for key in (
+            "service", "protocol_version", "helper_version", "instance_id",
+            "pid", "port")}
+        _emit({"event": "single-owner-stale-check", "already_running": public})
         return EXIT_SINGLE_OWNER
-    print("[helper] 接管 stale discovery：pid=%s 已退出" % record.get("pid", "?"),
-          file=sys.stderr)
+    print("[helper] 接管无活动锁的 stale/malformed discovery", file=sys.stderr)
     return None
 
 
@@ -273,6 +341,37 @@ def cmd_serve(args: argparse.Namespace) -> int:
         _emit({"error": "data-dir 不是目录", "path": str(data_dir)})
         return EXIT_INTERNAL
 
+    if args.start_gate:
+        deadline = time.monotonic() + 10
+        gate = Path(args.start_gate)
+        while not gate.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not gate.exists():
+            _emit({"error": "实验并发起跑门未打开", "exit": EXIT_INTERNAL})
+            return EXIT_INTERNAL
+
+    try:
+        owner_lock = OwnershipLock.acquire(data_dir)
+    except OSError as exc:
+        _emit({"error": "ownership lock 创建失败", "errno": exc.errno})
+        return EXIT_INTERNAL
+    if owner_lock is None:
+        _emit({"event": "single-owner-lock-held", "already_running": True})
+        return EXIT_SINGLE_OWNER
+
+    try:
+        return _serve_with_lock(args, data_dir)
+    except Exception as exc:  # noqa: BLE001 - 原型也必须结构化 fail closed
+        print(json.dumps({"error": "helper internal error",
+                          "type": type(exc).__name__, "exit": EXIT_INTERNAL},
+                         ensure_ascii=False), file=sys.stderr)
+        return EXIT_INTERNAL
+    finally:
+        owner_lock.close()
+
+
+def _serve_with_lock(args: argparse.Namespace, data_dir: Path) -> int:
+    """在长期 flock 持有期间完成检查、绑定、服务和清理。"""
     verdict = check_stale_ownership(data_dir)
     if verdict is not None:
         return verdict
@@ -356,6 +455,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="合成数据根（discovery 文件唯一写入目录；无默认值，防误写 HOME）")
     s.add_argument("--crash-after", type=float, default=None,
                    help="N 秒后 SIGKILL 自身（崩溃语义实验钩子）")
+    s.add_argument("--start-gate", default=None,
+                   help=argparse.SUPPRESS)  # 仅供并发竞争反例同步起跑
     s.set_defaults(func=cmd_serve)
     return p
 

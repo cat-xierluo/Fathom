@@ -44,7 +44,13 @@ def fold_changes(changes: list[DirChange], topn: int = 25) -> list[DirChange]:
       a +33 / b +33 / 其他 +34 构成时，四个都有定位价值）；
     - 候选无入选祖先、但有入选后代：残余量（自身变化减去同向后代已覆盖部分）
       不足 10% 或 1MB 时不入选（变化已被后代表达）。
+
+    ``topn`` 只限制完成父子折叠后的最终输出；必须遍历全部候选，后续更精确的
+    子目录才有机会替换先入选的父目录。
     """
+    if topn <= 0:
+        return []
+
     selected: list[DirChange] = []
     for c in sorted(changes, key=lambda x: abs(x.delta_kb), reverse=True):
         if c.delta_kb == 0:
@@ -65,9 +71,7 @@ def fold_changes(changes: list[DirChange], topn: int = 25) -> list[DirChange]:
             residual = abs(c.delta_kb) - covered
             if covered == 0 or residual >= max(1024, abs(c.delta_kb) * 0.1):
                 selected.append(c)
-        if len(selected) >= topn:
-            break
-    return selected
+    return selected[:topn]
 
 
 def compute_diff(

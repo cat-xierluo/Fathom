@@ -110,17 +110,27 @@ class TestDiff:
 
 
 class TestFoldChanges:
-    def test_parent_child_folding(self):
-        changes = [
-            reports.DirChange("/r", 100_000, 200_000, 100_000),       # 父 +100GB级
-            reports.DirChange("/r/a", 100, 99_900_000, 99_900_000 - 100),  # 子几乎同量 -> 折叠掉父或子其一
-            reports.DirChange("/r/b", 0, 5_000, 5_000),               # 独立子树
+    @staticmethod
+    def _parent_child_changes():
+        """父目录先排序，随后子目录应以更精确路径替换它。"""
+        return [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/r/a", 0, 99_800, 99_800),
+            reports.DirChange("/r/b", 0, 5_000, 5_000),
         ]
-        out = reports.fold_changes(changes, topn=10)
+
+    def test_parent_child_folding_respects_topn_after_replacement(self):
+        out = reports.fold_changes(self._parent_child_changes(), topn=1)
+
+        assert [c.path for c in out] == ["/r/a"]
+
+    def test_parent_child_folding_preserves_independent_sibling(self):
+        out = reports.fold_changes(self._parent_child_changes(), topn=10)
+
         paths = [c.path for c in out]
         # /r 与 /r/a 变化量几乎一致时应只保留一个（更精确的深层）
-        assert not (paths.count("/r") and paths.count("/r/a")) or True
-        assert len(out) <= 3
+        assert "/r" not in paths
+        assert "/r/a" in paths
         # 独立子树必保留
         assert "/r/b" in paths
 
@@ -133,6 +143,27 @@ class TestFoldChanges:
         ]
         out = reports.fold_changes(changes, topn=10)
         assert len(out) == 3
+
+    def test_negative_parent_child_replacement_and_zero_ignored(self):
+        changes = [
+            reports.DirChange("/r", 100_000, 0, -100_000),
+            reports.DirChange("/r/a", 99_800, 0, -99_800),
+            reports.DirChange("/zero", 1, 1, 0),
+        ]
+
+        out = reports.fold_changes(changes, topn=1)
+
+        assert [c.path for c in out] == ["/r/a"]
+
+    def test_topn_bounds_final_output(self):
+        changes = [
+            reports.DirChange(f"/r-{index}", 0, 100 - index, 100 - index)
+            for index in range(20)
+        ]
+
+        out = reports.fold_changes(changes, topn=3)
+
+        assert [c.path for c in out] == ["/r-0", "/r-1", "/r-2"]
 
 
 class TestPrune:

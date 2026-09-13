@@ -65,6 +65,7 @@ class RuntimeConfig:
 
     mode: str
     project_root: Path
+    home_dir: Path
     resource_dir: Path
     frontend_dir: Path
     runtime_dir: Path
@@ -127,6 +128,7 @@ class RuntimeConfig:
         return cls(
             mode=mode,
             project_root=project_root,
+            home_dir=home,
             resource_dir=resource_dir,
             frontend_dir=resource_dir / "frontend",
             runtime_dir=runtime_dir,
@@ -156,7 +158,7 @@ class RuntimeConfig:
             target_runtime = _absolute_path(runtime_dir, name="runtime_dir")
         elif mode_changes_default:
             target_runtime = (
-                Path.home() / "Library" / "Application Support" / "Fathom"
+                self.home_dir / "Library" / "Application Support" / "Fathom"
                 if target_mode == "release"
                 else self.project_root
             )

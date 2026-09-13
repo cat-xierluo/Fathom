@@ -179,7 +179,6 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     try:
-        _check_integrity(conn, label="数据库")
         version = schema_version(conn)
         if version > SCHEMA_VERSION:
             raise UnsupportedSchemaVersion(
@@ -188,6 +187,7 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
         if version == SCHEMA_VERSION:
             _validate_schema(conn, allow_missing=False)
         elif version == 0:
+            _check_integrity(conn, label="数据库")
             tables = _user_tables(conn)
             # 空文件/新库不含用户数据，无需生成无意义的迁移备份。
             if tables:
@@ -228,8 +228,29 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     """打开数据库；必要时先做一致备份与事务迁移，失败绝不删库重建。"""
     path = Path(db_path or config.DB_PATH).expanduser().resolve(strict=False)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _migration_lock(path):
+    try:
+        # 已是当前 schema 时走快路径：API 每次查询都会新建连接，
+        # 不能为此扫全库 integrity_check 或串行所有读连接。
+        current = sqlite3.connect(path, timeout=10)
+        current.row_factory = sqlite3.Row
         try:
+            version = schema_version(current)
+            if version > SCHEMA_VERSION:
+                raise UnsupportedSchemaVersion(
+                    f"数据库 schema={version}，当前程序只支持到 {SCHEMA_VERSION}；已拒绝降级打开"
+                )
+            if version == SCHEMA_VERSION:
+                _validate_schema(current, allow_missing=False)
+                current.execute("PRAGMA journal_mode=WAL")
+                current.execute("PRAGMA foreign_keys=ON")
+                return current
+        except Exception:
+            current.close()
+            raise
+        current.close()
+
+        # 只有待迁移/新建库需要跨进程串行；锁内重读版本处理竞争。
+        with _migration_lock(path):
             return _prepare_database(path)
-        except sqlite3.DatabaseError as exc:
-            raise DatabaseOpenError(f"数据库无法安全打开：{exc}") from exc
+    except sqlite3.DatabaseError as exc:
+        raise DatabaseOpenError(f"数据库无法安全打开：{exc}") from exc

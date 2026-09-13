@@ -75,7 +75,7 @@ def test_release_default_uses_application_support_not_resources(tmp_path):
 
 
 def test_mode_override_changes_default_runtime_root(tmp_path):
-    home = Path.home()
+    home = tmp_path / "home"
     value = config.RuntimeConfig.from_env(
         {}, project_root=tmp_path / "source", home=home
     ).with_overrides(mode="release")

@@ -151,3 +151,19 @@ def test_current_version_with_missing_table_fails_closed(tmp_path):
 
     with pytest.raises(db.DatabaseOpenError, match="缺少表"):
         db.connect(path)
+
+
+def test_current_schema_reopen_does_not_scan_entire_database(tmp_path, monkeypatch):
+    path = tmp_path / "current.db"
+    created = db.connect(path)
+    created.close()
+    monkeypatch.setattr(
+        db, "_check_integrity",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected full scan")),
+    )
+
+    reopened = db.connect(path)
+    try:
+        assert db.schema_version(reopened) == db.SCHEMA_VERSION
+    finally:
+        reopened.close()

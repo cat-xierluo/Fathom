@@ -19,17 +19,18 @@ macOS 本机的目录容量历史追踪工具：记录哪些目录在增长，�
 
 ## 开发者运行
 
-当前代码在 macOS、Python 3.14 环境验证。新克隆需先建立环境（Python 3.14 须已安装）；依赖尚未完全固定，可复现构建正在 ISS-031 处理。
+当前代码在 macOS、Python 3.14 环境验证。新克隆需先建立环境（Python 3.14 须已安装）；运行与开发依赖已分层，并由 constraints 固定已验证闭包。
 
 ```bash
 git clone https://github.com/cat-xierluo/fathom.git
 cd fathom
 python3.14 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m pip install -c constraints.txt -r requirements-dev.txt
+/bin/bash scripts/ci_pytest.sh
+/bin/bash scripts/ci_cargo_locked.sh
 ```
 
-仓库目前私有，clone 需要访问权限。开发 UI 首选 [隔离夹具服务](docs/TESTING.md)，可安全查看两天数据及重扫交互，不扫描 HOME。
+仓库目前私有，clone 需要访问权限。CI 还会用锁定的 Node/Playwright 运行隔离 Chromium/API 检查；完整复跑命令见 [TESTING](docs/TESTING.md)。开发 UI 首选其中的隔离夹具服务，可安全查看两天数据及重扫交互，不扫描 HOME。
 
 已了解当前限制并准备监控本机时：
 

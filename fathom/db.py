@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import fcntl
 import os
 from pathlib import Path
+import re
 import sqlite3
 import time
 from typing import Callable, Iterator
@@ -47,14 +48,38 @@ _SCHEMA_STATEMENTS = (
 # Kept as a readable schema reference for tests and diagnostics.
 SCHEMA = ";\n\n".join(_SCHEMA_STATEMENTS) + ";\n"
 
-_EXPECTED_COLUMNS = {
-    "snapshots": {
-        "id", "created_at", "root", "dir_count", "denied_count", "du_seconds", "total_kb"
-    },
-    "entries": {"snapshot_id", "path", "size_kb"},
-    "volume_stats": {"snapshot_id", "total_bytes", "free_bytes"},
-    "scan_runs": {"id", "started_at", "finished_at", "status", "message"},
+_EXPECTED_TABLE_INFO = {
+    # (name, declared type, notnull, primary-key order)
+    "snapshots": (
+        ("id", "INTEGER", 0, 1), ("created_at", "TEXT", 1, 0),
+        ("root", "TEXT", 1, 0), ("dir_count", "INTEGER", 1, 0),
+        ("denied_count", "INTEGER", 1, 0), ("du_seconds", "REAL", 1, 0),
+        ("total_kb", "INTEGER", 1, 0),
+    ),
+    "entries": (
+        ("snapshot_id", "INTEGER", 1, 1), ("path", "TEXT", 1, 2),
+        ("size_kb", "INTEGER", 1, 0),
+    ),
+    "volume_stats": (
+        ("snapshot_id", "INTEGER", 0, 1), ("total_bytes", "INTEGER", 1, 0),
+        ("free_bytes", "INTEGER", 1, 0),
+    ),
+    "scan_runs": (
+        ("id", "INTEGER", 0, 1), ("started_at", "TEXT", 1, 0),
+        ("finished_at", "TEXT", 0, 0), ("status", "TEXT", 1, 0),
+        ("message", "TEXT", 0, 0),
+    ),
 }
+
+_EXPECTED_FOREIGN_KEYS = {
+    "snapshots": (),
+    "entries": (("snapshots", "snapshot_id", "id", "NO ACTION", "CASCADE", "NONE"),),
+    "volume_stats": (("snapshots", "snapshot_id", "id", "NO ACTION", "CASCADE", "NONE"),),
+    "scan_runs": (),
+}
+
+_EXPECTED_WITHOUT_ROWID = {"snapshots": 0, "entries": 1, "volume_stats": 0, "scan_runs": 0}
+_EXPECTED_AUTOINCREMENT = {"snapshots", "scan_runs"}
 
 
 class DatabaseOpenError(RuntimeError):
@@ -82,9 +107,40 @@ def _user_tables(conn: sqlite3.Connection) -> set[str]:
     }
 
 
-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+def _table_info(conn: sqlite3.Connection, table: str) -> tuple[tuple[str, str, int, int], ...]:
     quoted = _quote_identifier(table)
-    return {row[1] for row in conn.execute(f"PRAGMA table_info({quoted})")}
+    return tuple(
+        (row[1], str(row[2]).upper(), int(row[3]), int(row[5]))
+        for row in conn.execute(f"PRAGMA table_info({quoted})")
+    )
+
+
+def _foreign_keys(conn: sqlite3.Connection, table: str) -> tuple[tuple[str, ...], ...]:
+    quoted = _quote_identifier(table)
+    return tuple(sorted(
+        (row[2], row[3], row[4], row[5], row[6], row[7])
+        for row in conn.execute(f"PRAGMA foreign_key_list({quoted})")
+    ))
+
+
+def _without_rowid(conn: sqlite3.Connection, table: str) -> int:
+    row = next(
+        (row for row in conn.execute("PRAGMA table_list")
+         if row[1] == table and row[2] == "table"),
+        None,
+    )
+    if row is None:
+        raise DatabaseOpenError(f"无法读取表 {table} 的 table_list 元数据")
+    return int(row[4])
+
+
+def _uses_autoincrement(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    sql = row[0] if row and row[0] else ""
+    # 不比较 sqlite_master 的格式，只识别影响 id 不复用语义的 SQL 关键字。
+    return re.search(r"\bAUTOINCREMENT\b", sql, re.IGNORECASE) is not None
 
 
 def _check_integrity(conn: sqlite3.Connection, *, label: str) -> None:
@@ -99,20 +155,27 @@ def _check_integrity(conn: sqlite3.Connection, *, label: str) -> None:
 
 def _validate_schema(conn: sqlite3.Connection, *, allow_missing: bool) -> None:
     tables = _user_tables(conn)
-    unknown = tables - set(_EXPECTED_COLUMNS)
+    unknown = tables - set(_EXPECTED_TABLE_INFO)
     if unknown:
         raise DatabaseOpenError(f"数据库包含未知未版本化表：{', '.join(sorted(unknown))}")
     if not allow_missing:
-        missing = set(_EXPECTED_COLUMNS) - tables
+        missing = set(_EXPECTED_TABLE_INFO) - tables
         if missing:
             raise DatabaseOpenError(f"schema {SCHEMA_VERSION} 缺少表：{', '.join(sorted(missing))}")
     for table in tables:
-        actual = _table_columns(conn, table)
-        expected = _EXPECTED_COLUMNS[table]
+        actual = _table_info(conn, table)
+        expected = _EXPECTED_TABLE_INFO[table]
         if actual != expected:
             raise DatabaseOpenError(
                 f"表 {table} 结构不兼容（expected={sorted(expected)}, actual={sorted(actual)}）"
             )
+        actual_foreign_keys = _foreign_keys(conn, table)
+        if actual_foreign_keys != _EXPECTED_FOREIGN_KEYS[table]:
+            raise DatabaseOpenError(f"表 {table} 外键/级联结构不兼容")
+        if _without_rowid(conn, table) != _EXPECTED_WITHOUT_ROWID[table]:
+            raise DatabaseOpenError(f"表 {table} WITHOUT ROWID 结构不兼容")
+        if _uses_autoincrement(conn, table) != (table in _EXPECTED_AUTOINCREMENT):
+            raise DatabaseOpenError(f"表 {table} AUTOINCREMENT 结构不兼容")
 
 
 def schema_version(conn: sqlite3.Connection) -> int:
@@ -121,7 +184,7 @@ def schema_version(conn: sqlite3.Connection) -> int:
 
 def _create_missing_tables(conn: sqlite3.Connection) -> None:
     existing = _user_tables(conn)
-    for table, statement in zip(_EXPECTED_COLUMNS, _SCHEMA_STATEMENTS, strict=True):
+    for table, statement in zip(_EXPECTED_TABLE_INFO, _SCHEMA_STATEMENTS, strict=True):
         if table not in existing:
             conn.execute(statement)
 

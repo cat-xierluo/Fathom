@@ -197,3 +197,52 @@ def test_current_schema_reopen_does_not_scan_entire_database(tmp_path, monkeypat
         assert db.schema_version(reopened) == db.SCHEMA_VERSION
     finally:
         reopened.close()
+
+
+def test_unconstrained_same_name_columns_are_not_a_trusted_v0_schema(tmp_path):
+    path = tmp_path / "fake-v0.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE snapshots(id, created_at, root, dir_count, denied_count, "
+        "du_seconds, total_kb)"
+    )
+    conn.execute(
+        "INSERT INTO snapshots VALUES (1, '2026-09-12', '/keep', 1, 0, 0.1, 42)"
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(db.DatabaseOpenError, match="结构不兼容"):
+        db.connect(path)
+
+    raw = sqlite3.connect(path)
+    try:
+        assert raw.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert raw.execute("SELECT total_kb FROM snapshots").fetchone()[0] == 42
+    finally:
+        raw.close()
+
+
+@pytest.mark.parametrize("fault", ["foreign_key", "without_rowid"])
+def test_current_schema_rejects_broken_entries_invariants(tmp_path, fault):
+    path = tmp_path / f"broken-{fault}.db"
+    conn = sqlite3.connect(path)
+    for index, statement in enumerate(db._SCHEMA_STATEMENTS):
+        if index == 1:
+            statement = """CREATE TABLE entries (
+                snapshot_id INTEGER NOT NULL%s,
+                path TEXT NOT NULL,
+                size_kb INTEGER NOT NULL,
+                PRIMARY KEY (snapshot_id, path)
+            )%s""" % (
+                " REFERENCES snapshots(id) ON DELETE CASCADE"
+                if fault != "foreign_key" else "",
+                " WITHOUT ROWID" if fault != "without_rowid" else "",
+            )
+        conn.execute(statement)
+    conn.execute(f"PRAGMA user_version={db.SCHEMA_VERSION}")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(db.DatabaseOpenError, match="不兼容"):
+        db.connect(path)

@@ -1,6 +1,6 @@
 # Fathom 当前架构
 
-**事实基线：main `0dba78b`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
+**事实基线：main `7aef239`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
 
 ## 入口与边界
 
@@ -31,6 +31,7 @@ CLI 和 API 的执行流程目前各自实现，只有 API 有进程内 threadin
 | launchd.py | 拼接 XML，安装扫描/常驻 Web 两个 plist | 路径不做 XML 转义；bootstrap 失败只打印，不能可靠表示安装失败 |
 | frontend/ | 原生 HTML/JS/CSS、ECharts、hash 五页 | 请求/状态/页面同文件；部分异常未接；重扫后列表不刷新 |
 | apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行 | bundle.active=false；无自包含 Python、安装/升级/卸载 UI；tray 实机待验 |
+| apps/desktop/experiments/iss029/ | PyInstaller onedir 与 helper 生命周期合同原型；只写指定数据根，结果被版本化规则忽略 | 仅技术验证，尚未接入生产 helper 或 `.app`；冻结健康仍受固定 7952 端口阻塞 |
 
 ## SQLite 与保留事实
 
@@ -82,7 +83,7 @@ API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。�
 
 ## 当前验证覆盖
 
-当前 main 候选已通过全量 **144 pytest** 与 **39 项 Chromium/API 安全检查**。覆盖扫描完整性、真实 BSD `du` 反例、事务回滚、scan_runs、Host/Origin/写令牌、reveal 越界/符号链接逃逸、路径与报告名转义、CSP 及浏览器资源清理。隔离真实 API 已执行 du、次日报告、通知 stub、运行历史及实际服务重启；首扫仍复现“有快照但报告不足而失败”，归 ISS-020。实际 Tauri WebView、系统通知、tray 和签名发行仍为 `NOT_VERIFIED`。
+当前 main 候选已通过全量 **144 pytest** 与 **39 项 Chromium/API 安全检查**。GitHub CI 在原生 arm64/x86_64 runner 运行 pytest 与 Rust 1.88 locked build，并在 arm64 运行浏览器/API；五项最近验收均成功。覆盖扫描完整性、真实 BSD `du` 反例、事务回滚、scan_runs、Host/Origin/写令牌、reveal 越界/符号链接逃逸、路径与报告名转义、CSP 及浏览器资源清理。隔离真实 API 已执行 du、次日报告、通知 stub、运行历史及实际服务重启；首扫仍复现“有快照但报告不足而失败”，归 ISS-020。实际 Tauri WebView、系统通知、tray、自包含 helper 和签名发行仍为 `NOT_VERIFIED`。
 
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。
 

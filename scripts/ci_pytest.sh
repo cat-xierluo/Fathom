@@ -17,7 +17,7 @@ expected="${EXPECTED_PYTEST_PASSED:-179}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then
-  echo "缺少可执行解释器: $py（本地用 .runtime/bin/python，CI 设 FATHOM_PYTHON）" >&2
+  echo "缺少可执行解释器: ${py}（本地用 .runtime/bin/python，CI 设 FATHOM_PYTHON）" >&2
   exit 1
 fi
 

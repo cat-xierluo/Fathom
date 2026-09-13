@@ -52,18 +52,22 @@ with TemporaryDirectory(prefix='fathom-ui-') as runtime:
     root = str(config.DEFAULT_ROOT)
     conn = db.connect()
     for ago, size in [(1, 400000), (0, 300000)]:
-        scanner.run_du = lambda _, value=size: (
-            {root: value, root + '/Archive': value - 100000,
-             root + '/Notes': 100000}, 0)
+        scanner.run_du = lambda _, value=size: scanner.DuResult(
+            sizes={root: value, root + '/Archive': value - 100000,
+                   root + '/Notes': 100000},
+            exit_code=0, denied_count=0, elapsed_seconds=0.0,
+            stderr_tail=(), other_error_count=0)
         sid = scanner.create_snapshot(conn)
         day = (dt.date.today() - dt.timedelta(days=ago)).isoformat()
         conn.execute('UPDATE snapshots SET created_at=? WHERE id=?',
                      (day + 'T10:00:00', sid))
         conn.commit()
     conn.close()
-    scanner.run_du = lambda _: (
-        {root: 250000, root + '/Archive': 150000,
-         root + '/Notes': 100000}, 0)
+    scanner.run_du = lambda _: scanner.DuResult(
+        sizes={root: 250000, root + '/Archive': 150000,
+               root + '/Notes': 100000},
+        exit_code=0, denied_count=0, elapsed_seconds=0.0,
+        stderr_tail=(), other_error_count=0)
     # ISS-003 集成后也不得让夹具发真实系统通知。
     try:
         from fathom import notify
@@ -114,9 +118,11 @@ PY
 | Tauri 开发壳 | 启动窗口，实测 tray 数量/图标/标题/菜单/隐藏与恢复、remote IPC | cargo build、JS mock |
 | 新账户安装 | 无开发工具安装，断网首启，部分权限首扫，第二日对比 | 开发机 cargo run |
 | 后台服务 | 登录、退出 UI、休眠错过计划、重启中断、拒绝/撤销权限 | 只读 plist 文本 |
-| 升级/恢复 | N→N+1、迁移失败、空间不足、备份恢复、版本不兼容 | 新库安装成功 |
+| 应用内更新 | 已安装 v0.3.0→测试 v0.3.1；双架构 manifest；进度/取消/离线/签名篡改；helper 停写退出、备份、重启和版本握手 | 只生成 `latest.json`、mock 下载、关闭签名校验 |
+| 升级/恢复 | N→N+1、迁移失败、空间不足、下载中断、备份恢复、版本不兼容与旧版回退 | 新库安装成功 |
 | 卸载/重装 | 停止并移除自己服务，默认保留历史，重装接回 | 删除 .app 图标 |
-| 公开下载包 | 声明的 CPU/最低及当前支持 OS，签名/公证/校验，真实下载后启动 | 本机未隔离的 unsigned 包 |
+| arm64/x86_64 发行包 | 各自在目标架构原生 runner 冻结 helper；`file`/`otool -L`；两个 DMG/updater tar.gz/`.sig`/checksums 齐全 | arm64 runner 的 Cargo x86 交叉 target、只构建 app 壳 |
+| 公开下载包 | Developer ID 嵌套签名；公证/staple；`codesign --verify --deep --strict`、`spctl --assess`、`stapler validate`；真实下载保留 quarantine 后启动 | 本机未隔离的 unsigned 包、`xattr` 绕过、仅 Tauri updater 签名 |
 
 不随意选择生产环境跑这些步骤。没有测试账户/机器/签名凭据时保留未勾项并写 NOT_VERIFIED；其他独立任务照常推进。UI 最小窗口通过不代表手机布局已支持。
 

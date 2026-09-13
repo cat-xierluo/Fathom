@@ -5,6 +5,30 @@
 
 ---
 
+### [DEC-016] - 2026-09-13 - v0.3.0 以双架构签名公证与安全更新为发行门槛
+
+**背景**：用户确认当前开发线可以作为 v0.3.0，并要求同步 GitHub、建立 release 编译、参照 Folia 配置密钥及应用内自动更新。独立审查发现当前壳仍依赖外部 Python/FastAPI、`bundle.active=false`、生产 UI 未接原型、版本漂移且没有 CI/Secrets。Folia 的 updater 流程可参考，但没有 Developer ID 签名和 Apple 公证。
+
+**决策**：v0.3.0 作为首个对外可安装目标，而非对当前代码已可发行的声明。先分别验证 arm64/x86_64 自包含 helper，再完成正式 UI、后台退出及一致备份/恢复协议；随后接入 Fathom 独立 Tauri updater key、双架构 `latest.json`，由固定 action SHA 的 CI 完成 Developer ID 签名、公证、stapling 与 private draft Release，最后使用真实 draft 产物验收 N→N+1 和失败回退。Tauri updater 签名和 Apple 签名/公证是两套独立信任链，均不可省略。公开 Release 与仓库可见性仍以具体候选供用户最终审阅。
+
+**验证**：基线 `main@8e7c07b` 的发行差距与 Folia 仓库由两个只读审查独立核对；Fathom GitHub Secrets 当前为 0，本机 codesigning identity 为 0，未找到 `FathomNotary` keychain profile。实现、签名、公证、下载启动与 v0.3.0→测试 v0.3.1 均为 NOT_VERIFIED，任务见 ISS-029/031/009/010/028/037/040/041/030。
+
+**影响/重评条件**：private GitHub Release 不能作为普通用户匿名更新源，客户端不得嵌入 PAT。对外自动更新前需把仓库转 public，或选择独立公开下载仓/CDN。凭据只以 secret 名进入方案，真实值由 Apple/GitHub 账户安全创建与保存；详细方案见 [v0.3.0 发行与自动更新方案](plans/2026-09-13-v0.3-release-design.md)。
+
+---
+
+### [DEC-015] - 2026-09-13 - 保留原型流程，按原生 Mac 方向重做视觉
+
+**背景**：用户实际试用第一轮可点击原型后反馈“流程可以，但视觉需要明显提升”，并在三个方向中选择“原生 Mac：克制、精致、轻量”。工程交互检查通过不足以证明视觉达到预期。
+
+**决策**：保留已认可的导航与旅程，继续在独立原型中迭代视觉；具体约束以 [DESIGN](DESIGN.md) 为准，执行边界见 [第二轮方案](plans/2026-09-13-native-mac-prototype-design.md)。工程验收与用户视觉认可分别记录，不提前将 ISS-026 标为 DONE。
+
+**验证**：第一轮原型经过 PM 的 91 项真实浏览器检查。第二轮通过 99 项浏览器检查、13 张截图及 15 个视口页面无横向溢出；用户实测认为流程、图标与优雅程度已经明显改善，但仍偏中规中矩，希望加入个人特色。第三轮“测深/等深线＋深度环”正在独立原型实现，结果 NOT_VERIFIED。
+
+**影响/重评条件**：ISS-028 继续等待原型定稿；第三轮保持原生 Mac 克制布局，把品牌识别限制在侧栏品牌区、总览 hero、选中态和关键图表，不进入数据表或替代语义色。用户再次评审后确定是否进入实装。
+
+---
+
 ### [DEC-014] - 2026-09-12 - M0 采用有界 PM 自动编排
 
 **背景**：用户要求 PM 按 multi-agent-orchestration 派发 worker 自动推进，并已授权审查合并。任务源已有明确 M0 修复与原型卡，需要避免多个模型同时修改共享文件或把未验证成果自动关闭。

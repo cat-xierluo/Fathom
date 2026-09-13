@@ -24,15 +24,15 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 |---|---|---|
 | config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口 | 尚无持久化设置 UI；release 模式只定义路径合同，不证明 `.app` 已自包含 |
 | db.py | sqlite3、WAL、外键、schema v2；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 支持 v0/v1→v2；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
-| scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 只承载采集结果、退出码、耗时与质量字段；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同日快照 | 无法无歧义映射/解码时拒绝采集；数据库只持久化 denied_count/du_seconds，详细质量尚未入库 |
-| reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown；按传入 sid 查找同根前驱 | 未记录仍表达为 added/removed；dataset/阈值/质量语义尚待 ISS-021，报告状态由协调器单独记录 |
+| scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 只承载采集结果、退出码、耗时与质量字段；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同数据集同日快照 | 无法无歧义映射/解码时拒绝采集；快照持久化 min_kb 与 collection_status（full/partial），v3 之前旧行为 NULL |
+| reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown；按传入 sid 查找同数据集（同根同 `min_kb`）前驱，报头带 a/b 快照 ID 与记录口径说明 | 单条目仍无法区分低于阈值与移除，措辞如实表达为未记录/首次记录；报告状态由协调器单独记录 |
 | notify.py | 日报写完后尝试 osascript 通知；首次记录目录单列；摘要限长；低空间阈值 10 GB | 显示受系统策略控制；首扫无日报不通知；阈值未与 UI 统一；日志可能含路径 |
 | bigfiles.py | `/usr/bin/find -xdev -type f -size +... -mtime -... -print0` 后 stat | 大小为 st_size 逻辑字节；每次请求实时遍历；无超时/去重/失败呈现 |
 | scan_coordinator.py | API/CLI/定时统一扫描；`flock`、owner 元数据、分阶段状态、首扫/故障/取消语义 | 生产 launchd 跨日与发行 helper 生命周期仍待对应任务实测 |
 | api.py | 查询、非 daemon 扫描线程；Host/Origin/写令牌守卫；受监控根约束的 reveal；挂载静态文件 | 实际 Tauri WebView 尚未真机验证 |
 | cli.py | scan/report/bigfiles/status/serve/install/uninstall；scan 可标记 cli/scheduled 来源 | 与 API 共用协调合同；install/uninstall 仍是开发版入口 |
 | launchd.py | 拼接 XML，安装扫描/常驻 Web 两个 plist | 路径不做 XML 转义；bootstrap 失败只打印，不能可靠表示安装失败 |
-| frontend/ | 原生 HTML/JS/CSS、ECharts、hash 五页；快照刷新保持有效选择，按页面/导航隔离响应世代并覆盖空、错误、断网和仅 added/removed 状态 | 请求/状态/页面仍在同一文件；正式 UX 原型尚未实装到生产页面 |
+| frontend/ | 无构建链原生 ES modules：modules/ 下 request（世代号+pageScoped 防倒序覆盖）、format、charts（隐藏 stale/重显 resume）、polling（幂等单实例）、tauri（浏览器降级）、router（hash 路由+单一刷新入口）、status 与五页 enter/leave 模块；ECharts 本地 vendor | 真实 Tauri WebView 桥接与真实 FastAPI StaticFiles 下 module MIME/CSP 实机未验证；正式 UX 原型尚未实装到生产页面 |
 | apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行 | bundle.active=false；无自包含 Python、安装/升级/卸载 UI；tray 实机待验 |
 | apps/desktop/experiments/iss029/ | PyInstaller onedir 与 helper 生命周期合同原型；只写指定数据根，结果被版本化规则忽略 | 仅技术验证，尚未接入生产 helper 或 `.app`；冻结健康仍受固定 7952 端口阻塞 |
 
@@ -40,8 +40,8 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 
 | 表 | 字段概要 | 含义 |
 |---|---|---|
-| schema | `PRAGMA user_version=2` | v0/v1 开发库经完整性/结构校验和一致备份后事务迁移；未来版本、损坏或不兼容结构拒绝打开 |
-| snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录 |
+| schema | `PRAGMA user_version=3` | v0/v1/v2 开发库经完整性/结构校验和一致备份后事务迁移；未来版本、损坏或不兼容结构拒绝打开 |
+| snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb, min_kb, collection_status | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录；min_kb/collection_status 自 v3 起持久化，旧行 NULL 不补造 |
 | entries | snapshot_id, path, size_kb | 复合主键，WITHOUT ROWID；父目录大小已含子目录 |
 | volume_stats | snapshot_id, total_bytes, free_bytes | 扫描时 statvfs，free 为 f_bavail × f_frsize |
 | scan_runs | id, started_at, finished_at, status, message | API/CLI/定时统一写 running/done/failed/interrupted；done message 保留兼容结果，failed/interrupted 为错误或取消原因 |
@@ -49,9 +49,9 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 
 协调器取得 `flock` 后才把遗留 running 记录收尾为 failed；无法取得锁时返回 busy 并只展示非权威 owner 元数据，不以 PID 或超时推断 owner 已死。扫描、报告、通知和保留逐阶段提交，首扫保存有效快照且 `report_status=not_available` 时整体成功；报告/通知失败作为警告，不抹掉快照。API shutdown、CLI SIGTERM/KeyboardInterrupt 与超时只回收本次会话拥有的 `du`，最后释放锁。
 
-同根同一天的新扫描在判定采集有效后，才进入“删除旧快照并写入新条目和卷统计”的事务。致命非零退出、信号退出、空输出、缺失根记录、负数和混合/非权限错误都在写入前失败；仅有明确权限拒绝、根记录有效且数值非负时可记录为部分覆盖。事务中的 SQL 错误会整体回滚，保留原有效快照。
+同数据集（同根同 `min_kb` 口径）同一天的新扫描在判定采集有效后，才进入“删除旧快照并写入新条目和卷统计”的事务；更换阈值口径属另一数据集，同日共存不互相替换。致命非零退出、信号退出、空输出、缺失根记录、负数和混合/非权限错误都在写入前失败；仅有明确权限拒绝、根记录有效且数值非负时可记录为部分覆盖。事务中的 SQL 错误会整体回滚，保留原有效快照。
 
-保留近 35 天每日快照，更早按 ISO 周保留一份；weekly_cutoff 实际从今天向前 12 周计算，总跨度约 84 天，不是“35 天再加 12 周”，更不是旧 DEC-006 所写约 9 个月。周分组当前未按根隔离；支持 `scan --root` 不代表多根产品已经正确。
+保留近 35 天每日快照，更早按 ISO 周保留一份；weekly_cutoff 实际从今天向前 12 周计算，总跨度约 84 天，不是“35 天再加 12 周”，更不是旧 DEC-006 所写约 9 个月。周分组按数据集 (root, min_kb) 隔离，两根或双数据集同周历史各保留一份；支持 `scan --root` 不代表多根产品已经正确。
 
 DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长期稳定”属于估算，不能代替持续测量；报告/日志也没有独立保留上限。
 
@@ -61,7 +61,7 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 - 卷 free/used 来自 statvfs；监控根默认仅 HOME 且不跨挂载点。卷已用量与 HOME 目录合计不是同一范围。
 - 大文件 st_size 是逻辑大小，与 du 占用、共享块/稀疏文件可能不同。界面当前把 1024 基数标为 KB/MB/GB；目标合同要求明确二进制口径。
 - `denied_count` 只数 stderr 每行最后一个错误消息段精确等于 `Permission denied` 或 `Operation not permitted` 的记录；路径文字中的同名片段不会作为权限证据。它不是完整覆盖率，也不能证明未显示的目录被删除。
-- 阈值过滤后缺失可能是小于阈值、首次记录、权限/读取失败或移除。当前差分没有足够元数据区分。
+- 阈值过滤后缺失可能是小于阈值、权限/读取失败或移除；差分已按数据集区分首次记录与未记录，但单条目仍无法区分低于阈值与移除，措辞不冒充文件系统事实。
 
 ## HTTP 接口
 
@@ -69,15 +69,15 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 |---|---|---|
 | GET | /api/bootstrap | 在同源读取边界内返回当前进程写令牌；令牌不进入 URL、日志或 localStorage |
 | GET | /api/status | 实时卷容量、根、快照总数、最新元数据、db_bytes、scan、port，以及不含令牌/凭据的实际 runtime 路径与模式 |
-| GET | /api/snapshots | 全局快照降序列表，含卷统计 |
+| GET | /api/snapshots | 全局快照降序列表，含卷统计与 min_kb/collection_status |
 | GET | /api/volume-trend?limit= | ASC LIMIT，目前取最早 N 条 |
 | GET | /api/trees?snapshot_id=&min_kb= | 最新/指定快照目录树；默认 ≥51200 KiB；先取所有行，再限 20000 节点 |
-| GET | /api/diff?a=&b=&topn= | b 相对 a；默认全局最近两条；不足两条 409，不存在 404；未校验同根 |
+| GET | /api/diff?a=&b=&topn= | b 相对 a；默认 a=最新快照的同数据集前驱；不足/无同数据集前驱 409，不存在 404；a/b 跨根或跨阈值 400 |
 | GET | /api/trend?path=&limit= | 有该路径记录的历史点；缺失不补点；ASC LIMIT |
 | GET | /api/bigfiles?days=&min_mb=&topn= | 同步遍历，返回 files；上限 200 |
 | POST | /api/scan | 需 `X-Fathom-Token`；先取得跨进程 `flock` 再落 running；冲突 409；成功返回 run_id；线程启动失败 503 并释放租约 |
 | GET | /api/scan/status?history= | 返回最新统一状态、source/phase/snapshot/report/notification/pruned/warnings；history=1..100 附 API/CLI/定时运行 |
-| GET | /api/browse?path= | 最新快照子目录、前一快照差值、趋势、面包屑；首次子目录错误地给全量 delta |
+| GET | /api/browse?path= | 最新快照子目录、同数据集前驱差值、趋势、面包屑；无基线时 delta_kb=null、is_new=false |
 | GET | /api/reports | reports/*.md 文件列表 |
 | GET | /api/reports/{date} | 仅接受完整 `YYYY-MM-DD` 片段，返回对应 Markdown 原文；不存在时 404 |
 | POST | /api/reveal | 需 `X-Fathom-Token`；只接受对象 JSON；规范化并解析路径后校验位于受监控根内、实际存在，再调用 `/usr/bin/open -R`；拒绝利用 `..` 越界、符号链接逃逸和相似前缀根 |
@@ -88,7 +88,7 @@ API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。�
 
 ## 当前验证覆盖
 
-当前 main 的精确门禁为 **179 pytest**；ISS-020 固定候选另通过 34 项专项及 39 项 Chromium/API 检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
+当前 main 的精确门禁为 **209 pytest**；另通过 39 项 Chromium/API 检查与 33 项前端模块/生命周期检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
 
 实际 Tauri WebView、系统通知、tray、生产 launchd 跨日、自包含发行包、原生 x86_64 冻结、Developer ID 签名、公证/stapling 和真实更新仍为 `NOT_VERIFIED`。
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。

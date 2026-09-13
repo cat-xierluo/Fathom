@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。新 PM 的默认下一项是 **P0 ISS-021**，完成后接 ISS-024；ISS-027 可并行，但会修改 `frontend/`。ISS-029 下一切片会修改 api/cli/config，应避免与 ISS-021/024 争用。ISS-026 与 ISS-045 是两个独立人工视觉门，均不得自动越过。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/027 已完成。新 PM 的默认下一项是 **ISS-024**（前置 ISS-021 已满足），可与 ISS-032 并行（后者占用 bigfiles/api/config，注意 api.py 重叠时串行）。ISS-029 下一切片会修改 api/cli/config，应避免与 ISS-024 争用。ISS-026 与 ISS-045 是两个独立人工视觉门，均不得自动越过。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -19,7 +19,7 @@
 授权来源：用户在本任务中明确要求“review 合并”，并追加“后续可以自动化推进了吗，你作为 pm 按照 multi-agent-orchestration 去派发对应的 worker”。PM 可在下列范围内派发、验证、创建私有仓库 PR，并在独立审查通过后合并；不逐波重复确认。用户说“暂停自动推进”即停止新派发，先安全收口在途工作；发生一次越界操作即回退逐波确认。
 
 - **范围**：2026-09-13 用户追加授权将当前开发线收敛为 v0.3.0 可分发版本，并要求 PM 派 worker 研究/推进 release、Apple 签名公证与应用内更新。ISS-019/023/025/031 已完成；自动推进当前覆盖 ISS-020/021/026/027/029，以及依赖满足后通往 v0.3.0 的 ISS-009/010/016/024/028/030/032/037/040/041；独立验收发现且会让这些门禁假绿的阻断缺陷可先登记为聚焦修复卡（当前已含 ISS-042/043/044/046）。仍须逐卡通过前置和验收，不因发布目标跳阶段。转公开、公开 Release、向外部测试者发送产物仍是最终人工门。
-- **后继查表**：ISS-020 已完成。新 PM 默认先做 P0 ISS-021，再做 ISS-024；ISS-027 可并行但占用 `frontend/`。ISS-032 已 READY。ISS-029 下一切片占用 api/cli/config，须与 ISS-021/024 串行；完成后再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线。
+- **后继查表**：ISS-020/021/027 已完成。新 PM 默认先做 ISS-024；ISS-032 已 READY，与 ISS-024 并行时注意 api.py 争用需串行。ISS-029 下一切片占用 api/cli/config，须与 ISS-024 串行；完成后再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线。
 - **UX**：ISS-026 原型路径登记为 `prototypes/ux/`，仅合成数据，配套 `scripts/verify_ux_prototype.cjs`。交付具体可点击产物供用户评审；未收到反馈时保持 WAITING，不标 DONE，不自动实装 ISS-028。原型的工程交付可建立 PR，用户评审是本卡关闭条件。
 - **角色/所有权**：用户于 2026-09-13 再次明确 PM 尽量只做验收、定方向和关键上下文；实现、测试与返修交给 worker，PM 不代写业务代码。实施 worker 只写合同所列工程文件和自己的 session context；PM 独占 TASKS/AGENTS/ARCHITECTURE/DECISIONS/DESIGN/ROADMAP/README/CHANGELOG/TESTING。worker 提供 WRITEBACK_PROPOSAL，由 PM 按事实更新。非平凡实现需要不同 session/dispatch 的 reviewer；固定 40 位 head，不能自审后直接合并。
 - **并发/资源**：本项目最多 3 个活跃 worker（含 reviewer）；待 PM 验收超过 2 项停止新派。scanner、api/app.js、schema/config 分别串行；全量测试全机一次仅一份，worker 只跑所分配回归。采用已有受支持 provider 配置，派发价值、额度、物理内存和写范围门禁均不得绕过。
@@ -66,13 +66,13 @@
 | ISS-018 | 拒绝无效扫描，保护有效快照 | P0 | M0 | DONE | — |
 | ISS-019 | 修正真实 BSD du 路径解析 | P0 | M0 | DONE | — |
 | ISS-020 | 统一扫描运行与跨进程互斥 | P0 | M0 | DONE | ISS-007、ISS-018、ISS-025 |
-| ISS-021 | 同口径差分与缺失语义 | P0 | M0 | READY | ISS-025 |
+| ISS-021 | 同口径差分与缺失语义 | P0 | M0 | DONE | ISS-025 |
 | ISS-022 | 本地 API 与渲染边界 | P0 | M0 | DONE | — |
 | ISS-023 | 修复可见数值与快照刷新缺陷 | P1 | M0 | DONE | — |
-| ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | BLOCKED | ISS-021 |
+| ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | READY | ISS-021 |
 | ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | DONE | — |
 | ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | WAITING | — |
-| ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | READY | ISS-023 |
+| ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | DONE | ISS-023 |
 | ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | BLOCKED | ISS-021、ISS-024、ISS-026、ISS-027 |
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | IN_PROGRESS | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
@@ -221,12 +221,12 @@
 - **范围**：fathom/reports.py、scanner.py、db.py、api.py 中差分/保留相关代码与测试。
 - **实施边界**：按目标方案定义 dataset/阈值/质量元数据；旧记录不补造未知元数据。统一 CLI/API/report 的选择逻辑，write_daily_report 必须用传入 sid 找同数据集前驱；保留策略按数据集分组。跨阈值条目只能说未记录/首次记录；新增/消失措辞不冒充文件系统事实。
 - **验收**：
-  - [ ] 两根混用被拒绝；两根同周历史各保留，报告不会错配
-  - [ ] 11→9 MiB、9→101 MiB、权限缩小、真实移除四类案例语义可解释
-  - [ ] 保留 horizon 与文案一致；同日替换仅针对同数据集有效快照
-  - [ ] topn=1 的单链折叠能选最具体贡献者，恒真断言移除；列表不作为净增量求和
-  - [ ] 日报对自身有明确 a/b ID，首扫无报告不是异常
-- **证据/接续**：AUD-04/05/12。PR #25 已完成一项局部基础：`write_daily_report(conn, sid)` 现在按传入 sid 查找同根前驱；后续 worker 不得重做该选择逻辑。ISS-021 仍需完成 dataset/阈值/质量元数据、按数据集保留、未记录语义和同日替换边界，因此保持 READY。若需广泛迁移，先按迁移→差分→查询拆子卡，不一次吞入其他模块重构。
+  - [x] 两根混用被拒绝；两根同周历史各保留，报告不会错配
+  - [x] 11→9 MiB、9→101 MiB、权限缩小、真实移除四类案例语义可解释
+  - [x] 保留 horizon 与文案一致；同日替换仅针对同数据集有效快照
+  - [x] topn=1 的单链折叠能选最具体贡献者，恒真断言移除；列表不作为净增量求和
+  - [x] 日报对自身有明确 a/b ID，首扫无报告不是异常
+- **证据/接续**（2026-09-13）：[PR #31](https://github.com/cat-xierluo/fathom/pull/31) squash 合并为 main `d6ac86e`（前置 head 4674b73 经独立 fixed-head review ACCEPT；修复 head 19eb889 经第二次独立 review ACCEPT，PR #30 被取代关闭）。schema v2→v3 事务迁移（幂等 ALTER、一致备份、失败回滚，旧行 NULL 不补造）；数据集=(root, min_kb) 贯穿前驱选择/差分/保留分组/同日替换；`/api/diff` 跨根或跨阈值 400、默认同数据集前驱、不足 409；`/api/browse` 无基线 delta_kb=null；日报带 a/b 快照 ID 与记录口径说明。新增 tests/test_reports_diff.py 30 项（全部合成隔离数据）；scoped 65 passed、全量 209 passed（PM 代跑+head 复跑，EXPECTED_PYTEST_PASSED 179→209 同步 ci_pytest.sh 与 ci.yml）；39/39 Chromium/API 检查（修复 episode 使 security fixture 造数改用生产默认阈值，与 API 扫描同数据集）。tests/test_scan_coordination.py 版本断言改相对值系 PM 授权（run_d5ccdb9157a8）。遗留登记：cli.py cmd_report 仍取全局最近两条（归 ISS-024 或小卡）；/api/trend、/api/volume-trend、/api/trees 口径归 ISS-024。任务 DONE。
 
 ### ISS-022 · 本地 API 与渲染边界
 
@@ -332,11 +332,11 @@
 - **范围**：frontend/ 原生模块、index.html、相关 smoke。
 - **实施边界**：保留无构建链；拆请求/格式化/页面/图表/Tauri桥，状态由单一刷新入口控制。异步请求世代号或取消；进入/离开页面管理轮询。API/schema 变化同步样例，避免添加框架迁移。
 - **验收**：
-  - [ ] 五页原行为可用且 import 资源全部本地
-  - [ ] 快速切页/切目录/请求倒序时只显示当前选择；连接失败有重试
-  - [ ] 轮询没有重复累积；图表隐藏后再显示尺寸正确
-  - [ ] 浏览器无 Tauri 与 Tauri 有桥两种路径均验证或清楚保留未验证项
-- **证据/接续**：尚未执行；不得勾选验收项。
+  - [x] 五页原行为可用且 import 资源全部本地
+  - [x] 快速切页/切目录/请求倒序时只显示当前选择；连接失败有重试
+  - [x] 轮询没有重复累积；图表隐藏后再显示尺寸正确
+  - [x] 浏览器无 Tauri 与 Tauri 有桥两种路径均验证或清楚保留未验证项
+- **证据/接续**（2026-09-13）：[PR #29](https://github.com/cat-xierluo/fathom/pull/29) head `98149d1554c2aac5b65ff3a94130bfe80810aea5` 经独立 fixed-head review ACCEPT，squash 合并为 main `ce1fbd2`。frontend/ 拆为无构建链原生 ES modules（modules/ 下 request/format/charts/polling/tauri/router/status + pages/ 五页 enter/leave；router 单一刷新入口；request 世代号+pageScoped 防倒序覆盖；charts 隐藏 stale/重显 resume；polling 幂等单实例；tauri 浏览器静默降级）。scripts/verify_frontend_refresh.cjs 扩至 33 项真实 Chromium 检查（旧代码基线与重构后均 33/33×2 轮；含乱序响应、切页轮询计数、图表重显 resize、mock Tauri 桥闭环）；合并后最新 main 复验 33/33、39/39、209 pytest 全绿。诚实说明：Chromium 环境下旧代码无行为反例，本卡交付性质为结构边界显式化+生命周期合同化+不回退。真实 Tauri WebView 桥接与真实 FastAPI StaticFiles 下 ES module MIME/CSP 实机 `NOT_VERIFIED`（随 ISS-028 实装或 ISS-009 桌面验收覆盖）。任务 DONE。
 
 ### ISS-028 · 总览、变化与目录详情 UX/UI 实装
 

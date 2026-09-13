@@ -202,7 +202,7 @@ def api_snapshots():
     try:
         rows = conn.execute(
             """SELECT s.id, s.created_at, s.root, s.total_kb, s.dir_count, s.denied_count,
-                      v.total_bytes, v.free_bytes
+                      s.min_kb, s.collection_status, v.total_bytes, v.free_bytes
                FROM snapshots s LEFT JOIN volume_stats v ON v.snapshot_id = s.id
                ORDER BY s.created_at DESC, s.id DESC"""
         ).fetchall()
@@ -287,26 +287,40 @@ def api_diff(
     b: int | None = None,
     topn: int = Query(25, ge=1, le=100),
 ):
-    """对比两个快照；默认 a=倒数第二个, b=最新。返回 b 相对 a 的变化。"""
+    """对比两个快照；默认 b=最新、a=其同数据集前驱。返回 b 相对 a 的变化。
+
+    a/b 必须属于同一数据集（同根同入库阈值口径），否则 400 拒绝——跨根
+    对比会错配基线（AUD-05）。默认选择与 write_daily_report 同一前驱逻辑。
+    """
     conn = _get_conn()
     try:
         if b is None or a is None:
-            snaps = _latest_snapshots(conn, 2)
-            if len(snaps) < 2:
+            latest = _latest_snapshots(conn, 1)
+            if not latest:
                 raise HTTPException(409, "至少需要两个快照才能对比")
-            b, a = snaps[0]["id"], snaps[1]["id"]
+            b = latest[0]["id"]
+            predecessor = reports.find_same_dataset_predecessor(conn, b)
+            if predecessor is None:
+                raise HTTPException(409, "至少需要两个同数据集（同根同口径）快照才能对比")
+            a = predecessor["id"]
+        meta: dict[int, dict] = {}
         for sid in (a, b):
-            if not conn.execute("SELECT 1 FROM snapshots WHERE id=?", (sid,)).fetchone():
+            row = conn.execute("SELECT * FROM snapshots WHERE id=?", (sid,)).fetchone()
+            if row is None:
                 raise HTTPException(404, f"快照 {sid} 不存在")
+            meta[sid] = row
+        if not reports.same_dataset(meta[a], meta[b]):
+            raise HTTPException(
+                400,
+                f"快照 {a} 与 {b} 不属于同一数据集（同根同口径），已拒绝跨数据集对比",
+            )
         old, new = reports.load_snapshot(conn, a), reports.load_snapshot(conn, b)
         diff = reports.compute_diff(old, new, topn=topn)
         def ser(items): return [
             {"path": c.path, "old_kb": c.old_kb, "new_kb": c.new_kb, "delta_kb": c.delta_kb}
             for c in items
         ]
-        meta = {sid: dict(conn.execute("SELECT * FROM snapshots WHERE id=?", (sid,)).fetchone())
-                for sid in (a, b)}
-        return {"a": meta[a], "b": meta[b],
+        return {"a": dict(meta[a]), "b": dict(meta[b]),
                 "grown": ser(diff["grown"]), "shrunk": ser(diff["shrunk"]),
                 "added": ser(diff["added"]), "removed": ser(diff["removed"])}
     finally:
@@ -437,16 +451,20 @@ app.router.add_event_handler("shutdown", _shutdown_scan)
 
 @app.get("/api/browse")
 def api_browse(path: str | None = None):
-    """目录浏览器：指定目录的直接子目录（最新快照）+ 与前一快照的差值 + 自身趋势。
+    """目录浏览器：指定目录的直接子目录（最新快照）+ 与同数据集前一快照的差值 + 自身趋势。
 
-    对应 DESIGN.md 分布页合同：面包屑下钻 + 行级 Finder 打开。
+    对应 DESIGN.md 分布页合同：面包屑下钻 + 行级 Finder 打开。差值基线取
+    最新快照的同数据集前驱（与日报/ diff 同一选择逻辑）；没有可比基线时
+    delta_kb 为 null——无基线不伪造"增长"（AUD-04）。
     """
     conn = _get_conn()
     try:
-        snaps = _latest_snapshots(conn, 2)
+        snaps = _latest_snapshots(conn, 1)
         if not snaps:
             raise HTTPException(409, "尚无快照，请先扫描")
-        new_sid, old_sid = snaps[0]["id"], (snaps[1]["id"] if len(snaps) > 1 else None)
+        new_sid = snaps[0]["id"]
+        predecessor = reports.find_same_dataset_predecessor(conn, new_sid)
+        old_sid = predecessor["id"] if predecessor else None
         root_path = snaps[0]["root"].rstrip("/")
         target = path.rstrip("/") if path else root_path
         if not (target == root_path or target.startswith(root_path + "/")):
@@ -467,8 +485,9 @@ def api_browse(path: str | None = None):
                     "name": rest,
                     "path": p,
                     "size_kb": size,
-                    "delta_kb": (size - old_size) if old_size is not None
-                                else (size if p not in old_entries else None),
+                    # 无同数据集基线或该目录基线中未记录：差值不可知（None），
+                    # 不把当前大小冒充为增量；是否首次记录由 is_new 表达。
+                    "delta_kb": (size - old_size) if old_size is not None else None,
                     "is_new": old_sid is not None and p not in old_entries,
                 })
         children.sort(key=lambda c: c["size_kb"], reverse=True)

@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE snapshots (
@@ -60,15 +60,28 @@ _SCHEMA_STATEMENTS = (
 )
 
 # Kept as a readable schema reference for tests and diagnostics.
+# 语句保持 v2 形态：全新库由迁移链 0→…→SCHEMA_VERSION 逐级建表并补列，
+# 保证"全新建库"与"旧库升级"到达完全相同的最终结构。
 SCHEMA = ";\n\n".join(_SCHEMA_STATEMENTS) + ";\n"
+
+# v3（ISS-021）为 snapshots 增加口径/质量元数据；两列均可空——
+# 旧记录不补造未知元数据，NULL 表示"该快照未持久化阈值/采集状态"。
+_SNAPSHOT_COLUMNS_V2 = (
+    ("id", "INTEGER", 0, 1), ("created_at", "TEXT", 1, 0),
+    ("root", "TEXT", 1, 0), ("dir_count", "INTEGER", 1, 0),
+    ("denied_count", "INTEGER", 1, 0), ("du_seconds", "REAL", 1, 0),
+    ("total_kb", "INTEGER", 1, 0),
+)
+_SNAPSHOT_ALTER_V3 = (
+    # ALTER 追加列的 DDL 片段（幂等：迁移前检查列是否已存在）。
+    "min_kb INTEGER",            # 入库阈值（KiB）：数据集口径的一部分
+    "collection_status TEXT",    # 采集质量：full / partial
+)
 
 _EXPECTED_TABLE_INFO = {
     # (name, declared type, notnull, primary-key order)
-    "snapshots": (
-        ("id", "INTEGER", 0, 1), ("created_at", "TEXT", 1, 0),
-        ("root", "TEXT", 1, 0), ("dir_count", "INTEGER", 1, 0),
-        ("denied_count", "INTEGER", 1, 0), ("du_seconds", "REAL", 1, 0),
-        ("total_kb", "INTEGER", 1, 0),
+    "snapshots": _SNAPSHOT_COLUMNS_V2 + (
+        ("min_kb", "INTEGER", 0, 0), ("collection_status", "TEXT", 0, 0),
     ),
     "entries": (
         ("snapshot_id", "INTEGER", 1, 1), ("path", "TEXT", 1, 2),
@@ -92,6 +105,18 @@ _EXPECTED_TABLE_INFO = {
         ("notification_status", "TEXT", 0, 0), ("pruned_count", "INTEGER", 0, 0),
     ),
 }
+
+
+def _expected_table_info(
+    version: int,
+) -> dict[str, tuple[tuple[str, str, int, int], ...]]:
+    """指定版本下每张表的期望列结构（v3 起 snapshots 带口径/质量列）。"""
+    if version >= SCHEMA_VERSION:
+        return _EXPECTED_TABLE_INFO
+    info = dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V2)
+    if version <= 1:
+        info = {t: cols for t, cols in info.items() if t in _V1_TABLES}
+    return info
 
 _EXPECTED_FOREIGN_KEYS = {
     "snapshots": (),
@@ -185,17 +210,18 @@ def _validate_schema(
     conn: sqlite3.Connection, *, allow_missing: bool, version: int = SCHEMA_VERSION
 ) -> None:
     tables = _user_tables(conn)
-    expected_tables = set(_EXPECTED_TABLE_INFO) if version == 2 else set(_V1_TABLES)
+    expected_info = _expected_table_info(version)
+    expected_tables = set(expected_info)
     unknown = tables - expected_tables
     if unknown:
         raise DatabaseOpenError(f"数据库包含未知未版本化表：{', '.join(sorted(unknown))}")
     if not allow_missing:
         missing = expected_tables - tables
         if missing:
-            raise DatabaseOpenError(f"schema {SCHEMA_VERSION} 缺少表：{', '.join(sorted(missing))}")
+            raise DatabaseOpenError(f"schema {version} 缺少表：{', '.join(sorted(missing))}")
     for table in tables:
         actual = _table_info(conn, table)
-        expected = _EXPECTED_TABLE_INFO[table]
+        expected = expected_info[table]
         if actual != expected:
             raise DatabaseOpenError(
                 f"表 {table} 结构不兼容（expected={sorted(expected)}, actual={sorted(actual)}）"
@@ -239,9 +265,34 @@ def _migrate_v1(conn: sqlite3.Connection) -> None:
         conn.execute(_SCHEMA_STATEMENTS[-1])
 
 
+def _snapshot_column_names(conn: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[1])
+        for row in conn.execute('PRAGMA table_info("snapshots")')
+    }
+
+
+def _migrate_v2(conn: sqlite3.Connection) -> None:
+    """为同口径差分补快照口径/质量列（ISS-021）。
+
+    只做幂等 ALTER，不改写任何既有行：旧快照的 min_kb/collection_status
+    保持 NULL（未持久化过的事实不补造）。列已齐全时（例如 user_version 被
+    手动回退）只做结构校验，不重复追加。
+    """
+    columns = _snapshot_column_names(conn)
+    if {"min_kb", "collection_status"} <= columns:
+        _validate_schema(conn, allow_missing=False)
+        return
+    _validate_schema(conn, allow_missing=False, version=2)
+    for ddl in _SNAPSHOT_ALTER_V3:
+        if ddl.split()[0] not in columns:
+            conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     0: _migrate_v0,
     1: _migrate_v1,
+    2: _migrate_v2,
 }
 
 

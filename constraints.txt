@@ -1,0 +1,54 @@
+# Fathom 依赖精确锁定（ISS-031，2026-09-13）
+#
+# 来源：通过全部验证的本地 venv 逐包审计（dist-info 版本 + METADATA
+# Requires-Dist 交叉核对），基线 commit 50a87d9 上验证结果：
+#   .runtime/bin/python -m pytest tests -q            -> 134 passed
+#   node scripts/verify_api_security.cjs              -> 39/39
+#   cargo build --locked --offline (src-tauri)        -> 通过
+# 解释器：Python 3.14.6（macOS arm64，BSD du）。
+#
+# 分层：
+#   直接运行依赖  -> requirements.txt（fastapi、uvicorn）
+#   直接测试依赖  -> requirements-dev.txt（pytest、httpx）
+#   本文件        -> 全部直接+传递依赖的 == 精确版本，仅供 -c 约束使用
+#
+# 已知未消除的两条弃用警告（保持可见，不静默）：
+#   1) starlette 1.6.0 testclient 对 httpx 的弃用提示（新客户端 httpx2 已在
+#      PyPI 提供，但本会话禁止安装依赖，无法验证切换后 134 项仍绿，
+#      升级路径留给 PM 授权后的小步变更）；
+#   2) starlette 1.6.0 内部引用 anyio.abc.BlockingPortal 旧别名的弃用提示
+#      （1.6.0 已是当前最新 starlette，无更高版本可修）。
+# 在上述验证完成前，任何版本都不得脱离本文件漂移。
+
+# --- 直接：运行 ---
+fastapi==0.141.1
+uvicorn==0.52.4
+
+# --- 直接：测试 ---
+pytest==9.1.1
+httpx==0.28.1
+
+# --- 传递：fastapi / pydantic 线 ---
+starlette==1.6.0
+pydantic==2.13.5
+pydantic-core==2.46.5
+annotated-types==0.8.0
+annotated-doc==0.0.5
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+
+# --- 传递：uvicorn / http 栈 ---
+click==8.5.0
+h11==0.16.0
+anyio==4.15.1
+
+# --- 传递：httpx ---
+httpcore==1.0.9
+certifi==2026.7.22
+idna==3.19
+
+# --- 传递：pytest ---
+iniconfig==2.3.0
+packaging==26.3
+pluggy==1.6.0
+pygments==2.21.0

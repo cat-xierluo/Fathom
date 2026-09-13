@@ -1,4 +1,14 @@
-fastapi>=0.115
-uvicorn>=0.30
-httpx>=0.27
-pytest>=8.0
+# Fathom 运行依赖（ISS-031 分层固定）
+#
+# 直接 import 审计（2026-09-13，基线 50a87d9）：
+#   fathom/api.py                -> fastapi（FastAPI/HTTPException/Query/CORSMiddleware/StaticFiles）
+#   fathom/cli.py serve          -> uvicorn
+#   scripts/security_fixture_server.py -> uvicorn（夹具服务，与 CLI 同一运行时层）
+# 其余 fathom 模块只用标准库。
+#
+# 版本策略：这里声明已验证的兼容区间；可复现安装用
+#   pip install -r requirements.txt -c constraints.txt
+# 传递闭包的精确版本与来源见 constraints.txt（与 134 pytest / 39 项检查
+# 通过的本地 venv 逐包一致），不要脱离 constraints 单独升级区间。
+fastapi>=0.141,<0.142
+uvicorn>=0.52,<0.53

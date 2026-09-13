@@ -5,11 +5,11 @@
 ## 新会话接手
 
 1. 读本文 → [TASKS](docs/TASKS.md) 的领取规则和完整任务卡 → 对应的 [ARCHITECTURE](docs/ARCHITECTURE.md)、[DESIGN](docs/DESIGN.md) 或目标方案。
-2. 运行 `git status --short --branch`、`git worktree list`、`git remote -v`；确认实际基线。已配置远端时先 fetch，再比较任务基线与远端主干。其他会话可能正在集成分支，不能把当前工作目录当作 main。
+2. 运行 `git status --short --branch`、`git worktree list`、`git remote -v`，并核对 `origin/main`、开放 PR 和所有 worktree。其他会话可能正在集成分支，不能把当前目录或旧对话当作 main；私有 `orchestration/` 状态不是接手前置。
 3. 用户当前指令优先。普通执行只领取状态为 READY、依赖已验收的任务；不按标题猜范围，不把已有分支重新实现。
 4. 在独立分支/工作区推进，项目分支名用 `iss-NNN-slug`。同一分支完成一个可独立验收的任务；超出卡片范围先登记拆分，不顺手做未来功能。
 5. 先复现卡片反例，再实现，再按 [TESTING](docs/TESTING.md) 验证真实入口。记录基线/命令/结果/未验证范围。测试通过只证明覆盖到的行为。
-6. 提交 PR，回写任务状态为 REVIEW；默认合并需用户确认。2026-09-12 用户已授权 PM 自动推进及审查合并，适用范围、暂停条件与共享文档所有权见 [TASKS 自动推进策略](docs/TASKS.md#pm-自动推进策略2026-09-12)。无远端时可本地提交并记录远端阻塞，不自称已经建立 PR。
+6. 提交 PR，回写任务状态为 REVIEW；合并规则与临时本地门禁见 [TASKS 自动推进策略](docs/TASKS.md#pm-自动推进策略2026-09-12)。旧 `fathom-m0-pm` 心跳已暂停；恢复自动化必须由用户明确要求或建立一个新 PM 唯一 owner，禁止双 PM。无远端时只做本地提交并记录阻塞。
 
 ## 文档职责与冲突处理
 
@@ -31,7 +31,7 @@
 
 - `fathom/scanner.py`：du 采集、快照与保留策略；`fathom/db.py`：连接和 schema。
 - `fathom/reports.py`：差分及 Markdown；`fathom/notify.py`：报告完成后的系统通知尝试；`fathom/bigfiles.py`：近期修改大文件查询。
-- `fathom/api.py`：HTTP 查询、扫描入口和 scan_runs 持久化（目前仅单 Web 进程约定）；`fathom/cli.py`：CLI；`main.py` 是入口包装。
+- `fathom/scan_coordinator.py`：API/CLI/定时扫描的统一生命周期、跨进程 `flock` 与分阶段状态；`fathom/api.py`：HTTP 查询/入口；`fathom/cli.py`：CLI；`main.py` 是入口包装。
 - `fathom/config.py`：当前常量与路径；`fathom/launchd.py`：开发版后台任务安装。
 - `frontend/`：无构建链 HTML/JS/CSS，ECharts 本地资源。SVG 图标只在 `frontend/icons.js` 集中维护，禁止装饰 emoji。
 - `apps/desktop/`：Tauri 壳；当前依赖独立运行的 FastAPI，不能宣称包已自包含。
@@ -40,7 +40,7 @@
 ## 数据与操作不变量
 
 - 生产 `data/`、`reports/`、`logs/` 以及 `docs/research/` 不入库；示例、截图与测试用合成路径和数据。
-- **`FATHOM_DB` 目前只隔离数据库，不隔离扫描根、日报、日志、端口或 launchd。** 不得据此触发真实 HOME 的扫盘或覆盖生产日报。隔离步骤见 TESTING。
+- `FATHOM_DB` 是兼容入口：未显式设置 `FATHOM_RUNTIME_DIR` 时，其父目录成为完整运行根；扫描根、只读资源根和端口仍必须显式隔离。不得触发真实 HOME 扫描或覆盖生产日报，步骤见 TESTING。
 - 验证不执行 `install/uninstall`、不修改生产调度或权限；确需部署验收时另按已授权环境进行。禁止覆盖其他工作区改动。
 - 扫描事实与解释分开；缺失条目不是删除证据，目录累计大小不可逐行相加当作可回收空间。
 - Agent 解释、目录标签不能修改快照事实、扩大读取范围或触发清理。远程分析必须在产品内得到相应数据发送授权。

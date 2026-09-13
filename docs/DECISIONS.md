@@ -5,13 +5,25 @@
 
 ---
 
+### [DEC-019] - 2026-09-13 - PM 交接以仓库任务源和唯一 owner 为准
+
+**背景**：用户改由其他 Agent 担任 PM。旧自动巡检依赖同一对话和私有 orchestration 状态；若新旧 PM 同时派发或合并，会重复实现、争用 worktree，并让任务状态失去唯一来源。
+
+**决策**：新 PM 必须按 AGENTS → TASKS 完整卡片 → 对应 ARCHITECTURE/DESIGN/TESTING/发行方案的顺序接手，再核对 `origin/main`、开放 PR 与所有 worktree。TASKS 是唯一队列；旧对话和 Git common dir 的私有 `orchestration/` 不是接手依赖。旧 `fathom-m0-pm` 心跳保持 PAUSED；恢复自动化须由用户明确要求或新 PM 建立唯一 owner，禁止双 PM。不得重做已合并任务、PR #17 的 ISS-029 spike 或 PR #10 已验收的 R3 工程。
+
+**验证**：ISS-020/044、PR #10 head、READY/WAITING/BLOCKED 依赖、179 项门禁与发行 `NOT_VERIFIED` 已回写到仓库权威文档；ISS-038 以文档索引/卡片、依赖、链接与资源终态核对收口。
+
+**影响/重评条件**：自动推进授权范围仍以 TASKS 为准，但暂停状态不会因旧授权自动恢复。新 PM 若恢复编排，应创建可审计的新运行记录并先确认没有其他 owner；公开发布、许可证、两个视觉门和 Apple 材料仍由用户决定。
+
+---
+
 ### [DEC-018] - 2026-09-13 - GitHub Actions 无额度期间采用固定候选本地门禁
 
 **背景**：PR #18 的 GitHub Actions 五个 job 均在任何步骤执行前被账户 billing/spending limit 拒绝，不能提供云端验证证据。用户确认当前 Actions 无额度，并明确授权本轮及额度恢复前在本机核验后合并，避免普通开发工作停滞。
 
 **决策**：临时以四项组合门禁替代普通云端 CI：候选必须基于最新 main 并固定 40 位 head；在该候选运行任务要求的本地全量测试和真实入口探针；由不同 worker 对同一 fixed head 独立审查；PM 合并前再次核对 exact head、diff 和证据。云端 job 若在步骤前被 billing 拒绝，一律记录为 `NOT_RUN` 及原因，不能写成失败测试或通过。本决定不替代发行矩阵中的原生 x86_64 冻结、Tauri GUI、隔离账户安装、Developer ID 签名、Apple 公证/stapling 和真实更新验证。
 
-**验证**：PR #18 在本地完成文档链接、diff-check 与 doc-curator 后合并为 `fc1cf91`；PR #19/#20/#21 分别取得独立 fixed-head ACCEPT，PM 核对 exact head，并以本地全量测试、Chromium/API 或真实 BSD `du`/SQLite 探针后合并。对应云端 job 均未进入执行步骤，状态保留为 `NOT_RUN`。
+**验证**：PR #18 在本地完成文档链接、diff-check 与 doc-curator 后合并为 `fc1cf91`；PR #19/#20/#21/#25/#26 均取得独立 fixed-head ACCEPT，PM 核对 exact head，并以本地全量测试、Chromium/API、真实 BSD `du`/SQLite 或跨进程扫描探针后合并。对应云端 job 均未进入执行步骤，状态保留为 `NOT_RUN`。
 
 **影响/重评条件**：额度恢复后重新启用普通 GitHub CI，并继续保留本地可复跑入口。任何缺少固定 head、独立 reviewer、真实入口或 exact-head 核对的候选不得引用本决定直接合并；涉及 release、x86_64、签名或公证时仍按 [TESTING 发行矩阵](TESTING.md#4-桌面与分发矩阵) 执行。
 
@@ -47,9 +59,9 @@
 
 **决策**：保留已认可的导航与旅程，继续在独立原型中迭代视觉；具体约束以 [DESIGN](DESIGN.md) 为准，执行边界见 [第二轮方案](plans/2026-09-13-native-mac-prototype-design.md)。工程验收与用户视觉认可分别记录，不提前将 ISS-026 标为 DONE。
 
-**验证**：第一轮原型经过 PM 的 91 项真实浏览器检查。第二轮通过 99 项浏览器检查、13 张截图及 15 个视口页面无横向溢出；用户实测认为流程、图标与优雅程度已经明显改善，但仍偏中规中矩，希望加入个人特色。第三轮“测深/等深线＋深度环”正在独立原型实现，结果 NOT_VERIFIED。
+**验证**：第一轮原型经过 PM 的 91 项真实浏览器检查。第二轮通过 99 项浏览器检查、13 张截图及 15 个视口页面无横向溢出；用户实测认为流程、图标与优雅程度已经明显改善，但仍偏中规中矩，希望加入个人特色。第三轮“测深/等深线＋深度环”已在 PR #10 head `a564e5e1287f89bf2719964a7339110923433a18` 完成，114/114 原型检查、13 张截图与独立 fixed-head review ACCEPT；用户对该具体原型的主观确认仍 `NOT_VERIFIED`。
 
-**影响/重评条件**：ISS-028 继续等待原型定稿；第三轮保持原生 Mac 克制布局，把品牌识别限制在侧栏品牌区、总览 hero、选中态和关键图表，不进入数据表或替代语义色。用户再次评审后确定是否进入实装。
+**影响/重评条件**：ISS-026 保持 WAITING，用户确认前不合并 PR #10 或启动 ISS-028。Logo/App Icon 是 ISS-045 的独立人工门，不由页面原型确认代替。第三轮继续把品牌识别限制在侧栏品牌区、总览 hero、选中态和关键图表，不进入数据表或替代语义色。
 
 ---
 

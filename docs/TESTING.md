@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库 CI 的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -23,9 +23,20 @@ PLAYWRIGHT_BIN="$PWD/.runtime/playwright/node_modules/.bin/playwright" \
 PW_INSTALL=1 /bin/bash scripts/ci_browser_checks.sh
 ```
 
-CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest 和 Rust 1.88 locked build，浏览器/API 检查在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
+GitHub CI 设计为在原生 Apple Silicon 与 Intel runner 上分别执行 pytest 和 Rust 1.88 locked build，浏览器/API 检查在 Apple Silicon 上运行。2026-09-13 起账户 Actions 无额度，job 在执行步骤前被 billing 拒绝时记为 `NOT_RUN`，不能称为测试失败或通过；额度恢复后重新启用。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
 
-**当前只设置 FATHOM_DB 不足以隔离：** CLI scan/API scan 仍可能扫描 HOME，报告/日志仍在源码工作区，serve 默认仍用生产端口。必须同时隔离 DATA_DIR、DB_PATH、REPORTS_DIR、LOGS_DIR、DEFAULT_ROOT、端口；install/uninstall/权限与真实 Finder 动作另属实机验证。ISS-025 交付后同步本节到正式配置入口。
+本地/API/CLI 验收必须显式设置完整隔离边界：`FATHOM_RUNTIME_DIR` 派生 data/reports/logs，`FATHOM_SCAN_ROOT` 指定合成根，`FATHOM_RESOURCE_DIR` 指定只读资源，`FATHOM_PORT` 使用已核对的测试端口；CLI 也提供等价覆盖。旧 `FATHOM_DB` 仅作兼容，未指定运行根时其父目录成为完整运行根。端口占用须非零退出，不停止未知进程；install/uninstall/权限与真实 Finder 动作另属实机验证。
+
+### 1.1 Actions 无额度期间的临时本地合并门禁
+
+用户于 2026-09-13 授权：普通 GitHub Actions 因账户额度无法启动期间，候选满足以下全部条件后可以合并：
+
+1. 基于最新 main 生成候选，并在验收记录固定完整 40 位 head；
+2. 在该 exact head 运行任务要求的本地全量检查与真实入口探针，记录环境、计数和 `NOT_VERIFIED`；
+3. 由实施者之外的 reviewer 对同一 fixed head 独立审查并给出 ACCEPT；
+4. PM 合并前再次核对候选 head、diff 范围和证据，合并后核对主干树。
+
+云端 job 在步骤前被 billing 拒绝时只记 `NOT_RUN`。本地 arm64 通过不能替代原生 x86_64；普通测试不能替代下文的 Tauri GUI、隔离安装、签名、公证、stapling 或真实更新门禁。额度恢复后重新启用普通 CI，详见 [DEC-018](DECISIONS.md#dec-018---2026-09-13---github-actions-无额度期间采用固定候选本地门禁)。
 
 不复制生产库到仓库，不在报告贴私人路径。数据量测试用合成目录或经用户选择的测试范围。故障测试 mock `open`、通知、launchctl 等系统动作，检查“有没有被调用”，不实际动生产服务。
 
@@ -146,4 +157,4 @@ PY
 
 纯规划/文档 PR：检查 Markdown 链接、源文件引用、任务编号唯一、依赖无环、READY 条件、路线/任务/设计一致；核对现状语句与代码。不得因为描述了目标就把对应功能标完成。
 
-持续集成已由 ISS-031 建立；最近一次验收运行见任务卡证据。发布前仍需发行 workflow 对固定 tag 执行 helper 冻结、签名、公证、staple、更新签名和 draft Release 聚合；普通 CI 通过不能替代这些门禁。
+持续集成入口已由 ISS-031 建立；当前 Actions 额度导致的 `NOT_RUN` 与本地替代门禁见 §1.1，最近一次候选验收见任务卡证据。发布前仍需发行 workflow 对固定 tag 执行 helper 冻结、签名、公证、staple、更新签名和 draft Release 聚合；普通 CI 或本地全量测试通过不能替代这些门禁。

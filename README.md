@@ -13,6 +13,7 @@ macOS 本机的目录容量历史追踪工具：记录哪些目录在增长，�
 - 查看目录分布、历史趋势与近期修改的大文件；从界面在 Finder 中显示路径。
 - 开发版通过 launchd 安排每日 12:00 扫描及常驻本地 Web 服务。
 - 手动扫描状态与历史写入 SQLite，可在服务重启后查询；当前仅按单 Web 进程运行，CLI/定时入口尚未统一协调。
+- 运行根、扫描根、资源根和端口可显式隔离；旧开发库打开时会经 schema v1 校验、WAL 一致备份和事务迁移。
 - 日报写完后尝试发送 macOS 通知，摘要含增长、首次记录的大目录与剩余空间；实际展示受系统通知策略影响，首扫无日报时尚不通知。
 
 扫描事实与报告保存在本机。当前应用没有 Agent 或远程分析功能；未来云端解释将作为单独启用和授权的能力。工具不执行文件清理。
@@ -30,7 +31,7 @@ python3.14 -m venv .venv
 /bin/bash scripts/ci_cargo_locked.sh
 ```
 
-仓库目前私有，clone 需要访问权限。CI 还会用锁定的 Node/Playwright 运行隔离 Chromium/API 检查；完整复跑命令见 [TESTING](docs/TESTING.md)。开发 UI 首选其中的隔离夹具服务，可安全查看两天数据及重扫交互，不扫描 HOME。
+仓库目前私有，clone 需要访问权限。锁定的本地脚本会运行 pytest、Cargo 和隔离 Chromium/API 检查；GitHub Actions 当前因账户额度在 job 步骤前 `NOT_RUN`，恢复额度后重新启用。完整复跑命令与临时本地合并门禁见 [TESTING](docs/TESTING.md)。开发 UI 首选其中的隔离夹具服务，可安全查看两天数据及重扫交互，不扫描 HOME。
 
 已了解当前限制并准备监控本机时：
 
@@ -62,10 +63,10 @@ cargo run
 
 ## 数据、权限与已知限制
 
-- 开发版数据位于项目下 `data/fathom.db`，报告在 `reports/`、日志在 `logs/`，均不入 Git。备份应使用 SQLite 一致备份或停止写入后处理，不能在 WAL 活跃时只拷贝主 DB 当作完整备份。
-- **FATHOM_DB 仅覆盖数据库位置**，不隔离报告、日志、扫描根或端口；完整隔离方法见 [TESTING](docs/TESTING.md)。
+- development 默认数据位于项目下 `data/fathom.db`，报告在 `reports/`、日志在 `logs/`，均不入 Git；release 模式默认使用 `~/Library/Application Support/Fathom`。可用 `FATHOM_RUNTIME_DIR`、`FATHOM_SCAN_ROOT`、`FATHOM_RESOURCE_DIR`、`FATHOM_PORT` 或等价 CLI 参数完整隔离，详见 [TESTING](docs/TESTING.md)。
+- `FATHOM_DB` 保留兼容：未指定运行根时，其父目录成为完整运行根，避免只隔离数据库。迁移备份使用 SQLite backup API 包含已提交 WAL；仍不能在普通备份中只拷贝活跃主 DB。
 - 未授权的目录可能无法读取；权限错误行数不等于覆盖比例，也不能说明被跳过的数据不重要。发行 helper 的授权主体待实机验证。
-- 失败扫描覆盖当天有效数据的问题已修复并由故障注入回归覆盖；网页首扫误报失败、特殊路径解析和选择器过期仍在任务队列，详情见 [审查记录](docs/plans/2026-09-12-project-review.md) 与 [任务](docs/TASKS.md)。
+- 失败扫描覆盖当天有效数据、特殊路径解析和选择器过期已修复并有真实入口回归；网页首扫误报失败仍在任务队列，详情见 [审查记录](docs/plans/2026-09-12-project-review.md) 与 [任务](docs/TASKS.md)。
 - 目录 du 累计大小、文件逻辑大小和整卷可用空间有不同口径；父子行不能直接相加，目录体积不等于可回收空间。
 - 保留策略实际总跨度约从今天向前 12 周，其中近 35 天保留每日快照；报告/日志独立清理尚未完成。
 

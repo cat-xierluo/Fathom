@@ -1,8 +1,8 @@
 # Fathom 依赖精确锁定（ISS-031，2026-09-13）
 #
 # 来源：通过全部验证的本地 venv 逐包审计（dist-info 版本 + METADATA
-# Requires-Dist 交叉核对），基线 commit 50a87d9 上验证结果：
-#   .runtime/bin/python -m pytest tests -q            -> 134 passed
+# Requires-Dist 交叉核对），基线 commit 8316402 上验证结果：
+#   .runtime/bin/python -m pytest tests -q            -> 144 passed
 #   node scripts/verify_api_security.cjs              -> 39/39
 #   cargo build --locked --offline (src-tauri)        -> 通过
 # 解释器：Python 3.14.6（macOS arm64，BSD du）。
@@ -14,7 +14,7 @@
 #
 # 已知未消除的两条弃用警告（保持可见，不静默）：
 #   1) starlette 1.6.0 testclient 对 httpx 的弃用提示（新客户端 httpx2 已在
-#      PyPI 提供，但本会话禁止安装依赖，无法验证切换后 134 项仍绿，
+#      PyPI 提供，但尚未验证切换后 144 项仍绿，
 #      升级路径留给 PM 授权后的小步变更）；
 #   2) starlette 1.6.0 内部引用 anyio.abc.BlockingPortal 旧别名的弃用提示
 #      （1.6.0 已是当前最新 starlette，无更高版本可修）。

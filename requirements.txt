@@ -8,7 +8,7 @@
 #
 # 版本策略：这里声明已验证的兼容区间；可复现安装用
 #   pip install -r requirements.txt -c constraints.txt
-# 传递闭包的精确版本与来源见 constraints.txt（与 134 pytest / 39 项检查
+# 传递闭包的精确版本与来源见 constraints.txt（与 144 pytest / 39 项检查
 # 通过的本地 venv 逐包一致），不要脱离 constraints 单独升级区间。
 fastapi>=0.141,<0.142
 uvicorn>=0.52,<0.53

@@ -366,9 +366,10 @@ def run(h: Harness) -> None:
     replaced_health = h.wait_health(h.base_port)
     replaced_path = replaced_data / "helper-instance.json"
     replacement_token = hashlib.sha256(os.urandom(32)).hexdigest()
+    replacement_pid = os.getpid() + 100000
     foreign = {"service": SERVICE, "protocol_version": PROTOCOL,
                "helper_version": HELPER_VERSION, "instance_id": "replacement",
-               "pid": 999999, "port": h.base_port, "control_token": replacement_token}
+               "pid": replacement_pid, "port": h.base_port, "control_token": replacement_token}
     h.replace_json(replaced_path, foreign)
     h.signal(replaced, signal.SIGTERM); h.wait(replaced, 8)
     try:

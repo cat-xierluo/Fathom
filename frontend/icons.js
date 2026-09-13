@@ -1,10 +1,10 @@
 /* Fathom 图标库 —— 内联 SVG 线条图标（lucide 同款风格）
  * 规范（DESIGN.md 视觉层）：24 viewBox、stroke=currentColor、fill=none、
  * stroke-width 2、round linecap/linejoin；禁止 emoji（DEC-010）。
+ * 所有用户可见 SVG 图标只在本文件集中维护（ES module）。
  */
-"use strict";
 
-const ICON_PATHS = {
+export const ICON_PATHS = {
   /* 水深测量锚：品牌图标（Fathom = 测深单位） */
   anchor:
     '<circle cx="12" cy="5" r="3"/><line x1="12" x2="12" y1="22" y2="8"/><path d="M5 12H2a10 10 0 0 0 20 0h-3"/>',
@@ -43,7 +43,7 @@ const ICON_PATHS = {
  * @param {number} size 像素尺寸，默认 18
  * @param {string} cls 额外 class
  */
-function icon(name, size = 18, cls = "") {
+export function icon(name, size = 18, cls = "") {
   const paths = ICON_PATHS[name];
   if (!paths) return "";
   return (

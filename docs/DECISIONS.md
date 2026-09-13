@@ -5,6 +5,18 @@
 
 ---
 
+### [DEC-018] - 2026-09-13 - GitHub Actions 无额度期间采用固定候选本地门禁
+
+**背景**：PR #18 的 GitHub Actions 五个 job 均在任何步骤执行前被账户 billing/spending limit 拒绝，不能提供云端验证证据。用户确认当前 Actions 无额度，并明确授权本轮及额度恢复前在本机核验后合并，避免普通开发工作停滞。
+
+**决策**：临时以四项组合门禁替代普通云端 CI：候选必须基于最新 main 并固定 40 位 head；在该候选运行任务要求的本地全量测试和真实入口探针；由不同 worker 对同一 fixed head 独立审查；PM 合并前再次核对 exact head、diff 和证据。云端 job 若在步骤前被 billing 拒绝，一律记录为 `NOT_RUN` 及原因，不能写成失败测试或通过。本决定不替代发行矩阵中的原生 x86_64 冻结、Tauri GUI、隔离账户安装、Developer ID 签名、Apple 公证/stapling 和真实更新验证。
+
+**验证**：PR #18 在本地完成文档链接、diff-check 与 doc-curator 后合并为 `fc1cf91`；PR #19/#20/#21 分别取得独立 fixed-head ACCEPT，PM 核对 exact head，并以本地全量测试、Chromium/API 或真实 BSD `du`/SQLite 探针后合并。对应云端 job 均未进入执行步骤，状态保留为 `NOT_RUN`。
+
+**影响/重评条件**：额度恢复后重新启用普通 GitHub CI，并继续保留本地可复跑入口。任何缺少固定 head、独立 reviewer、真实入口或 exact-head 核对的候选不得引用本决定直接合并；涉及 release、x86_64、签名或公证时仍按 [TESTING 发行矩阵](TESTING.md#4-桌面与分发矩阵) 执行。
+
+---
+
 ### [DEC-017] - 2026-09-13 - v0.3 helper 采用 PyInstaller onedir 与应用派生进程合同
 
 **背景**：当前 Tauri 壳依赖开发机上的 FastAPI 服务，无法随 `.app` 独立安装。ISS-029 比较了冻结方式，并在 arm64 上复现字符串导入、bundle 写入、缺少身份面和固定 7952 端口冲突；同时验证了 discovery、端口让位、并发所有权与受控退出合同。

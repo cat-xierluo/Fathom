@@ -262,6 +262,10 @@ def api_status():
             "db_bytes": db_size,
             "scan": _latest_scan_state(conn),
             "port": config.PORT,
+            "runtime": {
+                **config.get_runtime_config().public_values(),
+                "schema_version": db.schema_version(conn),
+            },
         }
     finally:
         conn.close()

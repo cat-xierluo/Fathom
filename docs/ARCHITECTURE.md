@@ -1,6 +1,6 @@
 # Fathom 当前架构
 
-**事实基线：main `4f2cf5b`（已集成 PR #3/#4/#5/#8/#9，仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
+**事实基线：main `0dba78b`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
 
 ## 入口与边界
 
@@ -23,7 +23,7 @@ CLI 和 API 的执行流程目前各自实现，只有 API 有进程内 threadin
 | config.py | 常量、项目相对运行目录、HOME 根、127.0.0.1:7952 | 仅 DB 支持 FATHOM_DB，不能隔离其他输出/扫描范围 |
 | db.py | sqlite3、WAL、外键、CREATE TABLE IF NOT EXISTS | 无 schema version/迁移协议；读取也打开可写连接并执行建表 |
 | scanner.py | `/usr/bin/du -xk`，以 `DuResult` 返回大小、退出码、耗时和 stderr 质量；完整采集或仅有明确权限拒绝且根记录有效时才替换同日快照 | 特殊路径仍可能误解析；数据库只持久化 denied_count/du_seconds，详细质量尚未入库 |
-| reports.py | 比较 entries、父子折叠、Markdown，文件名按日期 | 未记录即 added/removed；忽略传入 sid 取全局最新两条；无独立报告状态 |
+| reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown，文件名按日期 | 未记录即 added/removed；忽略传入 sid 取全局最新两条；无独立报告状态 |
 | notify.py | 日报写完后尝试 osascript 通知；首次记录目录单列；摘要限长；低空间阈值 10 GB | 显示受系统策略控制；首扫无日报不通知；阈值未与 UI 统一；日志可能含路径 |
 | bigfiles.py | `/usr/bin/find -xdev -type f -size +... -mtime -... -print0` 后 stat | 大小为 st_size 逻辑字节；每次请求实时遍历；无超时/去重/失败呈现 |
 | api.py | 查询、扫描线程、scan_runs 状态持久化；Host/Origin/写令牌守卫；受监控根约束的 reveal；挂载静态文件 | 首扫生成报告报错；扫描锁仍限单 Web 进程；实际 Tauri WebView 尚未真机验证 |
@@ -82,8 +82,8 @@ API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。�
 
 ## 当前验证覆盖
 
-当前 main 候选已通过全量 **134 pytest** 与 **39 项 Chromium/API 安全检查**。覆盖扫描完整性、真实 BSD `du` 反例、事务回滚、scan_runs、Host/Origin/写令牌、reveal 越界/符号链接逃逸、路径与报告名转义、CSP 及浏览器资源清理。隔离真实 API 已执行 du、次日报告、通知 stub、运行历史及实际服务重启；首扫仍复现“有快照但报告不足而失败”，归 ISS-020。实际 Tauri WebView、系统通知、tray 和签名发行仍为 `NOT_VERIFIED`。
+当前 main 候选已通过全量 **144 pytest** 与 **39 项 Chromium/API 安全检查**。覆盖扫描完整性、真实 BSD `du` 反例、事务回滚、scan_runs、Host/Origin/写令牌、reveal 越界/符号链接逃逸、路径与报告名转义、CSP 及浏览器资源清理。隔离真实 API 已执行 du、次日报告、通知 stub、运行历史及实际服务重启；首扫仍复现“有快照但报告不足而失败”，归 ISS-020。实际 Tauri WebView、系统通知、tray 和签名发行仍为 `NOT_VERIFIED`。
 
-扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠测试中的 `or True` 是恒真断言，原来宣称的单链行为没有被有效验证。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。
+扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。
 
 不把现有单元测试、其他分支的提交说明或 cargo build 作为安装、系统通知、权限、tray 与定时任务已经可靠的证据。

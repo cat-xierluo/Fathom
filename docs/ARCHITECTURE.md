@@ -1,6 +1,6 @@
 # Fathom 当前架构
 
-**事实基线：main `14c5745`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
+**事实基线：main `a57d7fd`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
 
 ## 入口与边界
 

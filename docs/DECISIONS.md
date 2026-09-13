@@ -11,7 +11,7 @@
 
 **决策**：新 PM 必须按 AGENTS → TASKS 完整卡片 → 对应 ARCHITECTURE/DESIGN/TESTING/发行方案的顺序接手，再核对 `origin/main`、开放 PR 与所有 worktree。TASKS 是唯一队列；旧对话和 Git common dir 的私有 `orchestration/` 不是接手依赖。旧 `fathom-m0-pm` 心跳保持 PAUSED；恢复自动化须由用户明确要求或新 PM 建立唯一 owner，禁止双 PM。不得重做已合并任务、PR #17 的 ISS-029 spike 或 PR #10 已验收的 R3 工程。
 
-**验证**：ISS-020/044、PR #10 head、READY/WAITING/BLOCKED 依赖、179 项门禁与发行 `NOT_VERIFIED` 已回写到仓库权威文档；ISS-038 以文档索引/卡片、依赖、链接与资源终态核对收口。
+**验证**：ISS-020/044/046、PR #10 head、READY/WAITING/BLOCKED 依赖、179 项门禁与发行 `NOT_VERIFIED` 已回写到仓库权威文档；ISS-038 以文档索引/卡片、依赖、链接与资源终态核对收口。
 
 **影响/重评条件**：自动推进授权范围仍以 TASKS 为准，但暂停状态不会因旧授权自动恢复。新 PM 若恢复编排，应创建可审计的新运行记录并先确认没有其他 owner；公开发布、许可证、两个视觉门和 Apple 材料仍由用户决定。
 

@@ -165,7 +165,7 @@
   - [x] 读写配置不依赖 cwd；应用资源只读场景可运行
   - [x] 旧 schema/损坏库/迁移失败/较新 schema 有明确行为，不删库重建
   - [x] 备份包含 WAL 一致状态；迁移失败旧库可恢复；配置实际值可供后续 API 查询
-- **证据/接续**（2026-09-13）：[PR #19](https://github.com/cat-xierluo/fathom/pull/19) 的实现内容在 head `5344dd4abf73760e3c303d0879661a5f1ee8e713` 经独立 fixed-head review ACCEPT；rebase 后最终候选 `7cee7c1542f037eb67f2c183720f2966df39b3ab` 内容等价，并完成 worker 与 PM 本地验证，squash 合并为 main `4408d7e`。20 项定向测试、164 项全量 pytest 与 39/39 浏览器/API 检查通过；五组真实探针覆盖无关 cwd 和含空格/中文/`&` 路径的 CLI/API 隔离、端口占用、v0 库及并发迁移、WAL 一致 0600 备份、只读资源指纹。损坏、较新版本与伪造同列异约束 schema 均拒绝，不删库重建；运行配置实际值由状态 API 返回且不含令牌/凭据。GitHub Actions 因账户额度在 job 步骤前拒绝，记 `NOT_RUN`；实际冻结 helper/Tauri 只读 `.app`、x86_64、真实旧用户库、磁盘满/掉电仍 `NOT_VERIFIED`。
+- **证据/接续**（2026-09-13）：[PR #19](https://github.com/cat-xierluo/fathom/pull/19) 最终候选 `7cee7c1542f037eb67f2c183720f2966df39b3ab` 经补充独立 fixed-head review ACCEPT；其 6 文件 tree 与此前已 ACCEPT 的 `5344dd4abf73760e3c303d0879661a5f1ee8e713` 完全一致，squash 合并为 main `4408d7e`。20 项定向测试、164 项全量 pytest 与 39/39 浏览器/API 检查通过；五组真实探针覆盖无关 cwd 和含空格/中文/`&` 路径的 CLI/API 隔离、端口占用、v0 库及并发迁移、WAL 一致 0600 备份、只读资源指纹。损坏、较新版本与伪造同列异约束 schema 均拒绝，不删库重建；运行配置实际值由状态 API 返回且不含令牌/凭据。GitHub Actions 因账户额度在 job 步骤前拒绝，记 `NOT_RUN`；实际冻结 helper/Tauri 只读 `.app`、x86_64、真实旧用户库、磁盘满/掉电仍 `NOT_VERIFIED`。
 
 ### ISS-021 · 同口径差分与缺失语义
 

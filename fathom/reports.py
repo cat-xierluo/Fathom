@@ -35,6 +35,86 @@ def _is_ancestor(a: str, b: str) -> bool:
     return b.startswith(a.rstrip("/") + "/")
 
 
+class _FoldNode:
+    """路径前缀节点，并缓存已选后代的同号变化量。"""
+
+    __slots__ = ("children", "entry", "positive_kb", "negative_kb")
+
+    def __init__(self) -> None:
+        self.children: dict[str, _FoldNode] = {}
+        self.entry: DirChange | None = None
+        self.positive_kb = 0
+        self.negative_kb = 0
+
+
+class _FoldIndex:
+    """支持按目录边界查询最近祖先和后代覆盖量的字符 trie。"""
+
+    def __init__(self) -> None:
+        self.root = _FoldNode()
+        self.selected: dict[str, DirChange] = {}
+
+    @staticmethod
+    def _key(path: str) -> str:
+        # 与 _is_ancestor 的 a.rstrip("/") 语义保持一致。
+        return path.rstrip("/")
+
+    def _find(self, prefix: str) -> _FoldNode | None:
+        node = self.root
+        for char in prefix:
+            node = node.children.get(char)
+            if node is None:
+                return None
+        return node
+
+    def nearest_ancestor(self, path: str) -> DirChange | None:
+        node = self.root
+        nearest = None
+        # 仅在下一个字符是 / 时认定目录边界，避免 /r 误匹配 /result。
+        for char in path:
+            if char == "/" and node.entry is not None:
+                nearest = node.entry
+            node = node.children.get(char)
+            if node is None:
+                break
+        return nearest
+
+    def descendant_covered(self, path: str, positive: bool) -> int:
+        # 后代必须从 path.rstrip("/") + "/" 开始，与 _is_ancestor 完全一致。
+        node = self._find(self._key(path) + "/")
+        if node is None:
+            return 0
+        return node.positive_kb if positive else node.negative_kb
+
+    def add(self, entry: DirChange) -> None:
+        key = self._key(entry.path)
+        node = self.root
+        nodes = [node]
+        for char in key:
+            node = node.children.setdefault(char, _FoldNode())
+            nodes.append(node)
+        node.entry = entry
+        self.selected[key] = entry
+        amount = abs(entry.delta_kb)
+        field = "positive_kb" if entry.delta_kb > 0 else "negative_kb"
+        for current in nodes:
+            setattr(current, field, getattr(current, field) + amount)
+
+    def remove(self, entry: DirChange) -> None:
+        key = self._key(entry.path)
+        node = self.root
+        nodes = [node]
+        for char in key:
+            node = node.children[char]
+            nodes.append(node)
+        node.entry = None
+        self.selected.pop(key)
+        amount = abs(entry.delta_kb)
+        field = "positive_kb" if entry.delta_kb > 0 else "negative_kb"
+        for current in nodes:
+            setattr(current, field, getattr(current, field) - amount)
+
+
 def fold_changes(changes: list[DirChange], topn: int = 25) -> list[DirChange]:
     """按 |delta| 降序选择，避免同一条链的父子重复刷屏（DEC-005）。
 
@@ -44,30 +124,33 @@ def fold_changes(changes: list[DirChange], topn: int = 25) -> list[DirChange]:
       a +33 / b +33 / 其他 +34 构成时，四个都有定位价值）；
     - 候选无入选祖先、但有入选后代：残余量（自身变化减去同向后代已覆盖部分）
       不足 10% 或 1MB 时不入选（变化已被后代表达）。
+
+    必须完整折叠全部候选，后续更精确的子目录才有机会替换先入选的父目录。
+    内部路径 trie 用前缀和维护同号后代覆盖量，避免完整结果导致两两扫描；
+    ``topn`` 只在折叠完成、稳定排序后限制最终输出。
     """
-    selected: list[DirChange] = []
+    if topn <= 0:
+        return []
+
+    index = _FoldIndex()
     for c in sorted(changes, key=lambda x: abs(x.delta_kb), reverse=True):
         if c.delta_kb == 0:
             continue
-        ancestor = next((s for s in selected if _is_ancestor(s.path, c.path)), None)
+        ancestor = index.nearest_ancestor(c.path)
         if ancestor is not None:
             if abs(c.delta_kb) >= abs(ancestor.delta_kb) * 0.9:
-                selected.remove(ancestor)
-                selected.append(c)
+                index.remove(ancestor)
+                index.add(c)
             else:
-                selected.append(c)
+                index.add(c)
         else:
-            covered = sum(
-                abs(s.delta_kb)
-                for s in selected
-                if _is_ancestor(c.path, s.path) and (s.delta_kb > 0) == (c.delta_kb > 0)
-            )
+            covered = index.descendant_covered(c.path, positive=c.delta_kb > 0)
             residual = abs(c.delta_kb) - covered
             if covered == 0 or residual >= max(1024, abs(c.delta_kb) * 0.1):
-                selected.append(c)
-        if len(selected) >= topn:
-            break
-    return selected
+                index.add(c)
+    return sorted(
+        index.selected.values(), key=lambda x: abs(x.delta_kb), reverse=True
+    )[:topn]
 
 
 def compute_diff(

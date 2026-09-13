@@ -73,9 +73,9 @@
 | ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | IN_PROGRESS | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | BLOCKED | ISS-023 |
 | ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | BLOCKED | ISS-021、ISS-024、ISS-026、ISS-027 |
-| ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | READY | — |
+| ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | IN_PROGRESS | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
-| ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | READY | — |
+| ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | DONE | — |
 | ISS-032 | 资源预算、大文件查询与诊断 | P1 | M1 | BLOCKED | ISS-020、ISS-025 |
 | ISS-033 | 外部内测与开放发布验收 | P1 | M3 | BLOCKED | ISS-001、ISS-002、ISS-003、ISS-008、ISS-024、ISS-028、ISS-030、ISS-032、ISS-037、ISS-040、ISS-041 |
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
@@ -258,12 +258,12 @@
 - **范围**：requirements.txt、拟新增开发依赖/锁定清单、tests/、拟新增 .github/workflows/、TESTING。
 - **实施边界**：先固定实际兼容 Python/依赖集合、分开运行/开发依赖；保留 Cargo.lock，并固定 Python、Rust 与 Tauri CLI 的构建版本。macOS job 运行 BSD du 真实路径测试，纯算法测试可另用其他系统；为后续发行分别提供 Apple Silicon 与 Intel 原生 runner 基础，不能在 arm64 runner 上假装冻结 x86 Python helper。新增匿名 fixture/API/浏览器 smoke 命令，删除恒真断言，不固定缺陷为期望行为。CI 默认不安装 launchd、不扫 HOME、不需要签名秘密，也不创建 Release。
 - **验收**：
-  - [ ] 新克隆依声明步骤能运行测试；环境版本与命令记录
-  - [ ] 错误实现会使关键反例变红；没有 or True/无条件跳过伪绿
-  - [ ] PR 有核心自动检查，UI/实机未覆盖项仍标 NOT_VERIFIED
-  - [ ] 合成数据能跑空库、单快照、两快照与异常页面，不接触生产数据
-  - [ ] Apple Silicon 与 Intel job 的架构、工具链和锁定安装可核查，任一平台失败不能被跳过或吞掉
-- **证据/接续**：CI 与依赖固定尚未实施。当前 main 候选全量 134 pytest 通过，仍有 Starlette 对 httpx 与 anyio 旧别名的两条弃用警告，纳入本卡测试依赖升级；不能把本地通过当作已有 CI。
+  - [x] 新克隆依声明步骤能运行测试；环境版本与命令记录
+  - [x] 错误实现会使关键反例变红；没有 or True/无条件跳过伪绿
+  - [x] PR 有核心自动检查，UI/实机未覆盖项仍标 NOT_VERIFIED
+  - [x] 合成数据能跑空库、单快照、两快照与异常页面，不接触生产数据
+  - [x] Apple Silicon 与 Intel job 的架构、工具链和锁定安装可核查，任一平台失败不能被跳过或吞掉
+- **证据/接续**：[PR #16](https://github.com/cat-xierluo/fathom/pull/16) 合并为 `33266da0c492f0c1ed26969751c6924142b805e0`。独立 fixed-head review ACCEPT；新克隆按 constraints 安装后 144 pytest、39 项 Chromium/API 检查通过，错误计数门禁返回非零。GitHub Actions run [34743048209](https://github.com/cat-xierluo/fathom/actions/runs/34743048209) 的 arm64/x86_64 pytest、Rust 1.88 Cargo locked 及 arm64 浏览器/API 五项均成功；首次 run 暴露 fixture 误用系统 Python，修复后增加 venv identity、prefix 与 FastAPI 来源门禁。CI 不扫描 HOME、不安装 launchd、不读取发行秘密或上传产物。实际 Tauri GUI、系统通知与发行包仍按各自任务标 `NOT_VERIFIED`。
 
 ### ISS-026 · 完整 UX 流程与视觉原型
 
@@ -323,8 +323,8 @@
   - [ ] 后台唯一所有者明确，退出/崩溃/重启/登录语义可实测
   - [ ] 安装路径含空格/中文/& 可用；服务无权限/端口占用给恢复动作
   - [ ] 当前宿主架构 helper 的 `file`、断网启动、`--version`/health、退出与崩溃行为有可复查证据；另一架构明确标为待 ISS-041 复验
-  - [ ] 记录选型 DEC、双架构复验计划、冻结打包依赖、端口策略、服务/TCC 身份及未解决阻塞；失败时不推进 ISS-009 的发行验收
-- **证据/接续**：当前只有 bundle.active=false 的开发壳；仅 cargo build 不证明可分发。
+  - [x] 记录选型 DEC、双架构复验计划、冻结打包依赖、端口策略、服务/TCC 身份及未解决阻塞；失败时不推进 ISS-009 的发行验收
+- **证据/接续**：[PR #17](https://github.com/cat-xierluo/fathom/pull/17) 合并为 `7aef239`，独立 fixed-head review ACCEPT，GitHub 双架构 CI 五项通过。当前 arm64 合同原型 18/18：0600 discovery、token 脱敏、身份匹配清理、8 进程唯一 owner、动态端口让位和未知占用零击杀；PyInstaller 6.22.3 onedir A/B 均生成 arm64 Mach-O，并固定 G1/G2/G3/G6 生产缺口。冻结 smoke 为 11 pass / 0 fail / 3 blocked：本机 7952 被未知 PID 占用，按合同未触碰，健康、Host 守卫和 SIGTERM 尚未完成。干净账户断网首启、x86_64 冻结、TCC/后台服务和完整 app 仍 `NOT_VERIFIED`；本卡保持 IN_PROGRESS，ISS-009 不进入发行验收。选型见 DEC-017，复验计划见 `apps/desktop/experiments/iss029/findings.md`。
 
 ### ISS-001 · 真实跨日定时日报验证
 

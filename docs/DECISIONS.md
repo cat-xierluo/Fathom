@@ -5,6 +5,18 @@
 
 ---
 
+### [DEC-017] - 2026-09-13 - v0.3 helper 采用 PyInstaller onedir 与应用派生进程合同
+
+**背景**：当前 Tauri 壳依赖开发机上的 FastAPI 服务，无法随 `.app` 独立安装。ISS-029 比较了冻结方式，并在 arm64 上复现字符串导入、bundle 写入、缺少身份面和固定 7952 端口冲突；同时验证了 discovery、端口让位、并发所有权与受控退出合同。
+
+**决策**：v0.3 的 Python helper 使用固定版本 PyInstaller onedir，并在 arm64 与 x86_64 原生 runner 分别冻结。helper 必须提供 `--version` 与 `/health` 身份面；只绑定回环地址，在一个小端口段内让位；用 Application Support 数据根内的全生命周期文件锁保证单一 owner，以权限 `0600` 的原子 discovery 记录 port、pid、instance_id 与随机控制令牌。未知端口占用者永不终止，关闭和清理前必须再次核对进程及 discovery 身份。首个可分发闭环由 Tauri 应用派生 helper；登录项与 UI 退出后常驻语义留给 ISS-010 实测后重评。
+
+**验证**：ISS-029 合同原型 18/18 通过，包括 8 进程同步竞争仅一个 owner、畸形记录接管、替换记录保留、token 不出日志、未知占用 PID 前后不变及只读资源指纹。PyInstaller 6.22.3 onedir A/B 均构建为 arm64 Mach-O。生产 helper 的冻结健康、Host 守卫和 SIGTERM 因 7952 已被未知进程占用而保持 `NOT_VERIFIED`；x86_64 冻结、干净账户、TCC、签名和公证也尚未验证。
+
+**影响/重评条件**：ISS-009 实装前必须关闭 G1–G6：显式导入、Application Support 数据根、统一版本、身份健康端点和动态端口；ISS-041 必须在两种原生 runner 复验 thin helper。若 PyInstaller 不再支持目标 Python/macOS 组合，或公证对 onedir 布局提出不可接受限制，再比较 onefile、内嵌 framework 或其他方案。实验与缺口见 [ISS-029 findings](../apps/desktop/experiments/iss029/findings.md)。
+
+---
+
 ### [DEC-016] - 2026-09-13 - v0.3.0 以双架构签名公证与安全更新为发行门槛
 
 **背景**：用户确认当前开发线可以作为 v0.3.0，并要求同步 GitHub、建立 release 编译、参照 Folia 配置密钥及应用内自动更新。独立审查发现当前壳仍依赖外部 Python/FastAPI、`bundle.active=false`、生产 UI 未接原型、版本漂移且没有 CI/Secrets。Folia 的 updater 流程可参考，但没有 Developer ID 签名和 Apple 公证。

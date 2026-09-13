@@ -11,6 +11,20 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
+仓库 CI 的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地复跑使用 macOS 系统 Bash：
+
+```bash
+/bin/bash scripts/ci_pytest.sh
+/bin/bash scripts/ci_cargo_locked.sh
+npm install --prefix .runtime/playwright playwright@1.61.1
+FATHOM_PYTHON="$PWD/.venv/bin/python" \
+NODE_PATH="$PWD/.runtime/playwright/node_modules" \
+PLAYWRIGHT_BIN="$PWD/.runtime/playwright/node_modules/.bin/playwright" \
+PW_INSTALL=1 /bin/bash scripts/ci_browser_checks.sh
+```
+
+CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest 和 Rust 1.88 locked build，浏览器/API 检查在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
+
 **当前只设置 FATHOM_DB 不足以隔离：** CLI scan/API scan 仍可能扫描 HOME，报告/日志仍在源码工作区，serve 默认仍用生产端口。必须同时隔离 DATA_DIR、DB_PATH、REPORTS_DIR、LOGS_DIR、DEFAULT_ROOT、端口；install/uninstall/权限与真实 Finder 动作另属实机验证。ISS-025 交付后同步本节到正式配置入口。
 
 不复制生产库到仓库，不在报告贴私人路径。数据量测试用合成目录或经用户选择的测试范围。故障测试 mock `open`、通知、launchctl 等系统动作，检查“有没有被调用”，不实际动生产服务。
@@ -132,4 +146,4 @@ PY
 
 纯规划/文档 PR：检查 Markdown 链接、源文件引用、任务编号唯一、依赖无环、READY 条件、路线/任务/设计一致；核对现状语句与代码。不得因为描述了目标就把对应功能标完成。
 
-持续集成由 ISS-031 建立，当前没有仓库 CI。发布前所需自动检查与真实矩阵都通过后才能请用户批准发布；缺少自动检查不能被理解为“全部通过”。
+持续集成已由 ISS-031 建立；最近一次验收运行见任务卡证据。发布前仍需发行 workflow 对固定 tag 执行 helper 冻结、签名、公证、staple、更新签名和 draft Release 聚合；普通 CI 通过不能替代这些门禁。

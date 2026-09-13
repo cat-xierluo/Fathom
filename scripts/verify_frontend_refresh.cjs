@@ -313,6 +313,7 @@ async function main() {
     await page.waitForFunction(() =>
       [...document.querySelectorAll("#sel-b option")].map((o) => o.value).join(",") === "3,1",
     null, { timeout: 12000 });
+    await waitForText(page, "#diff-status", "已更新或不再可用");
     const after = await page.evaluate(() => ({
       options: [...document.querySelectorAll("#sel-b option")].map((o) => o.value),
       selected: [document.querySelector("#sel-a").value, document.querySelector("#sel-b").value],

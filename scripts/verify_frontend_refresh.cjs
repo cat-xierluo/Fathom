@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-/* ISS-023 前端回归：随机端口、纯合成 API、真实 Chromium。 */
+/* 前端回归（ISS-023 起源，ISS-027 扩展）：随机端口、纯合成 API、真实 Chromium。
+ * ISS-027 新增口径：
+ *  - 乱序/迟到响应只显示当前选择（含切目录竞态）；
+ *  - 切页后扫描轮询不重复累积，扫描结束后轮询停止；
+ *  - 图表隐藏期间窗口变化，重新显示后尺寸恢复；
+ *  - 五页均真实走查（含大文件/设置），资源全部同源本地；
+ *  - 浏览器无 Tauri（静默降级）与注入 mock 桥两种路径。
+ * 驱动方式只经真实 UI（导航/点击/选择），不调用前端内部函数。 */
 "use strict";
 
 const fs = require("fs");
@@ -12,7 +19,7 @@ const { chromium } = require("playwright");
 const REPO = path.resolve(__dirname, "..");
 const ROOT = "/fixture/root";
 const TOKEN = "iss023-fixture-token";
-const evidenceDir = fs.mkdtempSync(path.join(os.tmpdir(), "fathom-iss023-"));
+const evidenceDir = fs.mkdtempSync(path.join(os.tmpdir(), "fathom-iss027-"));
 const checks = [];
 
 function record(name, ok, detail = "") {
@@ -25,6 +32,7 @@ function json(res, status, body) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": data.length,
+    "Cache-Control": "no-store",  // 合成夹具状态随调用变化，禁止任何缓存
   });
   res.end(data);
 }
@@ -58,6 +66,7 @@ function createFixture() {
       : snapshot(2, "2026-09-13T10:00:00");
     return [latest, snapshot(1, "2026-09-12T10:00:00")];
   };
+  const scanning = () => state.scanning || state.mode === "scanning-stuck";
 
   const diff = (a, b) => ({
     a: snapshots().find((s) => String(s.id) === String(a)),
@@ -89,6 +98,7 @@ function createFixture() {
     }
     if (url.pathname === "/api/bootstrap") return json(res, 200, { token: TOKEN });
     if (url.pathname === "/api/status") {
+      nextCall("status");
       const rows = snapshots();
       return json(res, 200, {
         root: ROOT,
@@ -97,8 +107,8 @@ function createFixture() {
         disk: { total_bytes: 1024 ** 4, free_bytes: 256 * 1024 ** 3 },
         db_bytes: 4096,
         scan: {
-          running: state.scanning,
-          started_at: state.scanning ? "2026-09-13T12:02:00" : null,
+          running: scanning(),
+          started_at: scanning() ? "2026-09-13T12:02:00" : null,
           finished_at: state.version === 3 ? "2026-09-13T12:03:00" : null,
         },
         port: server.address().port,
@@ -107,7 +117,7 @@ function createFixture() {
     if (url.pathname === "/api/snapshots") {
       if (state.mode === "snapshots500") return json(res, 500, { detail: "合成快照故障" });
       if (state.scenario === "snapshots-delay" && nextCall("snapshots") === 1) {
-        return later(res, 200, snapshots());
+        return later(res, 200, snapshots(), 700);
       }
       return json(res, 200, snapshots());
     }
@@ -119,10 +129,11 @@ function createFixture() {
       })));
     }
     if (url.pathname === "/api/diff") {
-      if (state.scenario === "overview-old-success-new-500") {
-        const call = nextCall("diff");
-        if (call === 1) return later(res, 200, diff(1, 2));
-        if (call === 2) return json(res, 500, { detail: "较新的合成差分故障" });
+      // 总览摘要固定带 topn=5；竞态只针对摘要请求计数，不影响变化页对比
+      if (state.scenario === "overview-old-success-new-500" && url.searchParams.get("topn") === "5") {
+        const call = nextCall("overviewDiff");
+        if (call === 1) return later(res, 200, diff(1, 2), 1200);
+        return json(res, 500, { detail: "较新的合成差分故障" });
       }
       if (state.mode === "error500") return json(res, 500, { detail: "合成差分故障" });
       const rows = snapshots();
@@ -149,8 +160,8 @@ function createFixture() {
     if (url.pathname === "/api/reports") {
       if (state.scenario === "report-old-success-new-500") {
         const call = nextCall("reports");
-        if (call === 1) return later(res, 200, { reports: [{ date: "2026-09-11" }] });
-        if (call === 2) return json(res, 500, { detail: "较新的合成报告故障" });
+        if (call === 1) return later(res, 200, { reports: [{ date: "2026-09-11" }] }, 1200);
+        return json(res, 500, { detail: "较新的合成报告故障" });
       }
       return json(res, 200, { reports: [{ date: state.version === 3 ? "2026-09-13" : "2026-09-12" }] });
     }
@@ -167,7 +178,7 @@ function createFixture() {
             { name, path: `${ROOT}/${name}`, value: 98976 },
           ] }],
         };
-        if (call === 1) return later(res, 200, body);
+        if (call === 1) return later(res, 200, body, 800);
         return json(res, 200, body);
       }
       const rows = snapshots();
@@ -190,7 +201,28 @@ function createFixture() {
           children: [{ name, path: `${ROOT}/${name}`, size_kb: 98976, delta_kb: -1024, is_new: false }],
           trend: [{ created_at: "2026-09-13T12:03:00", size_kb: 98976 }],
         };
-        if (call === 1) return later(res, 200, body);
+        if (call === 1) return later(res, 200, body, 800);
+        return json(res, 200, body);
+      }
+      if (state.scenario === "browse-switch-race") {
+        // 模拟快速切目录：奇数次（旧目录）慢响应，偶数次（新目录）先回
+        const call = nextCall("browse");
+        const odd = call % 2 === 1;
+        const body = odd
+          ? {
+            path: `${ROOT}/Archive`, size_kb: 98976,
+            crumbs: [{ name: "root", path: ROOT }, { name: "Archive", path: `${ROOT}/Archive` }],
+            children: [{ name: "SlowOldDir", path: `${ROOT}/Archive/SlowOldDir`,
+              size_kb: 40000, delta_kb: 1024, is_new: false }],
+            trend: [],
+          }
+          : {
+            path: ROOT, size_kb: 300000, crumbs: [{ name: "root", path: ROOT }],
+            children: [{ name: "FastNewDir", path: `${ROOT}/FastNewDir`,
+              size_kb: 60000, delta_kb: -512, is_new: false }],
+            trend: [],
+          };
+        if (odd) return later(res, 200, body, 1000);
         return json(res, 200, body);
       }
       if (state.scenario === "browse-navigation-delay") {
@@ -200,26 +232,39 @@ function createFixture() {
           children: [{ name: "OldAfterNavigation", path: `${ROOT}/OldAfterNavigation`, size_kb: 90000,
             delta_kb: 1024, is_new: false }],
           trend: [],
-        });
+        }, 600);
       }
       if (!snapshots().length) return json(res, 409, { detail: "尚无快照，请先扫描" });
       return json(res, 200, {
         path: ROOT,
         size_kb: 300000,
         crumbs: [{ name: "root", path: ROOT }],
-        children: [{
-          name: "Archive", path: `${ROOT}/Archive`, size_kb: 98976,
-          delta_kb: state.mode === "single" ? null : -1024,
-          is_new: false,
-        }],
+        children: [
+          {
+            name: "Archive", path: `${ROOT}/Archive`, size_kb: 98976,
+            delta_kb: state.mode === "single" ? null : -1024,
+            is_new: false,
+          },
+          {
+            name: "Stable", path: `${ROOT}/Stable`, size_kb: 40000,
+            delta_kb: state.mode === "single" ? null : 0,
+            is_new: false,
+          },
+        ],
         trend: [{ created_at: "2026-09-12T10:00:00", size_kb: 100000 },
           { created_at: "2026-09-13T12:03:00", size_kb: 98976 }],
       });
     }
-    if (url.pathname === "/api/bigfiles") return json(res, 200, { files: [] });
+    if (url.pathname === "/api/bigfiles") {
+      // 字段合同与 fathom/bigfiles.py 一致：[{path, size(字节), mtime 'YYYY-MM-DD HH:MM'}]
+      return json(res, 200, { files: [
+        { path: `${ROOT}/Build/fathom-disk.img`, size: 2 * 1024 ** 3, mtime: "2026-09-12 09:00" },
+      ] });
+    }
     if (url.pathname === "/api/reveal" && req.method === "POST") return json(res, 200, { ok: true });
     if (url.pathname === "/api/scan" && req.method === "POST") {
       if (req.headers["x-fathom-token"] !== TOKEN) return json(res, 403, { detail: "令牌无效" });
+      nextCall("scan");
       state.scanning = true;
       setTimeout(() => {
         state.version = 3;
@@ -235,7 +280,11 @@ function createFixture() {
       "/style.css": ["frontend/style.css", "text/css; charset=utf-8"],
       "/vendor/echarts.min.js": ["frontend/vendor/echarts.min.js", "application/javascript; charset=utf-8"],
     };
-    const file = staticFiles[url.pathname];
+    // ES modules（frontend/modules/）经受限字符集路径直接透出，禁止穿越
+    const file = staticFiles[url.pathname] ||
+      (/^\/modules\/[A-Za-z0-9_][A-Za-z0-9_./-]*\.js$/.test(url.pathname)
+        ? [`frontend${url.pathname}`, "application/javascript; charset=utf-8"]
+        : null);
     if (!file) return json(res, 404, { detail: "not found" });
     const data = fs.readFileSync(path.join(REPO, file[0]));
     res.writeHead(200, { "Content-Type": file[1], "Content-Length": data.length });
@@ -261,6 +310,8 @@ async function main() {
     const page = await browser.newPage({ viewport: { width: 1220, height: 820 } });
     const pageErrors = [];
     page.on("pageerror", (e) => pageErrors.push(e.message));
+    const resourceUrls = [];
+    page.on("request", (r) => resourceUrls.push(r.url()));
     const setMode = async (mode) => {
       const response = await page.request.get(`${base}/__fixture?mode=${mode}`);
       if (!response.ok()) throw new Error(`无法切换夹具模式：${mode}`);
@@ -273,25 +324,34 @@ async function main() {
       const response = await page.request.get(`${base}/__fixture?version=${version}`);
       if (!response.ok()) throw new Error(`无法切换夹具版本：${version}`);
     };
+    const fixtureState = async () =>
+      (await (await page.request.get(`${base}/__fixture`)).json());
+    // 仅片段不同的 goto 可能被 Chromium 当作 same-document 导航（不重跑应用
+    // init）。夹具状态切换后需要整页加载时用本入口：先脱离当前文档，保证
+    // 后续 goto 必然是全新加载。
+    const openPage = async (hash, waitUntil = "networkidle") => {
+      if (page.url() !== "about:blank") await page.goto("about:blank");
+      await page.goto(`${base}/${hash}`, { waitUntil });
+    };
     const waitForCount = async (name, count) => {
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline) {
-        const response = await page.request.get(`${base}/__fixture`);
-        const body = await response.json();
+        const body = await fixtureState();
         if ((body.counts[name] || 0) >= count) return body;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       throw new Error(`等待夹具调用超时：${name} >= ${count}`);
     };
 
-    await page.goto(`${base}/#/overview`, { waitUntil: "networkidle" });
+    /* ---------- 总览基线 ---------- */
+    await openPage("#/overview");
+    const foreign = resourceUrls.filter((u) => !u.startsWith(base));
+    record("all-resources-are-local", foreign.length === 0, foreign.join(","));
     await page.waitForSelector("#overview-summary table");
-    const visibleValues = await page.evaluate(() => [
-      fmtDelta(1024), fmtDelta(-1024), fmtDelta(0), fmtDelta(null),
-    ]);
-    record("delta-signs-and-unknown",
-      JSON.stringify(visibleValues) === JSON.stringify(["+1.0 MB", "−1.0 MB", "0.0 B", "—"]),
-      JSON.stringify(visibleValues));
+    const summaryText = await page.locator("#overview-summary").textContent();
+    record("delta-signs-rendered-in-overview",
+      summaryText.includes("+1.0 MB") && summaryText.includes("−1.0 MB") &&
+        !summaryText.includes("NaN"), summaryText.slice(0, 60));
     const overviewIcon = await page.evaluate(() => ({
       literal: document.querySelector("#overview-summary").textContent.includes("icon("),
       svg: Boolean(document.querySelector("#overview-summary [data-reveal] svg")),
@@ -300,7 +360,8 @@ async function main() {
     const overviewShot = path.join(evidenceDir, "overview-values-1220x820.png");
     await page.screenshot({ path: overviewShot });
 
-    await page.goto(`${base}/#/changes`, { waitUntil: "networkidle" });
+    /* ---------- 变化页：同日补扫协调 ---------- */
+    await openPage("#/changes");
     await page.waitForFunction(() => document.querySelectorAll("#sel-b option").length === 2);
     const before = await page.evaluate(() => ({
       options: [...document.querySelectorAll("#sel-b option")].map((o) => o.value),
@@ -330,6 +391,7 @@ async function main() {
     const changesShot = path.join(evidenceDir, "changes-after-rescan-1220x820.png");
     await page.screenshot({ path: changesShot });
 
+    /* ---------- 分布页 + 零差值渲染 ---------- */
     await page.click('a[data-page="browse"]');
     await page.waitForURL("**/#/browse");
     await page.waitForSelector("#tbl-browse tbody tr");
@@ -342,23 +404,69 @@ async function main() {
     record("browse-refreshes-latest-tree-and-svg",
       fixture.state.treeSnapshotId === 3 && browse.text.includes("−1.0 MB") &&
         !browse.literal && browse.svg && browse.canvases.every(([w, h]) => w > 0 && h > 0));
+    record("delta-zero-rendered-in-browse", browse.text.includes("0.0 B"), browse.text.slice(0, 80));
     const browseShot = path.join(evidenceDir, "browse-after-rescan-1220x820.png");
     await page.screenshot({ path: browseShot });
 
+    /* ---------- 图表隐藏后再显示：窗口在隐藏期间变化，重显后必须重新量尺寸 ---------- */
+    await page.click('a[data-page="overview"]');
+    await page.waitForURL("**/#/overview");
+    await page.waitForSelector("#chart-volume canvas");
+    const chartBefore = await page.evaluate(() => {
+      const box = document.getElementById("chart-volume");
+      return { box: box.clientWidth, canvas: box.querySelector("canvas").getBoundingClientRect().width };
+    });
+    await page.click('a[data-page="changes"]');
+    await page.waitForURL("**/#/changes");
+    await page.setViewportSize({ width: 1000, height: 820 });  // 总览隐藏时窗口变化
+    await page.waitForTimeout(250);
+    await page.click('a[data-page="overview"]');
+    await page.waitForURL("**/#/overview");
+    await page.waitForTimeout(450);
+    const chartAfter = await page.evaluate(() => {
+      const box = document.getElementById("chart-volume");
+      return { box: box.clientWidth, canvas: box.querySelector("canvas").getBoundingClientRect().width };
+    });
+    record("chart-resize-after-reshow",
+      chartAfter.canvas > 0 && Math.abs(chartAfter.canvas - chartAfter.box) <= 2,
+      JSON.stringify({ before: chartBefore, after: chartAfter }));
+    await page.setViewportSize({ width: 1220, height: 820 });
+
+    /* ---------- 大文件 / 设置页走查（五页覆盖） ---------- */
+    await openPage("#/bigfiles");
+    await page.waitForSelector("#tbl-bigfiles tbody tr");
+    const big = await page.evaluate(() => ({
+      text: document.querySelector("#tbl-bigfiles").textContent,
+      svg: Boolean(document.querySelector("#tbl-bigfiles [data-reveal] svg")),
+    }));
+    record("bigfiles-page-renders-row",
+      big.text.includes("2.0 GB") && big.text.includes("2026-09-12 09:00") &&
+        big.text.includes("fathom-disk.img") && big.svg, big.text.slice(0, 80));
+    const bigfilesShot = path.join(evidenceDir, "bigfiles-1220x820.png");
+    await page.screenshot({ path: bigfilesShot });
+
+    await openPage("#/settings");
+    await page.waitForSelector("#settings-table tbody tr");
+    const settingsText = await page.locator("#page-settings").textContent();
+    record("settings-page-renders-config",
+      settingsText.includes("监控根目录") && settingsText.includes(ROOT) &&
+        settingsText.includes("服务地址"), settingsText.slice(0, 60));
+
+    /* ---------- 状态语义矩阵 ---------- */
     await setMode("onlyadded");
-    await page.goto(`${base}/#/overview`, { waitUntil: "networkidle" });
+    await openPage("#/overview");
     await waitForText(page, "#overview-summary", "不能判断为“无变化”");
     const onlyAdded = await page.locator("#overview-summary").textContent();
     record("only-added-is-not-no-change",
       onlyAdded.includes("新增或未记录") && !onlyAdded.includes("期间没有 ≥1MB"));
 
     await setMode("empty");
-    await page.reload({ waitUntil: "networkidle" });
+    await openPage("#/overview");
     await waitForText(page, "#overview-summary", "还不能比较");
     record("empty-overview-is-baseline-state",
       (await page.locator("#card-latest").textContent()).includes("尚无快照") &&
         !(await page.locator("#overview-summary").textContent()).includes("加载失败"));
-    await page.goto(`${base}/#/changes`, { waitUntil: "networkidle" });
+    await openPage("#/changes");
     await waitForText(page, "#diff-status", "尚无快照");
     const empty = await page.evaluate(() => ({
       options: document.querySelectorAll("#sel-a option").length,
@@ -367,18 +475,20 @@ async function main() {
     record("empty-changes-clears-stale-results", empty.options === 0 && empty.disabled, JSON.stringify(empty));
 
     await setMode("single");
-    await page.reload({ waitUntil: "networkidle" });
+    await openPage("#/overview");
+    await waitForText(page, "#overview-summary", "还不能比较");
+    await openPage("#/changes");
     await waitForText(page, "#diff-status", "基线已建立");
     record("single-snapshot-enables-distribution-not-diff",
       await page.locator("#btn-diff").isDisabled());
-    await page.goto(`${base}/#/browse`, { waitUntil: "networkidle" });
+    await openPage("#/browse");
     await page.waitForSelector("#tbl-browse tbody tr");
     record("single-snapshot-distribution-loads",
       (await page.locator("#tbl-browse").textContent()).includes("Archive") &&
         (await page.locator("#tbl-browse").textContent()).includes("—"));
 
     await setMode("error500");
-    await page.goto(`${base}/#/overview`, { waitUntil: "networkidle" });
+    await openPage("#/overview");
     await waitForText(page, "#overview-summary", "HTTP 500");
     const error500 = await page.locator("#overview-summary").textContent();
     record("http-500-is-not-first-scan-or-no-change",
@@ -386,52 +496,60 @@ async function main() {
         !error500.includes("期间没有 ≥1MB"), error500);
 
     await setMode("snapshots500");
-    await page.goto(`${base}/#/changes`, { waitUntil: "networkidle" });
+    await openPage("#/changes");
     await waitForText(page, "#diff-status", "HTTP 500");
     record("snapshot-500-disables-stale-comparison",
       await page.locator("#btn-diff").isDisabled());
 
     await setMode("dual");
     await page.route("**/api/diff*", (route) => route.abort("internetdisconnected"));
-    await page.goto(`${base}/#/overview`, { waitUntil: "networkidle" });
+    await openPage("#/overview");
     await waitForText(page, "#overview-summary", "无法连接本地服务");
     record("network-error-is-explicit",
       !(await page.locator("#overview-summary").textContent()).includes("需要至少两个快照"));
     await page.unroute("**/api/diff*");
 
-    // 旧成功不能覆盖后发错误：同一加载域以 request generation 判定最终写入者。
-    await setMode("dual");
+    /* ---------- 乱序响应：旧成功晚于新失败/新结果，只允许显示当前状态 ---------- */
+    // 总览摘要：首访成功被延迟，随后一次 500 先到；迟到成功不得覆盖较新错误。
     await setScenario("overview-old-success-new-500");
-    await page.evaluate(() => { void loadOverviewSummary(); });
-    await waitForCount("diff", 1);
-    await page.evaluate(() => { void loadOverviewSummary(); });
+    await openPage("#/changes");
+    await openPage("#/overview", "domcontentloaded");  // 摘要请求1（慢成功）
+    await waitForCount("overviewDiff", 1);
+    await page.click('a[data-page="changes"]');
+    await page.waitForURL("**/#/changes");
+    await page.click('a[data-page="overview"]');
+    await page.waitForURL("**/#/overview");  // 摘要请求2（立即 500）
     await waitForText(page, "#overview-summary", "较新的合成差分故障");
-    await page.waitForTimeout(350);
+    await page.waitForTimeout(1400);
     record("late-overview-success-cannot-overwrite-newer-error",
       (await page.locator("#overview-summary").textContent()).includes("较新的合成差分故障"));
 
     // 报告列表同样覆盖“旧成功晚于新 500”。
-    await setMode("dual");
-    await page.goto(`${base}/#/changes`, { waitUntil: "networkidle" });
     await setScenario("report-old-success-new-500");
-    await page.evaluate(() => { void loadReportList(); });
+    await openPage("#/overview");
+    await openPage("#/changes", "domcontentloaded");  // 报告请求1（慢成功）
     await waitForCount("reports", 1);
-    await page.evaluate(() => { void loadReportList(); });
+    await page.click('a[data-page="overview"]');
+    await page.waitForURL("**/#/overview");
+    await page.click('a[data-page="changes"]');
+    await page.waitForURL("**/#/changes");  // 报告请求2（立即 500）
     await waitForText(page, "#report-list", "较新的合成报告故障");
-    await page.waitForTimeout(350);
+    await page.waitForTimeout(1400);
     record("late-report-success-cannot-overwrite-newer-error",
       (await page.locator("#report-list").textContent()).includes("较新的合成报告故障"));
 
     // 树与目录浏览器各自使用独立 generation；旧响应比新响应晚到仍被丢弃。
-    await setMode("dual");
-    await page.goto(`${base}/#/browse`, { waitUntil: "networkidle" });
     await setScenario("tree-browse-race");
-    await page.evaluate(() => { void loadTree(); void loadBrowse(null); });
+    await openPage("#/overview");
+    await openPage("#/browse", "domcontentloaded");  // 树/浏览器请求1（慢）
     await waitForCount("trees", 1);
     await waitForCount("browse", 1);
-    await page.evaluate(() => { void loadTree(); void loadBrowse(null); });
+    await page.click('a[data-page="overview"]');
+    await page.waitForURL("**/#/overview");
+    await page.click('a[data-page="browse"]');
+    await page.waitForURL("**/#/browse");  // 请求2（立即 NewTree/NewChild）
     await waitForText(page, "#tbl-browse", "NewChild");
-    await page.waitForTimeout(350);
+    await page.waitForTimeout(1000);
     const treeBrowseRace = await page.evaluate(() => {
       const chart = window.echarts.getInstanceByDom(document.getElementById("chart-sunburst"));
       return {
@@ -443,22 +561,43 @@ async function main() {
       treeBrowseRace.tree === "NewTree" && treeBrowseRace.child.includes("NewChild") &&
         !treeBrowseRace.child.includes("OldChild"), JSON.stringify(treeBrowseRace));
 
+    // 快速切目录：旧目录响应后到，表格只保留当前目录。
+    await setScenario("browse-switch-race");
+    await page.waitForSelector("#tbl-browse .dir-name");
+    await page.click("#tbl-browse .dir-name");  // 下钻 Archive（慢响应 SlowOldDir）
+    await waitForCount("browse", 1);
+    await page.click("#crumbs .crumb");  // 面包屑回根（快响应 FastNewDir）
+    await waitForText(page, "#tbl-browse", "FastNewDir");
+    await page.waitForTimeout(1200);
+    const switched = await page.evaluate(() => ({
+      table: document.querySelector("#tbl-browse").textContent,
+      currentCrumb: document.querySelector("#crumbs .crumb.current")?.textContent,
+    }));
+    record("rapid-dir-switch-shows-current-selection",
+      switched.table.includes("FastNewDir") && !switched.table.includes("SlowOldDir") &&
+        switched.currentCrumb === "root", JSON.stringify(switched));
+
     // 离开页面后，延迟的目录响应不得再改写隐藏页 DOM。
     await setScenario("browse-navigation-delay");
-    await page.evaluate(() => { void loadBrowse(null); });
-    await waitForCount("browse", 1);
     await page.click('a[data-page="overview"]');
     await page.waitForURL("**/#/overview");
-    await page.waitForTimeout(350);
+    await page.click('a[data-page="browse"]');
+    await page.waitForURL("**/#/browse");  // 目录请求（慢）
+    await waitForCount("browse", 1);
+    await page.click('a[data-page="overview"]');
+    await page.waitForURL("**/#/overview");  // 响应未到先离开
+    await page.waitForTimeout(800);
     record("navigation-invalidates-late-browse-write",
       !(await page.locator("#tbl-browse").textContent()).includes("OldAfterNavigation"));
 
     // snapshots 等待期间用户主动改选 [2,1]，响应不得用请求前 [1,2] 覆盖。
-    await setMode("dual");
-    await page.goto(`${base}/#/changes`, { waitUntil: "networkidle" });
+    await openPage("#/changes");
     await page.waitForFunction(() => document.querySelectorAll("#sel-b option").length === 2);
-    await setScenario("snapshots-delay");
-    await page.evaluate(() => { void loadSnapshotsForDiff(); });
+    await setScenario("snapshots-delay");  // 计数清零：下一次导航触发的快照请求才是慢响应
+    await page.click('a[data-page="overview"]');
+    await page.waitForURL("**/#/overview");
+    await page.click('a[data-page="changes"]');
+    await page.waitForURL("**/#/changes");  // 快照请求（慢）
     await waitForCount("snapshots", 1);
     await page.selectOption("#sel-a", "2");
     await page.selectOption("#sel-b", "1");
@@ -471,8 +610,8 @@ async function main() {
       JSON.stringify(delayedSelection));
 
     // 对比发出前后发生同日替换：先收到 404，再协调快照列表并自动恢复。
-    await setMode("dual");
-    await page.reload({ waitUntil: "networkidle" });
+    await setScenario(null);
+    await openPage("#/changes");
     await page.waitForFunction(() => document.querySelector("#sel-b").value === "2");
     await setVersion(3);
     await page.click("#btn-diff");
@@ -486,8 +625,33 @@ async function main() {
       recovered404.selected.join(",") === "1,3" && fixture.state.staleDiffs === 1 &&
         fixture.state.lastDiff?.join(",") === "1,3", JSON.stringify(recovered404));
 
+    /* ---------- 轮询生命周期：切页不累积，扫描结束即停 ---------- */
+    await setMode("scanning-stuck");
+    await openPage("#/browse");
+    await waitForText(page, "#scan-badge", "扫描进行中");
+    const statusBaseline = (await fixtureState()).counts.status || 0;
+    const pollStart = Date.now();
+    while (Date.now() - pollStart < 11200) {  // 覆盖 ≥2 个 5s 轮询周期
+      await page.click('a[data-page="overview"]');
+      await page.click('a[data-page="changes"]');
+      await page.click('a[data-page="browse"]');
+      await page.waitForTimeout(300);
+    }
+    const statusDuring = (await fixtureState()).counts.status - statusBaseline;
+    // 11.2s 内：初始加载 1 次 + 5s/10s 轮询 2 次；并行重复链会 ≥4
+    record("page-switches-do-not-duplicate-scan-poll",
+      statusDuring >= 2 && statusDuring <= 3, `status calls=${statusDuring} in 11.2s`);
+
+    await setMode("dual");  // 扫描结束：下一次轮询观测到空闲后必须停止
+    await waitForText(page, "#scan-badge", "未手动扫描过");
+    const settleStart = Date.now();
+    while (Date.now() - settleStart < 7000) await page.waitForTimeout(500);
+    const statusAfter = (await fixtureState()).counts.status;
+    record("scan-poll-stops-after-settle", statusAfter === 1, `status calls=${statusAfter} after settle`);
+
+    /* ---------- 行操作可访问名 ---------- */
     await setMode("addedremoved");
-    await page.reload({ waitUntil: "networkidle" });
+    await openPage("#/changes");
     await page.waitForSelector("#tbl-added [data-reveal]");
     await page.waitForSelector("#tbl-removed [data-reveal]");
     const accessibleNames = await page.evaluate(() =>
@@ -499,13 +663,49 @@ async function main() {
       accessibleNames.every(([aria, title]) => aria === "在 Finder 中显示" && title === aria),
       JSON.stringify(accessibleNames));
 
-    record("no-unhandled-page-errors", pageErrors.length === 0, pageErrors.join("; "));
+    /* ---------- Tauri 桥（注入 mock 桥验证有桥路径；真实壳运行见 RESULT 未验证项） ---------- */
+    const tpage = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const tauriErrors = [];
+    tpage.on("pageerror", (e) => tauriErrors.push(e.message));
+    await tpage.addInitScript(`
+      window.__tauriMock = { invokes: [], handlers: {} };
+      Object.defineProperty(window, "__TAURI__", { value: {
+        core: { invoke: (cmd, args) => {
+          window.__tauriMock.invokes.push({ cmd, args });
+          return Promise.resolve();
+        } },
+        event: { listen: (name, handler) => {
+          window.__tauriMock.handlers[name] = handler;
+          return Promise.resolve(0);
+        } },
+      }, configurable: true });
+    `);
+    await tpage.goto(`${base}/#/overview`, { waitUntil: "networkidle" });
+    await tpage.waitForFunction(() => (window.__tauriMock.invokes || []).length >= 1);
+    const trayFirst = await tpage.evaluate(() => window.__tauriMock.invokes[0]);
+    record("tauri-bridge-pushes-tray-status",
+      trayFirst?.cmd === "update_tray_status" && trayFirst?.args?.title === "256 GB" &&
+        /快照 2 个/.test(trayFirst?.args?.tooltip || ""), JSON.stringify(trayFirst));
+    record("tauri-bridge-registers-tray-action-listener",
+      (await tpage.evaluate(() => typeof window.__tauriMock.handlers["tray-action"])) === "function");
+    await tpage.evaluate(() => window.__tauriMock.handlers["tray-action"]({ payload: "scan" }));
+    await waitForCount("scan", 1);
+    await waitForText(tpage, "#scan-badge", "上次扫描 2026-09-13 12:03");
+    const trayInvokes = await tpage.evaluate(() => window.__tauriMock.invokes.length);
+    record("tauri-tray-action-triggers-scan-and-refresh",
+      trayInvokes >= 2 && fixture.state.version === 3, `invokes=${trayInvokes}`);
+    await tpage.close();
+
+    /* ---------- 汇总 ---------- */
+    record("no-unhandled-page-errors",
+      pageErrors.length === 0 && tauriErrors.length === 0,
+      [...pageErrors, ...tauriErrors].join("; "));
     const failed = checks.filter((c) => !c.ok);
     process.stdout.write(JSON.stringify({
       ok: failed.length === 0,
       passed: checks.length - failed.length,
       failed: failed.length,
-      evidence: [overviewShot, changesShot, browseShot],
+      evidence: [overviewShot, changesShot, browseShot, bigfilesShot],
       checks,
     }, null, 2) + "\n");
     if (failed.length) process.exitCode = 1;

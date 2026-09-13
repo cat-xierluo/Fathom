@@ -5,7 +5,10 @@
 "use strict";
 
 const charts = {};
-const state = { page: "overview", browsePath: null };
+const state = { page: "overview", browsePath: null, scanWasRunning: false };
+let scanPollTimer = null;
+let snapshotRequestId = 0;
+let diffRequestId = 0;
 
 /* ---------- 工具 ---------- */
 
@@ -114,18 +117,32 @@ function navigate() {
   document.getElementById("page-title").textContent = PAGE_TITLES[state.page];
 
   // 页面激活时懒加载对应数据（图表在隐藏容器中初始化拿不到宽度）
-  if (state.page === "overview") { loadVolumeTrend(); loadOverviewSummary(); }
+  if (state.page === "overview") { runQuietly(loadVolumeTrend(), "卷容量趋势"); loadOverviewSummary(); }
   if (state.page === "changes") { loadSnapshotsForDiff(); loadReportList(); }
-  if (state.page === "browse") { loadTree(); loadBrowse(state.browsePath); }
-  if (state.page === "bigfiles") loadBigfiles();
-  if (state.page === "settings") loadSettings();
+  if (state.page === "browse") { runQuietly(loadTree(), "占用分布"); loadBrowse(state.browsePath); }
+  if (state.page === "bigfiles") runQuietly(loadBigfiles(), "大文件");
+  if (state.page === "settings") runQuietly(loadSettings(), "设置");
 }
 window.addEventListener("hashchange", navigate);
+
+function runQuietly(promise, label) {
+  Promise.resolve(promise).catch((e) => console.warn(`${label}加载失败：`, e));
+}
 
 /* ---------- 状态卡与顶栏 ---------- */
 
 async function loadStatus() {
-  const s = await fetchJSON("/api/status");
+  const badge = document.getElementById("scan-badge");
+  const btn = document.getElementById("btn-scan");
+  let s;
+  try {
+    s = await fetchJSON("/api/status");
+  } catch (e) {
+    badge.textContent = e.status === 0 ? "服务未连接" : "状态加载失败";
+    badge.classList.remove("running");
+    btn.disabled = false;
+    throw e;
+  }
   const free = s.disk.free_bytes, total = s.disk.total_bytes;
   const used = total - free;
 
@@ -143,23 +160,33 @@ async function loadStatus() {
   document.getElementById("card-latest").textContent = latest
     ? latest.created_at.replace("T", " ") : "尚无快照";
 
-  const badge = document.getElementById("scan-badge");
-  const btn = document.getElementById("btn-scan");
+  const wasRunning = state.scanWasRunning;
+  state.scanWasRunning = Boolean(s.scan.running);
   if (s.scan.running) {
     badge.textContent = "扫描进行中…"; badge.classList.add("running"); btn.disabled = true;
-    setTimeout(() => { loadStatus().then(refreshData); }, 5000);
+    if (scanPollTimer == null) {
+      scanPollTimer = setTimeout(async () => {
+        scanPollTimer = null;
+        try { await loadStatus(); } catch (e) { console.warn("扫描状态轮询失败：", e); }
+      }, 5000);
+    }
   } else {
+    if (scanPollTimer != null) clearTimeout(scanPollTimer);
+    scanPollTimer = null;
     badge.textContent = s.scan.finished_at
       ? `上次扫描 ${s.scan.finished_at.replace("T", " ")}` : "未手动扫描过";
     badge.classList.remove("running"); btn.disabled = false;
+    if (wasRunning) runQuietly(refreshData(), "扫描结果");
   }
   pushTrayStatus(free, s.snapshot_count, latest);
 }
 
 function refreshData() {
-  if (state.page === "overview") { loadVolumeTrend(); loadOverviewSummary(); }
-  if (state.page === "changes") { loadSnapshotsForDiff(); loadReportList(); }
-  if (state.page === "browse") loadBrowse(state.browsePath);
+  const jobs = [];
+  if (state.page === "overview") jobs.push(loadVolumeTrend(), loadOverviewSummary());
+  if (state.page === "changes") jobs.push(loadSnapshotsForDiff(), loadReportList());
+  if (state.page === "browse") jobs.push(loadTree(), loadBrowse(state.browsePath));
+  return Promise.allSettled(jobs);
 }
 
 /* ---------- Tauri 桥 ---------- */
@@ -264,31 +291,113 @@ async function loadOverviewSummary() {
 
 /* ---------- 变化页 ---------- */
 
-async function loadSnapshotsForDiff() {
-  const snaps = await fetchJSON("/api/snapshots");
-  const selA = document.getElementById("sel-a"), selB = document.getElementById("sel-b");
-  if (!selA.options.length) {  // 已填过则保留用户选择
-    snaps.forEach((s, i) => {
-      const label = `#${s.id} ${s.created_at.slice(0, 16).replace("T", " ")}`;
-      selA.add(new Option(label, s.id));
-      selB.add(new Option(label, s.id));
-      if (i === 1) selA.value = s.id;
-      if (i === 0) selB.value = s.id;
-    });
-  }
-  if (snaps.length >= 2) loadDiff();
-  else document.getElementById("chart-grown").innerHTML = "";
+function setDiffStatus(message) {
+  document.getElementById("diff-status").textContent = message;
 }
 
-async function loadDiff() {
+function setDiffControlsEnabled(enabled) {
+  document.getElementById("sel-a").disabled = !enabled;
+  document.getElementById("sel-b").disabled = !enabled;
+  document.getElementById("btn-diff").disabled = !enabled;
+}
+
+function clearDiffResults() {
+  ["chart-grown", "chart-shrunk"].forEach((id) => {
+    if (charts[id]) charts[id].clear();
+    else document.getElementById(id).replaceChildren();
+  });
+  ["tbl-added", "tbl-removed"].forEach((id) => {
+    document.querySelector(`#${id} tbody`).innerHTML =
+      '<tr><td colspan="3" class="hint">暂无可比较数据</td></tr>';
+  });
+}
+
+function replaceSnapshotOptions(select, snaps) {
+  const options = snaps.map((s) => {
+    const label = `#${s.id} ${s.created_at.slice(0, 16).replace("T", " ")}`;
+    return new Option(label, String(s.id));
+  });
+  select.replaceChildren(...options);
+}
+
+async function loadSnapshotsForDiff({ notice = "" } = {}) {
+  const requestId = ++snapshotRequestId;
+  const selA = document.getElementById("sel-a"), selB = document.getElementById("sel-b");
+  const previousA = selA.value, previousB = selB.value;
+  let snaps;
+  try {
+    snaps = await fetchJSON("/api/snapshots");
+  } catch (e) {
+    if (requestId !== snapshotRequestId) return;
+    ++diffRequestId;
+    clearDiffResults();
+    setDiffControlsEnabled(false);
+    setDiffStatus(e.status === 0
+      ? "无法连接本地服务，快照列表暂不可用。"
+      : `快照列表加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);
+    return;
+  }
+  if (requestId !== snapshotRequestId) return;
+
+  const ids = snaps.map((s) => String(s.id));
+  const validA = ids.includes(previousA), validB = ids.includes(previousB);
+  let nextB = validB ? previousB : (ids[0] || "");
+  let nextA = validA && previousA !== nextB
+    ? previousA : (ids.find((id) => id !== nextB) || "");
+
+  replaceSnapshotOptions(selA, snaps);
+  replaceSnapshotOptions(selB, snaps);
+  selA.value = nextA;
+  selB.value = nextB;
+
+  const fellBack = Boolean((previousA && !validA) || (previousB && !validB));
+  if (snaps.length < 2) {
+    ++diffRequestId;
+    clearDiffResults();
+    setDiffControlsEnabled(false);
+    setDiffStatus(snaps.length === 1
+      ? "基线已建立；需要另一个不同日期的有效快照才能比较，分布现在可用。"
+      : "尚无快照，请先扫描建立基线。");
+    return;
+  }
+
+  const fallbackNotice = notice || (fellBack
+    ? "所选快照已更新或不再可用，已切换到最近有效快照。"
+    : "");
+  setDiffControlsEnabled(true);
+  await loadDiff({ retryOnMissing: false, successMessage: fallbackNotice });
+}
+
+async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
+  const requestId = ++diffRequestId;
   const a = document.getElementById("sel-a").value;
   const b = document.getElementById("sel-b").value;
   if (!a || !b) return;
-  const d = await fetchJSON(`/api/diff?a=${a}&b=${b}`);
-  renderDeltaBars("chart-grown", d.grown, "#d64545");
-  renderDeltaBars("chart-shrunk", d.shrunk, "#2e9e5b");
-  fillTwoColTable("tbl-added", d.added, (r) => [r.path, fmtKB(r.new_kb)]);
-  fillTwoColTable("tbl-removed", d.removed, (r) => [r.path, fmtKB(r.old_kb)]);
+  setDiffStatus("正在加载快照对比…");
+  try {
+    const d = await fetchJSON(`/api/diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+    if (requestId !== diffRequestId) return;
+    renderDeltaBars("chart-grown", d.grown, "#d64545");
+    renderDeltaBars("chart-shrunk", d.shrunk, "#2e9e5b");
+    fillTwoColTable("tbl-added", d.added, (r) => [r.path, fmtKB(r.new_kb)]);
+    fillTwoColTable("tbl-removed", d.removed, (r) => [r.path, fmtKB(r.old_kb)]);
+    setDiffStatus(successMessage || `正在对比快照 #${a} → #${b}`);
+  } catch (e) {
+    if (requestId !== diffRequestId) return;
+    if (e.status === 404 && retryOnMissing) {
+      clearDiffResults();
+      await loadSnapshotsForDiff({ notice: "所选快照已更新或不再可用，已切换到最近有效快照。" });
+      return;
+    }
+    clearDiffResults();
+    if (e.status === 409) {
+      setDiffStatus("还不能比较：需要两个不同日期的有效快照。");
+    } else if (e.status === 0) {
+      setDiffStatus("无法连接本地服务，快照对比暂不可用。");
+    } else {
+      setDiffStatus(`快照对比加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);
+    }
+  }
 }
 
 function renderDeltaBars(id, rows, color) {
@@ -301,12 +410,12 @@ function renderDeltaBars(id, rows, color) {
       return `${escapeHtml(r.path)}<br/>${fmtKB(r.old_kb)} → ${fmtKB(r.new_kb)}<br/>变化 ${fmtDelta(r.delta_kb)}`;
     } },
     grid: { left: 150, right: 50, top: 6, bottom: 24 },
-    xAxis: { type: "value", axisLabel: { formatter: (v) => fmtBytes(v * 1024) } },
+    xAxis: { type: "value", axisLabel: { formatter: (v) => fmtDelta(v) } },
     yAxis: { type: "category", data: top.map((r) => shortPath(r.path, 2)),
       axisLabel: { fontSize: 11, width: 140, overflow: "truncate" } },
     series: [{ type: "bar", data: top.map((r) => ({ value: r.delta_kb, raw: r })),
       itemStyle: { color, borderRadius: [0, 3, 3, 0] },
-      label: { show: true, position: "right", fontSize: 11, formatter: (p) => fmtKB(p.value) } }],
+      label: { show: true, position: "right", fontSize: 11, formatter: (p) => fmtDelta(p.value) } }],
   }, true);
 }
 
@@ -333,6 +442,8 @@ function fillTwoColTable(id, rows, cols) {
 async function loadReportList() {
   const el = document.getElementById("report-list");
   const view = document.getElementById("report-view");
+  view.classList.add("hidden");
+  view.replaceChildren();
   try {
     const r = await fetchJSON("/api/reports");
     if (!r.reports.length) {
@@ -401,7 +512,8 @@ async function loadBrowse(path) {
     const total = b.size_kb || 1;
     b.children.forEach((c) => {
       const tr = document.createElement("tr");
-      const deltaCls = c.delta_kb == null ? "" : (c.delta_kb > 0 ? "delta-grow" : "delta-shrink");
+      const deltaCls = c.delta_kb == null || c.delta_kb === 0
+        ? "" : (c.delta_kb > 0 ? "delta-grow" : "delta-shrink");
       tr.innerHTML =
         `<td class="dir-name" data-path="${escapeHtml(c.path)}" title="${escapeHtml(c.path)}">${escapeHtml(c.name)}</td>` +
         `<td class="num">${fmtKB(c.size_kb)}</td>` +
@@ -478,11 +590,12 @@ async function triggerScan() {
   btn.disabled = true;
   try {
     await apiPost("/api/scan");  // 令牌随请求头发送，不进 URL
+    state.scanWasRunning = true;
   } catch (e) {
     if (e.status === 409) alert("已有扫描在进行中");
     else alert(e.message || "扫描启动失败");
   } finally {
-    loadStatus();
+    try { await loadStatus(); } catch (e) { console.warn("扫描后状态加载失败：", e); }
   }
 }
 
@@ -502,7 +615,7 @@ function mountStaticIcons() {
 /* ---------- 启动 ---------- */
 
 document.getElementById("btn-scan").addEventListener("click", triggerScan);
-document.getElementById("btn-diff").addEventListener("click", loadDiff);
+document.getElementById("btn-diff").addEventListener("click", () => loadDiff());
 document.getElementById("btn-bigfiles").addEventListener("click", loadBigfiles);
 
 (async function init() {

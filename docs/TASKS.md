@@ -69,7 +69,7 @@
 | ISS-022 | 本地 API 与渲染边界 | P0 | M0 | DONE | — |
 | ISS-023 | 修复可见数值与快照刷新缺陷 | P1 | M0 | READY | — |
 | ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | BLOCKED | ISS-021 |
-| ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | READY | — |
+| ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | IN_PROGRESS | — |
 | ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | IN_PROGRESS | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | BLOCKED | ISS-023 |
 | ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | BLOCKED | ISS-021、ISS-024、ISS-026、ISS-027 |
@@ -164,7 +164,7 @@
   - [ ] 读写配置不依赖 cwd；应用资源只读场景可运行
   - [ ] 旧 schema/损坏库/迁移失败/较新 schema 有明确行为，不删库重建
   - [ ] 备份包含 WAL 一致状态；迁移失败旧库可恢复；配置实际值可供后续 API 查询
-- **证据/接续**：AUD-08：FATHOM_DB 只改变 DB_PATH，其他输出和 HOME 保持原值。
+- **证据/接续**：AUD-08：FATHOM_DB 只改变 DB_PATH，其他输出和 HOME 保持原值。2026-09-13 PM 在 ISS-031 与 ISS-029 spike 合并后领取本卡，实施分支 `iss-025-runtime-config`；worker 仅负责配置/数据版本化边界，后台安装器、设置 UI 与 helper supervisor 不在本卡实现。
 
 ### ISS-021 · 同口径差分与缺失语义
 

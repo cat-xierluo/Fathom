@@ -27,11 +27,10 @@ if [ ! -x .runtime/bin/python ]; then
     exit 1
   }
   mkdir -p .runtime/bin
-  export FATHOM_PYTHON="$target"
-  cat > .runtime/bin/python <<'EOF'
-#!/bin/sh
-exec "$FATHOM_PYTHON" "$@"
-EOF
+  {
+    printf '#!/bin/bash\n'
+    printf 'exec %q "$@"\n' "$target"
+  } > .runtime/bin/python
   chmod 755 .runtime/bin/python
 fi
 

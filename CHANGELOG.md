@@ -25,9 +25,9 @@
 - 补充依赖来源/用途识别、可选 Agent 解读及目录标签的远期合同，明确证据、未知、数据发送与执行边界。
 - 新模型可按任务依赖、实施范围、反例和验证入口接手；纠正 FATHOM_DB 隔离范围和保留期说明。复审补充 Wave 1 冲突编号的历史映射与夹具实例身份确认，避免领错任务或误测生产服务。本项只变更文档，应用行为未改变。
 
-## [0.3.0-dev.1] - 2026-09-12
+### 0.3.0 开发检查点（未发布，2026-09-12）
 
-### 改进
+#### 改进
 - **更名 Fathom**：延续 Folia/Funes 的 F 系列命名。fathom（英寻）是水深测量单位，动词意为"测深、弄明白"——双关直击产品要回答的问题："I can't fathom where my disk space went"。涉及：项目目录、Python 包、launchd 标签（com.maoscripts.fathom-*，旧任务自动卸载）、Tauri identifier/productName/crate、全部文档；数据库文件平滑迁移（disk.db → fathom.db，保留首扫基线数据）
 - **UI 全面去 emoji，对齐 Folia 视觉规范**：导航/面板/按钮/日报全部改用内联 SVG 线条图标（lucide 同款 stroke 风格，currentColor 跟随语义色），Markdown 日报标题同步去 emoji
 - **文档层对齐**（同日补）：README/DESIGN 残留装饰 emoji 清理；DESIGN 版本头升至 v0.3；ARCHITECTURE API 清单补齐 v0.2.0 四个端点（browse/reports/reports/{date}/reveal）并在架构图标注桌面壳入口；ROADMAP 与 0.3 开发里程碑对齐；AGENTS 模块速查补 icons.js；清理空的 docs/ux/ 遗留目录

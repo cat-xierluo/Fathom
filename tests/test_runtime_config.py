@@ -112,6 +112,11 @@ def test_invalid_relative_path_port_and_split_db_fail_closed(tmp_path):
             "FATHOM_RUNTIME_DIR": str(tmp_path / "runtime"),
             "FATHOM_DB": str(tmp_path / "outside.db"),
         }, project_root=tmp_path, home=tmp_path)
+    with pytest.raises(config.ConfigurationError, match="必须位于"):
+        config.RuntimeConfig.from_env({
+            "FATHOM_RUNTIME_DIR": str(tmp_path / "runtime"),
+            "FATHOM_DB": str(tmp_path / "runtime"),
+        }, project_root=tmp_path, home=tmp_path)
 
 
 def test_runtime_directory_creation_never_touches_resource_tree(tmp_path):

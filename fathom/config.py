@@ -109,7 +109,7 @@ class RuntimeConfig:
         data_dir = runtime_dir / "data"
         if legacy_db_raw:
             db_path = _absolute_path(legacy_db_raw, name="FATHOM_DB")
-            if not _is_within(db_path, runtime_dir):
+            if db_path == runtime_dir or not _is_within(db_path, runtime_dir):
                 raise ConfigurationError(
                     f"FATHOM_DB 必须位于 FATHOM_RUNTIME_DIR 内：{db_path}"
                 )

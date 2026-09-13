@@ -1,33 +1,36 @@
 # Fathom 当前架构
 
-**事实基线：main `655fc67`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
+**事实基线：main `a57d7fd`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
 
 ## 入口与边界
 
 ```text
-launchd scan → main.py → cli.cmd_scan ──┐
-                                     ├─ scanner → SQLite
-HTTP POST /api/scan → 安全守卫 → daemon thread ─┘       └─ reports → Markdown → notify（尝试系统通知）
+launchd scan / CLI / HTTP POST /api/scan
+                 ↓
+       scan_coordinator → 跨进程 flock → 分阶段 scan_run_details
+                 ↓
+ scanner → SQLite snapshot → reports → Markdown → notify（尝试系统通知）→ prune
 launchd web → main.py serve → FastAPI :7952 → frontend/ 五页
                                                ↑
 Tauri loader → 探测 /api/status → 跳转本地 HTTP ─┘
 前端定期 invoke → Rust tray 标题；tray-action → 前端 → /api/scan
 ```
 
-CLI 和 API 的执行流程目前各自实现，只有 API 有进程内 threading.Lock。Tauri 只承担窗口与 tray，不启动或修复后端；关闭窗口隐藏，tray 菜单退出 UI。后台服务需另行通过开发版 `install` 安装，壳与后端生命周期分离。
+API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周期 `flock` 是跨进程 owner 真值，进程内锁只用于 API 线程状态。协调器不读取或终止外部 PID，只取消并回收自己启动的 `du`。Tauri 仍只承担窗口与 tray，不启动或修复后端；后台服务需通过开发版 `install` 安装，壳与后端生命周期分离。
 
 ## 模块与实际行为
 
 | 模块 | 实现 | 已确认局限 |
 |---|---|---|
 | config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口 | 尚无持久化设置 UI；release 模式只定义路径合同，不证明 `.app` 已自包含 |
-| db.py | sqlite3、WAL、外键、schema v1；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 当前仅有 v0→v1；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
-| scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 返回大小、退出码、耗时和 stderr 质量；完整采集或仅有明确权限拒绝且根记录有效时才替换同日快照 | 无法无歧义映射/解码时拒绝采集；数据库只持久化 denied_count/du_seconds，详细质量尚未入库 |
-| reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown，文件名按日期 | 未记录即 added/removed；忽略传入 sid 取全局最新两条；无独立报告状态 |
+| db.py | sqlite3、WAL、外键、schema v2；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 支持 v0/v1→v2；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
+| scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 只承载采集结果、退出码、耗时与质量字段；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同日快照 | 无法无歧义映射/解码时拒绝采集；数据库只持久化 denied_count/du_seconds，详细质量尚未入库 |
+| reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown；按传入 sid 查找同根前驱 | 未记录仍表达为 added/removed；dataset/阈值/质量语义尚待 ISS-021，报告状态由协调器单独记录 |
 | notify.py | 日报写完后尝试 osascript 通知；首次记录目录单列；摘要限长；低空间阈值 10 GB | 显示受系统策略控制；首扫无日报不通知；阈值未与 UI 统一；日志可能含路径 |
 | bigfiles.py | `/usr/bin/find -xdev -type f -size +... -mtime -... -print0` 后 stat | 大小为 st_size 逻辑字节；每次请求实时遍历；无超时/去重/失败呈现 |
-| api.py | 查询、扫描线程、scan_runs 状态持久化；Host/Origin/写令牌守卫；受监控根约束的 reveal；挂载静态文件 | 首扫生成报告报错；扫描锁仍限单 Web 进程；实际 Tauri WebView 尚未真机验证 |
-| cli.py | scan/report/bigfiles/status/serve/install/uninstall | scan 的首份报告缺基线会被单独捕获，与 API 成功语义不同 |
+| scan_coordinator.py | API/CLI/定时统一扫描；`flock`、owner 元数据、分阶段状态、首扫/故障/取消语义 | 生产 launchd 跨日与发行 helper 生命周期仍待对应任务实测 |
+| api.py | 查询、非 daemon 扫描线程；Host/Origin/写令牌守卫；受监控根约束的 reveal；挂载静态文件 | 实际 Tauri WebView 尚未真机验证 |
+| cli.py | scan/report/bigfiles/status/serve/install/uninstall；scan 可标记 cli/scheduled 来源 | 与 API 共用协调合同；install/uninstall 仍是开发版入口 |
 | launchd.py | 拼接 XML，安装扫描/常驻 Web 两个 plist | 路径不做 XML 转义；bootstrap 失败只打印，不能可靠表示安装失败 |
 | frontend/ | 原生 HTML/JS/CSS、ECharts、hash 五页；快照刷新保持有效选择，按页面/导航隔离响应世代并覆盖空、错误、断网和仅 added/removed 状态 | 请求/状态/页面仍在同一文件；正式 UX 原型尚未实装到生产页面 |
 | apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行 | bundle.active=false；无自包含 Python、安装/升级/卸载 UI；tray 实机待验 |
@@ -37,13 +40,14 @@ CLI 和 API 的执行流程目前各自实现，只有 API 有进程内 threadin
 
 | 表 | 字段概要 | 含义 |
 |---|---|---|
-| schema | `PRAGMA user_version=1` | v0 开发库经完整性/结构校验和一致备份后事务迁移；未来版本、损坏或不兼容结构拒绝打开 |
+| schema | `PRAGMA user_version=2` | v0/v1 开发库经完整性/结构校验和一致备份后事务迁移；未来版本、损坏或不兼容结构拒绝打开 |
 | snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录 |
 | entries | snapshot_id, path, size_kb | 复合主键，WITHOUT ROWID；父目录大小已含子目录 |
 | volume_stats | snapshot_id, total_bytes, free_bytes | 扫描时 statvfs，free 为 f_bavail × f_frsize |
-| scan_runs | id, started_at, finished_at, status, message | API 写 running/done/failed；done 的 message 为 JSON 结果，failed 为错误；CLI/定时尚不写此表 |
+| scan_runs | id, started_at, finished_at, status, message | API/CLI/定时统一写 running/done/failed/interrupted；done message 保留兼容结果，failed/interrupted 为错误或取消原因 |
+| scan_run_details | run_id, source, phase, owner_*, heartbeat_at, snapshot_id, report/notification 状态, pruned_count, warnings | schema v2 的一对一阶段详情；来源为 api/cli/scheduled，快照成功与报告/通知结果分开 |
 
-状态恢复仍依赖单 Web 进程约定：锁空闲且记录超过 3600 秒时，在状态读取中收尾为 failed；新扫描持锁时收尾遗留记录。这不能证明其他进程 owner 已退出，多实例共享库不受支持。线程启动失败会释放锁并记录 failed；扫描阶段失败先回滚未提交事务，再独立写入结束态。统一跨进程运行协议归 ISS-020。
+协调器取得 `flock` 后才把遗留 running 记录收尾为 failed；无法取得锁时返回 busy 并只展示非权威 owner 元数据，不以 PID 或超时推断 owner 已死。扫描、报告、通知和保留逐阶段提交，首扫保存有效快照且 `report_status=not_available` 时整体成功；报告/通知失败作为警告，不抹掉快照。API shutdown、CLI SIGTERM/KeyboardInterrupt 与超时只回收本次会话拥有的 `du`，最后释放锁。
 
 同根同一天的新扫描在判定采集有效后，才进入“删除旧快照并写入新条目和卷统计”的事务。致命非零退出、信号退出、空输出、缺失根记录、负数和混合/非权限错误都在写入前失败；仅有明确权限拒绝、根记录有效且数值非负时可记录为部分覆盖。事务中的 SQL 错误会整体回滚，保留原有效快照。
 
@@ -71,21 +75,22 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | GET | /api/diff?a=&b=&topn= | b 相对 a；默认全局最近两条；不足两条 409，不存在 404；未校验同根 |
 | GET | /api/trend?path=&limit= | 有该路径记录的历史点；缺失不补点；ASC LIMIT |
 | GET | /api/bigfiles?days=&min_mb=&topn= | 同步遍历，返回 files；上限 200 |
-| POST | /api/scan | 需 `X-Fathom-Token`；running 先落库；进程锁冲突 409；成功返回 200 和 run_id；线程启动失败 503 |
-| GET | /api/scan/status?history= | 持久化最新状态，保留原字段并增加 id/status；history=1..100 附 runs，默认不附历史 |
+| POST | /api/scan | 需 `X-Fathom-Token`；先取得跨进程 `flock` 再落 running；冲突 409；成功返回 run_id；线程启动失败 503 并释放租约 |
+| GET | /api/scan/status?history= | 返回最新统一状态、source/phase/snapshot/report/notification/pruned/warnings；history=1..100 附 API/CLI/定时运行 |
 | GET | /api/browse?path= | 最新快照子目录、前一快照差值、趋势、面包屑；首次子目录错误地给全量 delta |
 | GET | /api/reports | reports/*.md 文件列表 |
 | GET | /api/reports/{date} | 仅接受完整 `YYYY-MM-DD` 片段，返回对应 Markdown 原文；不存在时 404 |
 | POST | /api/reveal | 需 `X-Fathom-Token`；只接受对象 JSON；规范化并解析路径后校验位于受监控根内、实际存在，再调用 `/usr/bin/open -R`；拒绝利用 `..` 越界、符号链接逃逸和相似前缀根 |
 
-所有请求只接受回环 Host；带 Origin 的请求只接受同源或允许的 Tauri loader，非安全方法还必须通过进程内写令牌。应用页面使用严格 CSP；`/docs`、`/redoc` 和 `/openapi.json` 仅在精确路径使用文档所需策略。令牌生命周期、多进程协调和桌面发行身份仍需后续任务收口。
+所有请求只接受回环 Host；带 Origin 的请求只接受同源或允许的 Tauri loader，非安全方法还必须通过进程内写令牌。应用页面使用严格 CSP；`/docs`、`/redoc` 和 `/openapi.json` 仅在精确路径使用文档所需策略。令牌生命周期和桌面发行身份仍需后续任务收口。
 
 API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。接口实际合同以后端代码为准，版本同源化归 ISS-037。
 
 ## 当前验证覆盖
 
-当前 main 固定候选的本地验收包含全量 **168 pytest** 与 **22 项 Chromium 前端检查**；此前同一轮固定候选另有 **39 项 Chromium/API 安全检查**。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、迁移/WAL 一致备份、事务回滚、scan_runs、Host/Origin/写令牌、reveal 越界/符号链接逃逸、前端重扫/乱序/错误状态、路径与报告名转义、CSP 及浏览器资源清理。GitHub Actions 当前因账户额度在 job 步骤前拒绝，本轮云端结果记为 `NOT_RUN`；恢复额度后重新启用。隔离真实 API 已执行 du、次日报告、通知 stub、运行历史及实际服务重启；首扫仍复现“有快照但报告不足而失败”，归 ISS-020。实际 Tauri WebView、系统通知、tray、自包含 helper、x86_64 当前候选和签名发行仍为 `NOT_VERIFIED`。
+当前 main 的精确门禁为 **179 pytest**；ISS-020 固定候选另通过 34 项专项及 39 项 Chromium/API 检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
 
+实际 Tauri WebView、系统通知、tray、生产 launchd 跨日、自包含发行包、原生 x86_64 冻结、Developer ID 签名、公证/stapling 和真实更新仍为 `NOT_VERIFIED`。
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。
 
 不把现有单元测试、其他分支的提交说明或 cargo build 作为安装、系统通知、权限、tray 与定时任务已经可靠的证据。

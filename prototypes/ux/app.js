@@ -4,14 +4,15 @@
  * 所有数据均为明显合成（演示用户 / 演示目录），用于评审五页导航、
  * 总览→变化→目录详情旅程、首次启动/失败恢复流程与各状态呈现。
  * 视觉与交互合同：docs/DESIGN.md。图标沿用 frontend/icons.js 的线条 SVG 规范。
+ * 第三轮视觉签名（合同「原型第三轮」）：深度环品牌标记（测深/等深线），
+ * 摆位稀疏（侧栏字标/扫描指示/首扫阶段/详情定位），扫描中指示 DOM 不随
+ * tick 重建以保持旋转连续；平滑滚动与品牌动效均服从 prefers-reduced-motion。
  */
 "use strict";
 (function () {
   /* ===== 图标（与 frontend/icons.js 同规范：24 viewBox、描边 2、round） ===== */
 
   var ICON_PATHS = {
-    anchor:
-      '<circle cx="12" cy="5" r="3"/><line x1="12" x2="12" y1="22" y2="8"/><path d="M5 12H2a10 10 0 0 0 20 0h-3"/>',
     gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
     activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
     pie: '<path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>',
@@ -57,6 +58,38 @@
   styleEl.textContent = iconStyle;
   document.head.appendChild(styleEl);
 
+  /* ===== 深度环（第三轮品牌标记：测深/等深线签名的核心图形） =====
+   * 开放圆环（海沟蓝）+ 中心探针 + 跨刻度缺口的短刻度（矿物青）。
+   * 摆位稀疏：侧栏字标 / 顶栏扫描中 / 首扫阶段 / 目录详情定位（均为线条 SVG） */
+  var DEPTH_RING_PATHS =
+    '<path class="dr-ring" d="M20 9.1A8.5 8.5 0 1 1 14.9 4"/>' +
+    '<line class="dr-probe" x1="12" y1="7.5" x2="12" y2="16.5"/>' +
+    '<line class="dr-tick" x1="17.2" y1="6.8" x2="19.3" y2="4.7"/>';
+  function depthRingSvg(size) {
+    var s = size || 20;
+    return (
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="' + s + '" height="' + s +
+      '" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      DEPTH_RING_PATHS +
+      "</svg>"
+    );
+  }
+
+  /* 总览主结论背景：低对比同心等深线，自右缘发出、向内渐弱。
+   * 装饰性（aria-hidden），仅用于非错误结论 */
+  var CONTOUR_BG =
+    '<div class="brand-contour" data-brand="contour" aria-hidden="true">' +
+    '<svg viewBox="0 0 340 160" preserveAspectRatio="xMaxYMid slice" focusable="false">' +
+    [70, 105, 140, 175, 210, 245]
+      .map(function (r, i) {
+        return (
+          '<circle cx="340" cy="80" r="' + r + '" fill="none" stroke="#345d7f" stroke-opacity="' +
+          (0.1 - i * 0.012).toFixed(3) + '" stroke-width="1"/>'
+        );
+      })
+      .join("") +
+    "</svg></div>";
+
   /* ===== 工具 ===== */
 
   function esc(s) {
@@ -66,6 +99,13 @@
   }
   function $(sel, root) { return (root || document).querySelector(sel); }
   function $$(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+  function prefersReducedMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+  /* 平滑滚动服从减少动态设置：降级为即时定位，信息不缺失 */
+  function reveal(el) {
+    if (el) el.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
+  }
 
   var G = function (x) { return Math.round(x * 1048576); };  /* GiB → KiB */
   var M = function (x) { return Math.round(x * 1024); };     /* MiB → KiB */
@@ -306,7 +346,21 @@
     else if (state.scenario === "first-launch") { text = "尚未扫描"; }
     else { text = "上次扫描 9月12日 12:03 · 成功"; }
     chip.dataset.scanState = st;
-    chip.innerHTML = '<span class="chip-dot"></span>' + esc(text);
+    /* 指示器/文字分离：扫描中的 250ms tick 只更新文字与状态属性，
+     * 指示节点（状态点↔深度环）仅在状态切换时替换，旋转动画不被重建重置 */
+    var ind = chip.querySelector(".chip-indicator");
+    if (!ind) {
+      chip.innerHTML = '<span class="chip-indicator"></span><span class="chip-text"></span>';
+      ind = chip.querySelector(".chip-indicator");
+    }
+    var wantRing = st === "running";
+    var hasRing = !!ind.querySelector(".chip-ring");
+    if (wantRing && !hasRing) {
+      ind.innerHTML = '<span class="chip-ring" data-brand="ring" aria-hidden="true">' + depthRingSvg(12) + "</span>";
+    } else if (!wantRing && (hasRing || !ind.firstChild)) {
+      ind.innerHTML = '<span class="chip-dot"></span>';
+    }
+    chip.querySelector(".chip-text").textContent = text;
     $("#btn-scan").disabled = scan.running;
   }
 
@@ -382,6 +436,7 @@
     } else if (s === "single") {
       conc.className = "conclusion";
       conc.innerHTML =
+        CONTOUR_BG +
         '<div class="conclusion-main">' +
         '<p class="conclusion-kicker">首次基线 · 9月12日 12:03</p>' +
         '<h2 class="conclusion-headline headline-ok">基线已建立</h2>' +
@@ -394,6 +449,7 @@
       var partial2 = s === "partial";
       conc.className = "conclusion";
       conc.innerHTML =
+        CONTOUR_BG +
         '<div class="conclusion-main">' +
         '<p class="conclusion-kicker">最近变化 · 9月11日 09:00 → 9月12日 12:03 · 已测量同口径</p>' +
         '<h2 class="conclusion-headline headline-danger">最近增长 ' + ROOT_NET.text + "</h2>" +
@@ -557,7 +613,7 @@
     return order.map(function (name) {
       var idx = order.indexOf(name), cur = order.indexOf(current);
       if (cur > idx) return '<li class="done">' + icon("check", 13) + " " + name + "</li>";
-      if (cur === idx) return '<li class="active"><span class="spinner"></span> ' + name + "</li>";
+      if (cur === idx) return '<li class="active"><span class="scan-ring" data-brand="ring" aria-hidden="true">' + depthRingSvg(14) + "</span> " + name + "</li>";
       return "<li>" + icon("clock", 13) + " " + name + "</li>";
     }).join("");
   }
@@ -1118,7 +1174,7 @@
 
     box.dataset.path = path;
     box.innerHTML =
-      '<div class="detail-head"><h2 class="detail-title" id="detail-title" tabindex="-1">' + esc(lastSeg(path)) + "</h2>" +
+      '<div class="detail-head"><h2 class="detail-title" id="detail-title" tabindex="-1"><span class="detail-locator" data-brand="ring" aria-hidden="true">' + depthRingSvg(16) + "</span>" + esc(lastSeg(path)) + "</h2>" +
       '<button class="btn btn-ghost" data-action="close-detail" aria-label="关闭目录详情">' + icon("x", 16) + " 关闭</button></div>" +
       '<p class="detail-path"><code title="' + esc(path) + '">' + esc(midTrunc(path, 52)) + "</code>" +
       '<button class="btn-mini" data-action="copy" data-path="' + esc(path) + '" aria-label="复制完整路径" title="复制完整路径">' + icon("copy", 14) + "</button></p>" +
@@ -1225,7 +1281,11 @@
       [{ name: "读取目录结构", ms: 900 }, { name: "统计目录大小", ms: 1200 }, { name: "写入快照", ms: 600 }],
       function () {
         var ul = $("#onboard .scan-phase-list");
-        if (ul) ul.innerHTML = phaseListHtml(state.scan.phase);
+        /* 阶段未变时不重建列表：250ms tick 全量重渲染会重建深度环、重置旋转 */
+        if (ul && ul.dataset.phase !== state.scan.phase) {
+          ul.dataset.phase = state.scan.phase;
+          ul.innerHTML = phaseListHtml(state.scan.phase);
+        }
         var el = $('[data-region="wizard-elapsed"]');
         if (el) el.textContent = "已耗时 " + fmtElapsed(performance.now() - state.scan.startedAt) + " · 不估算百分比，避免误导";
       },
@@ -1372,9 +1432,9 @@
   function handleAction(el) {
     var a = el.dataset.action;
     if (a === "goto") { go(el.dataset.goto); return; }
-    if (a === "goto-perm") { go("settings", true); $("#set-perm").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
-    if (a === "goto-diag") { go("settings", true); $("#set-diag").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
-    if (a === "goto-service") { go("settings", true); $("#set-service").scrollIntoView({ behavior: "smooth", block: "start" }); return; }
+    if (a === "goto-perm") { go("settings", true); reveal($("#set-perm")); return; }
+    if (a === "goto-diag") { go("settings", true); reveal($("#set-diag")); return; }
+    if (a === "goto-service") { go("settings", true); reveal($("#set-service")); return; }
     if (a === "close-detail") { closeDetail(); return; }
     if (a === "copy") {
       var p = el.dataset.path;
@@ -1474,5 +1534,7 @@
     var size = parseInt(el.dataset.iconSize || "18", 10);
     el.innerHTML = icon(el.dataset.icon, size);
   });
+  var brandMark = $(".brand-mark");
+  if (brandMark) brandMark.innerHTML = depthRingSvg(20);
   routeFromHash();
 })();

@@ -5,6 +5,12 @@
  * 表格为工作主体（统一行高/对齐/hover-focus-选中）、精简网格与坐标的走势图、
  * 分隔线与留白替代重复卡片外框；浅色桌面工具应用，无装饰渐变。
  *
+ * 第三轮（视觉签名，合同见 docs/DESIGN.md「原型第三轮」）：在第二轮令牌上
+ * 增加低饱和「海沟蓝—矿物青」品牌色，仅用于主动作/当前选择/深度环；
+ * 等深线与短深度刻度只出现在侧栏品牌区、总览主结论背景与选中态的少量
+ * 位置；品牌动效 160–240ms 且完整支持 prefers-reduced-motion；
+ * 语义色（成功/警告/错误/增减）不与品牌色混用。
+ *
  * 断点：导航 ≥1200px 展开文字；目录详情 ≥1440px 为右侧栏（表格保有完整
  * 关键列宽度），<1440px（含 1220）为不透明全宽覆盖层。
  */
@@ -19,16 +25,21 @@
   --text: #1a2233;
   --text-2: #45474f;
   --muted: #6b7486;
-  --primary: #2f6fed;
-  --primary-weak: #e9f0fd;
+  /* 品牌强调（第三轮，低饱和）：海沟蓝承担主动作/当前选择/深度环主体，
+   * 矿物青只作探针与刻度点缀；不进入语义色 */
+  --trench: #345d7f;
+  --trench-weak: #e8edf2;
+  --mineral: #3e7e7c;
+  --primary: #345d7f;
+  --primary-weak: #e8edf2;
   --danger: #d64545;
   --ok: #2e9e5b;
   /* 原型补充语义色：警告（部分覆盖）、焦点、选中 */
   --warn-text: #8a5d00;
   --warn-bg: #fdf6e3;
   --warn-border: #ecd9a0;
-  --focus: #2f6fed;
-  --sel: #e9f0fd;
+  --focus: #345d7f;
+  --sel: #e8edf2;
   /* 正负变化：色相弱化、配合符号与字重，避免整列“报警感” */
   --grow: #b8433c;
   --shrink: #217a45;
@@ -149,12 +160,21 @@ body {
   letter-spacing: 0.01em;
   padding: var(--sp1) var(--sp2) var(--sp4);
 }
-.brand .icon { color: var(--text-2); }
+/* 字标深度环：开放圆环（海沟蓝）+ 中心探针与刻度缺口（矿物青）。
+ * 与 frontend/icons.js 同一线条 SVG 语言（24 viewBox、stroke 2、圆端点） */
+.brand-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: none;
+  width: 20px; height: 20px;
+  color: var(--trench);
+}
+.brand-mark .dr-probe, .brand-mark .dr-tick { stroke: var(--mineral); }
 .brand-name { display: none; }
 .nav-spacer { flex: 1; }
 .nav-foot { color: var(--muted); font-size: 11px; padding-top: var(--sp2); white-space: nowrap; }
 
 .nav-item {
+  position: relative;
   width: 100%;
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   padding: var(--sp2) 0;
@@ -164,11 +184,23 @@ body {
   font-size: 11px;
   transition: background 0.1s ease-out;
 }
+/* 当前页短深度刻度：矿物青，选中时从 0 生长到 16px（品牌动效 200ms） */
+.nav-item::before {
+  content: "";
+  position: absolute;
+  left: 5px; top: 50%;
+  transform: translateY(-50%);
+  width: 3px; height: 0;
+  border-radius: 2px;
+  background: var(--mineral);
+  transition: height 0.2s ease-out;
+}
+.nav-item[aria-current="page"]::before { height: 16px; }
 .nav-item .icon { color: var(--muted); }
 .nav-item:hover { background: rgba(16, 24, 40, 0.05); color: var(--text); }
 .nav-item:hover .icon { color: var(--text-2); }
 .nav-item[aria-current="page"] {
-  background: rgba(47, 111, 237, 0.12);
+  background: rgba(52, 93, 127, 0.10);
   color: var(--primary);
   font-weight: 600;
 }
@@ -214,19 +246,32 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   max-width: 46vw;
 }
-.status-chip[data-scan-state="running"] { color: var(--primary); border-color: rgba(47, 111, 237, 0.45); }
+.status-chip[data-scan-state="running"] { color: var(--primary); border-color: rgba(52, 93, 127, 0.4); }
 .status-chip[data-scan-state="failed"]  { color: var(--danger);  border-color: rgba(214, 69, 69, 0.4); }
 .status-chip[data-scan-state="offline"] { color: var(--danger);  border-color: rgba(214, 69, 69, 0.4); }
 .status-chip[data-scan-state="partial"] { color: var(--warn-text); border-color: var(--warn-border); background: var(--warn-bg); }
+/* 指示器/文字分离：扫描中每 250ms 只更新文字，指示节点不被重建（旋转不重置） */
+.chip-indicator { display: inline-flex; align-items: center; flex: none; }
 .chip-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--muted); flex: none;
 }
-.status-chip[data-scan-state="running"] .chip-dot { background: var(--primary); animation: pulse 1.1s ease-in-out infinite; }
 .status-chip[data-scan-state="failed"] .chip-dot,
 .status-chip[data-scan-state="offline"] .chip-dot { background: var(--danger); }
 .status-chip[data-scan-state="partial"] .chip-dot { background: var(--warn-text); }
-@keyframes pulse { 50% { opacity: 0.35; } }
+/* 扫描中：状态点让位给旋转深度环（功能性加载指示 0.9s；状态语义由文字承载） */
+.chip-ring {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 12px; height: 12px; flex: none;
+  color: var(--trench);
+  animation: ring-spin 0.9s linear infinite;
+}
+.chip-ring .dr-probe, .chip-ring .dr-tick { stroke: var(--mineral); }
+.chip-text {
+  min-width: 0;
+  overflow: hidden; text-overflow: ellipsis;
+}
+@keyframes ring-spin { to { transform: rotate(360deg); } }
 
 /* ===== 工作台：白色内容面板 + 目录详情 ===== */
 
@@ -301,6 +346,20 @@ body {
 .conclusion-actions { display: flex; gap: var(--sp2); flex-wrap: wrap; align-items: center; }
 .conclusion .headline-danger { color: var(--grow); }
 .conclusion .headline-ok { color: var(--shrink); }
+/* 主结论背景等深线：低对比同心圆自右缘发出、向内渐弱；绝对定位不参与布局、
+ * pointer-events 关闭、文字层级在其上；显现 200ms（reduced-motion 下关闭）。
+ * 仅非错误结论使用（错误态保持语义色纯净，见 app.js） */
+.conclusion { position: relative; }
+.conclusion > .conclusion-main,
+.conclusion > .conclusion-actions { position: relative; z-index: 1; }
+.brand-contour {
+  position: absolute; inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  animation: contour-in 0.2s ease-out;
+}
+.brand-contour svg { width: 100%; height: 100%; display: block; }
+@keyframes contour-in { from { opacity: 0; } }
 
 .ov-rest { min-width: 0; }
 .ov-rest[hidden] { display: none; }
@@ -374,8 +433,8 @@ body {
   background: var(--primary); border-color: var(--primary); color: #fff;
   font-weight: 590;
 }
-.btn-primary:hover { background: #3a79f0; border-color: #3a79f0; }
-.btn-primary:active { background: #2862d6; }
+.btn-primary:hover { background: #3e6a8f; border-color: #3e6a8f; }
+.btn-primary:active { background: #2c506e; }
 .btn-danger { border-color: var(--border); color: var(--danger); }
 .btn-danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
 .btn-ghost { border-color: transparent; background: none; color: var(--text-2); }
@@ -424,8 +483,9 @@ body {
 .tbl .num, .tbl td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tbl tbody tr:last-child td { border-bottom: none; }
 
-/* 行可聚焦：键盘上下移动，Enter 打开详情；悬停/焦点/选中三态一致 */
-tr.krow { cursor: pointer; }
+/* 行可聚焦：键盘上下移动，Enter 打开详情；悬停/焦点/选中三态一致。
+ * 选中为品牌弱底 + 200ms 背景过渡（深度感），表内不出现任何品牌图形元素 */
+tr.krow { cursor: pointer; transition: background-color 0.2s ease-out; }
 tr.krow:hover { background: #f6f7fa; }
 tr.krow:focus { outline: none; box-shadow: inset 0 0 0 2px var(--focus); background: #f6f7fa; }
 tr.krow.selected { background: var(--sel); }
@@ -595,6 +655,15 @@ th[aria-sort="ascending"] .th-sort::after { content: " ↑"; }
   margin-bottom: var(--sp1);
 }
 .detail-title { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; word-break: break-all; }
+/* 当前目录定位：详情标题前的静态深度环（装饰，aria-hidden） */
+.detail-locator {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px;
+  margin-right: 6px;
+  vertical-align: -2px;
+  color: var(--trench);
+}
+.detail-locator .dr-probe, .detail-locator .dr-tick { stroke: var(--mineral); }
 .detail-path {
   display: flex; align-items: center; gap: var(--sp1);
   margin: 0 0 var(--sp4);
@@ -721,13 +790,15 @@ th[aria-sort="ascending"] .th-sort::after { content: " ↑"; }
 .scan-phase-list li { display: flex; align-items: center; gap: var(--sp2); padding: 3px 0; color: var(--muted); }
 .scan-phase-list li.done { color: var(--shrink); }
 .scan-phase-list li.active { color: var(--primary); font-weight: 600; }
-.spinner {
-  width: 13px; height: 13px; flex: none;
-  border: 2px solid var(--hairline); border-top-color: var(--primary);
-  border-radius: 50%;
-  animation: spin 0.9s linear infinite;
+/* 首扫阶段指示：深度环旋转（功能性加载指示，0.9s 与原 spinner 同速；
+ * 静止状态下仍有文字状态，reduced-motion 下停转） */
+.scan-ring {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; flex: none;
+  color: var(--trench);
+  animation: ring-spin 0.9s linear infinite;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
+.scan-ring .dr-probe, .scan-ring .dr-tick { stroke: var(--mineral); }
 .scan-elapsed { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); }
 
 /* ===== 大文件状态行 ===== */
@@ -788,3 +859,14 @@ th[aria-sort="ascending"] .th-sort::after { content: " ↑"; }
   animation: toast-in 0.15s ease-out;
 }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* ===== 减少动态（prefers-reduced-motion）：品牌动画/过渡与功能性旋转全部关闭。
+ * 静止状态下信息完整：扫描与阶段状态由文字和颜色承载，等深线静止呈现 ===== */
+@media (prefers-reduced-motion: reduce) {
+  .brand-contour, .chip-ring, .scan-ring, .chip-dot, .toast,
+  tr.krow, .nav-item, .row-actions, .btn, .ctl select, .ctl-input {
+    animation: none;
+    transition: none;
+  }
+  .nav-item::before { transition: none; }
+}

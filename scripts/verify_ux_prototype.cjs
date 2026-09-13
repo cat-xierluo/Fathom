@@ -10,6 +10,10 @@
  *   末位 x 轴标签不越出 viewBox。
  * - 状态合同：正常 / 单快照 / 首次启动（结论区不得残留其他场景内容）/ 部分权限 /
  *   失败保留旧数据 / 服务断开 / 未记录 ≠ 新增 / Agent 未启用不得假装已识别。
+ * - docs/DESIGN.md「原型第三轮：Fathom 视觉签名」：深度环可访问性与结构、
+ *   等深线低对比且约束在结论区、语义色不与品牌色混用、品牌动效 160–240ms、
+ *   摆位稀疏且不入数据表格、扫描指示为深度环且结束回落、装饰元素 aria-hidden、
+ *   prefers-reduced-motion 关闭品牌动画/过渡、980 紧凑侧栏不溢出。
  *
  * 运行：node scripts/verify_ux_prototype.cjs [--evidence-dir <dir>]
  *   --evidence-dir  截图/日志/结果 JSON 的输出目录（默认为系统临时目录下按 uid
@@ -411,6 +415,9 @@ async function main() {
     await page.click('[data-action="wizard-scan"]');            /* 步骤 3：首扫 */
     await page.waitForFunction(() => document.querySelector("#onboard").dataset.step === "3", null, { timeout: 3000 });
     check("首启·首扫阶段可见且不估算百分比", ((await page.textContent('[data-region="wizard-elapsed"]'))).includes("不估算百分比"));
+    check("首启·首扫阶段以深度环指示（装饰性隐藏）",
+      (await page.$("#onboard .scan-ring")) !== null &&
+      (await page.$eval("#onboard .scan-ring", (el) => el.getAttribute("aria-hidden"))) === "true");
     await page.waitForFunction(() => !!document.querySelector('#onboard .scan-phase-list li.done'), null, { timeout: 5000 });
     check("首启·阶段推进（读取目录结构完成）", true);
     await page.waitForFunction(() => document.body.dataset.scenario === "single" && location.hash === "#/browse", null, { timeout: 12000 });
@@ -536,6 +543,157 @@ async function main() {
     await shot("11-1440-changes-detail-rail");
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => document.body.dataset.detail === "closed", null, { timeout: 5000 });
+
+    /* ===== C16.7 品牌签名（第三轮：深度环 / 等深线 / 减少动态） ===== */
+    await page.setViewportSize({ width: 1220, height: 820 });
+    await gotoHash("overview");
+    await page.waitForSelector('[data-region="conclusion"] .conclusion-headline', { timeout: 5000 });
+
+    const brandMarkInfo = await page.$eval(".brand-mark", (el) => ({
+      role: el.getAttribute("role"),
+      label: el.getAttribute("aria-label"),
+      hasRing: !!el.querySelector("svg .dr-ring"),
+      visible: el.offsetParent !== null,
+    }));
+    check("品牌·侧栏字标为深度环且带可访问名称（非装饰标识）",
+      brandMarkInfo.role === "img" && brandMarkInfo.label === "Fathom" && brandMarkInfo.hasRing && brandMarkInfo.visible,
+      JSON.stringify(brandMarkInfo));
+
+    const ringGeom = await page.$eval(".brand-mark svg", (svg) => {
+      const ring = svg.querySelector(".dr-ring");
+      const d = ring ? ring.getAttribute("d") : "";
+      return {
+        openArc: !!ring && d.indexOf("A") >= 0 && d.indexOf("Z") < 0,
+        probe: !!svg.querySelector(".dr-probe"),
+        tick: !!svg.querySelector(".dr-tick"),
+      };
+    });
+    check("品牌·深度环结构（开放圆环+中心探针+刻度缺口，无闭合）",
+      ringGeom.openArc && ringGeom.probe && ringGeom.tick, JSON.stringify(ringGeom));
+
+    const contourInfo = await page.$eval(".brand-contour", (el) => {
+      const circles = Array.from(el.querySelectorAll("circle"));
+      const rect = el.getBoundingClientRect();
+      const parent = el.parentElement.getBoundingClientRect();
+      return {
+        maxOpacity: circles.length ? Math.max.apply(null, circles.map((c) => parseFloat(c.getAttribute("stroke-opacity") || "1"))) : 0,
+        circles: circles.length,
+        contained: rect.right <= parent.right + 0.5 && rect.left >= parent.left - 0.5 && rect.bottom <= parent.bottom + 0.5 && rect.top >= parent.top - 0.5,
+        pointerEvents: getComputedStyle(el).pointerEvents,
+      };
+    });
+    check("品牌·结论等深线低对比且约束在结论区内（不拦截交互）",
+      contourInfo.maxOpacity <= 0.12 && contourInfo.circles >= 3 && contourInfo.contained && contourInfo.pointerEvents === "none",
+      JSON.stringify(contourInfo));
+
+    const headlineColor = await page.$eval(".conclusion-headline", (el) => getComputedStyle(el).color);
+    check("品牌·结论文字颜色不受等深线影响（语义色保留）", headlineColor === "rgb(184, 67, 60)", headlineColor);
+
+    const scanBtnBg = await page.$eval("#btn-scan", (el) => getComputedStyle(el).backgroundColor);
+    check("品牌·主动作使用低饱和海沟蓝", scanBtnBg === "rgb(52, 93, 127)", scanBtnBg);
+
+    const okChipColor = await page.$eval(".quality-chip.ok", (el) => getComputedStyle(el).color);
+    check("品牌·语义色不与品牌色混用（覆盖完整仍为语义绿）", okChipColor === "rgb(33, 122, 69)", okChipColor);
+
+    const brandDurations = await page.evaluate(() => {
+      const toSec = (v) => (parseFloat(v) || 0) * (String(v).indexOf("ms") >= 0 ? 0.001 : 1);
+      return {
+        contourAnim: toSec(getComputedStyle(document.querySelector(".brand-contour")).animationDuration),
+        krowTransition: toSec(getComputedStyle(document.querySelector("tr.krow")).transitionDuration),
+        navTick: toSec(getComputedStyle(document.querySelector('.nav-item[aria-current="page"]'), "::before").transitionDuration),
+      };
+    });
+    check("品牌·品牌动效在 160–240ms 区间（等深线显现/行选中/刻度生长）",
+      brandDurations.contourAnim >= 0.16 && brandDurations.contourAnim <= 0.24 &&
+      brandDurations.krowTransition >= 0.16 && brandDurations.krowTransition <= 0.24 &&
+      brandDurations.navTick >= 0.16 && brandDurations.navTick <= 0.24,
+      JSON.stringify(brandDurations));
+
+    const placement = await page.evaluate(() => {
+      const ALLOW = ".sidenav, .conclusion, #status-chip, .scan-progress, .detail-head";
+      const els = Array.from(document.querySelectorAll("[data-brand]"));
+      return {
+        total: els.length,
+        outside: els.filter((el) => !el.closest(ALLOW)).map((el) => el.className).join(","),
+        inTable: !!document.querySelector("table [data-brand]"),
+      };
+    });
+    check("品牌·摆位稀疏且只在允许区域（侧栏/结论/状态/扫描/详情，表格内无）",
+      placement.total >= 2 && placement.total <= 6 && placement.outside === "" && !placement.inTable,
+      JSON.stringify(placement));
+
+    /* 扫描中：状态点让位给旋转深度环；结束后回落 */
+    await page.click("#btn-scan");
+    await page.waitForFunction(() => document.querySelector("#status-chip").dataset.scanState === "running", null, { timeout: 4000 });
+    const chipRingInfo = await page.$eval("#status-chip .chip-ring", (el) => ({
+      hidden: el.getAttribute("aria-hidden"),
+      anim: getComputedStyle(el).animationName,
+      dur: getComputedStyle(el).animationDuration,
+    }));
+    check("品牌·扫描中以深度环指示（旋转、装饰性隐藏）",
+      chipRingInfo.hidden === "true" && chipRingInfo.anim === "ring-spin" && chipRingInfo.dur === "0.9s",
+      JSON.stringify(chipRingInfo));
+    await page.waitForFunction(() => document.querySelector("#status-chip").dataset.scanState === "idle", null, { timeout: 8000 });
+    check("品牌·扫描结束深度环退回状态点",
+      !(await page.$("#status-chip .chip-ring")) && !!(await page.$("#status-chip .chip-dot")), "");
+
+    /* 详情定位环 + 装饰性 aria-hidden 全量核对（含数据表格零品牌元素） */
+    await gotoHash("changes");
+    await page.click('#page-changes tr[data-path="' + BUILD_PATH + '"]');
+    await page.waitForFunction(() => document.body.dataset.detail === "open", null, { timeout: 5000 });
+    const ariaInfo = await page.evaluate(() => {
+      const mark = document.querySelector(".brand-mark");
+      const els = Array.from(document.querySelectorAll("[data-brand]"));
+      return {
+        decorativeHidden: els.every((el) => el === mark || el.getAttribute("aria-hidden") === "true"),
+        locator: !!document.querySelector(".detail-head .detail-locator"),
+        tablesClean: !document.querySelector("table [data-brand], table .brand-contour, table .brand-mark"),
+      };
+    });
+    check("品牌·装饰性深度环/等深线 aria-hidden 正确，数据表格无品牌元素",
+      ariaInfo.decorativeHidden && ariaInfo.locator && ariaInfo.tablesClean, JSON.stringify(ariaInfo));
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => document.body.dataset.detail === "closed", null, { timeout: 5000 });
+
+    /* reduced-motion：品牌动画/过渡关闭（emulateMedia 下直接读计算样式；
+     * 功能性旋转用合成元素探针验证：reduced-motion 必须停住连续运动） */
+    await gotoHash("overview");
+    await page.waitForSelector('[data-region="conclusion"] .conclusion-headline', { timeout: 5000 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const reducedInfo = await page.evaluate(() => {
+      const toSec = (v) => (parseFloat(v) || 0) * (String(v).indexOf("ms") >= 0 ? 0.001 : 1);
+      const probe1 = document.createElement("span");
+      probe1.className = "chip-ring";
+      const probe2 = document.createElement("span");
+      probe2.className = "scan-ring";
+      document.body.appendChild(probe1);
+      document.body.appendChild(probe2);
+      const ringsStopped =
+        getComputedStyle(probe1).animationName === "none" && getComputedStyle(probe2).animationName === "none";
+      probe1.remove();
+      probe2.remove();
+      return {
+        contourAnim: getComputedStyle(document.querySelector(".brand-contour")).animationName,
+        krowTransition: toSec(getComputedStyle(document.querySelector("tr.krow")).transitionDuration),
+        navTick: toSec(getComputedStyle(document.querySelector('.nav-item[aria-current="page"]'), "::before").transitionDuration),
+        ringsStopped,
+      };
+    });
+    check("品牌·reduced-motion 下品牌动画/过渡全部关闭（含功能性旋转停转）",
+      reducedInfo.contourAnim === "none" && reducedInfo.krowTransition === 0 && reducedInfo.navTick === 0 && reducedInfo.ringsStopped,
+      JSON.stringify(reducedInfo));
+    await page.emulateMedia({ reducedMotion: null });
+
+    /* 980 紧凑侧栏：品牌字标不撑出横向滚动 */
+    await page.setViewportSize({ width: 980, height: 640 });
+    await gotoHash("overview");
+    const sidenavFit = await page.evaluate(() => {
+      const n = document.querySelector(".sidenav");
+      return { sw: n.scrollWidth, cw: n.clientWidth };
+    });
+    check("品牌·980 紧凑侧栏无横向滚动（字标不越界）", sidenavFit.sw <= sidenavFit.cw + 1, JSON.stringify(sidenavFit));
+    await noOverflow("980×640 总览（品牌元素复验）");
+    await page.setViewportSize({ width: 1220, height: 820 });
 
     /* ===== C17 运行期无错误 ===== */
     check("全程无 pageerror", pageErrors.length === 0, pageErrors.join("; ").slice(0, 200));

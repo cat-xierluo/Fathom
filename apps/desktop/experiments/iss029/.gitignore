@@ -1,0 +1,7 @@
+# ISS-029 实验产物：构建目录与 task-local venv 不入库（含二进制）
+build/
+.venv-build/
+__pycache__/
+*.pyc
+
+results/

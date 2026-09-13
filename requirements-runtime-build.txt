@@ -1,0 +1,9 @@
+# ISS-029 冻结工具链 pin 提案（PROPOSAL——安装需 PM 显式批准后写入
+# .claude/agent-sessions/fathom-release-iss-029/INSTALL_AUTHORIZATION.json
+# 的 authorized_install_commands，未批准不得安装）。
+#
+# 版本依据（2026-09-13 查询 PyPI 官方元数据）：
+# - pyinstaller 6.22.3：requires_python ">=3.8,<3.16"；官方描述支持
+#   Python 3.8-3.15、macOS 10.15+；非交叉编译器（必须在目标架构原生构建），
+#   与发行方案「冻结 Python helper 必须使用目标架构原生 runner」一致。
+pyinstaller==6.22.3

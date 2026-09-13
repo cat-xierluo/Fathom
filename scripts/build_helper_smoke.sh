@@ -51,7 +51,8 @@ log() { printf '%s\n' "$*" | tee -a "$LOG_OUT" >&2; }
 record() { # record <name> <pass|fail|blocked> <detail> [assertion|preparation]
   python3 - "$1" "$2" "$3" "${4:-assertion}" >> "$CASES_JSONL" <<'PYEOF'
 import json, sys
-print(json.dumps({"name": sys.argv[1], "status": sys.argv[2],
+statuses = {"pass": "passed", "fail": "failed", "blocked": "blocked"}
+print(json.dumps({"name": sys.argv[1], "status": statuses[sys.argv[2]],
                   "detail": sys.argv[3], "kind": sys.argv[4]}, ensure_ascii=False))
 PYEOF
   case "$2" in
@@ -69,7 +70,7 @@ import json, sys
 cases = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 verdict = sys.argv[7] or ("PASS" if int(sys.argv[4]) == 0 and int(sys.argv[6]) == 0 else "FAIL")
 out = {
-    "schema": "fathom.iss029.smoke-results.v1",
+    "schema": "fathom.iss029.smoke-results.v2",
     "run_id": sys.argv[3],
     "verdict": verdict,
     "failed": int(sys.argv[4]),

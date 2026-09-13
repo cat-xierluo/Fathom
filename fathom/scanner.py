@@ -20,9 +20,10 @@
   errno 消息段（行内最后一个 ": " 之后）与权限文案的精确相等，出错
   路径文本含权限措辞不得冒充权限证据（R2 BLK-1），无法证明权限类的
   行保守计为非权限错误。
-- 采集质量的持久化边界：现有 schema 只有 denied_count/du_seconds 两列，
-  退出码、stderr 摘要等质量细节只存在于当次 DuResult，不伪造未知元数据；
-  完整质量元数据的持久化随 ISS-025 的 schema 工作补齐。
+- 采集质量的持久化（ISS-021）：schema v3 起，快照与 min_kb（入库阈值，
+  数据集口径的一部分）和 collection_status（full/partial，来自
+  classify_collection）一并落库；v3 之前的旧行两列为 NULL，不补造未知
+  元数据。退出码、stderr 摘要等更细的质量细节仍只存在于当次 DuResult。
 """
 
 from __future__ import annotations
@@ -358,13 +359,18 @@ def _volume_stat(root: Path) -> tuple[int, int]:
     return st.f_blocks * st.f_frsize, st.f_bavail * st.f_frsize
 
 
-def _drop_same_day(conn: sqlite3.Connection, day: str, root: str) -> None:
-    """删除同根路径同一天的旧快照，实现"一天一行"。"""
+def _drop_same_day(
+    conn: sqlite3.Connection, day: str, root: str, min_kb: int
+) -> None:
+    """删除同数据集（同根同阈值口径）同一天的旧快照，实现"一天一行"。
+
+    阈值口径不同的快照属于另一数据集，同日不替换（ISS-021）；更换根同理。
+    """
     ids = [
         r["id"]
         for r in conn.execute(
-            "SELECT id FROM snapshots WHERE root = ? AND created_at LIKE ?",
-            (root, f"{day}%"),
+            "SELECT id FROM snapshots WHERE root = ? AND min_kb = ? AND created_at LIKE ?",
+            (root, min_kb, f"{day}%"),
         )
     ]
     for sid in ids:
@@ -380,7 +386,9 @@ def create_snapshot(
 ) -> int:
     """执行一次完整扫描并写入快照，返回快照 id。
 
-    min_kb 可在测试中注入小值；生产使用 config.MIN_DIR_KB。
+    min_kb 可在测试中注入小值；生产使用 config.MIN_DIR_KB。快照与
+    min_kb、采集质量（full/partial）一并持久化——数据集身份是
+    (root, min_kb)，差分/保留/同日替换都以它分组（ISS-021）。
 
     采集无效（歧义/不可解码路径、缺根记录/空输出、信号终止、非权限或
     混合错误、负数大小、退出码非零但无权限证据）时抛 InvalidScanError，
@@ -393,19 +401,20 @@ def create_snapshot(
     root_str = str(root)
 
     result = run_du(root)
-    classify_collection(result, root_str)  # 无效采集在此被拒绝，事务尚未开始
+    collection_status = classify_collection(result, root_str)  # 无效采集在此被拒绝
     sizes = result.sizes
     total_kb = sizes[root_str]
     kept = [(p, s) for p, s in sizes.items() if s >= min_kb]
 
     now = dt.datetime.now()
     with conn:
-        _drop_same_day(conn, now.strftime("%Y-%m-%d"), root_str)
+        _drop_same_day(conn, now.strftime("%Y-%m-%d"), root_str, min_kb)
         cur = conn.execute(
-            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, total_kb) "
-            "VALUES (?,?,?,?,?,?)",
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, total_kb, "
+            "min_kb, collection_status) VALUES (?,?,?,?,?,?,?,?)",
             (now.isoformat(timespec="seconds"), root_str, len(sizes),
-             result.denied_count, result.elapsed_seconds, total_kb),
+             result.denied_count, result.elapsed_seconds, total_kb,
+             min_kb, collection_status),
         )
         sid = cur.lastrowid
         conn.executemany(
@@ -426,7 +435,12 @@ def prune_snapshots(
     keep_daily_days: int | None = None,
     keep_weekly_weeks: int | None = None,
 ) -> int:
-    """清理旧快照：近 N 天全保留，更早的每周保留最早一份，最多 M 周。
+    """清理旧快照：每个数据集（同根同口径）近 N 天全保留，更早的每周
+    保留最早一份，最多 M 周（weekly_cutoff 从今天向前 M 周，非 N 天加 M 周）。
+
+    周分组按数据集独立进行：两个根（或同根不同阈值口径）在同一 ISO 周的
+    历史各自保留一份，不会互相挤掉（ISS-021，AUD-05）。旧记录 min_kb 为
+    NULL，与已知阈值一样按 (root, min_kb) 分组，NULL 只与 NULL 同组。
 
     返回删除的快照数。
     """
@@ -438,19 +452,19 @@ def prune_snapshots(
     weekly_cutoff = today - dt.timedelta(weeks=keep_weekly_weeks)
 
     rows = conn.execute(
-        "SELECT id, created_at FROM snapshots ORDER BY created_at"
+        "SELECT id, created_at, root, min_kb FROM snapshots ORDER BY created_at, id"
     ).fetchall()
 
-    # 每个iso周保留最早一个快照（仅对超过每日保留期的部分）；
+    # 每个数据集的每个 ISO 周保留最早一个快照（仅对超过每日保留期的部分）；
     # 用 id 锚定而非集合标记，同时间戳的两条也能正确只留一条。
     daily_cutoff_date = dt.date.fromisoformat(daily_cutoff)
     weekly_keep_id: dict[tuple, int] = {}
     for r in rows:
         created = dt.date.fromisoformat(r["created_at"][:10])
         if daily_cutoff_date > created >= weekly_cutoff:
-            iso = created.isocalendar()[:2]  # (年, 周)
-            if iso not in weekly_keep_id:
-                weekly_keep_id[iso] = r["id"]
+            key = (r["root"], r["min_kb"], created.isocalendar()[:2])
+            if key not in weekly_keep_id:
+                weekly_keep_id[key] = r["id"]
 
     to_delete: list[int] = []
     for r in rows:
@@ -459,8 +473,10 @@ def prune_snapshots(
             continue  # 近 N 天全保留
         if created < weekly_cutoff:
             to_delete.append(r["id"])  # 超过每周保留期
-        elif r["id"] != weekly_keep_id.get(created.isocalendar()[:2]):
-            to_delete.append(r["id"])  # 每周非首个快照
+        elif r["id"] != weekly_keep_id.get(
+            (r["root"], r["min_kb"], created.isocalendar()[:2])
+        ):
+            to_delete.append(r["id"])  # 该数据集每周非首个快照
     for sid in to_delete:
         conn.execute("DELETE FROM entries WHERE snapshot_id = ?", (sid,))
         conn.execute("DELETE FROM volume_stats WHERE snapshot_id = ?", (sid,))

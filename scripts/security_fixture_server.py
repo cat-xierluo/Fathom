@@ -119,7 +119,7 @@ def main() -> int:
         try:
             for ago, table in ((1, DAY1_SIZES), (0, DAY2_SIZES)):
                 scanner.run_du = (lambda t: (lambda _r: synth_du(_r, t)))(table)
-                sid = scanner.create_snapshot(conn, min_kb=1024)
+                sid = scanner.create_snapshot(conn)
                 day = (dt.date.today() - dt.timedelta(days=ago)).isoformat()
                 conn.execute("UPDATE snapshots SET created_at=? WHERE id=?",
                              (day + "T10:00:00", sid))

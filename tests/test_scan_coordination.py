@@ -93,7 +93,7 @@ def test_v1_database_migrates_to_lifecycle_details_without_losing_history(tmp_pa
         conn.close()
     migrated = db.connect(path)
     try:
-        assert db.schema_version(migrated) == 2
+        assert db.schema_version(migrated) == db.SCHEMA_VERSION
         assert migrated.execute("SELECT COUNT(*) FROM scan_runs").fetchone()[0] == 1
         assert migrated.execute("SELECT COUNT(*) FROM scan_run_details").fetchone()[0] == 0
     finally:

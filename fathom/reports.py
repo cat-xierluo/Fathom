@@ -2,8 +2,12 @@
 
 核心问题："哪个文件夹冒出来了" —— 对比两个快照，给出：
 - Top 增长 / 缩减目录（父子折叠，避免同一条链刷屏）
-- 新增目录（基线中不存在）
-- 消失目录（当前不存在）
+- 首次记录的大目录（基线中未记录，可能是越过阈值，不代表文件系统新建）
+- 未记录的目录（本次未记录，可能是低于阈值/权限受限/已移除，不构成删除证据）
+
+差分只比较同一数据集（同根同入库阈值口径）的有效快照（ISS-021）：
+根或阈值不同的历史互不作为基线，避免错配。列表只按目录逐条呈现，
+父子累计值不可求和，也不提供净增量合计。
 """
 
 from __future__ import annotations
@@ -28,6 +32,38 @@ def load_snapshot(conn: sqlite3.Connection, sid: int) -> dict[str, int]:
         r["path"]: r["size_kb"]
         for r in conn.execute("SELECT path, size_kb FROM entries WHERE snapshot_id = ?", (sid,))
     }
+
+
+def same_dataset(row_a, row_b) -> bool:
+    """两快照是否属于同一数据集（同根同入库阈值口径）。
+
+    数据集身份 = (root, min_kb)。v3 之前的旧记录未持久化阈值，min_kb 为
+    NULL：同为 NULL 视为该根的"口径未知"数据集，彼此可比较（保持既有
+    行为）；NULL 与已知阈值不可比——不能证明同口径，拒绝混用。
+    """
+    return row_a["root"] == row_b["root"] and row_a["min_kb"] == row_b["min_kb"]
+
+
+def find_same_dataset_predecessor(
+    conn: sqlite3.Connection, sid: int
+) -> sqlite3.Row | None:
+    """用传入 sid 的数据集身份找同数据集前一快照；无则返回 None。
+
+    PR #25 已把日报基线从"全局最近两条"改为按传入 sid 查同根前驱；本函数
+    在其上收紧为同数据集（ISS-021）：根或阈值口径不同的历史不进入对比，
+    升级后首个新口径快照、新监控根的首扫都没有可比基线。
+    """
+    target = conn.execute("SELECT * FROM snapshots WHERE id=?", (sid,)).fetchone()
+    if target is None:
+        return None
+    return conn.execute(
+        "SELECT * FROM snapshots "
+        "WHERE root = ? AND min_kb IS ? "
+        "AND (created_at < ? OR (created_at = ? AND id < ?)) "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        (target["root"], target["min_kb"],
+         target["created_at"], target["created_at"], sid),
+    ).fetchone()
 
 
 def _is_ancestor(a: str, b: str) -> bool:
@@ -201,13 +237,24 @@ def render_markdown(
     new_vol: tuple[int, int] | None,
     bigfiles: list[dict] | None = None,
 ) -> str:
-    """渲染 Markdown 日报。"""
+    """渲染 Markdown 日报。
+
+    快照 ID（a=基线，b=本次）写进报头，报告对自身依据一目了然（ISS-021）。
+    跨阈值条目只说"首次记录/未记录"，不冒充文件系统事实：入库有阈值，
+    entries 缺失可能是低于阈值、权限受限或已移除，数据库无法区分。
+    """
     lines: list[str] = []
     lines.append(f"# Fathom 日报 · {new_meta['created_at'][:10]}")
     lines.append("")
     lines.append(
-        f"- 对比快照：{old_meta['created_at']} → {new_meta['created_at']}（根：`{new_meta['root']}`）"
+        f"- 对比快照（a→b）：#{old_meta['id']} {old_meta['created_at']} → "
+        f"#{new_meta['id']} {new_meta['created_at']}（根：`{new_meta['root']}`）"
     )
+    new_min_kb = new_meta["min_kb"] if "min_kb" in new_meta.keys() else None
+    if new_min_kb is not None:
+        lines.append(
+            f"- 记录口径：仅入库 ≥{new_min_kb} KiB 的目录；未记录不等于不存在"
+        )
     if old_vol and new_vol:
         free_delta = new_vol[1] - old_vol[1]
         lines.append(
@@ -215,12 +262,13 @@ def render_markdown(
         )
     if new_meta["denied_count"]:
         lines.append(
-            f"- 注意：有 {new_meta['denied_count']} 个目录因权限无法统计（如需覆盖 ~/Library 受保护区域，"
-            f"为运行终端授予「完全磁盘访问权限」）"
+            f"- 注意：本次采集为部分覆盖，有 {new_meta['denied_count']} 个目录因权限无法统计"
+            "（如需覆盖 ~/Library 受保护区域，为运行终端授予「完全磁盘访问权限」），"
+            "这些目录及其子目录本次未记录"
         )
     lines.append("")
 
-    def section(title: str, items: list[DirChange]) -> None:
+    def section(title: str, items: list[DirChange], note: str | None = None) -> None:
         lines.append(f"## {title}")
         lines.append("")
         if not items:
@@ -234,11 +282,22 @@ def render_markdown(
                 f"| `{c.path}` | {human_kb(c.delta_kb)} | {human_kb(c.old_kb)} | {human_kb(c.new_kb)} |"
             )
         lines.append("")
+        if note:
+            lines.append(note)
+            lines.append("")
 
     section("增长最多的目录", diff["grown"])
     section("缩减最多的目录", diff["shrunk"])
-    section("新出现的大目录（≥100MB）", diff["added"])
-    section("消失的目录", diff["removed"])
+    section(
+        "首次记录的大目录（≥100MB）",
+        diff["added"],
+        "上一快照未记录这些目录：可能是既有目录增长越过记录阈值，不代表文件系统新建。",
+    )
+    section(
+        "未记录的目录",
+        diff["removed"],
+        "本次快照未记录这些目录：可能是已低于记录阈值、权限受限或已被移除；不构成删除证明。",
+    )
 
     if bigfiles is not None:
         lines.append(f"## 近期新增/修改的大文件（≥{config.BIGFILE_DEFAULT_MB}MB）")
@@ -258,17 +317,15 @@ def render_markdown(
 
 
 def _report_inputs(conn: sqlite3.Connection, sid: int):
-    snaps = conn.execute(
-        "SELECT * FROM snapshots WHERE root=(SELECT root FROM snapshots WHERE id=?) "
-        "AND (created_at < (SELECT created_at FROM snapshots WHERE id=?) "
-        "OR (created_at = (SELECT created_at FROM snapshots WHERE id=?) AND id <= ?)) "
-        "ORDER BY created_at DESC, id DESC LIMIT 2",
-        (sid, sid, sid, sid),
-    ).fetchall()
-    if len(snaps) < 2 or snaps[0]["id"] != sid:
-        raise ValueError("至少需要两个快照才能生成对比报告")
+    new_meta = conn.execute("SELECT * FROM snapshots WHERE id=?", (sid,)).fetchone()
+    if new_meta is None:
+        raise ValueError(f"快照 {sid} 不存在，无法生成对比报告")
+    old_meta = find_same_dataset_predecessor(conn, sid)
+    if old_meta is None:
+        # 首扫、升级后首个新口径快照或新监控根首扫都没有同数据集基线；
+        # 协调器以此消息把报告阶段记为 not_available 而不是失败。
+        raise ValueError("至少需要两个快照（同根同口径）才能生成对比报告")
 
-    new_meta, old_meta = snaps[0], snaps[1]
     diff = compute_diff(load_snapshot(conn, old_meta["id"]), load_snapshot(conn, new_meta["id"]))
 
     def vol(sid_: int) -> tuple[int, int] | None:
@@ -284,7 +341,7 @@ def _report_inputs(conn: sqlite3.Connection, sid: int):
 def write_daily_report(
     conn: sqlite3.Connection, sid: int, *, notify_after_write: bool = True
 ) -> Path:
-    """对比指定快照与同根前一快照生成日报文件，返回路径。
+    """对比指定快照与同数据集（同根同口径）前一快照生成日报文件，返回路径。
 
     ``notify_after_write=False`` 供统一协调器把报告和通知分阶段记录；默认值
     保持既有直接调用合同。

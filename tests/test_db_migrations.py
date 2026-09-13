@@ -36,6 +36,8 @@ def test_unversioned_database_migrates_without_losing_rows(tmp_path):
     path = tmp_path / "legacy.db"
     legacy = _legacy_database(path)
     try:
+        wal_path = path.with_name(path.name + "-wal")
+        assert wal_path.stat().st_size > 32, "迁移前提交行确实仍在 WAL"
         migrated = db.connect(path)
         try:
             assert db.schema_version(migrated) == db.SCHEMA_VERSION

@@ -397,13 +397,13 @@
 
 - **目标**：更新与卸载可预测，不因替换 app 丢失历史或留下幽灵服务。
 - **范围**：发行维护流程、迁移工具、后台服务、README/TESTING。
-- **实施边界**：演练旧开发版→发行版、发行版 N→N+1；识别旧服务后经用户操作迁移，避免双运行。private draft 产物由 PM/CI 以仓库身份下载，再仅将已签名更新包和测试 manifest 放到受控、可撤销的匿名 HTTPS staging 源；客户端始终不携带 GitHub token，staging 地址与清理责任写入证据。更新前先停止新写入、让旧 helper 退出并做 SQLite 一致备份；替换后校验 app/helper 版本握手。迁移、签名或启动失败必须回到可运行旧版与旧数据。普通卸载保留数据，删数据另有明确预览确认。
+- **实施边界**：演练旧开发版→发行版、发行版 N→N+1；识别旧服务后经用户操作迁移，避免双运行。private draft 产物由 PM/CI 以仓库身份下载，默认通过仅隔离测试机可达的本机/私网 HTTPS 与受信测试证书提供已签名更新包和 manifest；客户端始终不携带 GitHub token。若必须使用外部 staging，先把具体资产、URL、访问范围和自动失效时间交用户批准。更新前先停止新写入、让旧 helper 退出并做 SQLite 一致备份；替换后校验 app/helper 版本握手。迁移、签名或启动失败必须回到可运行旧版与旧数据。普通卸载保留数据，删数据另有明确预览确认。
 - **验收**：
   - [ ] N→N+1 成功；迁移失败/磁盘不足/中途退出保留可恢复旧数据
   - [ ] 卸载后无后台残留/端口占用；重新安装可恢复保留历史
   - [ ] 未知旧 schema/较新 schema 拒绝危险操作；恢复流程真实执行
   - [ ] 使用 ISS-041 的真实 draft 产物验证下载中断、签名拒绝、helper 未退出与新 helper 握手失败均不会留下半升级状态
-  - [ ] HTTPS staging 只含签名发行资产，无源码、凭据或用户数据；测试后撤销并记录资源终态
+  - [ ] 测试 HTTPS 源只含签名发行资产，无源码、凭据或用户数据；本机/私网源测试后关闭并记录资源终态，外部 staging 未获用户批准不得创建
   - [ ] 不把删除数据库或关闭系统安全保护作为解决方案
 - **证据/接续**：尚未执行；不得勾选验收项。
 
@@ -423,7 +423,7 @@
 
 - **目标**：让已安装的 v0.3.0 能在应用内安全检查、下载并安装后续版本，失败不影响本地基础功能或扫描历史。
 - **范围**：Tauri updater 插件/最小 capability、Rust 更新协调模块、设置页更新状态、双架构 `latest.json` 生成与专用测试。
-- **实施边界**：Fathom 使用独立 updater keypair；公钥进入应用配置，私钥和密码只进入 GitHub Secrets 与仓库外加密备份。更新由可信 Rust 壳掌控，不给当前回环远程页面宽泛 updater 权限。启动后延迟检查、用户确认安装并明确重启；不静默更新。更新源必须为 HTTPS 匿名可读；仓库保持 private 时仅允许夹具或受控临时 staging 的内部 RC，生产 endpoint 保持关闭或指向独立公开制品源，禁止在客户端内嵌 GitHub PAT。
+- **实施边界**：Fathom 使用独立 updater keypair；公钥进入应用配置，私钥和密码只进入 GitHub Secrets 与仓库外加密备份。更新由可信 Rust 壳掌控，不给当前回环远程页面宽泛 updater 权限。启动后延迟检查、用户确认安装并明确重启；不静默更新。生产更新源必须为 HTTPS 匿名可读；仓库保持 private 时只允许夹具或隔离测试机可达的本机/私网 HTTPS 内部 RC，生产 endpoint 保持关闭或指向独立公开制品源，禁止在客户端内嵌 GitHub PAT。
 - **验收**：
   - [ ] updater 签名校验不可关闭；篡改包、公钥不匹配、离线和超时均有明确且可恢复结果
   - [ ] `latest.json` 同时含 `darwin-aarch64` 与 `darwin-x86_64` 的 HTTPS URL 和内联 signature；缺任一平台 fail closed
@@ -435,7 +435,7 @@
 
 - **目标**：从固定提交生成 Apple Silicon 与 Intel 的自包含、Developer ID 签名、Apple 公证并 stapled 的 v0.3.0 候选包，以 draft Release 供最终验收。
 - **范围**：`.github/workflows/release.yml`、发行校验脚本、macOS entitlements/iconset、Tauri bundle/updater artifact 配置；不改业务功能。
-- **实施边界**：分别在原生 arm64 与 Intel runner 冻结 Python helper 和构建 thin app/DMG；处理 Apple 凭据的 Actions 固定完整 commit SHA、最小 `contents: write` 权限、临时 keychain 与临时 p8 文件。Tauri updater 签名与 Apple codesign/notarization 是两套独立信任链，均须通过。先建 draft，两个架构 DMG、updater tar.gz、`.sig`、checksums 与完整 `latest.json` 齐全才允许进入公开发布人工门。
+- **实施边界**：分别在原生 arm64 与 Intel runner 冻结 Python helper 和构建 thin app/DMG。非特权 build job 只给 `contents: read`；任何能读取 signing/updater secrets 或持有 write token 的 job，其全部 `uses:` 均固定完整 commit SHA，不混入可移动 `@vN` action，并使用临时 keychain 与临时 p8 文件。仅最终聚合/发布 job 给最小 `contents: write`。Tauri updater 签名与 Apple codesign/notarization 是两套独立信任链，均须通过。先建 draft，两个架构 DMG、updater tar.gz、`.sig`、checksums 与完整 `latest.json` 齐全才允许进入公开发布人工门。
 - **验收**：
   - [ ] tag 与 Python/API/Tauri/Cargo/产物版本完全一致，不一致在上传前失败
   - [ ] arm64 与 x86_64 均通过 `codesign --verify --deep --strict --verbose=2`、`spctl --assess --type execute -vv` 与 `xcrun stapler validate`

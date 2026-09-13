@@ -1,25 +1,33 @@
 # ISS-029 技术验证发现与选型建议
 
-状态：当前宿主（arm64）验证完成；冻结冒烟被安装授权阻塞
+状态：当前宿主（arm64）验证完成；冻结冒烟已获 PM 授权执行——14 pass /
+0 fail / 3 项因生产端口 7952 被占用而 blocked（G6 实证，未杀占用者）
 日期：2026-09-13 · 会话 fathom-release-iss-029
 基线：`origin/main@50a87d9d6b3e5da6adf326622a9730c9ba429533`
-证据：[results/](results/)（experiment 21/21 PASS；smoke BLOCKED_DEPENDENCY）
+证据：[results/](results/)（experiment 最新 20260913T050439Z 21/21 PASS；
+smoke 授权轮 20260913T050248Z PARTIAL_BLOCKED_PORT_7952；
+更早的 20260913T044957Z/045329Z 两轮为授权前 fail-closed 记录）
 范围声明：本文只做当前宿主技术验证，不实现 ISS-009/010/040/041；
 共享文档（TASKS/DECISIONS/ARCHITECTURE 等）由 PM 独占回写（见 §10 草案）。
 
 ## 1. 结论摘要
 
 1. **冻结方式建议锁定 PyInstaller（onedir）**，pin `pyinstaller==6.22.3`
-   （依据见 §5 与 requirements-runtime-build.txt）。本机当前未安装且
-   policy=deny_by_default，冒烟按合同 fail closed（exit 3），未安装、
-   未冒充自包含。
+   （依据见 §5 与 requirements-runtime-build.txt）。PM 已授权并创建
+   task-local venv（`.venv-build`，仅实验目录内）；授权轮冒烟完成两次
+   onedir 冻结（A/B 对照），`file` 确认 Mach-O 64-bit executable arm64，
+   `otool -L` 与 pip freeze 锁快照均已落盘。
 2. **发行 helper 的进程合同已在本机 arm64 用纯 stdlib 原型完整证明**
-   （21/21 断言，results/experiment-20260913T044621Z.json）：身份/版本面、
+   （21/21 断言，results/experiment-20260913T050439Z.json）：身份/版本面、
    health+Host 守卫、回环端口+让位、未知占用零击杀、单一所有者、
    结构化退出码、崩溃 stale 接管、含空格/中文/& 路径、资源只读、全回收。
-3. **生产 fathom 包直接冻结存在 7 个缺口（G1-G7，§3）**，其中 G1/G2/G6
-   是阻塞项：不改生产代码就无法产生合规冻结产物。生产修改不在本卡授权
-   写入范围，已整理为 ISS-009 前置改造清单交 PM 排期。
+3. **生产 fathom 包直接冻结的缺口 G1/G2/G3/G6 已获运行时实证**（冻结
+   产物级，见 §3 证据列）：字符串导入不被分析、运行时目录写进 bundle、
+   无 --version 身份面、固定端口无让位策略。G4/G5/G7 为分析确认。
+   生产修改不在本卡授权写入范围，已整理为 ISS-009 前置改造清单交 PM。
+4. 冒烟 3 项用例（健康 serve、冻结产物 Host 守卫、冻结产物 SIGTERM）
+   被 7952 端口占用（pid 6026，未识别/未触碰）阻塞——这本身是 G6 的
+   运行时实证，也是 G6 修复优先级的直接依据。
 
 ## 2. 主机环境证据（experiment results env 块）
 
@@ -27,7 +35,10 @@
 - macOS 版本/build：见 results env（sw_vers）
 - python3：3.14.6 @ `/opt/homebrew/bin/python3`（Homebrew framework，
   base_prefix=/opt/homebrew/opt/python@3.14/Frameworks/...）
-- PyInstaller / Nuitka：均未安装（env.pyinstaller_import=not-installed）
+- PyInstaller / Nuitka：全局 Python 均未安装（env.pyinstaller_import=
+  not-installed）；冻结冒烟使用 PM 授权的 task-local venv
+  `apps/desktop/experiments/iss029/.venv-build`（pyinstaller 6.22.3，
+  gitignore 不入库，锁快照见 results/smoke-20260913T050248Z.freeze.lock）
 - 工具齐备：file/curl/lsof/codesign/otool/pgrep/shasum
 - 本机 7952（生产开发端口）冒烟时未被占用（smoke 日志无占用记录）；
   合同实验全程使用独立端口段 17963-17967
@@ -36,12 +47,12 @@
 
 | # | 缺口 | 位置 | 影响 | 证据状态 |
 |---|---|---|---|---|
-| G1 | `uvicorn.run("fathom.api:app", ...)` 字符串导入不被 PyInstaller 静态分析 | `fathom/cli.py` cmd_serve | 冻结产物 serve 启动即 `ModuleNotFoundError: fathom.api`；需 `--hidden-import fathom.api` 或改为对象导入 `uvicorn.run(api.app)` | 分析确认；冻结反例已写入 smoke 脚本（freeze A/B 对比），待授权后执行 |
-| G2 | 运行时目录跟着 `PROJECT_ROOT=Path(__file__).parent.parent` 走，冻结后在 bundle 内创建 `data/reports/logs` | `fathom/config.py` | 违反「app 资源只读、用户数据写 Application Support」；`FATHOM_DB` 只隔离 DB 不隔离三个目录 | 分析确认；smoke 已内置运行后指纹断言，待授权后执行 |
-| G3 | CLI 无 `--version`/身份面 | `fathom/cli.py` | app 壳无法在启动前后校验 helper 身份与版本（发行方案要求）；smoke 断言冻结产物 `--version` 退出码 2 | 分析确认 |
+| G1 | `uvicorn.run("fathom.api:app", ...)` 字符串导入不被 PyInstaller 静态分析 | `fathom/cli.py` cmd_serve | 冻结产物 serve 启动即无法导入 fathom.api；需 `--hidden-import fathom.api` 或改为对象导入 `uvicorn.run(api.app)` | **运行时实证**（freeze A 反例 vs freeze B 通过；smoke-20260913T050248Z） |
+| G2 | 运行时目录跟着 `PROJECT_ROOT=Path(__file__).parent.parent` 走，冻结后在 bundle 内创建 `data/reports/logs` | `fathom/config.py` | 违反「app 资源只读、用户数据写 Application Support」；`FATHOM_DB` 只隔离 DB 不隔离三个目录 | **运行时实证**（冻结树 `_internal/{data,logs,reports}` 实际生成；同上 smoke 结果） |
+| G3 | CLI 无 `--version`/身份面 | `fathom/cli.py` | app 壳无法在启动前后校验 helper 身份与版本（发行方案要求） | **运行时实证**（冻结产物 `--version` 退出码 2；同上） |
 | G4 | API 无 `/health` 身份端点：`/api/status` 不含 service/protocol_version | `fathom/api.py` | 端口被占时无法做「同服务身份探测」，只能 HTTP 200 猜测——发行方案明令禁止 | 分析确认 |
 | G5 | 版本三处不一致：`fathom/__init__.py` 0.1.0、`api.py` FastAPI(version="0.2.0")、发行目标 v0.3 | 同左 | 单一版本源要求（发行方案 §6）无法满足 | 分析确认 |
-| G6 | 固定端口 7952，无让位/探测/零击杀语义 | `fathom/config.py` PORT、api 守卫 | 端口冲突时要么启动失败要么误连他人服务；发行必需语义见 §4 原型 | **原型已证明语义可行**（C5/C6/C7） |
+| G6 | 固定端口 7952，无让位/探测/零击杀语义 | `fathom/config.py` PORT、api 守卫 | 端口冲突时启动失败（本次实测）或误连他人服务 | **双重实证**：原型语义可行（C5/C6/C7）；冻结 serve 在 7952 被占时绑定失败退出且占用者未受影响（smoke 授权轮） |
 | G7 | 后台唯一所有者未定义（开发 launchd 标签 vs 发行 app 派生） | `fathom/launchd.py`、发行方案 §4 | 双实例/孤儿进程风险；归 ISS-010 决策 | **原型已证明退出码 4 单所有者语义** |
 
 ## 4. 合同原型（helper_contract.py）已验证语义
@@ -112,14 +123,19 @@ macOS 10.15+；fastapi 0.141.1 / uvicorn 0.52.4 均 `>=3.10`（本机
 
 ## 9. 阻塞与 NOT_VERIFIED
 
-- **BLOCKED**：PyInstaller 安装授权（policy=deny_by_default；精确请求见
-  `results/smoke-*.log` REQUEST 块，命令/版本/依据/环境/磁盘/清理齐备）。
-  授权前不产生任何「已冻结」声明。
-- NOT_VERIFIED：冻结产物 file/otool/断网首启/无 Python 账户；G1/G2 的
-  运行态实证（反例脚本就绪）；新账户/干净机；TCC/SMAppService/launchd
-  注册；x86_64；签名公证（无证书材料，DEC-008）。
-- 冒烟端口说明：生产 serve 只绑 7952（G6），冒烟已内建「被占即不杀、
-  转 PARTIAL_BLOCKED_PORT_7952」分支，避免与开发 launchd 服务互踩。
+- ~~BLOCKED：PyInstaller 安装授权~~ **已解决**（2026-09-13 PM 批准并执行
+  两条精确命令，task-local `.venv-build`，pyinstaller 6.22.3 与 pin 一致；
+  未安装/升级其他依赖）。授权前两轮 fail-closed 记录保留于 results/
+  （20260913T044957Z、045329Z）。
+- **当前 blocked（环境性，非依赖）**：冒烟 3 项用例（健康 serve、冻结产物
+  Host 守卫、冻结产物 SIGTERM）——7952 被未识别进程 pid 6026 占用；按合同
+  不杀不碰，等待 G6 修复（端口让位）或占用方消失后重跑
+  `bash scripts/build_helper_smoke.sh` 即可补齐。
+- NOT_VERIFIED：断网首启、无 Python/Homebrew 的干净账户（需真断网与
+  新账户环境，本卡未授权）；TCC/SMAppService/launchd 注册；x86_64
+  （归 ISS-041）；签名公证（无证书材料，DEC-008）。
+- 冒烟端口说明：生产 serve 只绑 7952（G6），冒烟内建「被占即不杀、转
+  PARTIAL_BLOCKED_PORT_7952」分支；该分支本身产出 G2/G6 运行时实证。
 
 ## 10. DEC 草案（供 PM 录入 docs/DECISIONS.md）
 

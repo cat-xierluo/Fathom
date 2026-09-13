@@ -182,14 +182,17 @@ if [ "$VENV_READY" != "yes" ]; then
   log "[authorized] 创建 task-local venv 并安装 pinned 依赖……"
   $CMD_VENV >> "$LOG_OUT" 2>&1
   $CMD_PIP >> "$LOG_OUT" 2>&1
-  "$VENV/bin/pip" freeze > "$RESULTS_DIR/smoke-$RUN_ID.freeze.lock" 2>>"$LOG_OUT" || true
-  record "smoke-install" pass "pinned 安装完成，pip freeze 快照见 smoke-${RUN_ID}.freeze.lock"
+  record "smoke-install" pass "pinned 安装完成（本脚本执行）"
 fi
+# 依赖锁快照（只读，不升级任何包）：ISS-031 CI lock 的对照证据
+"$VENV/bin/pip" freeze > "$RESULTS_DIR/smoke-$RUN_ID.freeze.lock" 2>>"$LOG_OUT" || true
+record "smoke-freeze-lock" pass "pip freeze 快照见 smoke-${RUN_ID}.freeze.lock"
 
 # ---------------------------------------------------------------- 冻结 A：无 hidden-import（G1 反例）
 mkdir -p "$BUILD_DIR"
 log "[freeze A] 不带 --hidden-import fathom.api（预期 serve 反例）……"
 "$VENV/bin/pyinstaller" --noconfirm --clean --onedir \
+  --paths "$ROOT" \
   --name fathom-helper-exp-a \
   --distpath "$BUILD_DIR/distA" --workpath "$BUILD_DIR/workA" --specpath "$BUILD_DIR" \
   "$EXP_DIR/freeze_entry.py" >> "$LOG_OUT" 2>&1
@@ -199,7 +202,9 @@ record "freeze-a-built" pass "onedir 构建完成：${BIN_A}"
 CODE=0
 (cd "$WORK" && FATHOM_DB="$WORK/smoke-db/fathom.db" "$BIN_A" serve) >> "$LOG_OUT" 2>&1 || CODE=$?
 sleep 1
-if grep -qE "ModuleNotFoundError: No module named 'fathom.api'" "$LOG_OUT"; then
+# uvicorn 加载失败的标准输出是 "Could not import module \"fathom.api\"."；
+# 直接 importlib 场景才吐 ModuleNotFoundError——两种形态都算实证
+if grep -qE "Could not import module .?fathom\.api|ModuleNotFoundError: No module named .?fathom\.api" "$LOG_OUT"; then
   record "freeze-a-g1-counterexample" pass \
     "无 hidden-import 时冻结产物 serve 失败：uvicorn 的 \"fathom.api:app\" 字符串导入不被静态分析（缺口 G1 实证，exit=${CODE}）"
 else
@@ -209,6 +214,7 @@ fi
 # ---------------------------------------------------------------- 冻结 B：--hidden-import fathom.api
 log "[freeze B] 带 --hidden-import fathom.api ……"
 "$VENV/bin/pyinstaller" --noconfirm --clean --onedir \
+  --paths "$ROOT" \
   --name fathom-helper-exp-b \
   --hidden-import fathom.api \
   --distpath "$BUILD_DIR/distB" --workpath "$BUILD_DIR/workB" --specpath "$BUILD_DIR" \
@@ -251,10 +257,29 @@ mkdir -p "$WORK/smoke-db"
 if [ -n "$PORT_OCCUPIER" ]; then
   record "smoke-g6-fixed-port-collision" pass \
     "实证 G6：生产 serve 固定绑定 7952 且无端口让位/身份探测；当前被 pid=${PORT_OCCUPIER} 占用，按合同不杀占用者"
-  record "smoke-serve-nasty-path" blocked "7952 被占用，serve 用例无法在不影响占用者的前提下执行"
-  record "smoke-host-guard" blocked "同上"
-  record "smoke-g2-readonly-violation" blocked "同上"
-  record "smoke-sigterm-frozen" blocked "同上"
+  # 即便绑定失败，cmd_serve 的 ensure_runtime_dirs() 也先于 uvicorn.run 执行：
+  # 仍可无侵入地取得 G2（冻结树内建运行时目录）与 G6（绑定失败路径）实证
+  CODE=0
+  (cd "$NASTY" && FATHOM_DB="$WORK/smoke-db/fathom.db" "$BIN_N" serve) \
+    >> "$LOG_OUT" 2>&1 || CODE=$?
+  sleep 1
+  OCC_STILL="$(lsof -tiTCP:7952 -sTCP:LISTEN 2>/dev/null || true)"
+  if grep -qE "Address already in use|Errno 48|\[Errno 48\]" "$LOG_OUT"; then
+    record "smoke-g6-runtime-bind-failure" pass \
+      "冻结 serve 在 7952 绑定失败退出（exit=${CODE}）：固定端口无让位的运行时实证；占用者 pid=${OCC_STILL:-?} 全程未受影响"
+  else
+    record "smoke-g6-runtime-bind-failure" fail "未捕获预期 bind 失败日志（exit=${CODE}）"
+  fi
+  RUNTIME_DIRS="$(find "$NASTY" -maxdepth 2 -type d \( -name data -o -name reports -o -name logs \) | sort | tr '\n' ' ')"
+  if [ -n "$RUNTIME_DIRS" ]; then
+    record "smoke-g2-readonly-violation" pass \
+      "实证 G2：绑定失败路径仍在冻结树内创建运行时目录（${RUNTIME_DIRS}）——生产 config 需冻结感知数据根"
+  else
+    record "smoke-g2-readonly-violation" fail "未观测到 G2 预期（运行时目录未出现在冻结树内）——请人工复核"
+  fi
+  record "smoke-serve-nasty-path" blocked "7952 被占用，健康 serve 用例无法在不影响占用者的前提下执行（ nasty 目录可执行性已由 G2/G6 运行证明）"
+  record "smoke-host-guard" blocked "需健康 serve 才能验证；7952 被占用"
+  record "smoke-sigterm-frozen" blocked "需健康 serve 才能验证；7952 被占用"
   summarize "PARTIAL_BLOCKED_PORT_7952"
   log "RESULT=PARTIAL（7952 被占用；不杀未知占用进程）"
   exit 3

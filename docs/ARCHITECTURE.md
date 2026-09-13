@@ -1,6 +1,6 @@
 # Fathom 当前架构
 
-**事实基线：main `7aef239`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
+**事实基线：main `655fc67`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
 
 ## 入口与边界
 
@@ -20,16 +20,16 @@ CLI 和 API 的执行流程目前各自实现，只有 API 有进程内 threadin
 
 | 模块 | 实现 | 已确认局限 |
 |---|---|---|
-| config.py | 常量、项目相对运行目录、HOME 根、127.0.0.1:7952 | 仅 DB 支持 FATHOM_DB，不能隔离其他输出/扫描范围 |
-| db.py | sqlite3、WAL、外键、CREATE TABLE IF NOT EXISTS | 无 schema version/迁移协议；读取也打开可写连接并执行建表 |
-| scanner.py | `/usr/bin/du -xk`，以 `DuResult` 返回大小、退出码、耗时和 stderr 质量；完整采集或仅有明确权限拒绝且根记录有效时才替换同日快照 | 特殊路径仍可能误解析；数据库只持久化 denied_count/du_seconds，详细质量尚未入库 |
+| config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口 | 尚无持久化设置 UI；release 模式只定义路径合同，不证明 `.app` 已自包含 |
+| db.py | sqlite3、WAL、外键、schema v1；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 当前仅有 v0→v1；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
+| scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 返回大小、退出码、耗时和 stderr 质量；完整采集或仅有明确权限拒绝且根记录有效时才替换同日快照 | 无法无歧义映射/解码时拒绝采集；数据库只持久化 denied_count/du_seconds，详细质量尚未入库 |
 | reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown，文件名按日期 | 未记录即 added/removed；忽略传入 sid 取全局最新两条；无独立报告状态 |
 | notify.py | 日报写完后尝试 osascript 通知；首次记录目录单列；摘要限长；低空间阈值 10 GB | 显示受系统策略控制；首扫无日报不通知；阈值未与 UI 统一；日志可能含路径 |
 | bigfiles.py | `/usr/bin/find -xdev -type f -size +... -mtime -... -print0` 后 stat | 大小为 st_size 逻辑字节；每次请求实时遍历；无超时/去重/失败呈现 |
 | api.py | 查询、扫描线程、scan_runs 状态持久化；Host/Origin/写令牌守卫；受监控根约束的 reveal；挂载静态文件 | 首扫生成报告报错；扫描锁仍限单 Web 进程；实际 Tauri WebView 尚未真机验证 |
 | cli.py | scan/report/bigfiles/status/serve/install/uninstall | scan 的首份报告缺基线会被单独捕获，与 API 成功语义不同 |
 | launchd.py | 拼接 XML，安装扫描/常驻 Web 两个 plist | 路径不做 XML 转义；bootstrap 失败只打印，不能可靠表示安装失败 |
-| frontend/ | 原生 HTML/JS/CSS、ECharts、hash 五页 | 请求/状态/页面同文件；部分异常未接；重扫后列表不刷新 |
+| frontend/ | 原生 HTML/JS/CSS、ECharts、hash 五页；快照刷新保持有效选择，按页面/导航隔离响应世代并覆盖空、错误、断网和仅 added/removed 状态 | 请求/状态/页面仍在同一文件；正式 UX 原型尚未实装到生产页面 |
 | apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行 | bundle.active=false；无自包含 Python、安装/升级/卸载 UI；tray 实机待验 |
 | apps/desktop/experiments/iss029/ | PyInstaller onedir 与 helper 生命周期合同原型；只写指定数据根，结果被版本化规则忽略 | 仅技术验证，尚未接入生产 helper 或 `.app`；冻结健康仍受固定 7952 端口阻塞 |
 
@@ -37,6 +37,7 @@ CLI 和 API 的执行流程目前各自实现，只有 API 有进程内 threadin
 
 | 表 | 字段概要 | 含义 |
 |---|---|---|
+| schema | `PRAGMA user_version=1` | v0 开发库经完整性/结构校验和一致备份后事务迁移；未来版本、损坏或不兼容结构拒绝打开 |
 | snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录 |
 | entries | snapshot_id, path, size_kb | 复合主键，WITHOUT ROWID；父目录大小已含子目录 |
 | volume_stats | snapshot_id, total_bytes, free_bytes | 扫描时 statvfs，free 为 f_bavail × f_frsize |
@@ -63,7 +64,7 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | 方法 | 端点 | 当前返回/行为 |
 |---|---|---|
 | GET | /api/bootstrap | 在同源读取边界内返回当前进程写令牌；令牌不进入 URL、日志或 localStorage |
-| GET | /api/status | 实时卷容量、根、快照总数、最新元数据、db_bytes、scan、port |
+| GET | /api/status | 实时卷容量、根、快照总数、最新元数据、db_bytes、scan、port，以及不含令牌/凭据的实际 runtime 路径与模式 |
 | GET | /api/snapshots | 全局快照降序列表，含卷统计 |
 | GET | /api/volume-trend?limit= | ASC LIMIT，目前取最早 N 条 |
 | GET | /api/trees?snapshot_id=&min_kb= | 最新/指定快照目录树；默认 ≥51200 KiB；先取所有行，再限 20000 节点 |
@@ -83,7 +84,7 @@ API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。�
 
 ## 当前验证覆盖
 
-当前 main 候选已通过全量 **144 pytest** 与 **39 项 Chromium/API 安全检查**。GitHub CI 在原生 arm64/x86_64 runner 运行 pytest 与 Rust 1.88 locked build，并在 arm64 运行浏览器/API；五项最近验收均成功。覆盖扫描完整性、真实 BSD `du` 反例、事务回滚、scan_runs、Host/Origin/写令牌、reveal 越界/符号链接逃逸、路径与报告名转义、CSP 及浏览器资源清理。隔离真实 API 已执行 du、次日报告、通知 stub、运行历史及实际服务重启；首扫仍复现“有快照但报告不足而失败”，归 ISS-020。实际 Tauri WebView、系统通知、tray、自包含 helper 和签名发行仍为 `NOT_VERIFIED`。
+当前 main 固定候选的本地验收包含全量 **168 pytest** 与 **22 项 Chromium 前端检查**；此前同一轮固定候选另有 **39 项 Chromium/API 安全检查**。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、迁移/WAL 一致备份、事务回滚、scan_runs、Host/Origin/写令牌、reveal 越界/符号链接逃逸、前端重扫/乱序/错误状态、路径与报告名转义、CSP 及浏览器资源清理。GitHub Actions 当前因账户额度在 job 步骤前拒绝，本轮云端结果记为 `NOT_RUN`；恢复额度后重新启用。隔离真实 API 已执行 du、次日报告、通知 stub、运行历史及实际服务重启；首扫仍复现“有快照但报告不足而失败”，归 ISS-020。实际 Tauri WebView、系统通知、tray、自包含 helper、x86_64 当前候选和签名发行仍为 `NOT_VERIFIED`。
 
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。
 

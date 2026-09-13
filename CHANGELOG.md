@@ -1,7 +1,7 @@
 # 变更记录
 
 本文件是用户可见变更的权威记录。格式遵循 legal-skills 的 CHANGELOG 规范。
-（0.2.0 及以前项目名为 disk-sentinel / 容量哨兵，0.3.0 起更名 Fathom，历史条目保留原名。）
+（0.2.0 及以前项目名为 disk-sentinel / 容量哨兵，0.3.0 开发线起更名 Fathom，历史条目保留原名。）
 
 ## [Unreleased]
 
@@ -20,16 +20,17 @@
 
 ### 规划与文档
 - 面向可安装桌面应用重排路线，补齐扫描可信度、UX/UI 原型与实装、运行时分发、升级恢复和开放发布门槛。
+- 将 v0.3.0 明确为首个可分发目标，新增应用内更新、双架构 Developer ID 签名、Apple 公证、draft Release 与真实 N→N+1 恢复门禁；当前代码仍是开发线，不把原型或未自包含桌面壳声明为已发布应用。
 - 复现并登记扫描失败覆盖、首扫误报、路径解析、差分口径与前端状态问题；保留 ISS-003/007/008 既有分支接续，不把规划写成已修复功能。
 - 补充依赖来源/用途识别、可选 Agent 解读及目录标签的远期合同，明确证据、未知、数据发送与执行边界。
 - 新模型可按任务依赖、实施范围、反例和验证入口接手；纠正 FATHOM_DB 隔离范围和保留期说明。复审补充 Wave 1 冲突编号的历史映射与夹具实例身份确认，避免领错任务或误测生产服务。本项只变更文档，应用行为未改变。
 
-## [0.3.0] - 2026-09-12
+### 0.3.0 开发检查点（未发布，2026-09-12）
 
-### 改进
+#### 改进
 - **更名 Fathom**：延续 Folia/Funes 的 F 系列命名。fathom（英寻）是水深测量单位，动词意为"测深、弄明白"——双关直击产品要回答的问题："I can't fathom where my disk space went"。涉及：项目目录、Python 包、launchd 标签（com.maoscripts.fathom-*，旧任务自动卸载）、Tauri identifier/productName/crate、全部文档；数据库文件平滑迁移（disk.db → fathom.db，保留首扫基线数据）
 - **UI 全面去 emoji，对齐 Folia 视觉规范**：导航/面板/按钮/日报全部改用内联 SVG 线条图标（lucide 同款 stroke 风格，currentColor 跟随语义色），Markdown 日报标题同步去 emoji
-- **文档层对齐**（同日补）：README/DESIGN 残留装饰 emoji 清理；DESIGN 版本头升至 v0.3；ARCHITECTURE API 清单补齐 v0.2.0 四个端点（browse/reports/reports/{date}/reveal）并在架构图标注桌面壳入口；ROADMAP v0.3 章节与 0.3.0 实际发布内容对齐；AGENTS 模块速查补 icons.js；清理空的 docs/ux/ 遗留目录
+- **文档层对齐**（同日补）：README/DESIGN 残留装饰 emoji 清理；DESIGN 版本头升至 v0.3；ARCHITECTURE API 清单补齐 v0.2.0 四个端点（browse/reports/reports/{date}/reveal）并在架构图标注桌面壳入口；ROADMAP 与 0.3 开发里程碑对齐；AGENTS 模块速查补 icons.js；清理空的 docs/ux/ 遗留目录
 - **任务治理升级（TASKS.md）**：全部任务改为固定字段合同（目标/前置/范围/要点/验证/验收框），新增依赖与并行轨道图（观察/壳/后端/功能四轨）、`iss-NNN-slug` 分支规范与自动认领规则；ROADMAP 条目全部立项（新增 ISS-015 周报月报、ISS-016 设置可写、ISS-014 窄屏适配）
 
 ## [0.2.0] - 2026-09-12

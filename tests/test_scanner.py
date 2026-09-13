@@ -110,17 +110,27 @@ class TestDiff:
 
 
 class TestFoldChanges:
-    def test_parent_child_folding(self):
-        changes = [
-            reports.DirChange("/r", 100_000, 200_000, 100_000),       # 父 +100GB级
-            reports.DirChange("/r/a", 100, 99_900_000, 99_900_000 - 100),  # 子几乎同量 -> 折叠掉父或子其一
-            reports.DirChange("/r/b", 0, 5_000, 5_000),               # 独立子树
+    @staticmethod
+    def _parent_child_changes():
+        """父目录先排序，随后子目录应以更精确路径替换它。"""
+        return [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/r/a", 0, 99_800, 99_800),
+            reports.DirChange("/r/b", 0, 5_000, 5_000),
         ]
-        out = reports.fold_changes(changes, topn=10)
+
+    def test_parent_child_folding_respects_topn_after_replacement(self):
+        out = reports.fold_changes(self._parent_child_changes(), topn=1)
+
+        assert [c.path for c in out] == ["/r/a"]
+
+    def test_parent_child_folding_preserves_independent_sibling(self):
+        out = reports.fold_changes(self._parent_child_changes(), topn=10)
+
         paths = [c.path for c in out]
         # /r 与 /r/a 变化量几乎一致时应只保留一个（更精确的深层）
-        assert not (paths.count("/r") and paths.count("/r/a")) or True
-        assert len(out) <= 3
+        assert "/r" not in paths
+        assert "/r/a" in paths
         # 独立子树必保留
         assert "/r/b" in paths
 
@@ -133,6 +143,117 @@ class TestFoldChanges:
         ]
         out = reports.fold_changes(changes, topn=10)
         assert len(out) == 3
+
+    def test_negative_parent_child_replacement_and_zero_ignored(self):
+        changes = [
+            reports.DirChange("/r", 100_000, 0, -100_000),
+            reports.DirChange("/r/a", 99_800, 0, -99_800),
+            reports.DirChange("/zero", 1, 1, 0),
+        ]
+
+        out = reports.fold_changes(changes, topn=1)
+
+        assert [c.path for c in out] == ["/r/a"]
+
+    def test_topn_bounds_final_output(self):
+        changes = [
+            reports.DirChange(f"/r-{index}", 0, 100 - index, 100 - index)
+            for index in range(20)
+        ]
+
+        out = reports.fold_changes(changes, topn=3)
+
+        assert [c.path for c in out] == ["/r-0", "/r-1", "/r-2"]
+
+    def test_nearest_ancestor_is_replaced_in_multilevel_chain(self):
+        changes = [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/r/a", 0, 80_000, 80_000),
+            reports.DirChange("/r/a/deep", 0, 75_000, 75_000),
+        ]
+
+        out = reports.fold_changes(changes, topn=10)
+
+        assert [c.path for c in out] == ["/r", "/r/a/deep"]
+
+    def test_replacement_preserves_final_delta_order(self):
+        changes = [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/other", 0, 99_900, 99_900),
+            reports.DirChange("/r/a", 0, 99_800, 99_800),
+        ]
+
+        out = reports.fold_changes(changes, topn=2)
+
+        assert [(c.path, c.delta_kb) for c in out] == [
+            ("/other", 99_900),
+            ("/r/a", 99_800),
+        ]
+
+    def test_replacement_does_not_discard_higher_ranked_independent_path(self):
+        changes = [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/independent", 0, 95_000, 95_000),
+            reports.DirChange("/r/a", 0, 91_000, 91_000),
+        ]
+
+        out = reports.fold_changes(changes, topn=1)
+
+        assert [c.path for c in out] == ["/independent"]
+
+    def test_descendant_covered_sum_preserves_residual_folding(self):
+        changes = [
+            reports.DirChange("/r/a", 0, 2_000, 2_000),
+            reports.DirChange("/r", 0, 1_900, 1_900),
+        ]
+
+        out = reports.fold_changes(changes, topn=10)
+
+        assert [c.path for c in out] == ["/r/a"]
+
+    def test_directory_prefix_does_not_match_similar_name(self):
+        changes = [
+            reports.DirChange("/r", 0, 100_000, 100_000),
+            reports.DirChange("/result", 0, 99_800, 99_800),
+        ]
+
+        out = reports.fold_changes(changes, topn=10)
+
+        assert [c.path for c in out] == ["/r", "/result"]
+
+    def test_root_path_can_be_replaced_by_precise_child(self):
+        changes = [
+            reports.DirChange("/", 0, 100_000, 100_000),
+            reports.DirChange("/r", 0, 99_800, 99_800),
+        ]
+
+        out = reports.fold_changes(changes, topn=1)
+
+        assert [c.path for c in out] == ["/r"]
+
+    def test_large_input_avoids_pairwise_ancestor_checks(self, monkeypatch):
+        original_is_ancestor = reports._is_ancestor
+        ancestor_checks = 0
+
+        def counted_is_ancestor(a, b):
+            nonlocal ancestor_checks
+            ancestor_checks += 1
+            return original_is_ancestor(a, b)
+
+        monkeypatch.setattr(reports, "_is_ancestor", counted_is_ancestor)
+        changes = [
+            reports.DirChange(f"/independent-{index}", 0, 8_000 - index, 8_000 - index)
+            for index in range(8_000)
+        ]
+
+        out = reports.fold_changes(changes, topn=3)
+
+        assert [c.path for c in out] == [
+            "/independent-0",
+            "/independent-1",
+            "/independent-2",
+        ]
+        assert ancestor_checks == 0
 
 
 class TestPrune:

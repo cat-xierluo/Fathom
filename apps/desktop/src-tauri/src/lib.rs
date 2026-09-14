@@ -4,8 +4,11 @@
 //! - 壳负责 helper 进程生命周期（ISS-009 切片 1）：启动时拉起 PyInstaller
 //!   onedir helper，经 ``helper-instance.json`` / ``/health`` 握手后导航主
 //!   窗口到本地服务；退出时按身份 SIGTERM 回收；同服务已在跑则复用。
-//! - 关闭窗口 = 隐藏（macOS 菜单栏应用惯例），退出走 tray 菜单；退出流程
-//!   只向本壳拉起的 helper 发信号，不触碰外部同服务实例。
+//! - 退出回收覆盖所有路径（ISS-057）：tray 菜单「退出」与非 tray 路径
+//!   （Cmd+Q / AppleScript quit / 系统注销等，经 ``RunEvent::ExitRequested``
+//!   / ``RunEvent::Exit`` 全局钩子）都调用同一幂等回收；关闭窗口 = 隐藏
+//!   （macOS 菜单栏应用惯例）；退出流程只向本壳拉起的 helper 发信号，
+//!   不触碰外部同服务实例。
 //! - tray 标题（剩余空间）由前端页面定期 invoke `update_tray_status` 推送，
 //!   Rust 侧不引 HTTP 依赖。
 //! - helper 路径定位：打包态 ``resource_dir()/helper/fathom-helper/fathom-helper``；
@@ -20,7 +23,7 @@ use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, Url, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindow, WindowEvent,
 };
 
 mod helper;
@@ -260,15 +263,30 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// 退出路径统一回收（ISS-057）：take() 取走 ``HelperState`` 里的句柄后调用
+/// ``stop()``，保证幂等——tray 菜单退出、``RunEvent::ExitRequested`` 与
+/// ``RunEvent::Exit`` 可能依次触发，第一次 take 后后续调用拿到 ``None``
+/// 直接返回，不会对同一 helper 重复发信号。
+///
+/// 既有三条语义由 ``HelperHandle::stop`` 自身保证，此处不绕过：
+/// a) 复用模式（reused=true，helper 为外部/他实例持有）不发信号；
+/// b) SIGTERM 后 bounded 等待（10s 上限），不会无限阻塞退出；
+/// c) 只向本壳 spawn 的子进程发信号（零击杀）。
+fn reap_spawned_helper(app: &AppHandle) {
+    let Some(state) = app.try_state::<HelperState>() else {
+        return;
+    };
+    let Ok(mut guard) = state.0.lock() else {
+        return;
+    };
+    if let Some(handle) = guard.take() {
+        let _ = handle.stop();
+    }
+}
+
 /// tray 退出流程：先 SIGTERM 回收本壳拉起的 helper，再退出 app。
 fn quit_with_helper(app: &AppHandle) {
-    if let Some(state) = app.try_state::<HelperState>() {
-        if let Ok(g) = state.0.lock() {
-            if let Some(h) = g.as_ref() {
-                let _ = h.stop();
-            }
-        }
-    }
+    reap_spawned_helper(app);
     app.exit(0);
 }
 
@@ -343,6 +361,15 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("Fathom 桌面壳启动失败");
+        .build(tauri::generate_context!())
+        .expect("Fathom 桌面壳启动失败")
+        // ISS-057：全局退出钩子兜底非 tray 退出路径（Cmd+Q / AppleScript
+        // quit / 系统注销等）。tray「退出」先走 quit_with_helper，随后
+        // app.exit(0) 也会触发 ExitRequested——take() 幂等保证只回收一次。
+        // 复用模式 stop() 不发信号；bounded 等待 10s 不阻塞退出。
+        .run(|app, event| match event {
+            RunEvent::ExitRequested { .. } => reap_spawned_helper(app),
+            RunEvent::Exit => reap_spawned_helper(app),
+            _ => {}
+        });
 }

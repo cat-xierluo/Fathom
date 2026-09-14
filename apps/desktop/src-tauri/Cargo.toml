@@ -1,6 +1,8 @@
 [package]
 name = "fathom-desktop"
-version = "0.2.0"
+# 版本必须与单一版本源 fathom/__init__.py __version__ 一致（ISS-037）；
+# scripts/check_version_consistency.sh 会拦截漂移。
+version = "0.3.0"
 description = "Fathom 桌面壳：菜单栏监控 + 主窗口"
 edition = "2021"
 

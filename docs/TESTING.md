@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前 pytest 门禁是 **295**，变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前 pytest 门禁是 **308**，变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh

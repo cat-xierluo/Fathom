@@ -44,6 +44,7 @@ import threading
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -148,6 +149,21 @@ async def local_boundary_guard(request: Request, call_next):
     return response
 
 
+@app.exception_handler(RequestValidationError)
+async def _query_args_as_400(request: Request, exc: RequestValidationError):
+    """查询参数校验失败统一 400（ISS-024：坏参数与 404/409 语义明确区分）。
+
+    FastAPI 默认返回 422 + 机器 errors 数组；本项目其余入口（reveal、
+    reports 日期）都以 400 + 中文 detail 表达坏参数。这里把全 API 的
+    参数校验失败收敛到同一合同，避免前端/CLI 面对三种错误码。
+    """
+    parts = []
+    for err in exc.errors():
+        where = ".".join(str(loc) for loc in err.get("loc", [])[1:]) or "请求"
+        parts.append(f"{where}：{err.get('msg', '无效')}")
+    return JSONResponse({"detail": "请求参数无效：" + "；".join(parts)}, status_code=400)
+
+
 # 树接口单次返回的目录上限（防止极端情况下响应过大）
 TREE_MAX_NODES = 20000
 
@@ -213,45 +229,83 @@ def api_snapshots():
 
 @app.get("/api/volume-trend")
 def api_volume_trend(limit: int = Query(120, ge=2, le=2000)):
+    """卷容量趋势：最新快照所属数据集（同根同 min_kb，ISS-021 口径）内
+    先取最新 N 条，再正序输出（AUD-09：旧实现 ASC LIMIT 取的是最早 N 条，
+    序列超过 limit 时最新点反而被截掉；跨数据集历史也不得混点）。
+    """
     conn = _get_conn()
     try:
+        latest = _latest_snapshots(conn, 1)
+        if not latest:
+            return []
+        anchor = latest[0]
         rows = conn.execute(
             """SELECT s.created_at, v.total_bytes, v.free_bytes
                FROM snapshots s JOIN volume_stats v ON v.snapshot_id = s.id
-               ORDER BY s.created_at ASC LIMIT ?""",
-            (limit,),
+               WHERE s.root = ? AND s.min_kb IS ?
+               ORDER BY s.created_at DESC, s.id DESC
+               LIMIT ?""",
+            (anchor["root"], anchor["min_kb"], limit),
         ).fetchall()
+        rows.reverse()  # 输出仍为时间正序，图表可直接渲染
         return [dict(r) for r in rows]
     finally:
         conn.close()
 
 
 @app.get("/api/trees")
-def api_trees(snapshot_id: int | None = None, min_kb: int = 51200):
-    """目录树（旭日图/矩形树图数据），默认最新快照、>=50MB 的目录。"""
+def api_trees(snapshot_id: int | None = None, min_kb: int = Query(51200, ge=1)):
+    """目录树（旭日图/矩形树图数据），默认最新快照、>=50MB 的目录。
+
+    三类"没有数据"语义明确区分（ISS-024）：
+    - 库里没有任何快照：200，snapshot_id=null（前端据此提示首扫）；
+    - 指定 snapshot_id 不存在：404；
+    - 有效快照但没有 >= min_kb 的目录：200 空 children（低于显示阈值
+      不是错误，旧行为把这两种情况混在一个 404 里）。
+
+    节点预算在 SQL 层生效（LIMIT），不再先取全部行；截断事实通过
+    truncated/matched_count/node_count/node_limit 显式可见。
+    """
     conn = _get_conn()
     try:
         if snapshot_id is None:
             latest = _latest_snapshots(conn, 1)
             if not latest:
-                return {"snapshot_id": None, "root": None, "children": []}
+                return {"snapshot_id": None, "root": None, "children": [],
+                        "truncated": False, "matched_count": 0, "node_count": 0,
+                        "node_limit": TREE_MAX_NODES}
             snapshot_id = latest[0]["id"]
+        meta = conn.execute(
+            "SELECT id, root FROM snapshots WHERE id = ?", (snapshot_id,)
+        ).fetchone()
+        if meta is None:
+            raise HTTPException(404, f"快照 {snapshot_id} 不存在")
+        # root=/ 时 rstrip("/") 会得到空串；统一归一成 "/"，避免把根
+        # 当作 top 的孩子重复挂载、面包屑/父路径前缀错位。
+        root_path = meta["root"].rstrip("/") or "/"
+
+        # SQL 层预算：多取一行只为探测 truncated；非截断时不再付 COUNT 扫描。
         rows = conn.execute(
             "SELECT path, size_kb FROM entries WHERE snapshot_id = ? AND size_kb >= ? "
-            "ORDER BY size_kb DESC",
-            (snapshot_id, min_kb),
+            "ORDER BY size_kb DESC LIMIT ?",
+            (snapshot_id, min_kb, TREE_MAX_NODES + 1),
         ).fetchall()
-        if not rows:
-            raise HTTPException(404, f"快照 {snapshot_id} 不存在或无 >= {min_kb}KB 的目录")
-
-        meta = conn.execute("SELECT root FROM snapshots WHERE id = ?", (snapshot_id,)).fetchone()
-        root_path = meta["root"].rstrip("/")
+        truncated = len(rows) > TREE_MAX_NODES
+        if truncated:
+            matched_count = conn.execute(
+                "SELECT COUNT(*) c FROM entries WHERE snapshot_id = ? AND size_kb >= ?",
+                (snapshot_id, min_kb),
+            ).fetchone()["c"]
+        else:
+            matched_count = len(rows)
+        rows = rows[:TREE_MAX_NODES]
 
         # 由扁平路径构建嵌套树；用字典登记路径 -> 节点。
         # du 的累计语义保证父目录大小 >= 子目录，因此浅层大目录几乎总在保留集内；
         # 个别中间层被 TREE_MAX_NODES 截断时，其子孙直接挂到顶层（旭日图可正常下钻）。
+        # 每个节点只会挂到一个父节点上：子树不重复归属，无孤儿节点。
         nodes: dict[str, dict] = {}
-        for r in rows[:TREE_MAX_NODES]:
+        for r in rows:
             nodes[r["path"]] = {"name": r["path"].rsplit("/", 1)[-1], "value": r["size_kb"],
                                 "path": r["path"], "children": {}}
 
@@ -276,7 +330,9 @@ def api_trees(snapshot_id: int | None = None, min_kb: int = 51200):
                                    sorted(d["children"].values(), key=lambda x: -x["value"])]
             return out
 
-        return {"snapshot_id": snapshot_id, "root": root_path, "children": [to_list(top)]}
+        return {"snapshot_id": snapshot_id, "root": root_path, "children": [to_list(top)],
+                "truncated": truncated, "matched_count": matched_count,
+                "node_count": len(nodes), "node_limit": TREE_MAX_NODES}
     finally:
         conn.close()
 
@@ -328,16 +384,39 @@ def api_diff(
 
 
 @app.get("/api/trend")
-def api_trend(path: str, limit: int = Query(120, ge=2, le=2000)):
-    """单目录历史大小序列。"""
+def api_trend(path: str = Query(..., min_length=1),
+              limit: int = Query(120, ge=2, le=2000)):
+    """单目录历史大小序列。
+
+    口径（ISS-024）：
+    - 数据集隔离：以"最新一条记录该路径的快照"为锚，只返回锚快照同数据集
+      （同根同 min_kb）内的点。嵌套监控根或改阈值后，同一绝对路径可能存在
+      于多个数据集，跨数据集混点会画出不可比的折线（AUD-09 同类反例）。
+    - 最新窗口：先取最新 N 条再正序输出，超过 limit 时最新点必须保留
+      （旧实现 ASC LIMIT 截掉的是最新端）。
+    - gap 语义：只返回确有记录的历史点；路径在中间某些快照缺失时缺不补点。
+    - 路径从未有记录：200 + 空 points（是"无记录"不是错误，与 400/404 区分）。
+    """
     conn = _get_conn()
     try:
+        anchor = conn.execute(
+            """SELECT s.id, s.root, s.min_kb FROM entries e
+               JOIN snapshots s ON s.id = e.snapshot_id
+               WHERE e.path = ?
+               ORDER BY s.created_at DESC, s.id DESC LIMIT 1""",
+            (path,),
+        ).fetchone()
+        if anchor is None:
+            return {"path": path, "points": []}
         rows = conn.execute(
             """SELECT s.created_at, e.size_kb FROM entries e
                JOIN snapshots s ON s.id = e.snapshot_id
-               WHERE e.path = ? ORDER BY s.created_at ASC LIMIT ?""",
-            (path, limit),
+               WHERE e.path = ? AND s.root = ? AND s.min_kb IS ?
+               ORDER BY s.created_at DESC, s.id DESC
+               LIMIT ?""",
+            (path, anchor["root"], anchor["min_kb"], limit),
         ).fetchall()
+        rows.reverse()  # 输出时间正序
         return {"path": path, "points": [dict(r) for r in rows]}
     finally:
         conn.close()
@@ -465,21 +544,27 @@ def api_browse(path: str | None = None):
         new_sid = snaps[0]["id"]
         predecessor = reports.find_same_dataset_predecessor(conn, new_sid)
         old_sid = predecessor["id"] if predecessor else None
-        root_path = snaps[0]["root"].rstrip("/")
-        target = path.rstrip("/") if path else root_path
-        if not (target == root_path or target.startswith(root_path + "/")):
+        # root=/ 时 rstrip("/") 得空串：归一成 "/"，否则 target/prefix/面包屑
+        # 全部错位（ISS-024 root=/ 边界）。
+        root_path = snaps[0]["root"].rstrip("/") or "/"
+        target = (path.rstrip("/") or root_path) if path else root_path
+        # root=/ 时任何绝对路径都在根内（root_path + "/" 会拼出 "//" 误拒）。
+        inside = target.startswith("/") if root_path == "/" else (
+            target == root_path or target.startswith(root_path + "/"))
+        if not inside:
             raise HTTPException(400, f"路径必须在监控根 {root_path} 之内")
 
         new_entries = reports.load_snapshot(conn, new_sid)
         old_entries = reports.load_snapshot(conn, old_sid) if old_sid else {}
 
-        prefix = target + "/"
+        prefix = target.rstrip("/") + "/"  # root=/ 时 target+"/" 会拼出 "//"
         children = []
         for p, size in new_entries.items():
             if not p.startswith(prefix):
                 continue
             rest = p[len(prefix):]
-            if "/" not in rest:  # 直接子目录
+            # rest 必须是非空单段：root=/ 时根条目 "/" 自身会以空前缀命中
+            if rest and "/" not in rest:  # 直接子目录
                 old_size = old_entries.get(p)
                 children.append({
                     "name": rest,
@@ -492,13 +577,16 @@ def api_browse(path: str | None = None):
                 })
         children.sort(key=lambda c: c["size_kb"], reverse=True)
 
+        # 侧栏趋势与子目录差值同一数据集口径（ISS-024）：只取当前快照同
+        # 数据集（同根同 min_kb）内该路径的记录点，跨数据集不混点。
         points = [
             dict(r)
             for r in conn.execute(
                 """SELECT s.created_at, e.size_kb FROM entries e
                    JOIN snapshots s ON s.id = e.snapshot_id
-                   WHERE e.path = ? ORDER BY s.created_at""",
-                (target,),
+                   WHERE e.path = ? AND s.root = ? AND s.min_kb IS ?
+                   ORDER BY s.created_at ASC""",
+                (target, snaps[0]["root"], snaps[0]["min_kb"]),
             )
         ]
         # 面包屑

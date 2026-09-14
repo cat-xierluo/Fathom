@@ -73,7 +73,7 @@
 | ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | DONE | — |
 | ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | DONE | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | DONE | ISS-023 |
-| ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | READY | ISS-021、ISS-024、ISS-026、ISS-027 |
+| ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | REVIEW_EXTERNAL | ISS-021、ISS-024、ISS-026、ISS-027 |
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | IN_PROGRESS | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
 | ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | DONE | — |
@@ -353,6 +353,14 @@
 - **证据/接续**（2026-09-13）：[PR #29](https://github.com/cat-xierluo/fathom/pull/29) head `98149d1554c2aac5b65ff3a94130bfe80810aea5` 经独立 fixed-head review ACCEPT，squash 合并为 main `ce1fbd2`。frontend/ 拆为无构建链原生 ES modules（modules/ 下 request/format/charts/polling/tauri/router/status + pages/ 五页 enter/leave；router 单一刷新入口；request 世代号+pageScoped 防倒序覆盖；charts 隐藏 stale/重显 resume；polling 幂等单实例；tauri 浏览器静默降级）。scripts/verify_frontend_refresh.cjs 扩至 33 项真实 Chromium 检查（旧代码基线与重构后均 33/33×2 轮；含乱序响应、切页轮询计数、图表重显 resize、mock Tauri 桥闭环）；合并后最新 main 复验 33/33、39/39、209 pytest 全绿。诚实说明：Chromium 环境下旧代码无行为反例，本卡交付性质为结构边界显式化+生命周期合同化+不回退。真实 Tauri WebView 桥接与真实 FastAPI StaticFiles 下 ES module MIME/CSP 实机 `NOT_VERIFIED`（随 ISS-028 实装或 ISS-009 桌面验收覆盖）。任务 DONE。
 
 ### ISS-028 · 总览、变化与目录详情 UX/UI 实装
+
+- **交付中（2026-09-14，PM Wave 5）**：`iss-028-repair-chartlabel` 分支 head `c6473a5`，PR #43（未合并）。
+- 已实现：总览接入真实快照事实与覆盖质量、变化页统一可排序表 + 目录详情侧栏、分布行可聚焦 + 长路径复制、设置页运行历史、卷容量走势图等价表格、键盘 Tab/Esc 焦点返回、三视口（960/1220/1920）无横向溢出。
+- 验证（PM 独立复跑）：`node scripts/verify_frontend_refresh.cjs` 59/59；`bash scripts/ci_browser_checks.sh` 39/39；全量 pytest 285。
+- 修复记录：m2 曾把柱条 yAxis 标签改为“前 14 字符 + 省略号 + 后 15 字符”截断，导致 ISS-031 安全检查 `chart-tooltip-escapes-path` 按类目文本定位恶意条目失败（39→38/39）；修复 commit 恢复 `shortPath(r.path, 2)`。属内部可恢复缺陷，已修复并复验。
+- **未完成**：独立 fixed-head review。首任 reviewer 会话完成实质审查后会话失效未落盘；重派的 `review-wave5-028b` 因 codebuddy-hy4 lane 网关 503 中断无产物。两任均未产出 verdict，因此本卡**不得合并、不得勾验收项**。
+- **解除条件**：额度重置（GLM 20:04 / MiniMax 20:00）或网关恢复后，重派独立 reviewer 审 `c6473a5` 取得 verdict。
+
 
 - **目标**：把已评审原型接入真实扫描事实，完成桌面核心体验提升。
 - **范围**：frontend/、必要的 api.py 展示字段、DESIGN。

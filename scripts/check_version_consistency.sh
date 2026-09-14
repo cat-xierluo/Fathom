@@ -11,6 +11,9 @@
 #   tauri.conf.json           顶层 version 与所有嵌套 "version" 键（含 bundle/
 #                             预发行配置未来新增处）必须等于权威源
 #   Cargo.toml                [package] version 必须等于权威源
+#   Cargo.lock                本地包 fathom-desktop 紧随 name 行的 version
+#                             必须等于权威源（生成物漂移会让 --locked 构建
+#                             与单一源脱钩；依赖项版本不比对）
 #   pyproject.toml            若声明 version 则必须等于权威源（当前 fathom
 #                             非安装包、无该字段；规则保持 fail-closed 覆盖未来补充）
 #   frontend/（UI）           无独立版本字面量，版本经 /api/status 从单一源
@@ -33,6 +36,7 @@ py_init="$root/fathom/__init__.py"
 py_api="$root/fathom/api.py"
 tauri_conf="$root/apps/desktop/src-tauri/tauri.conf.json"
 cargo_toml="$root/apps/desktop/src-tauri/Cargo.toml"
+cargo_lock="$root/apps/desktop/src-tauri/Cargo.lock"
 pyproject="$root/pyproject.toml"
 
 fail() {
@@ -51,7 +55,7 @@ add_row() {
 }
 
 # ---- 0. 结构存在性（缺文件先于一切比对）----
-for f in "$py_init" "$py_api" "$tauri_conf" "$cargo_toml"; do
+for f in "$py_init" "$py_api" "$tauri_conf" "$cargo_toml" "$cargo_lock"; do
   [ -f "$f" ] || fail "缺少 $f"
 done
 
@@ -113,7 +117,26 @@ cargo_version="$(awk '/^\[package\]/{in_pkg=1; next} /^\[/{in_pkg=0} in_pkg && /
   && add_row "Cargo.toml [package] version" "$cargo_version" ok "" \
   || add_row "Cargo.toml [package] version" "$cargo_version" drift "期望 $ref"
 
-# ---- 5. pyproject.toml：有 version 声明则必须一致 ----
+# ---- 5. Cargo.lock 本地包 fathom-desktop version ----
+# Cargo.lock 是 cargo 生成物，但 3beb3b5 时它停在 0.2.0 而本脚本全绿
+# （BF-2 盲区，PM 人工发现后另作同步），故本地包版本行纳入比对：
+# 只认紧跟 name = "fathom-desktop" 的 version 行，依赖项版本不比对。
+lock_version="$(awk '
+  /^name[[:space:]]*=[[:space:]]*"fathom-desktop"[[:space:]]*$/ { want = 1; next }
+  /^\[\[package\]\]/ { want = 0; next }
+  want && /^version[[:space:]]*=[[:space:]]*"/ {
+    sub(/^version[[:space:]]*=[[:space:]]*"/, "")
+    sub(/"[[:space:]]*$/, "")
+    print
+    exit
+  }
+' "$cargo_lock")"
+[ -n "$lock_version" ] || fail "Cargo.lock 读不出 fathom-desktop 的 version 行（本地包条目缺失或格式异常）"
+[ "$lock_version" = "$ref" ] \
+  && add_row "Cargo.lock fathom-desktop" "$lock_version" ok "" \
+  || add_row "Cargo.lock fathom-desktop" "$lock_version" drift "期望 $ref"
+
+# ---- 6. pyproject.toml：有 version 声明则必须一致 ----
 pyproject_versions="$(grep -E '^version[[:space:]]*=[[:space:]]*"[^"]+"' "$pyproject" 2>/dev/null | sed -E 's/.*"([^"]+)".*/\1/' || true)"
 if [ -z "$pyproject_versions" ]; then
   add_row "pyproject.toml version" "—" ok "未声明（fathom 非安装包）"

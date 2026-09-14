@@ -8,8 +8,8 @@ Tauri 0.3.0 四处漂移且无校验拦截。
 1. 真实仓库四处版本全部等于单一版本源，`scripts/check_version_consistency.sh`
    退出 0；
 2. 在临时副本上制造任一处漂移（含 api.py 硬编码回潮、tauri 嵌套/预发行
-   配置版本、pyproject 未来补充的 version 声明），校验器退出 1 且打印
-   差异信息——真实文件不被修改；
+   配置版本、Cargo.lock 本地包版本行、pyproject 未来补充的 version
+   声明），校验器退出 1 且打印差异信息——真实文件不被修改；
 3. 权威源读不出或文件缺失（结构性失败）时退出 2；
 4. 运行时 FastAPI 实例的 version 与 `fathom.__version__` 同源相等。
 """
@@ -33,6 +33,7 @@ CHECKED_FILES = [
     "fathom/api.py",
     "apps/desktop/src-tauri/tauri.conf.json",
     "apps/desktop/src-tauri/Cargo.toml",
+    "apps/desktop/src-tauri/Cargo.lock",
     "pyproject.toml",
 ]
 
@@ -137,6 +138,23 @@ def test_tauri_nested_prerelease_version_drift(tmp_path: Path) -> None:
     )
     result = _run_checker(root)
     assert result.returncode == 1, result.stdout + result.stderr
+
+
+def test_cargo_lock_local_package_drift_detected(tmp_path: Path) -> None:
+    # BF-2 盲区钉住：3beb3b5 时 Cargo.lock 本地包仍 0.2.0 而校验器全绿，
+    # PM 人工发现后另作同步。本地包 fathom-desktop 紧随 name 行的 version
+    # 漂移必须退出 1 并点名 Cargo.lock；一致场景由 test_real_repo_consistent
+    # 覆盖（真实仓库该行为 0.3.0，校验器保持退出 0）。
+    root = _make_copy(tmp_path)
+    _rewrite(
+        root / "apps/desktop/src-tauri/Cargo.lock",
+        'name = "fathom-desktop"\nversion = "0.3.0"',
+        'name = "fathom-desktop"\nversion = "0.2.0"',
+    )
+    result = _run_checker(root)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "Cargo.lock" in result.stdout
+    assert "0.2.0" in result.stdout
 
 
 def test_pyproject_declared_version_must_match(tmp_path: Path) -> None:

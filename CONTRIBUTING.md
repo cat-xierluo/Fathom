@@ -24,7 +24,8 @@ Fathom 是 macOS 本机目录容量历史追踪工具：每日 `du` 快照存 SQ
    等于脚本内期望值，测试增删要显式同步）。
 2. **版本一致性**：`bash scripts/check_version_consistency.sh`——版本
    唯一权威源是 `fathom/__init__.py` 的 `__version__`，不要手改
-   `tauri.conf.json` / `Cargo.toml` 里的版本号再忘了同步。
+   `tauri.conf.json` / `Cargo.toml` 里的版本号再忘了同步。改版本后
+   同步 `Cargo.lock` 本地包 `fathom-desktop` 的版本行。
 3. **真实入口验证**：行为变化请按 [docs/TESTING.md](docs/TESTING.md)
    用隔离数据根跑真实交互（不要触发真实 HOME 扫描、不写生产库）。
 

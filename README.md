@@ -4,7 +4,7 @@ macOS 本机的目录容量历史追踪工具：记录哪些目录在增长，�
 
 目前是 **v0.3.0 开发线**，提供每日扫描内核、SQLite 快照、Markdown 日报、五页 Web 仪表盘和 Tauri 开发壳。v0.3.0 是首个可分发版本的目标，当前还没有面向普通用户的完整安装包或 Release；自包含运行时、正式 UI、Developer ID 签名/公证和应用内更新仍在任务队列，详情见 [路线图](docs/ROADMAP.md)、[任务](docs/TASKS.md) 与 [发行方案](docs/plans/2026-09-13-v0.3-release-design.md)。
 
-近期目标是让其他 Mac 用户无需开发工具即可安装使用，并整体提升 UX/UI；远期增加依赖来源/用途识别、扫描结果的可选 Agent 解释与目录标签。**这些智能功能尚未实现。** 当前源码私有托管，未来开源与许可证选择另行确认。
+近期目标是让其他 Mac 用户无需开发工具即可安装使用，并整体提升 UX/UI；远期增加依赖来源/用途识别、扫描结果的可选 Agent 解释与目录标签。**这些智能功能尚未实现。** 源码采用 Apache-2.0 许可证（见 LICENSE），当前仍私有托管，公开发布时机另行确认。
 
 ## 当前能做什么
 
@@ -86,4 +86,4 @@ cargo run
 
 ## 许可证状态
 
-当前未授予开源许可证，不作公开分发声明。仓库保持 private 时只准备内部 RC/draft Release，普通客户端不能把 private GitHub Release 当作匿名自动更新源。依赖/资源许可清单及项目许可证选择由 ISS-037 完成，用户批准后再开放发布。
+本项目采用 **Apache License 2.0**（仓库根 `LICENSE`，Copyright 2026 maoking，与 Folia 一致），第三方组件声明见 `THIRD_PARTY_NOTICES.md`，依赖来源清单见 `docs/plans/2026-09-14-dependency-inventory.md`。许可证已授予不等于已公开发布：仓库保持 private 时只准备内部 RC/draft Release，普通客户端不能把 private GitHub Release 当作匿名自动更新源；公开时机由用户决定。

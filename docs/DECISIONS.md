@@ -5,6 +5,18 @@
 
 ---
 
+### [DEC-020] - 2026-09-14 - 项目许可证采用 Apache-2.0（与 Folia 一致）
+
+**背景**：ISS-037 交付了许可证选项对比（MIT / Apache-2.0 / MPL-2.0 / AGPL-3.0）并推荐 Apache-2.0，但按合同不落 LICENSE，等用户选择。依赖侧 PyInstaller 为 GPLv2 + 允许冻结产物以任意许可分发的例外条款、Tauri/tao 系 crate 与 ECharts 为 Apache-2.0/MIT，均与 Apache-2.0 兼容。
+
+**决策**：用户 2026-09-14 指示“和 Folia 一样”，采用 Apache License 2.0。LICENSE 正文与 Folia 仓库逐字一致，版权行按 Fathom 最早提交年份写 `Copyright 2026 maoking`；Cargo package 声明 `license = "Apache-2.0"`；README、THIRD_PARTY_NOTICES 与许可证方案文档联动。授予许可证不改变仓库 private 状态与公开发布时机（仍由用户决定）。
+
+**验证**：`diff` 证明 LICENSE 除版权行外与 Folia 一致；`bash scripts/check_version_consistency.sh` 不受影响；THIRD_PARTY_NOTICES 已注明项目自身许可。
+
+**影响/重评条件**：ISS-041 打包须把 LICENSE 与 THIRD_PARTY_NOTICES 纳入 .app/.dmg Resources；若未来引入 GPL 强传染依赖或需双许可，重开决策。ISS-037 验收框“用户选定许可证后才落入 LICENSE”据此满足。
+
+---
+
 ### [DEC-019] - 2026-09-13 - PM 交接以仓库任务源和唯一 owner 为准
 
 **背景**：用户改由其他 Agent 担任 PM。旧自动巡检依赖同一对话和私有 orchestration 状态；若新旧 PM 同时派发或合并，会重复实现、争用 worktree，并让任务状态失去唯一来源。

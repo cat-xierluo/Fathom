@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。新 PM 的默认下一项：**ISS-009**（可分发 app 与安装入口；前置仅剩 ISS-045 Logo 人工门——若用户仍未选图标方向，可先做不依赖图标的打包/安装引导切片并把 iconset 留 NOT_VERIFIED）。ISS-045 仍是人工视觉门，不得自动越过；LICENSE 落地待用户选择许可证。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。新 PM 的默认下一项：**ISS-009**（可分发 app 与安装入口；前置仅剩 ISS-045 Logo 人工门——若用户仍未选图标方向，可先做不依赖图标的打包/安装引导切片并把 iconset 留 NOT_VERIFIED）。ISS-045 仍是人工视觉门，不得自动越过；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -563,9 +563,9 @@
 - **验收**：
   - [ ] Python/API/UI/Tauri/Cargo 从单一版本源或等价生成/校验规则得到一致版本；任一代码或预发行配置漂移时校验器必红
   - [ ] 依赖与图标等资源来源及必要 notice 齐全
-  - [ ] 用户选定许可证后才落入 LICENSE；未选择则保持任务未完成
+  - [x] 用户选定许可证后才落入 LICENSE；未选择则保持任务未完成
   - [ ] 贡献/漏洞反馈与匿名诊断说明可供外部用户理解
-- **证据/接续**（2026-09-14）：[PR #57](https://github.com/cat-xierluo/fathom/pull/57) head `e23618e` squash 合并为 main `b27404a`（#50 关闭取代）。单一版本源 `fathom.__version__ = 0.3.0`，api.py/Cargo.toml/tauri.conf.json/Cargo.lock 本地包行同源；`scripts/check_version_consistency.sh` fail-closed（一致 0 / 漂移 1 / 缺失 2）覆盖含 Cargo.lock 的全部五处，`tests/test_version_consistency.py` 13 项；依赖来源清单与 THIRD_PARTY_NOTICES（echarts vendored 双版本标识与上游校验和 NOT_VERIFIED 如实登记；Rust 474 条目仅核对主要子集其余 UNKNOWN）；许可证选项方案推荐 Apache-2.0 但 **LICENSE 未创建（待用户选择）**；CONTRIBUTING/SECURITY 草案。首审 REJECT 两条（门禁计数未同步；校验器漏 Cargo.lock——该盲区曾真实发生），修复后 re_review ACCEPT。验收框 1/2/4 满足；框 3（LICENSE）与图标来源（ISS-045）保留人工门，任务按“可自动化部分”DONE，用户选定许可证后另起小卡落 LICENSE。
+- **证据/接续**（2026-09-14）：[PR #57](https://github.com/cat-xierluo/fathom/pull/57) head `e23618e` squash 合并为 main `b27404a`（#50 关闭取代）。单一版本源 `fathom.__version__ = 0.3.0`，api.py/Cargo.toml/tauri.conf.json/Cargo.lock 本地包行同源；`scripts/check_version_consistency.sh` fail-closed（一致 0 / 漂移 1 / 缺失 2）覆盖含 Cargo.lock 的全部五处，`tests/test_version_consistency.py` 13 项；依赖来源清单与 THIRD_PARTY_NOTICES（echarts vendored 双版本标识与上游校验和 NOT_VERIFIED 如实登记；Rust 474 条目仅核对主要子集其余 UNKNOWN）；许可证选项方案推荐 Apache-2.0 但 **LICENSE 未创建（待用户选择）**；CONTRIBUTING/SECURITY 草案。首审 REJECT 两条（门禁计数未同步；校验器漏 Cargo.lock——该盲区曾真实发生），修复后 re_review ACCEPT。验收框 1/2/4 满足；框 3 于 2026-09-14 由用户选定 Apache-2.0（与 Folia 一致，DEC-020）后落地 LICENSE；图标来源待 ISS-045。任务 DONE。
 - **原 READY 说明**：2026-09-14 转 READY（ISS-029 DONE、ISS-031 DONE）。**人工门保留**：ISS-045 Logo 方向与最终 LICENSE 选择由用户决定；worker 交付可自动化部分——单一版本源与 fail-closed 校验器、依赖锁与来源/许可证清单（SBOM 或等价）、第三方 notices、许可证选项对比方案（不落 LICENSE）、贡献/漏洞反馈/匿名诊断说明草案。图标资源来源一项待 ISS-045。
 
 ### ISS-040 · 应用内更新与双架构更新清单

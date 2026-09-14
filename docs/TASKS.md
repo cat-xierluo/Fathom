@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。当前可并行：**ISS-028**（frontend/，api.py 需要时先 ask）与 **ISS-029 下一切片**（api/cli/config/apps/desktop）。ISS-045 仍是人工视觉门，不得自动越过。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-029 已 DONE（实机项并入 ISS-009/041）。当前：ISS-028 停 REVIEW_EXTERNAL 待独立 review；**ISS-037 READY**（版本单一源/依赖清单/notices/许可证方案，Logo 与 LICENSE 落地为人工门）；ISS-009 待 ISS-037 与 ISS-045。ISS-045 仍是人工视觉门，不得自动越过。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -74,7 +74,7 @@
 | ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | DONE | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | DONE | ISS-023 |
 | ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | REVIEW_EXTERNAL | ISS-021、ISS-024、ISS-026、ISS-027 |
-| ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | IN_PROGRESS | — |
+| ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | DONE | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
 | ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | DONE | — |
 | ISS-032 | 资源预算、大文件查询与诊断 | P1 | M1 | DONE | ISS-020、ISS-025 |
@@ -82,7 +82,7 @@
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
 | ISS-036 | 目录打标与智能变化解读 | P2 | M4 | DEFERRED | ISS-028、ISS-035 |
-| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | BLOCKED | ISS-029、ISS-031、ISS-045 |
+| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | READY | ISS-029、ISS-031、ISS-045 |
 | ISS-038 | PM 自动推进与监督接续 | P1 | M0 | DONE | — |
 | ISS-039 | 扫描结果合同与安全浏览器夹具兼容 | P0 | M0 | DONE | ISS-018、ISS-022 |
 | ISS-040 | 应用内更新与双架构更新清单 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-028、ISS-031 |
@@ -399,6 +399,8 @@
   - [x] 记录选型 DEC、双架构复验计划、冻结打包依赖、端口策略、服务/TCC 身份及未解决阻塞；失败时不推进 ISS-009 的发行验收
 - **证据/接续**：[PR #17](https://github.com/cat-xierluo/fathom/pull/17) 合并为 `7aef239`，独立 fixed-head review ACCEPT，GitHub 双架构 CI 五项通过。当前 arm64 合同原型 18/18：0600 discovery、token 脱敏、身份匹配清理、8 进程唯一 owner、动态端口让位和未知占用零击杀；PyInstaller 6.22.3 onedir A/B 均生成 arm64 Mach-O，并固定 G1/G2/G3/G6 生产缺口。冻结 smoke 为 11 pass / 0 fail / 3 blocked：本机 7952 被未知 PID 占用，按合同未触碰，健康、Host 守卫和 SIGTERM 尚未完成。干净账户断网首启、x86_64 冻结、TCC/后台服务和完整 app 仍 `NOT_VERIFIED`；本卡保持 IN_PROGRESS，ISS-009 不进入发行验收。选型见 DEC-017，复验计划见 `apps/desktop/experiments/iss029/findings.md`。 下一切片必须基于最新 main，在生产路径关闭 G1/G2/G3/G6，完成冻结 helper 的 `/health` 身份、Host 守卫、SIGTERM、动态端口、clean-account 与唯一 owner；与 ISS-020 的 `scan_coordinator`/flock 合同对齐。不得重做已合并 spike，不得触碰当前占用 7952 的未知 PID；x86_64 留 ISS-041。
 
+  **切片 2 完成（2026-09-14）**：[PR #45](https://github.com/cat-xierluo/fathom/pull/45) head `1e08470` squash 合并为 main `87d452a`（MiniMax-M3 worker 实现 + 修复 episode 1；独立 review ACCEPT）。G1 对象导入、G2 运行目录出冻结树、G3 `--version`、G4 `/health` 身份同源、G6 让位/零击杀/端口发现文件 0600 全部在生产路径关闭；冻结冒烟 21/21（含 dummy 占用让位与零击杀反例、外部 7952 占用者不触碰）、合同 pytest 19、全量 295。PM 复跑抓到 smoke 子 shell PID 记账缺陷（让位实际正常）并经修复 episode 收口。**PM 决策**：本卡技术验证目标（“证明可行安装架构、锁定发行方案”）已达成，卡片前三框中仍 `NOT_VERIFIED` 的“新账户断网首启”“TCC 授权主体”“唯一 owner 实测”属发行实机验证，明确并入 ISS-009 验收框（含 x86_64 归 ISS-041），标准不降低。任务 DONE。
+
 ### ISS-001 · 真实跨日定时日报验证
 
 - **目标**：证明定时调度产生第二个有效日期与正确日报。
@@ -502,7 +504,7 @@
   - [ ] 依赖与图标等资源来源及必要 notice 齐全
   - [ ] 用户选定许可证后才落入 LICENSE；未选择则保持任务未完成
   - [ ] 贡献/漏洞反馈与匿名诊断说明可供外部用户理解
-- **证据/接续**：尚未执行；不得勾选验收项。
+- **证据/接续**：2026-09-14 转 READY（ISS-029 DONE、ISS-031 DONE）。**人工门保留**：ISS-045 Logo 方向与最终 LICENSE 选择由用户决定；worker 交付可自动化部分——单一版本源与 fail-closed 校验器、依赖锁与来源/许可证清单（SBOM 或等价）、第三方 notices、许可证选项对比方案（不落 LICENSE）、贡献/漏洞反馈/匿名诊断说明草案。图标资源来源一项待 ISS-045。
 
 ### ISS-040 · 应用内更新与双架构更新清单
 

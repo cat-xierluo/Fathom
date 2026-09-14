@@ -26,6 +26,28 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": ["app", "dmg"],
+    "resources": [
+      "resources/helper/**"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null,
+      "entitlements": null,
+      "exceptionDomain": null
+    },
+    "category": "DeveloperTool",
+    "shortDescription": "Fathom — 本机目录容量历史追踪",
+    "longDescription": "Fathom 在 macOS 本机追踪目录容量变化，按根与阈值生成历史快照，并通过内置 FastAPI 仪表盘展示。"
   }
 }

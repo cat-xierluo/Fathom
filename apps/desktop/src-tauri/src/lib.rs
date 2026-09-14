@@ -1,22 +1,43 @@
-//! Fathom 桌面壳：菜单栏常驻 + 主窗口（加载本机 FastAPI 仪表盘）。
+//! Fathom 桌面壳：菜单栏常驻 + 主窗口（拉起并握手内嵌 helper，导航到本地服务）。
 //!
-//! 设计原则（DEC-007）：
-//! - 壳只负责 UI（tray + 窗口），不管 Python 后端生命周期——后端由 launchd 常驻。
-//! - 关闭窗口 = 隐藏（macOS 菜单栏应用惯例），退出走 tray 菜单。
+//! 设计原则：
+//! - 壳负责 helper 进程生命周期（ISS-009 切片 1）：启动时拉起 PyInstaller
+//!   onedir helper，经 ``helper-instance.json`` / ``/health`` 握手后导航主
+//!   窗口到本地服务；退出时按身份 SIGTERM 回收；同服务已在跑则复用。
+//! - 关闭窗口 = 隐藏（macOS 菜单栏应用惯例），退出走 tray 菜单；退出流程
+//!   只向本壳拉起的 helper 发信号，不触碰外部同服务实例。
 //! - tray 标题（剩余空间）由前端页面定期 invoke `update_tray_status` 推送，
 //!   Rust 侧不引 HTTP 依赖。
+//! - helper 路径定位：打包态 ``resource_dir()/helper/fathom-helper/fathom-helper``；
+//!   开发态 ``FATHOM_HELPER_BIN`` 覆盖；缺失时握手页显示明确错误而非 panic。
+//!
+//! 不引入新 crate（--locked --offline 门禁下避免拉不到依赖）；helper 进程
+//! 操作全用 ``std::process::Command`` 与 ``std`` 文件 I/O。
+
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager, WindowEvent,
+    AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
+};
+
+mod helper;
+
+use helper::{
+    default_runtime_dir, locate_helper, spawn_helper, HelperEvent, HelperHandle,
+    HANDSHAKE_TIMEOUT_S, STOP_TIMEOUT_S,
 };
 
 struct TrayStatusMenu(MenuItem<tauri::Wry>);
 
+/// 全局 helper 句柄；Tauri ``State`` 通过 ``app.manage`` 注入。
+struct HelperState(Mutex<Option<HelperHandle>>);
+
 /// tray 标题推送：空值隐藏对应元素，超长截断；失败记日志不向调用方扩散。
 #[tauri::command]
-fn update_tray_status(app: tauri::AppHandle, title: String, tooltip: String) {
+fn update_tray_status(app: AppHandle, title: String, tooltip: String) {
     const TITLE_MAX_CHARS: usize = 16; // 菜单栏横向空间有限，防异常超长标题撑爆
 
     let Some(tray) = app.tray_by_id("sentinel") else {
@@ -49,17 +70,213 @@ fn update_tray_status(app: tauri::AppHandle, title: String, tooltip: String) {
     }
 }
 
-fn show_main(app: &tauri::AppHandle) {
+/// 查询 helper 当前握手状态；前端握手页用。返回 JSON object：
+/// - ``state``: ``"ready"`` | ``"starting"`` | ``"reused"`` | ``"exhausted"`` | ``"error"``
+/// - ``port``: u16（ready/reused 时）
+/// - ``log_path``: 错误或诊断时
+/// - ``recovery``: ports-exhausted 时恢复动作
+/// - ``error``: error 时
+#[tauri::command]
+fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
+    let guard = match state.0.lock() {
+        Ok(g) => g,
+        Err(_) => return serde_json::json!({"state": "error", "error": "helper 句柄锁中毒"}),
+    };
+    let Some(handle) = guard.as_ref() else {
+        return serde_json::json!({"state": "starting"});
+    };
+    let runtime = handle.runtime_dir.clone();
+    match handle.handshake() {
+        Ok(Some(instance)) => {
+            if handle.reused.load(std::sync::atomic::Ordering::SeqCst) {
+                serde_json::json!({
+                    "state": "reused",
+                    "port": instance.port,
+                    "service": instance.service,
+                    "protocol_version": instance.protocol_version,
+                    "version": instance.version,
+                })
+            } else {
+                serde_json::json!({
+                    "state": "ready",
+                    "port": instance.port,
+                    "service": instance.service,
+                    "protocol_version": instance.protocol_version,
+                    "version": instance.version,
+                    "instance_id": instance.instance_id,
+                    "runtime_mode": instance.runtime_mode,
+                })
+            }
+        }
+        Ok(None) => serde_json::json!({"state": "starting"}),
+        Err(err) => serde_json::json!({
+            "state": "error",
+            "error": err,
+            "log_path": runtime.join("logs").join("helper.log").display().to_string(),
+            "runtime_dir": runtime.display().to_string(),
+            "timeout_s": HANDSHAKE_TIMEOUT_S,
+            "stop_timeout_s": STOP_TIMEOUT_S,
+        }),
+    }
+}
+
+/// 重启 helper：先 stop 当前句柄，再 spawn 新的子进程并握手；返回 ``helper_status`` 同样 JSON。
+#[tauri::command]
+fn helper_retry(app: AppHandle, state: State<'_, HelperState>) -> serde_json::Value {
+    let runtime = match state.0.lock() {
+        Ok(g) => match g.as_ref() {
+            Some(h) => h.runtime_dir.clone(),
+            None => default_runtime_dir(),
+        },
+        Err(_) => return serde_json::json!({"state": "error", "error": "helper 句柄锁中毒"}),
+    };
+    // 先 stop
+    if let Ok(g) = state.0.lock() {
+        if let Some(h) = g.as_ref() {
+            let _ = h.stop();
+        }
+    }
+    // 重置 handle
+    if let Ok(mut g) = state.0.lock() {
+        *g = Some(HelperHandle::new(runtime.clone()));
+    }
+    match start_helper_internal(&app, &state) {
+        Ok(_) => helper_status(state),
+        Err(err) => serde_json::json!({
+            "state": "error",
+            "error": err,
+            "log_path": runtime.join("logs").join("helper.log").display().to_string(),
+            "runtime_dir": runtime.display().to_string(),
+        }),
+    }
+}
+
+/// 导航主窗口到 ``http://127.0.0.1:<port>/``；仅在握手成功时调用。
+fn navigate_main_to(window: &WebviewWindow, port: u16) -> Result<(), String> {
+    let url = format!("http://127.0.0.1:{}/", port);
+    window.navigate(url.as_str()).map_err(|err| {
+        format!("主窗口导航 {} 失败：{}", url, err)
+    })
+}
+
+/// 启动 helper 并握手；成功后导航主窗口。返回 ``Result<(), String>``。
+///
+/// 错误由 ``start_helper_internal`` 上抛；握手页通过 ``helper_status`` 命令查询。
+fn start_helper_internal(app: &AppHandle, state: &State<'_, HelperState>) -> Result<(), String> {
+    let bin = locate_helper(app)?;
+    let runtime = state
+        .0
+        .lock()
+        .map_err(|_| "helper 句柄锁中毒".to_string())?
+        .as_ref()
+        .map(|h| h.runtime_dir.clone())
+        .unwrap_or_else(default_runtime_dir);
+
+    let child = spawn_helper(&bin, &runtime)?;
+    let port = std::env::var("FATHOM_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(helper::DEFAULT_PORT);
+    if let Ok(mut g) = state.0.lock() {
+        if let Some(h) = g.as_mut() {
+            h.adopt(child, port);
+        }
+    }
+
+    // 握手：拿 helper-instance.json 或 /health
+    let handshake_result = {
+        let guard = state.0.lock().map_err(|_| "helper 句柄锁中毒".to_string())?;
+        match guard.as_ref() {
+            Some(h) => h.handshake(),
+            None => Err("helper 句柄未初始化".to_string()),
+        }
+    };
+    match handshake_result {
+        Ok(Some(instance)) => {
+            let reused = state
+                .0
+                .lock()
+                .map(|g| {
+                    g.as_ref()
+                        .map(|h| h.reused.load(std::sync::atomic::Ordering::SeqCst))
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = navigate_main_to(&win, instance.port);
+            } else {
+                eprintln!("[helper] 主窗口不存在，跳过 navigate");
+            }
+            if reused {
+                println!(
+                    "[helper] 已复用 127.0.0.1:{} 的同服务实例（不拉起、不 SIGTERM）",
+                    instance.port
+                );
+            } else {
+                println!(
+                    "[helper] 本壳拉起的 helper 已就绪 127.0.0.1:{} instance_id={:?}",
+                    instance.port, instance.instance_id
+                );
+            }
+            Ok(())
+        }
+        Ok(None) => {
+            // 复用路径但 instance 字段为空；不再拉起
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = navigate_main_to(&win, helper::DEFAULT_PORT);
+            }
+            Ok(())
+        }
+        Err(err) => {
+            // 检查 helper 是否让位（same-service-discovered）或端口耗尽
+            let event = {
+                let guard = state.0.lock().map_err(|_| "helper 句柄锁中毒".to_string())?;
+                match guard.as_ref() {
+                    Some(h) => h.wait_with_events().ok(),
+                    None => None,
+                }
+            };
+            match event {
+                Some(HelperEvent::SameServiceDiscovered { port, .. }) => {
+                    if let Some(win) = app.get_webview_window("main") {
+                        let _ = navigate_main_to(&win, port);
+                    }
+                    Ok(())
+                }
+                Some(HelperEvent::PortsExhausted { .. }) => Err("ports-exhausted".to_string()),
+                _ => Err(err),
+            }
+        }
+    }
+}
+
+fn show_main(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
         let _ = win.set_focus();
     }
 }
 
+/// tray 退出流程：先 SIGTERM 回收本壳拉起的 helper，再退出 app。
+fn quit_with_helper(app: &AppHandle) {
+    if let Some(state) = app.try_state::<HelperState>() {
+        if let Ok(g) = state.0.lock() {
+            if let Some(h) = g.as_ref() {
+                let _ = h.stop();
+            }
+        }
+    }
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![update_tray_status])
+        .invoke_handler(tauri::generate_handler![
+            update_tray_status,
+            helper_status,
+            helper_retry,
+        ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // macOS 菜单栏应用惯例：点关闭只隐藏窗口，tray 常驻
@@ -68,6 +285,13 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // helper 句柄先初始化（runtime_dir 用环境变量或默认）
+            let runtime_dir: PathBuf = std::env::var("FATHOM_RUNTIME_DIR")
+                .ok()
+                .map(PathBuf::from)
+                .unwrap_or_else(default_runtime_dir);
+            app.manage(HelperState(Mutex::new(Some(HelperHandle::new(runtime_dir)))));
+
             let status = MenuItem::with_id(app, "status", "Fathom 启动中…", false, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
             let scan = MenuItem::with_id(app, "scan", "立即扫描…", true, None::<&str>)?;
@@ -92,7 +316,7 @@ pub fn run() {
                         // 前端监听该事件并触发 POST /api/scan（浏览器独立打开时无此通道，静默忽略）
                         let _ = app.emit("tray-action", "scan");
                     }
-                    "quit" => app.exit(0),
+                    "quit" => quit_with_helper(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -106,6 +330,13 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // 启动 helper 并握手；失败也不阻塞 setup，由前端握手页显示
+            let handle = app.handle();
+            let state = handle.state::<HelperState>();
+            if let Err(err) = start_helper_internal(handle, &state) {
+                eprintln!("[helper] 启动/握手失败：{} — 握手页会显示诊断", err);
+            }
 
             Ok(())
         })

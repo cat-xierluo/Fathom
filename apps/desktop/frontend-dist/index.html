@@ -9,42 +9,168 @@
     background: #f5f6f8; color: #1a2233;
     font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
   }
-  .box { text-align: center; }
-  h1 { font-size: 18px; margin: 0 0 8px; }
-  p { color: #6b7486; font-size: 13px; }
+  .box { text-align: center; max-width: 720px; padding: 0 24px; }
+  h1 { font-size: 18px; margin: 0 0 8px; font-weight: 600; }
+  p { color: #4d566b; font-size: 13px; line-height: 1.55; margin: 6px 0; }
+  .muted { color: #6b7486; }
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    background: #eef0f4; border-radius: 6px; padding: 8px 10px;
+    word-break: break-all; text-align: left; color: #2a3144;
+  }
+  ul { text-align: left; color: #4d566b; font-size: 13px; line-height: 1.65; padding-left: 20px; }
   button {
     margin-top: 14px; border: none; background: #2f6fed; color: #fff;
     padding: 8px 20px; border-radius: 8px; font-size: 14px; cursor: pointer;
+  }
+  button.secondary { background: #e7ebf3; color: #1a2233; }
+  .row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  pre.recovery {
+    text-align: left; white-space: pre-wrap; word-break: break-word;
+    background: #fff7e8; color: #5b3f00; border: 1px solid #f1d99a;
+    border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.5;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
 </style>
 </head>
 <body>
   <div class="box">
-    <h1>Fathom</h1>
-    <p id="msg">正在连接本机服务（127.0.0.1:7952）…</p>
-    <button id="retry" hidden>重试</button>
+    <h1 id="title">Fathom</h1>
+    <p id="msg" class="muted">正在启动后台服务……</p>
+    <div id="extra"></div>
+    <div class="row">
+      <button id="retry" hidden>重试握手</button>
+      <button id="open-log" class="secondary" hidden>查看日志</button>
+    </div>
   </div>
 <script>
-  const URL_ = "http://127.0.0.1:7952";
-  async function tryConnect() {
-    document.getElementById("retry").hidden = true;
-    document.getElementById("msg").textContent = "正在连接本机服务（127.0.0.1:7952）…";
-    try {
-      const res = await fetch(URL_ + "/api/status", { mode: "cors" });
-      if (res.ok) {
-        location.replace(URL_);
-        return;
-      }
-      throw new Error("HTTP " + res.status);
-    } catch (e) {
-      document.getElementById("msg").textContent =
-        "本机服务未响应——后台扫描服务应由 launchd 常驻，若刚卸载过请运行 main.py install。";
-      document.getElementById("retry").hidden = false;
+  // 握手页：状态由 Rust 端 helper_status / helper_retry 决定
+  // - ready / reused：直接 navigate 到 http://127.0.0.1:<port>/
+  // - starting：每 1s 轮询一次
+  // - ports-exhausted：展示恢复动作 + 端口冲突表
+  // - error：展示错误 + 日志路径 + runtime 路径
+  // 零 emoji；与现有占位样式一致
+  function invoke(cmd, args) {
+    if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === "function") {
+      return window.__TAURI__.core.invoke(cmd, args || {});
+    }
+    if (window.__TAURI_INTERNALS__ && typeof window.__TAURI_INTERNALS__.invoke === "function") {
+      return window.__TAURI_INTERNALS__.invoke(cmd, args || {});
+    }
+    return Promise.reject(new Error("Tauri bridge 不可用"));
+  }
+
+  const $msg = document.getElementById("msg");
+  const $extra = document.getElementById("extra");
+  const $retry = document.getElementById("retry");
+  const $openLog = document.getElementById("open-log");
+  const $title = document.getElementById("title");
+
+  function renderStarting() {
+    $title.textContent = "Fathom";
+    $msg.textContent = "正在启动后台服务（最长 20 秒）……";
+    $extra.innerHTML = "";
+    $retry.hidden = true;
+    $openLog.hidden = true;
+  }
+
+  function renderReady(state) {
+    $title.textContent = "Fathom";
+    $msg.textContent = state === "reused"
+      ? "已检测到本机服务正在运行，正在打开主界面……"
+      : "后台服务已就绪，正在打开主界面……";
+    $extra.innerHTML = "";
+    const url = "http://127.0.0.1:" + state.port + "/";
+    setTimeout(function () { location.replace(url); }, 300);
+  }
+
+  function renderExhausted(state) {
+    $title.textContent = "无法启动后台服务";
+    $msg.textContent = "端口 7952..7956 全部被未知进程占用，Fathom 不会 kill 任何进程。请按下方恢复动作处理后重试。";
+    $extra.innerHTML = "";
+    const rec = document.createElement("pre");
+    rec.className = "recovery";
+    rec.textContent = state.recovery || "请检查端口 7952..7956 的占用进程并释放，或使用其他启动端口。";
+    $extra.appendChild(rec);
+    $retry.hidden = false;
+    $openLog.hidden = false;
+  }
+
+  function renderError(state) {
+    $title.textContent = "无法启动后台服务";
+    $msg.textContent = state.error || "未知错误";
+    $extra.innerHTML = "";
+    const list = document.createElement("ul");
+    const items = [
+      "日志路径：" + (state.log_path || "（未提供）"),
+      "运行根：" + (state.runtime_dir || "（未提供）"),
+      "握手超时：" + (state.timeout_s || 20) + " 秒",
+      "SIGTERM 等待上限：" + (state.stop_timeout_s || 10) + " 秒"
+    ];
+    for (const text of items) {
+      const li = document.createElement("li");
+      li.textContent = text;
+      list.appendChild(li);
+    }
+    $extra.appendChild(list);
+    $retry.hidden = false;
+    $openLog.hidden = false;
+  }
+
+  function apply(state) {
+    if (!state || typeof state !== "object") { renderStarting(); return; }
+    switch (state.state) {
+      case "ready":
+      case "reused":
+        renderReady(state);
+        break;
+      case "ports-exhausted":
+        renderExhausted(state);
+        break;
+      case "error":
+        renderError(state);
+        break;
+      default:
+        renderStarting();
     }
   }
-  document.getElementById("retry").addEventListener("click", tryConnect);
-  tryConnect();
-  setInterval(() => { if (!document.hidden) tryConnect(); }, 5000);
+
+  let polling = false;
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    try {
+      const state = await invoke("helper_status");
+      apply(state);
+    } catch (err) {
+      $msg.textContent = "Tauri 桥接错误：" + (err && err.message || String(err));
+      $retry.hidden = false;
+    } finally {
+      polling = false;
+    }
+  }
+
+  $retry.addEventListener("click", async function () {
+    $msg.textContent = "正在重启后台服务……";
+    $retry.hidden = true;
+    try {
+      const state = await invoke("helper_retry");
+      apply(state);
+    } catch (err) {
+      $msg.textContent = "重启失败：" + (err && err.message || String(err));
+      $retry.hidden = false;
+    }
+  });
+
+  $openLog.addEventListener("click", function () {
+    // 仅提示用户日志路径；真正打开日志由用户在 Finder 里定位（沙盒外）
+    $msg.textContent = "日志位于运行根 logs/helper.log；如需查看，请打开 Finder 跳转到运行根目录。";
+  });
+
+  // 启动轮询：每 1s 一次，启动后立即先查一次
+  poll();
+  setInterval(poll, 1000);
 </script>
 </body>
 </html>

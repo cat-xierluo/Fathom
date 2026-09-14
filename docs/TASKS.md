@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。新 PM 的默认下一项是 **ISS-029 下一切片**（api/cli/config 已无在途争用）；ISS-028 仍待 ISS-026 人工门。ISS-026 与 ISS-045 是两个独立人工视觉门，均不得自动越过。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。当前可并行：**ISS-028**（frontend/，api.py 需要时先 ask）与 **ISS-029 下一切片**（api/cli/config/apps/desktop）。ISS-045 仍是人工视觉门，不得自动越过。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -19,8 +19,8 @@
 授权来源：用户在本任务中明确要求“review 合并”，并追加“后续可以自动化推进了吗，你作为 pm 按照 multi-agent-orchestration 去派发对应的 worker”。PM 可在下列范围内派发、验证、创建私有仓库 PR，并在独立审查通过后合并；不逐波重复确认。用户说“暂停自动推进”即停止新派发，先安全收口在途工作；发生一次越界操作即回退逐波确认。
 
 - **范围**：2026-09-13 用户追加授权将当前开发线收敛为 v0.3.0 可分发版本，并要求 PM 派 worker 研究/推进 release、Apple 签名公证与应用内更新。ISS-019/023/025/031 已完成；自动推进当前覆盖 ISS-020/021/026/027/029，以及依赖满足后通往 v0.3.0 的 ISS-009/010/016/024/028/030/032/037/040/041；独立验收发现且会让这些门禁假绿的阻断缺陷可先登记为聚焦修复卡（当前已含 ISS-042/043/044/046）。仍须逐卡通过前置和验收，不因发布目标跳阶段。转公开、公开 Release、向外部测试者发送产物仍是最终人工门。
-- **后继查表**：ISS-020/021/024/027/032/047 已完成。ISS-029 下一切片占用 api/cli/config，当前无在途争用可直接派发；完成后再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线。
-- **UX**：ISS-026 原型路径登记为 `prototypes/ux/`，仅合成数据，配套 `scripts/verify_ux_prototype.cjs`。交付具体可点击产物供用户评审；未收到反馈时保持 WAITING，不标 DONE，不自动实装 ISS-028。原型的工程交付可建立 PR，用户评审是本卡关闭条件。
+- **后继查表**：ISS-020/021/024/026/027/032/047 已完成。ISS-028 与 ISS-029 下一切片可并行（前者 frontend/，后者 api/cli/config/apps/desktop；ISS-028 若需 api.py 展示字段先 ask PM 拆契约子卡）；完成后再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线。
+- **UX**：ISS-026 原型位于 `prototypes/ux/`（仅合成数据，配套 `scripts/verify_ux_prototype.cjs`），用户 2026-09-14 确认合并（保留后续反馈权），ISS-028 实装解锁；实装以原型为视觉/交互合同，DESIGN 为页面职责合同，遇原型与真实事实冲突以事实为准并登记。
 - **角色/所有权**：用户于 2026-09-13 再次明确 PM 尽量只做验收、定方向和关键上下文；实现、测试与返修交给 worker，PM 不代写业务代码。实施 worker 只写合同所列工程文件和自己的 session context；PM 独占 TASKS/AGENTS/ARCHITECTURE/DECISIONS/DESIGN/ROADMAP/README/CHANGELOG/TESTING。worker 提供 WRITEBACK_PROPOSAL，由 PM 按事实更新。非平凡实现需要不同 session/dispatch 的 reviewer；固定 40 位 head，不能自审后直接合并。
 - **并发/资源**：本项目最多 3 个活跃 worker（含 reviewer）；待 PM 验收超过 2 项停止新派。scanner、api/app.js、schema/config 分别串行；全量测试全机一次仅一份，worker 只跑所分配回归。采用已有受支持 provider 配置，派发价值、额度、物理内存和写范围门禁均不得绕过。
 - **交付**：每项先反例，再修复及真实入口验证；完成派发价值、交付后、独立审查门禁后，PM 在最新 main 的候选树验证并经唯一 PR 合并。允许在隔离环境准备依赖锁、私有 draft Release、Fathom 专用 updater 密钥配置和签名/公证工作流；不得扫描生产 HOME、注册生产服务、提交/回显密钥、把 GitHub PAT 嵌入客户端或自动公开仓库/Release。Apple 账户材料齐备后才能执行真实签名公证。
@@ -71,9 +71,9 @@
 | ISS-023 | 修复可见数值与快照刷新缺陷 | P1 | M0 | DONE | — |
 | ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | DONE | ISS-021 |
 | ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | DONE | — |
-| ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | WAITING | — |
+| ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | DONE | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | DONE | ISS-023 |
-| ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | BLOCKED | ISS-021、ISS-024、ISS-026、ISS-027 |
+| ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | READY | ISS-021、ISS-024、ISS-026、ISS-027 |
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | IN_PROGRESS | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
 | ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | DONE | — |
@@ -338,7 +338,7 @@
   - [x] 980×640、1220×820 与长路径布局通过，文字/颜色/键盘可辨
   - [x] 覆盖真实/未知/权限缺口/Agent 未启用的区别，未来内容按状态出现
   - [ ] 用户评审针对具体产物，反馈回写 DESIGN；不能只产出一张不可操作的静态美图
-- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10) 实际 head 为 `a564e5e1287f89bf2719964a7339110923433a18`。第三轮“测深/等深线＋深度环”工程已通过 114/114 原型检查、13 张截图和独立 fixed-head review ACCEPT；它只修改合成数据原型，不是生产前端。当前唯一缺口是用户对该具体原型的主观视觉确认，因此本卡保持 WAITING，不能自动合并 PR #10、标 DONE 或启动 ISS-028 实装。Logo/App Icon 方向另见 ISS-045，是第二个人工门。
+- **证据/接续**（2026-09-13）：[PR #10](https://github.com/cat-xierluo/fathom/pull/10) 实际 head 为 `a564e5e1287f89bf2719964a7339110923433a18`。第三轮“测深/等深线＋深度环”工程已通过 114/114 原型检查、13 张截图和独立 fixed-head review ACCEPT；它只修改合成数据原型，不是生产前端。当前唯一缺口是用户对该具体原型的主观视觉确认，2026-09-14 用户确认合并（“先合并吧，后续有问题的时候我会再给你提意见”），PR #10 squash 合并为 main `0faeda6`（4 文件纯新增：prototypes/ux/ 三件 + scripts/verify_ux_prototype.cjs，不触碰生产代码）。任务 DONE；用户保留对原型的后续反馈权，反馈到达时登记为 ISS-028 或新卡的输入。Logo/App Icon 方向另见 ISS-045，仍是人工门。
 
 ### ISS-027 · 原生前端模块与状态生命周期
 

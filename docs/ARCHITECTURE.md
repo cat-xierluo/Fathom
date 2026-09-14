@@ -30,7 +30,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 | bigfiles.py | `BigfilesManager` 显式触发查询任务：同参数 (root, days, min_mb, topn) 并发去重只启动一次 `find`，进程组 SIGTERM→SIGKILL 升级回收，TTL 缓存（过期为瞬态：驱逐后重启 find），结果上限截断，五态 ok/no_match/permission_denied/failed/truncated（expired 仅作合同兼容），find stderr/退出码不再当空结果，日志路径 sha8+basename 脱敏，`resource.getrusage` 记录墙钟/峰值内存/输出行 | 大小为 st_size 逻辑字节；同步包装 `find_big_files` 对过期结果抛 `BigfilesError` 而非静默；预算常量 `BIGFILE_*` 在 config.py，日志/报告保留天数常量暂无消费方 |
 | scan_coordinator.py | API/CLI/定时统一扫描；`flock`、owner 元数据、分阶段状态、首扫/故障/取消语义 | 生产 launchd 跨日与发行 helper 生命周期仍待对应任务实测 |
 | api.py | 查询、非 daemon 扫描线程；Host/Origin/写令牌守卫；受监控根约束的 reveal；挂载静态文件 | 实际 Tauri WebView 尚未真机验证 |
-| cli.py | scan/report/bigfiles/status/serve/install/uninstall；scan 可标记 cli/scheduled 来源 | 与 API 共用协调合同；install/uninstall 仍是开发版入口 |
+| cli.py | scan/report/bigfiles/status/serve/install/uninstall；scan 可标记 cli/scheduled 来源；report 按同数据集前驱生成（可 --snapshot-id 指定 b），无前驱明确文案并非零退出；`--version`；serve 支持 `--port/--port-range` 让位与零击杀 | 与 API 共用协调合同；install/uninstall 仍是开发版入口 |
 | launchd.py | 拼接 XML，安装扫描/常驻 Web 两个 plist | 路径不做 XML 转义；bootstrap 失败只打印，不能可靠表示安装失败 |
 | frontend/ | 无构建链原生 ES modules：modules/ 下 request（世代号+pageScoped 防倒序覆盖）、format、charts（隐藏 stale/重显 resume）、polling（幂等单实例）、tauri（浏览器降级）、router（hash 路由+单一刷新入口）、status 与五页 enter/leave 模块；ECharts 本地 vendor | 真实 Tauri WebView 桥接与真实 FastAPI StaticFiles 下 module MIME/CSP 实机未验证；正式 UX 原型尚未实装到生产页面 |
 | apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行 | bundle.active=false；无自包含 Python、安装/升级/卸载 UI；tray 实机待验 |
@@ -53,7 +53,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 
 保留近 35 天每日快照，更早按 ISO 周保留一份；weekly_cutoff 实际从今天向前 12 周计算，总跨度约 84 天，不是“35 天再加 12 周”，更不是旧 DEC-006 所写约 9 个月。周分组按数据集 (root, min_kb) 隔离，两根或双数据集同周历史各保留一份；支持 `scan --root` 不代表多根产品已经正确。
 
-DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长期稳定”属于估算，不能代替持续测量；报告/日志也没有独立保留上限。
+DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长期稳定”属于估算，不能代替持续测量。报告与日志按 `BIGFILE_REPORT_RETENTION_DAYS` / `BIGFILE_LOG_RETENTION_DAYS` 在扫描保留阶段清理：只删运行根内文件名日期可解析且早于阈值的文件，不可解析一律保留，失败作为 warning 不影响快照。
 
 ## 口径
 
@@ -91,11 +91,11 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 - `--version` 与 `/health` 的身份字段同源于 `fathom.__init__` 的常量；`/health` 返回 service/protocol_version/pid/port/runtime_mode/status。
 - 冻结产物（PyInstaller onedir）在无 hidden-import 时可服务；data/reports/logs 由 `FATHOM_RUNTIME_DIR` 指向冻结树之外。x86_64 与 .app 签名公证仍未验证（ISS-041/Tauri 端）。
 
-API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。接口实际合同以后端代码为准，版本同源化归 ISS-037。
+版本单一源为 `fathom.__version__ = 0.3.0`：API 文档、Tauri config、Cargo package 与 Cargo.lock 本地包行同源，`scripts/check_version_consistency.sh` 在任一漂移时 fail-closed（一致 0 / 漂移 1 / 缺失 2）。接口实际合同以后端代码为准。
 
 ## 当前验证覆盖
 
-当前 main 的精确门禁为 **308 pytest**；另通过 39 项 Chromium/API 检查与 38 项前端模块/生命周期/大文件状态检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
+当前 main 的精确门禁为 **338 pytest**；另通过 39 项 Chromium/API 检查、61 项前端检查（模块生命周期、大文件五态、三条旅程、全状态矩阵、键盘/复制/视口）与版本一致性校验器。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
 
 实际 Tauri WebView、系统通知、tray、生产 launchd 跨日、自包含发行包、原生 x86_64 冻结、Developer ID 签名、公证/stapling 和真实更新仍为 `NOT_VERIFIED`。
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。

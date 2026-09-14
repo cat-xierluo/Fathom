@@ -138,6 +138,94 @@ tr:hover .btn-mini { opacity: 1; }
 .shrink { color: var(--ok); }
 .diff-tables { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px; }
 
+/* 总览质量行 / 状态胶囊 / 表格等价切换 */
+.quality-line {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
+  margin: -6px 0 14px;
+  color: var(--muted); font-size: 12px;
+}
+.quality-line .path-mono {
+  color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px; max-width: 38ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quality-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 10px; background: var(--bg); color: var(--muted);
+  line-height: 18px; white-space: nowrap;
+}
+.quality-chip.ok { color: var(--ok); border-color: rgba(46, 158, 91, 0.4); background: #f1f9f3; }
+.quality-chip.warn { color: #8a5d00; border-color: #ecd9a0; background: #fdf6e3; }
+.quality-chip.miss { color: var(--muted); }
+.quality-chip .icon { color: inherit; }
+
+.tbl-toggle { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.tbl-toggle summary { cursor: pointer; color: var(--primary); user-select: none; }
+.tbl-toggle[open] summary { margin-bottom: 8px; }
+.tbl-mini { font-size: 12px; }
+.tbl-mini th, .tbl-mini td { padding: 4px 8px; }
+
+/* 表格行可聚焦（DESIGN 键盘可达）：hover 与 focus 可见一致 */
+tr.focusable { cursor: pointer; }
+tr.focusable:hover, tr.focusable:focus, tr.focusable.selected {
+  background: #f6f7fa;
+}
+tr.focusable:focus { outline: none; box-shadow: inset 0 0 0 2px var(--primary); }
+tr.focusable.selected { background: #eaf1fe; }
+
+/* 行操作：hover 或键盘 focus 时可见 */
+.row-actions { display: inline-flex; gap: 4px; justify-content: flex-end; opacity: 0; transition: opacity 0.12s; }
+tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
+
+/* 全局焦点可见：键盘可达的每个控件都有焦点环 */
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.btn:focus-visible, .crumb:focus-visible { outline-offset: 1px; }
+
+/* 路径/详情文本：避免溢出，可全选复制 */
+.cell-path {
+  display: inline-block;
+  max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px; color: var(--text); vertical-align: -2px;
+}
+.tbl td.path { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+  word-break: break-all; max-width: 480px; }
+
+/* 状态行小图标点（DESIGN 状态合同：颜色不是唯一信息） */
+.st-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--muted); margin-right: 6px; flex: none;
+}
+.st { display: inline-flex; align-items: center; gap: 0; font-size: 12px; white-space: nowrap; }
+.st.st-measured { color: var(--muted); } .st.st-measured .st-dot { background: #9aa0ac; }
+.st.st-unrecorded { color: #8a5d00; } .st.st-unrecorded .st-dot { background: #c99a2e; }
+.st.st-restricted { color: var(--danger); } .st.st-restricted .st-dot { background: var(--danger); }
+.st.st-ok { color: var(--ok); } .st.st-ok .st-dot { background: var(--ok); }
+.st.st-fail { color: var(--danger); } .st.st-fail .st-dot { background: var(--danger); }
+
+/* 区域错误占位（保持高度不塌陷） */
+.region-error {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  min-height: 64px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; color: var(--muted); background: #fafbfc; font-size: 13px;
+}
+.region-error .re-title { color: var(--danger); font-weight: 600; }
+
+/* 行内小标签：变化方向标记，避免只用颜色 */
+.delta-sign { display: inline-block; min-width: 1.6em; font-weight: 600; }
+.delta-grow .delta-sign { color: var(--danger); }
+.delta-shrink .delta-sign { color: var(--ok); }
+.delta-none { color: var(--muted); }
+
+/* 复制按钮内联，紧贴长路径 */
+.copy-path {
+  border: 1px solid var(--border); background: var(--card); color: var(--muted);
+  border-radius: 5px; padding: 0 6px; height: 22px; cursor: pointer;
+  font-size: 11px; line-height: 20px;
+}
+.copy-path:hover { border-color: var(--primary); color: var(--primary); }
+.copy-path.copied { color: var(--ok); border-color: var(--ok); }
+
 /* ===== 表格 ===== */
 
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }

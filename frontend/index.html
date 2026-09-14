@@ -50,16 +50,26 @@
           <div class="card"><p class="card-label">快照数量</p><p class="card-value" id="card-snaps">--</p></div>
           <div class="card"><p class="card-label">最近扫描</p><p class="card-value small" id="card-latest">--</p></div>
         </div>
+        <div class="quality-line" id="overview-quality" aria-live="polite" aria-atomic="true"></div>
         <div class="panel">
           <div class="panel-head"><h2>卷容量趋势</h2><p class="hint">每次快照记录的整卷用量</p></div>
           <div id="chart-volume" class="chart chart-lg"></div>
+          <details class="tbl-toggle">
+            <summary>以表格查看走势</summary>
+            <div id="overview-volume-table" class="tbl-wrap"></div>
+          </details>
         </div>
         <div class="panel">
           <div class="panel-head">
-            <h2>今日摘要</h2>
+            <h2 id="overview-summary-title">最近变化</h2>
             <a class="hint link" href="#/changes">查看完整对比 →</a>
           </div>
           <div id="overview-summary">加载中…</div>
+          <p class="hint" id="overview-summary-foot">列表包含父子目录，行值不可相加为净变化；"未记录"不等于新增或删除。</p>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>最近扫描</h2></div>
+          <div id="overview-scan-note" class="hint-line" aria-live="polite">加载中…</div>
         </div>
       </section>
 

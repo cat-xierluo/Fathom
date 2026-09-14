@@ -151,6 +151,15 @@ def _sanitize_path_for_log(path: str) -> str:
     return f"{h}.../{base}"
 
 
+def _sanitize_key_for_log(key: tuple) -> str:
+    """日志中以 ``(<sanitized_root>, days, min_mb, topn)`` 形式呈现
+    ``BigfilesQuery.key``，根路径走 ``_sanitize_path_for_log``，其他字段保留
+    可读性。ISS-049 钉死：完整 root 路径不进入任何日志级别。
+    """
+    sanitized_root = _sanitize_path_for_log(key[0])
+    return f"({sanitized_root}, {key[1]}, {key[2]}, {key[3]})"
+
+
 def _format_mtime(epoch: float) -> str:
     return dt.datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M")
 
@@ -309,7 +318,8 @@ class BigfilesManager:
                         )
                         future = BigfilesFuture(self, key, query)
                         future._set_result(fresh)
-                        _LOG.debug("命中缓存：key=%s age=%.2fs", key, age)
+                        _LOG.debug("命中缓存：key=%s age=%.2fs",
+                                   _sanitize_key_for_log(key), age)
                         return future
                     # 过期条目瞬态处理（ISS-032 修复）：锁内丢弃后继续走下方
                     # in-flight 去重与新 find 启动，本次返回新任务的 future。
@@ -318,7 +328,7 @@ class BigfilesManager:
                     # 拿不到新数据。
                     self._cache.pop(key, None)
                     _LOG.debug("缓存过期，丢弃并启动新查询：key=%s age=%.2fs",
-                               key, age)
+                               _sanitize_key_for_log(key), age)
 
             existing = self._inflight.get(key)
             if existing is not None:
@@ -397,7 +407,8 @@ class BigfilesManager:
                 state=BigfilesState.FAILED,
                 error_message=f"内部错误：{exc.__class__.__name__}",
             )
-            _LOG.exception("bigfiles 查询异常：key=%s", task.key)
+            _LOG.exception("bigfiles 查询异常：key=%s",
+                           _sanitize_key_for_log(task.key))
 
         if result.state != BigfilesState.FAILED:
             with self._lock:

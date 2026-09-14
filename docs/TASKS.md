@@ -98,11 +98,24 @@
 | ISS-050 | 报告与日志保留策略落地 | P2 | M1 | DONE | ISS-032 |
 | ISS-051 | 冻结冒烟脚本统一 exec 进程记账 | P2 | M0 | DONE | ISS-029 |
 | ISS-052 | 查询口径 NULL 阈值锚点直接测试 | P2 | M0 | DONE |
-| ISS-053 | Tauri 资源 glob 在缺少 helper 产物时阻断构建 | P0 | M2 | READY | ISS-009 | ISS-024 |
+| ISS-053 | Tauri 资源 glob 在缺少 helper 产物时阻断构建 | P0 | M2 | IN_PROGRESS | ISS-009 |
+| ISS-054 | ISS-009 切片 1 代码编译打通（类型/可变性/图标） | P0 | M2 | READY | ISS-053 | ISS-024 |
 
 ## 任务卡
 
 字段合同：目标 → 范围 → 实施边界 → 验收 → 证据。优先级/阶段/状态/依赖以索引为唯一来源。验收框仅在取得证据后勾选。
+
+### ISS-054 · ISS-009 切片 1 代码编译打通（类型/可变性/图标）
+
+- **状态**：READY（P0/M2）；来源：PM 在 ISS-053 修复后复跑 cargo check 发现（2026-09-15）。
+- **目标**：`cd apps/desktop/src-tauri && cargo check --locked --offline` 在干净克隆上 exit 0，使 ISS-009 切片 1 具备可验证的构建基线。
+- **范围**：apps/desktop/src-tauri/src/helper.rs、apps/desktop/src-tauri/src/lib.rs、apps/desktop/src-tauri/icons/、scripts/build_icons.sh。
+- **实施边界**：修复下列真实编译错误（PM 复跑实证，见 Wave9 证据 iss-053-after-fix-blocked.md）：`helper.rs:346` 与 `:372` 的 `u16.saturating_add(u8)` 类型不匹配；`lib.rs:157` `window.navigate(url.as_str())` 需要 `Url` 而非 `&str`；`helper.rs:398` `guard` 未声明 mut；`lib.rs:343` 因 `tauri.conf.json` 声明的 5 个图标（32x32.png / 128x128.png / 128x128@2x.png / icon.icns / icon.ico）在仓库中均不存在而 proc macro panic。修图标时须记住 ISS-045 是人工门：可用现有 icon.png 经 sips/iconutil 生成占位集提交（明确标注占位、公开前必须替换），或改为只声明真实存在的条目并在 RESULT 说明取舍；不得把正式 Logo 决策当作已完成。不得改需求语义（helper 生命周期/握手/让位/退出合同保持切片 1 的设计），不得引入新 crate 依赖（--locked --offline 门禁）。
+- **验收**：
+  - [ ] 干净克隆上 `cargo check --locked --offline` exit 0
+  - [ ] 修复仅涉及类型/可变性/图标产物，helper 生命周期语义与 tauri bundle 其它字段未被放松
+  - [ ] 图标若为占位：RESULT 明确标注 NOT_VERIFIED 且指向 ISS-045
+- **证据/接续**：不得勾选验收项，先补复现（PM 证据已给出 5 条错误与行号）。
 
 ### ISS-053 · Tauri 资源 glob 在缺少 helper 产物时阻断构建
 
@@ -115,6 +128,8 @@
   - [ ] 跑过 build_helper.sh 后 `tauri build` 仍把 helper 树打进 .app 的 Contents/Resources/helper/
   - [ ] 反例：构建脚本不再因 glob 无匹配而中断；.gitignore 仍排除产物
 - **证据/接续**：不得勾选验收项，需先补复现脚本。
+- **2026-09-15 01:20 进展**：修复分支 `iss-053-tauri-resource-glob`（base `f6dc9bb`）已把 `bundle.resources` 改为 `resources/helper/**/*`，**glob 硬错误已消失**（PM 复跑确认），但 `cargo check` 仍 exit 101，暴露 5 个被 glob 错误掩盖的真实编译错误——已登记 **ISS-054** 承接。本卡待 ISS-054 完成后与切片 1 一并验收。
+- 修复前后证据：`.git/orchestration/wave9-evidence/iss-053-{before-fix,after-fix-blocked}.md`。
 
 ### ISS-052 · 查询口径 NULL 阈值锚点直接测试
 

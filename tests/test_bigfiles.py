@@ -359,22 +359,37 @@ class TestTruncation:
 
 class TestLogSanitization:
     def test_full_path_not_in_log(self, tmp_path, caplog):
-        # tmp_path 形如 /private/var/folders/.../pytest-.../test_full_path_not_in_log0；
-        # pytest 自动分配目录名本身就在 log 中以 sanitized 形式呈现，不会泄露
-        # find 真实查找路径中的敏感部分。
+        """ISS-049 回归：完整 root 路径不应在任何日志级别（DEBUG 起）出现；
+        脱敏形态 ``<sha8>.../<basename>`` 必须存在。
+        """
         _make_tree(tmp_path / "r", large_files=1)
         m = bigfiles.BigfilesManager(find_path="/usr/bin/find")
-        with caplog.at_level(logging.INFO, logger="fathom.bigfiles"):
-            r = m.submit(tmp_path / "r", days=7, min_mb=1, topn=5).result(timeout=5.0)
+        root_path = tmp_path / "r"
+        with caplog.at_level(logging.DEBUG, logger="fathom.bigfiles"):
+            r = m.submit(root_path, days=7, min_mb=1, topn=5).result(timeout=5.0)
         assert r.state == bigfiles.BigfilesState.OK
-        # pytest tmp_path 中的目录段不会以未脱敏形式进入我们的日志
-        # （tmp_path 在 sanitized 形式中以 "<sha8>.../<basename>" 出现）
-        # 这里主要断言 log 中没有完整 tmp_path 前缀；basename 本身是允许的
-        # （短、易读、可定位），与合同 "<sha8>.../<basename>" 一致
-        # basename 允许，但完整 tmp_path 字符串不应以非脱敏形态出现：
-        sanitized_form_present = ".../" in caplog.text
-        assert sanitized_form_present, (
-            "日志必须以 sha8 截断 + basename 形式呈现，未发现脱敏形态"
+
+        # 真实完整路径字符串不应在任何记录中缺席（caplog 覆盖 DEBUG 与以上）
+        full_root = str(root_path)
+        full_tmp = str(tmp_path)
+        for record in caplog.records:
+            if record.name != "fathom.bigfiles":
+                continue
+            msg = record.getMessage()
+            assert full_root not in msg, (
+                f"日志记录包含完整 root 路径（未脱敏）："
+                f"{record.levelname} {record.name}: {msg!r}"
+            )
+            # tmp_path 父目录也不应以原始形式出现（防御性）
+            assert full_tmp not in msg, (
+                f"日志记录包含 tmp_path 父目录："
+                f"{record.levelname} {record.name}: {msg!r}"
+            )
+
+        # 脱敏形态必须存在：与 _sanitize_path_for_log(str(root_path)) 一致
+        sanitized_form = bigfiles._sanitize_path_for_log(str(root_path))
+        assert sanitized_form in caplog.text, (
+            f"日志中未发现脱敏形态 {sanitized_form!r}，实测日志：\n{caplog.text!r}"
         )
 
 

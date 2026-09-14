@@ -54,7 +54,7 @@
 | ISS-006 | Tauri 初始桌面壳 | P2 | 历史 | DONE | — |
 | ISS-007 | 接续 scan_runs 实现审查 | P1 | M0 | DONE | — |
 | ISS-008 | 接续 tray 链路与实机验证 | P1 | M1 | WAITING | — |
-| ISS-009 | 可分发 app 与安装入口 | P1 | M2 | BLOCKED | ISS-018、ISS-019、ISS-020、ISS-022、ISS-025、ISS-029、ISS-031、ISS-045 |
+| ISS-009 | 可分发 app 与安装入口 | P1 | M2 | IN_PROGRESS | ISS-018、ISS-019、ISS-020、ISS-022、ISS-025、ISS-029、ISS-031、ISS-045 |
 | ISS-010 | 登录自启与后台计划 | P1 | M2 | BLOCKED | ISS-009、ISS-020 |
 | ISS-011 | 文件类型分布 | P3 | 后续 | DEFERRED | ISS-021、ISS-032 |
 | ISS-012 | 重复文件检测 | P3 | 后续 | DEFERRED | ISS-032 |
@@ -516,7 +516,7 @@
   - [ ] 关闭/退出行为正确；后台未就绪可恢复且不要求 main.py install
   - [ ] 路径含空格/中文，资源只读，端口冲突、二次启动均可控
   - [ ] 构建步骤/支持矩阵/产物校验值记录；未签名内测明确标记，不冒充公开包
-- **证据/接续**：尚未执行；不得勾选验收项。
+- **证据/接续**（2026-09-14 晚，PM 切片决策）：除 ISS-045（Logo/图标方向，人工门）外前置全部 DONE。按用户“不要阻塞”指令，先派**切片 1：壳-helper 生命周期 + 未签名打包流水线**——Tauri 壳启动时拉起内嵌 PyInstaller onedir helper（release 模式，数据根 `~/Library/Application Support/Fathom`），经 `helper-instance.json`/`/health` 握手后导航到本地服务，退出时按身份 SIGTERM 回收；同服务已在运行则复用不重复拉起；`scripts/build_helper.sh` / `build_app.sh` / `verify_app_bundle.sh` 产出未签名 `.app`/`.dmg` 并做结构、只读布局、含空格/中文路径启动、端口冲突让位、二次启动、校验值记录。图标用现有 `icon.png` 生成占位 iconset（**NOT_VERIFIED，公开前必须换 ISS-045 正式图标**）。新账户/断网首启与真实下载产物验收留 `NOT_VERIFIED`（切片 2 或实机验收）。不签名、不公证、不注册 launchd、不改 fathom/ 生产代码。
 
 ### ISS-010 · 登录自启与后台计划
 

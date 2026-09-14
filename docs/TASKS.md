@@ -360,6 +360,8 @@
 - 修复记录：m2 曾把柱条 yAxis 标签改为“前 14 字符 + 省略号 + 后 15 字符”截断，导致 ISS-031 安全检查 `chart-tooltip-escapes-path` 按类目文本定位恶意条目失败（39→38/39）；修复 commit 恢复 `shortPath(r.path, 2)`。属内部可恢复缺陷，已修复并复验。
 - **未完成**：独立 fixed-head review。首任 reviewer 会话完成实质审查后会话失效未落盘；重派的 `review-wave5-028b` 因 codebuddy-hy4 lane 网关 503 中断无产物。两任均未产出 verdict，因此本卡**不得合并、不得勾验收项**。
 - **解除条件**：额度重置（GLM 20:04 / MiniMax 20:00）或网关恢复后，重派独立 reviewer 审 `c6473a5` 取得 verdict。
+- **2026-09-14 19:32 状态（PM 记录）**：三个 lane 全部不可用——glm-api 0%（20:04 重置）、minimax 0%（20:00 重置）、codebuddy-hy4 health=down（网关 503）。`quota_preflight` 对三者分别给出 lane_below_stop_line / lane_unhealthy，属额度保护的正确 fail-closed 行为，非缺陷。按“不伪造 review 结论”原则，本卡停在 REVIEW_EXTERNAL，不等同 DONE。
+- **接手指引**：恢复后直接 `--api-provider glm-5.3`（或 minimax-M3）派 reviewer，审 `c6473a5b2312feb21a5a3b263af7023130520202`（base f170856），合同命令 `node scripts/verify_frontend_refresh.cjs`（59/59）与 `bash scripts/ci_browser_checks.sh`（39/39）；产出 review JSON 后过 `review-acceptance-gate.py`，再走 PR #43 审计与合并。
 
 
 - **目标**：把已评审原型接入真实扫描事实，完成桌面核心体验提升。

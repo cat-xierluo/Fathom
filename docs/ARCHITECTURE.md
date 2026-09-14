@@ -27,7 +27,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 | scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 承载采集结果、退出码、耗时、权限/瞬时/其他错误分类计数与样例；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同数据集同日快照 | 无法无歧义映射/解码时拒绝采集；瞬时系统错误（Interrupted system call/Resource temporarily unavailable，按行尾 errno 段精确匹配）单独计数且使采集归 partial、永不 full，与真实致命错误并存仍整体拒绝；快照持久化 min_kb 与 collection_status（full/partial），v3 之前旧行为 NULL；瞬时计数尚未入库 |
 | reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown；按传入 sid 查找同数据集（同根同 `min_kb`）前驱，报头带 a/b 快照 ID 与记录口径说明 | 单条目仍无法区分低于阈值与移除，措辞如实表达为未记录/首次记录；报告状态由协调器单独记录 |
 | notify.py | 日报写完后尝试 osascript 通知；首次记录目录单列；摘要限长；低空间阈值 10 GB | 显示受系统策略控制；首扫无日报不通知；阈值未与 UI 统一；日志可能含路径 |
-| bigfiles.py | `/usr/bin/find -xdev -type f -size +... -mtime -... -print0` 后 stat | 大小为 st_size 逻辑字节；每次请求实时遍历；无超时/去重/失败呈现 |
+| bigfiles.py | `BigfilesManager` 显式触发查询任务：同参数 (root, days, min_mb, topn) 并发去重只启动一次 `find`，进程组 SIGTERM→SIGKILL 升级回收，TTL 缓存（过期为瞬态：驱逐后重启 find），结果上限截断，五态 ok/no_match/permission_denied/failed/truncated（expired 仅作合同兼容），find stderr/退出码不再当空结果，日志路径 sha8+basename 脱敏，`resource.getrusage` 记录墙钟/峰值内存/输出行 | 大小为 st_size 逻辑字节；同步包装 `find_big_files` 对过期结果抛 `BigfilesError` 而非静默；预算常量 `BIGFILE_*` 在 config.py，日志/报告保留天数常量暂无消费方 |
 | scan_coordinator.py | API/CLI/定时统一扫描；`flock`、owner 元数据、分阶段状态、首扫/故障/取消语义 | 生产 launchd 跨日与发行 helper 生命周期仍待对应任务实测 |
 | api.py | 查询、非 daemon 扫描线程；Host/Origin/写令牌守卫；受监控根约束的 reveal；挂载静态文件 | 实际 Tauri WebView 尚未真机验证 |
 | cli.py | scan/report/bigfiles/status/serve/install/uninstall；scan 可标记 cli/scheduled 来源 | 与 API 共用协调合同；install/uninstall 仍是开发版入口 |
@@ -74,7 +74,7 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | GET | /api/trees?snapshot_id=&min_kb= | 最新/指定快照目录树；默认 ≥51200 KiB；节点预算在 SQL 层生效（LIMIT+1 探测），响应含 truncated/matched_count/node_count/node_limit；截断时子孙提升为顶层且无孤儿重复；指定快照不存在 404、空库 200 snapshot_id=null、低于阈值 200 空结果；root=/ 归一化不再成为自己的孩子 |
 | GET | /api/diff?a=&b=&topn= | b 相对 a；默认 a=最新快照的同数据集前驱；不足/无同数据集前驱 409，不存在 404；a/b 跨根或跨阈值 400 |
 | GET | /api/trend?path=&limit= | 以最新记录该路径的快照为锚取最新 N 点后正序输出，按数据集隔离；缺失不补点（保留 gap）；无记录路径 200 空 points |
-| GET | /api/bigfiles?days=&min_mb=&topn= | 同步遍历，返回 files；上限 200 |
+| GET | /api/bigfiles?days=&min_mb=&topn= | 经 BigfilesManager 显式触发/去重/TTL；返回 state、scope、stats（wall_ms/peak_rss_bytes/find_output_lines/find_exit_code/…）、files、truncated、cached、cache_age_s、error_message；topn 上限 200 |
 | POST | /api/scan | 需 `X-Fathom-Token`；先取得跨进程 `flock` 再落 running；冲突 409；成功返回 run_id；线程启动失败 503 并释放租约 |
 | GET | /api/scan/status?history= | 返回最新统一状态、source/phase/snapshot/report/notification/pruned/warnings；history=1..100 附 API/CLI/定时运行 |
 | GET | /api/browse?path= | 最新快照子目录、同数据集前驱差值、趋势、面包屑；无基线时 delta_kb=null、is_new=false |
@@ -88,7 +88,7 @@ API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。�
 
 ## 当前验证覆盖
 
-当前 main 的精确门禁为 **260 pytest**；另通过 39 项 Chromium/API 检查与 33 项前端模块/生命周期检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
+当前 main 的精确门禁为 **285 pytest**；另通过 39 项 Chromium/API 检查与 38 项前端模块/生命周期/大文件状态检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
 
 实际 Tauri WebView、系统通知、tray、生产 launchd 跨日、自包含发行包、原生 x86_64 冻结、Developer ID 签名、公证/stapling 和真实更新仍为 `NOT_VERIFIED`。
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。

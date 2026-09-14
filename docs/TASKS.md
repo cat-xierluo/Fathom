@@ -100,7 +100,8 @@
 | ISS-052 | 查询口径 NULL 阈值锚点直接测试 | P2 | M0 | DONE |
 | ISS-053 | Tauri 资源 glob 在缺少 helper 产物时阻断构建 | P0 | M2 | DONE | ISS-009 |
 | ISS-054 | ISS-009 切片 1 代码编译打通（类型/可变性/图标） | P0 | M2 | DONE | ISS-053 |
-| ISS-055 | 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/ | P0 | M2 | READY | ISS-054 | ISS-024 |
+| ISS-055 | 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/ | P0 | M2 | IN_PROGRESS | ISS-054 |
+| ISS-056 | verify_app_bundle 启动/就绪判定改为不依赖 GUI 上下文 | P1 | M2 | READY | ISS-055 | ISS-024 |
 
 ## 任务卡
 
@@ -117,6 +118,18 @@
   - [ ] 修复仅涉及类型/可变性/图标产物，helper 生命周期语义与 tauri bundle 其它字段未被放松
   - [ ] 图标若为占位：RESULT 明确标注 NOT_VERIFIED 且指向 ISS-045
 - **证据/接续**（2026-09-15 完成）：分支 `iss-054-cargo-build-fix` head `c52cdef`（base `0856bf3`）；`helper.rs` 两处改 `u16::from(...)`、`lib.rs` navigate 改用解析后的 `Url`、`helper.rs` guard 加 mut。**PM 独立复跑 `cargo check --locked --offline` exit 0**（仅 2 个 dead_code 警告），切片 1 代码首次编译通过。继续跑打包链（Wave9 证据 iss-054-verify-findings.md）：`build_helper.sh` exit 0（Mach-O arm64、`--version` 报 service/version/protocol_version、SHA256 已记）、`build_app.sh` exit 0（产出 Fathom.app 与 Fathom_0.3.0_aarch64.dmg），但 `verify_app_bundle.sh` exit 1，暴露两项缺陷转 ISS-055。
+
+### ISS-056 · verify_app_bundle 启动/就绪判定改为不依赖 GUI 上下文
+
+- **状态**：READY（P1/M2）；来源：PM 在 ISS-055 后复跑 verify 发现（2026-09-15）。
+- **目标**：`bash scripts/verify_app_bundle.sh` 的 (c)(d)(f) 段在当前环境下可真实执行并给出可信结论，而不是因启动链路不可靠恒失败。
+- **范围**：scripts/verify_app_bundle.sh。
+- **实施边界**：PM 复跑得 8 passed / 4 failed，(a)(b)(g) 全过，(c)(d)(f) 失败同源于 `c-helper-ready`（30s 内 /health 未就绪）。已排除代码缺陷：helper 二进制从 app 内直接执行 `--version` exit 0；脱离壳独立启动会写 0600 helper-instance.json、因本机 7952 被外部占用而**让位到 7953** 并成功起 uvicorn。当前脚本用 `open -a` 启动 app 并依赖 `launchctl setenv` 把 FATHOM_RUNTIME_DIR 传给 app，进而由壳 spawn helper——该链路在无头/CI 环境不可靠，且脚本只轮询 7952–7956，无法覆盖让位后的端口。修法方向：改用可直接控制环境与生命周期的启动方式（例如直接以 `FATHOM_RUNTIME_DIR=... Fathom.app/Contents/MacOS/fathom-desktop` 前台/后台启动并捕获 pid），或先探测 helper 实际端口（读 helper-instance.json）再轮询；必须让“端口被外部占用→让位”这一真实场景可验证，不得把失败项静默跳过。
+- **验收**：
+  - [ ] 在“7952 被外部进程占用”的当前环境下，(c)(d)(f) 能真实执行并给出确定结论（pass 或带证据的 fail），不再是启动链路导致的不确定失败
+  - [ ] 不放松任何既有断言（a/b/g 与结构/只读/零击杀语义保持）
+  - [ ] 失败时有可读原因（哪个环节、什么证据），便于定位
+- **证据/接续**：不得勾选验收项；PM 证据见 .git/orchestration/wave9-evidence/iss-055-verify-findings.md。
 
 ### ISS-055 · 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/
 

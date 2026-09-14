@@ -273,20 +273,39 @@ class TestTTL:
         assert r2.state == bigfiles.BigfilesState.OK
         assert r2.files == r1.files
 
-    def test_expired_cache_returns_expired_state(self, tmp_path):
+    def test_expired_cache_evicts_and_returns_fresh_data(self, fake_popen, tmp_path):
+        """ISS-032 修复回归：TTL 过期后同参数 submit 必须丢弃过期条目、启动
+        新 find 并返回新数据、替换缓存；不得返回 expired 终态的旧快照。"""
         _make_tree(tmp_path / "r", large_files=1)
         m = bigfiles.BigfilesManager(find_path="/usr/bin/find",
                                      cache_ttl_s=0.05)
         first = m.submit(tmp_path / "r", days=7, min_mb=1, topn=10)
         r1 = first.result(timeout=10.0)
         assert r1.state == bigfiles.BigfilesState.OK
-        time.sleep(0.10)  # 等待 TTL 过期
+        assert len(r1.files) == 1 and r1.files[0]["path"].endswith("large_0.bin")
+        # 数据集变化：删掉旧大文件，制造一个名字/大小都不同的新文件
+        (tmp_path / "r" / "dirA" / "large_0.bin").unlink()
+        new_big = tmp_path / "r" / "dirA" / "large_new.bin"
+        with open(new_big, "wb") as f:
+            f.write(b"\0")
+            f.seek(4 * 1024 * 1024 - 1)
+            f.write(b"\0")
+        time.sleep(0.10)  # 越过 TTL
+        assert len(_FakePopen.instances) == 1  # 目前只启动过首次 find
         second = m.submit(tmp_path / "r", days=7, min_mb=1, topn=10)
         r2 = second.result(timeout=10.0)
-        assert r2.state == bigfiles.BigfilesState.EXPIRED
-        assert r2.cached is True
-        assert r2.cache_age_s is not None and r2.cache_age_s >= 0.05
-        assert len(r2.files) == len(r1.files)
+        # 启动了新 find（popen 计数 +1），且拿到的是新数据而非旧快照
+        assert len(_FakePopen.instances) == 2, [p.args for p in _FakePopen.instances]
+        assert r2.state == bigfiles.BigfilesState.OK, r2
+        assert r2.cached is False
+        assert r2.cache_age_s is None
+        assert len(r2.files) == 1 and r2.files[0]["path"].endswith("large_new.bin")
+        # 缓存被替换：TTL 内第三次查询命中“新结果”缓存
+        third = m.submit(tmp_path / "r", days=7, min_mb=1, topn=10)
+        r3 = third.result(timeout=2.0)
+        assert r3.cached is True
+        assert r3.state == bigfiles.BigfilesState.OK
+        assert r3.files == r2.files
 
     def test_force_refresh_bypasses_cache(self, tmp_path):
         _make_tree(tmp_path / "r", large_files=2)
@@ -388,6 +407,30 @@ class TestBackwardCompat:
     def test_find_big_files_raises_on_failed_root(self, tmp_path):
         with pytest.raises(bigfiles.BigfilesError):
             bigfiles.find_big_files(root=tmp_path / "nope", days=7,
+                                    min_mb=1, topn=10)
+
+    def test_find_big_files_raises_on_expired_state(self, monkeypatch, tmp_path):
+        """ISS-032 修复回归：EXPIRED 结果不得被静默当作 files 列表返回
+        （CLI cmd_bigfiles / --with-bigfiles 日报路径）。
+
+        修复后 submit 不再产生 expired 终态；此测试用注入的 expired
+        future 钉死同步包装的合同：拿到 EXPIRED 必须抛 BigfilesError。
+        """
+        m = bigfiles.BigfilesManager()
+        query = bigfiles.BigfilesQuery(root=tmp_path / "r", days=7,
+                                       min_mb=1, topn=10)
+        stale = bigfiles.BigfilesResult(
+            state=bigfiles.BigfilesState.EXPIRED,
+            files=[{"path": str(tmp_path / "r" / "stale.bin"),
+                    "size": 3 * 1024 * 1024, "mtime": "2026-09-01 00:00"}],
+            cached=True,
+            cache_age_s=99.0,
+        )
+        future = bigfiles.BigfilesFuture(m, query.key, query)
+        future._set_result(stale)
+        monkeypatch.setattr(bigfiles, "submit", lambda **kwargs: future)
+        with pytest.raises(bigfiles.BigfilesError):
+            bigfiles.find_big_files(root=tmp_path / "r", days=7,
                                     min_mb=1, topn=10)
 
 

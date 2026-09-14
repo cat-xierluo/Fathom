@@ -8,7 +8,10 @@
   发送 SIGTERM，超时回收窗口内仍存活则升级为 SIGKILL；所有等待者同步收到
   ``CancelledError`` / 超时状态。
 - TTL 缓存：成功结果缓存 ``cache_ttl_s``；TTL 内同参数请求直接命中缓存。
-- 过期可辨：TTL 之外调用获得 ``state=expired`` 的缓存结果，缓存仍可用于对比。
+- 过期即刷新：TTL 之外的首个同参数调用丢弃过期条目并启动新 find（仍遵守
+  并发去重），返回新结果；``submit`` 不再返回携带旧数据的 ``state=expired``
+  终态（枚举保留以兼容 API 状态字段合同，``find_big_files`` 对该状态抛错
+  而非静默返回旧列表）。
 - 结果上限截断可辨：find 实际输出命中 ``result_cap`` 或请求 ``topn`` 时，结果
   携带 ``truncated=True`` 与未截断的原始计数。
 - 五态区分（不含 OK 共六态）：OK / NO_MATCH / PERMISSION_DENIED / FAILED /
@@ -271,6 +274,13 @@ class BigfilesManager:
         ``root=None`` 使用 ``config.DEFAULT_ROOT``；``timeout=None`` 使用
         ``default_timeout_s``；``force_refresh=True`` 跳过缓存直接启动新 find
         （仍遵守同参数去重）。
+
+        过期语义（ISS-032 修复）：缓存条目超过 ``cache_ttl_s`` 即视为不存在
+        ——首个这样的调用在锁内丢弃过期条目，随后与缓存未命中完全一致地走
+        in-flight 去重并启动新 find，返回新任务的 ``BigfilesFuture``（等待
+        完成即得新数据，缓存由 ``_runner`` 写入替换）。不再返回携带旧数据的
+        ``state=expired`` 终态 future；``EXPIRED`` 枚举仅为兼容 API 状态
+        字段合同而保留。
         """
         root_path = Path(root) if root is not None else config.DEFAULT_ROOT
         eff_days = config.BIGFILE_DEFAULT_DAYS if days is None else int(days)
@@ -301,20 +311,14 @@ class BigfilesManager:
                         future._set_result(fresh)
                         _LOG.debug("命中缓存：key=%s age=%.2fs", key, age)
                         return future
-                    expired = BigfilesResult(
-                        state=BigfilesState.EXPIRED,
-                        files=list(result.files),
-                        stats=result.stats,
-                        error_message=result.error_message,
-                        cached=True,
-                        cache_age_s=age,
-                        truncated=result.truncated,
-                        raw_truncated=result.raw_truncated,
-                    )
-                    future = BigfilesFuture(self, key, query)
-                    future._set_result(expired)
-                    _LOG.debug("缓存过期：key=%s age=%.2fs", key, age)
-                    return future
+                    # 过期条目瞬态处理（ISS-032 修复）：锁内丢弃后继续走下方
+                    # in-flight 去重与新 find 启动，本次返回新任务的 future。
+                    # 旧实现在此直接 return expired 终态，控制流永远到不了
+                    # 启动段，缓存既不删除也不刷新，同参数在进程生命周期内
+                    # 拿不到新数据。
+                    self._cache.pop(key, None)
+                    _LOG.debug("缓存过期，丢弃并启动新查询：key=%s age=%.2fs",
+                               key, age)
 
             existing = self._inflight.get(key)
             if existing is not None:
@@ -642,13 +646,17 @@ def find_big_files(
     *,
     timeout: Optional[float] = 30.0,
 ) -> list[dict]:
-    """向后兼容同步接口（api.py 现存调用方）。
+    """向后兼容同步接口（api.py 现存调用方；CLI ``cmd_bigfiles`` 与
+    ``--with-bigfiles`` 日报路径同样经此取列表）。
 
     行为：
     - 阻塞等待至完成、取消或超时；
     - find 异常时抛出 ``BigfilesError``；
-    - ``topn`` 截断与缓存均沿用管理器语义；
-    - 缓存命中或正常返回仅取 ``files`` 字段（与旧合同一致）。
+    - ``topn`` 截断与缓存均沿用管理器语义（过期即刷新，见 ``submit``）；
+    - 缓存命中或正常返回仅取 ``files`` 字段（与旧合同一致）；
+    - 返回值始终是 ``list[dict]``：``EXPIRED`` 状态一律抛 ``BigfilesError``
+      而非静默返回旧 ``files``（ISS-032 修复合同；修复后 ``submit`` 不再
+      产生该状态，此守卫保证同步/报告路径永不无辨析地嵌入过期列表）。
     """
     future = submit(root=root, days=days, min_mb=min_mb, topn=topn, timeout=timeout)
     try:
@@ -661,6 +669,8 @@ def find_big_files(
         raise BigfilesError(result.error_message or "find 失败")
     if result.state == BigfilesState.PERMISSION_DENIED:
         raise BigfilesError(result.error_message or "find 权限受限")
+    if result.state == BigfilesState.EXPIRED:
+        raise BigfilesError("大文件缓存已过期：结果不可静默使用，请重新查询")
     return list(result.files)
 
 

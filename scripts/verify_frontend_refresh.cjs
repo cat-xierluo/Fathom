@@ -151,6 +151,33 @@ function createFixture() {
         state.staleDiffs += 1;
         return json(res, 404, { detail: "快照不存在" });
       }
+      if (state.scenario === "net-overlap" || state.scenario === "net-nobaseline") {
+        // 净变化口径夹具（ISS-028 修复验证）：
+        //  - net-overlap：grown 含父子重叠（父 +100 与子 +33/+33 同时入选，DEC-005
+        //    fold_changes 不去重祖先），逐行求和 = +166；根总量 a→b 差 = +100。
+        //    页面必须显示根差分而非行和。
+        //  - net-nobaseline：a/b 缺 total_kb（模拟首扫无基线），页面必须显示
+        //    “无基线”，不得显示 0 或回退行求和（此处行和 = +2.0 MB）。
+        const body = diff(a, b);
+        if (state.scenario === "net-overlap") {
+          body.a = { ...body.a, total_kb: 300000 };
+          body.b = { ...body.b, total_kb: 300100 };
+          body.grown = [
+            { path: `${ROOT}/Parent`, old_kb: 40000, new_kb: 40100, delta_kb: 100 },
+            { path: `${ROOT}/Parent/A`, old_kb: 20000, new_kb: 20033, delta_kb: 33 },
+            { path: `${ROOT}/Parent/B`, old_kb: 20000, new_kb: 20033, delta_kb: 33 },
+          ];
+          body.shrunk = [];
+        } else {
+          const { total_kb: _dropA, ...aMeta } = body.a;
+          const { total_kb: _dropB, ...bMeta } = body.b;
+          body.a = aMeta;
+          body.b = bMeta;
+          body.grown = [{ path: `${ROOT}/Big`, old_kb: 100000, new_kb: 102048, delta_kb: 2048 }];
+          body.shrunk = [];
+        }
+        return json(res, 200, body);
+      }
       if (state.mode === "onlyadded" || state.mode === "addedremoved") {
         const body = diff(a, b);
         body.grown = [];
@@ -829,6 +856,39 @@ async function main() {
     record("added-and-removed-actions-have-accessible-names",
       accessibleNames.every(([aria, title]) => aria === "在 Finder 中显示" && title === aria),
       JSON.stringify(accessibleNames));
+
+    /* ---------- 净变化口径：根同口径差分，非行求和（ISS-028 修复） ---------- */
+    // 父子重叠：父 +100 KiB 与子 +33/+33 同时入选（DEC-005），行求和 = +166；
+    // 根总量差 = +100。净变化必须等于根差分 +100.0 KB，并与“根目录 X → Y”同源一致
+    //（300000→300100 KiB 显示 293.0 MB → 293.1 MB，差值即 +100 KiB）。
+    await setMode("dual");
+    await setScenario("net-overlap");
+    await openPage("#/changes");
+    await page.waitForSelector("#changes-net:not([hidden])");
+    const netOverlap = await page.evaluate(() => ({
+      strong: document.querySelector("#changes-net strong")?.textContent || "",
+      line: document.getElementById("changes-net").textContent,
+    }));
+    record("changes-net-is-root-diff-not-row-sum",
+      netOverlap.strong === "+100.0 KB" &&
+        netOverlap.line.includes("根同口径差分") &&
+        netOverlap.line.includes("根目录 293.0 MB → 293.1 MB") &&
+        !netOverlap.line.includes("166"),
+      JSON.stringify(netOverlap));
+    // 无基线：a/b 缺 total_kb 时净变化显示“无基线”，不得显示 0 或回退行求和
+    //（夹具行和 = +2048 KiB，若回退会显示 +2.0 MB）。
+    await setScenario("net-nobaseline");
+    await openPage("#/changes");
+    await page.waitForSelector("#changes-net:not([hidden])");
+    const netNoBaseline = await page.evaluate(() => ({
+      strong: document.querySelector("#changes-net strong")?.textContent || "",
+      line: document.getElementById("changes-net").textContent,
+    }));
+    record("changes-net-no-baseline-not-zero-or-sum",
+      netNoBaseline.strong === "无基线" &&
+        !netNoBaseline.line.includes("2.0 MB") && !netNoBaseline.line.includes("+0.0 B"),
+      JSON.stringify(netNoBaseline));
+    await setScenario(null);
 
     /* ---------- Tauri 桥（注入 mock 桥验证有桥路径；真实壳运行见 RESULT 未验证项） ---------- */
     const tpage = await browser.newPage({ viewport: { width: 1220, height: 820 } });

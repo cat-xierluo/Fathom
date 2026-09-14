@@ -289,7 +289,7 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
 }
 
-/* 净变化行（DESIGN：根同口径，不取 Top 求和） */
+/* 净变化行（DESIGN：根同口径差分 = b.total_kb − a.total_kb；列表行含父子重叠，不可求和） */
 .net-line {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px;
   padding: 10px 14px; background: #f6f7fa; border-radius: 8px;

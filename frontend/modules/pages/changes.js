@@ -6,7 +6,8 @@
  * - 仅 frontend/icons.js 的 SVG 图标；零 emoji；
  *
  * 展示（ISS-028）：
- * - 净变化口径：根同口径差分，不对子目录求和为净变化；
+ * - 净变化口径：根同口径差分（b.total_kb − a.total_kb），缺根总量显示"无基线"，
+ *   绝不把列表行求和当净变化（行含父子重叠且被截断）；
  * - 状态列：已测量 / 未记录（首次进入统计） / 受限（权限不足时不可知）；
  * - 键盘可达：表行可 Tab 聚焦、Enter 打开详情、Esc 关闭后焦点返回触发行；
  * - 长路径：可一键复制（DESIGN 关键可达性约束）；
@@ -116,11 +117,13 @@ async function loadSnapshotsForDiff({ notice = "" } = {}) {
 /* ---------- 净变化与可排序表 ---------- */
 
 function computeNet(d) {
-  // 根同口径净变化：来自 grown/shrunk 的简单和（API 顶层不带 sum）；不与 added/removed 混算。
-  let net = 0;
-  for (const r of d.grown || []) net += Number(r.delta_kb || 0);
-  for (const r of d.shrunk || []) net += Number(r.delta_kb || 0);
-  return net;
+  // 根同口径净变化 = b.total_kb − a.total_kb（同一响应内两快照的根累计 KiB）。
+  // grown/shrunk 行按 fold_changes 设计可含父子重叠（父行包含子行，DEC-005），
+  // 且经 topn 截断与 min_delta_kb 过滤——逐行求和不等于任何口径的净变化，
+  // 禁止回退到求和。任一侧缺 total_kb（如无基线）时返回 null。
+  const prev = Number(d.a && d.a.total_kb), curr = Number(d.b && d.b.total_kb);
+  if (!Number.isFinite(prev) || !Number.isFinite(curr)) return null;
+  return curr - prev;
 }
 
 function synthesizeRows(d) {
@@ -301,16 +304,18 @@ function renderNetLine(d) {
   const footEl = document.getElementById("changes-foot");
   const measured = (d.grown || []).length + (d.shrunk || []).length;
   const unrec = (d.added || []).length + (d.removed || []).length;
-  const span = `${String(d.a.created_at).slice(0, 10)} → ${String(d.b.created_at).slice(0, 10)}`;
-  if (measured === 0 && unrec > 0) {
-    netEl.innerHTML = `<span>已测量同口径净变化 <strong class="delta-none">—</strong></span>` +
-      `<span class="hint">${span} 期间没有可测量变化，另有 ${unrec} 个未记录目录，不能判为"无变化"。</span>`;
-  } else {
-    netEl.innerHTML = `<span>已测量同口径净变化 <strong class="${
-      net > 0 ? "delta-grow" : net < 0 ? "delta-shrink" : "delta-none"
-    }">${escapeHtml(fmtDelta(net))}</strong></span>` +
-      `<span class="hint">同根同口径，根目录 ${escapeHtml(fmtKB(d.a.total_kb || 0))} → ${escapeHtml(fmtKB(d.b.total_kb || 0))}</span>`;
-  }
+  const span = `${String(d.a?.created_at || "").slice(0, 10)} → ${String(d.b?.created_at || "").slice(0, 10)}`;
+  const netHtml = net == null
+    ? `<strong class="delta-none">无基线</strong>`
+    : `<strong class="${net > 0 ? "delta-grow" : net < 0 ? "delta-shrink" : "delta-none"}">${escapeHtml(fmtDelta(net))}</strong>`;
+  // 根目录 X → Y 与净变化同源（都是 a/b.total_kb），数值上严格一致
+  const rootNote = net == null
+    ? `<span class="hint">${span} 快照缺少根总量（无基线），净变化不可知；不用列表行求和推算。</span>`
+    : `<span class="hint">根同口径差分：根目录 ${escapeHtml(fmtKB(d.a.total_kb))} → ${escapeHtml(fmtKB(d.b.total_kb))}（行值不可相加）</span>`;
+  const unrecNote = measured === 0 && unrec > 0
+    ? `<span class="hint">${span} 期间没有 ≥1MB 可测量行，另有 ${unrec} 个未记录目录，不能判为"无变化"。</span>`
+    : "";
+  netEl.innerHTML = `<span>根同口径净变化 ${netHtml}</span>` + rootNote + unrecNote;
   netEl.hidden = false;
   footEl.hidden = false;
 }

@@ -194,7 +194,20 @@ print(s.getsockname()[1])
 s.close()
 ')"
 log "脚本自起 dummy 占 $DUMMY_PORT"
-python3 - "$DUMMY_PORT" >> "$LOG" 2>&1 &
+# dummy 只 bind+listen 不应答：占用端口本身即目的（helper 探测 1xx/超时后让位）。
+# ISS-055 修复：原 `python3 - "$DUMMY_PORT" ... &` 缺 stdin 脚本体，python 读
+# EOF 即退出，dummy 从未监听，d-zero-kill 的 before 恒为空而必败。
+python3 - "$DUMMY_PORT" >> "$LOG" 2>&1 <<'PYEOF' &
+import socket, sys, time
+port = int(sys.argv[1])
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(8)
+print(f"dummy listening on {port}", flush=True)
+while True:
+    time.sleep(60)
+PYEOF
 DUMMY_PID=$!
 disown "$DUMMY_PID" 2>/dev/null || true
 sleep 0.5

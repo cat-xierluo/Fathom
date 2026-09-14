@@ -101,7 +101,8 @@
 | ISS-053 | Tauri 资源 glob 在缺少 helper 产物时阻断构建 | P0 | M2 | DONE | ISS-009 |
 | ISS-054 | ISS-009 切片 1 代码编译打通（类型/可变性/图标） | P0 | M2 | DONE | ISS-053 |
 | ISS-055 | 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/ | P0 | M2 | IN_PROGRESS | ISS-054 |
-| ISS-056 | verify_app_bundle 启动/就绪判定改为不依赖 GUI 上下文 | P1 | M2 | READY | ISS-055 | ISS-024 |
+| ISS-056 | verify_app_bundle 启动/就绪判定改为不依赖 GUI 上下文 | P1 | M2 | DONE | ISS-055 |
+| ISS-057 | 壳在非 tray 退出路径也须回收自己拉起的 helper | P0 | M2 | READY | ISS-055 | ISS-024 |
 
 ## 任务卡
 
@@ -130,6 +131,22 @@
   - [ ] 不放松任何既有断言（a/b/g 与结构/只读/零击杀语义保持）
   - [ ] 失败时有可读原因（哪个环节、什么证据），便于定位
 - **证据/接续**：不得勾选验收项；PM 证据见 .git/orchestration/wave9-evidence/iss-055-verify-findings.md。
+
+
+- **2026-09-15 更正（PM 复跑后）**：原判“`open -a` + `launchctl setenv` 启动链路不可靠”**不成立**。用修复后的 bundle 重跑，`c-helper-ready`（helper 在 7953 就绪，证明壳确实拉起并握手成功）、`c-instance-0600`、`d-zero-kill`、`d-yield-success`、`e-second-open-yield` 全部 pass——该链路工作正常。上一轮的 c/f 失败主因是**旧 bundle 里 helper 是目录**（build_app 假成功 + tauri-build 不清旧拷贝），非启动方式问题。本卡随之关闭：verify 脚本经本卡修复后全段真实执行到末尾，不再有 unbound variable 提前退出，且启动/就绪/让位/二次启动/零击杀各段均可信。唯一剩余失败 f-port-closed 属壳的退出行为缺陷，已转 ISS-057。
+
+### ISS-057 · 壳在非 tray 退出路径也须回收自己拉起的 helper
+
+- **状态**：READY（P0/M2）；来源：PM 复跑 verify_app_bundle.sh 发现（2026-09-15）。
+- **目标**：app 以任何方式退出（tray 菜单退出、SIGTERM、系统注销/重启、osascript quit）后，本壳拉起的 helper 都被回收，`f-port-closed` 通过。
+- **范围**：apps/desktop/src-tauri/src/lib.rs（退出路径）、必要时 apps/desktop/src-tauri/src/helper.rs（stop/生命周期）。
+- **实施边界**：PM 实测残留 helper pid 41268 **ppid=1（被 launchd 收养）**，仍在原端口监听 /health。根因：`lib.rs:264 quit_with_helper` 只在 tray 菜单退出路径调用 `h.stop()`（SIGTERM）；verify 脚本用 osascript/open 关闭 app 时走**非 tray 退出路径**，壳未回收 helper → 孤儿进程。修法：在壳的全局退出钩子（如 `RunEvent::ExitRequested` / `RunEvent::Exit`）也调用同一回收逻辑，保证“只回收本壳拉起的 helper、复用模式不发信号、SIGTERM 有 bounded 等待”这三条既有语义不变；不得改为向未知进程发信号。
+- **验收**：
+  - [ ] 关闭/退出 app 后 11s 内原端口 /health 不再 200（f-port-closed pass）
+  - [ ] tray 退出路径仍正常回收且退出码 0
+  - [ ] 复用模式（helper 由他者持有）退出时不对其发信号
+  - [ ] verify_app_bundle.sh 全段 12/12 pass
+- **证据/接续**：见 .git/orchestration/wave9-evidence/iss-055-v2-verify.md。
 
 ### ISS-055 · 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/
 

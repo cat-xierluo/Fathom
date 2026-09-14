@@ -24,7 +24,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 |---|---|---|
 | config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口 | 尚无持久化设置 UI；release 模式只定义路径合同，不证明 `.app` 已自包含 |
 | db.py | sqlite3、WAL、外键、schema v2；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 支持 v0/v1→v2；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
-| scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 只承载采集结果、退出码、耗时与质量字段；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同数据集同日快照 | 无法无歧义映射/解码时拒绝采集；快照持久化 min_kb 与 collection_status（full/partial），v3 之前旧行为 NULL |
+| scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 承载采集结果、退出码、耗时、权限/瞬时/其他错误分类计数与样例；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同数据集同日快照 | 无法无歧义映射/解码时拒绝采集；瞬时系统错误（Interrupted system call/Resource temporarily unavailable，按行尾 errno 段精确匹配）单独计数且使采集归 partial、永不 full，与真实致命错误并存仍整体拒绝；快照持久化 min_kb 与 collection_status（full/partial），v3 之前旧行为 NULL；瞬时计数尚未入库 |
 | reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown；按传入 sid 查找同数据集（同根同 `min_kb`）前驱，报头带 a/b 快照 ID 与记录口径说明 | 单条目仍无法区分低于阈值与移除，措辞如实表达为未记录/首次记录；报告状态由协调器单独记录 |
 | notify.py | 日报写完后尝试 osascript 通知；首次记录目录单列；摘要限长；低空间阈值 10 GB | 显示受系统策略控制；首扫无日报不通知；阈值未与 UI 统一；日志可能含路径 |
 | bigfiles.py | `/usr/bin/find -xdev -type f -size +... -mtime -... -print0` 后 stat | 大小为 st_size 逻辑字节；每次请求实时遍历；无超时/去重/失败呈现 |
@@ -70,10 +70,10 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | GET | /api/bootstrap | 在同源读取边界内返回当前进程写令牌；令牌不进入 URL、日志或 localStorage |
 | GET | /api/status | 实时卷容量、根、快照总数、最新元数据、db_bytes、scan、port，以及不含令牌/凭据的实际 runtime 路径与模式 |
 | GET | /api/snapshots | 全局快照降序列表，含卷统计与 min_kb/collection_status |
-| GET | /api/volume-trend?limit= | ASC LIMIT，目前取最早 N 条 |
-| GET | /api/trees?snapshot_id=&min_kb= | 最新/指定快照目录树；默认 ≥51200 KiB；先取所有行，再限 20000 节点 |
+| GET | /api/volume-trend?limit= | 以最新快照为锚取最新 N 条后正序输出；按数据集 (root, min_kb) 隔离，跨根/跨阈值不混点 |
+| GET | /api/trees?snapshot_id=&min_kb= | 最新/指定快照目录树；默认 ≥51200 KiB；节点预算在 SQL 层生效（LIMIT+1 探测），响应含 truncated/matched_count/node_count/node_limit；截断时子孙提升为顶层且无孤儿重复；指定快照不存在 404、空库 200 snapshot_id=null、低于阈值 200 空结果；root=/ 归一化不再成为自己的孩子 |
 | GET | /api/diff?a=&b=&topn= | b 相对 a；默认 a=最新快照的同数据集前驱；不足/无同数据集前驱 409，不存在 404；a/b 跨根或跨阈值 400 |
-| GET | /api/trend?path=&limit= | 有该路径记录的历史点；缺失不补点；ASC LIMIT |
+| GET | /api/trend?path=&limit= | 以最新记录该路径的快照为锚取最新 N 点后正序输出，按数据集隔离；缺失不补点（保留 gap）；无记录路径 200 空 points |
 | GET | /api/bigfiles?days=&min_mb=&topn= | 同步遍历，返回 files；上限 200 |
 | POST | /api/scan | 需 `X-Fathom-Token`；先取得跨进程 `flock` 再落 running；冲突 409；成功返回 run_id；线程启动失败 503 并释放租约 |
 | GET | /api/scan/status?history= | 返回最新统一状态、source/phase/snapshot/report/notification/pruned/warnings；history=1..100 附 API/CLI/定时运行 |
@@ -82,13 +82,13 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | GET | /api/reports/{date} | 仅接受完整 `YYYY-MM-DD` 片段，返回对应 Markdown 原文；不存在时 404 |
 | POST | /api/reveal | 需 `X-Fathom-Token`；只接受对象 JSON；规范化并解析路径后校验位于受监控根内、实际存在，再调用 `/usr/bin/open -R`；拒绝利用 `..` 越界、符号链接逃逸和相似前缀根 |
 
-所有请求只接受回环 Host；带 Origin 的请求只接受同源或允许的 Tauri loader，非安全方法还必须通过进程内写令牌。应用页面使用严格 CSP；`/docs`、`/redoc` 和 `/openapi.json` 仅在精确路径使用文档所需策略。令牌生命周期和桌面发行身份仍需后续任务收口。
+参数校验失败统一返回 400 + 中文 detail（原 FastAPI 默认 422 已全局收敛，前端与测试无 422 依赖）。所有请求只接受回环 Host；带 Origin 的请求只接受同源或允许的 Tauri loader，非安全方法还必须通过进程内写令牌。应用页面使用严格 CSP；`/docs`、`/redoc` 和 `/openapi.json` 仅在精确路径使用文档所需策略。令牌生命周期和桌面发行身份仍需后续任务收口。
 
 API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。接口实际合同以后端代码为准，版本同源化归 ISS-037。
 
 ## 当前验证覆盖
 
-当前 main 的精确门禁为 **209 pytest**；另通过 39 项 Chromium/API 检查与 33 项前端模块/生命周期检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
+当前 main 的精确门禁为 **260 pytest**；另通过 39 项 Chromium/API 检查与 33 项前端模块/生命周期检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
 
 实际 Tauri WebView、系统通知、tray、生产 launchd 跨日、自包含发行包、原生 x86_64 冻结、Developer ID 签名、公证/stapling 和真实更新仍为 `NOT_VERIFIED`。
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。

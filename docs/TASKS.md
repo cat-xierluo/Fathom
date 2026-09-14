@@ -97,11 +97,24 @@
 | ISS-049 | bigfiles 日志脱敏补全与路径缺席断言 | P2 | M1 | DONE | ISS-032 |
 | ISS-050 | 报告与日志保留策略落地 | P2 | M1 | DONE | ISS-032 |
 | ISS-051 | 冻结冒烟脚本统一 exec 进程记账 | P2 | M0 | DONE | ISS-029 |
-| ISS-052 | 查询口径 NULL 阈值锚点直接测试 | P2 | M0 | DONE | ISS-024 |
+| ISS-052 | 查询口径 NULL 阈值锚点直接测试 | P2 | M0 | DONE |
+| ISS-053 | Tauri 资源 glob 在缺少 helper 产物时阻断构建 | P0 | M2 | READY | ISS-009 | ISS-024 |
 
 ## 任务卡
 
 字段合同：目标 → 范围 → 实施边界 → 验收 → 证据。优先级/阶段/状态/依赖以索引为唯一来源。验收框仅在取得证据后勾选。
+
+### ISS-053 · Tauri 资源 glob 在缺少 helper 产物时阻断构建
+
+- **状态**：READY（P0/M2）；来源：ISS-009 切片 1 PM 复跑发现（2026-09-15）。
+- **目标**：`cargo check`/`tauri build` 在尚未生成 helper 冻结产物时也能通过，或明确以可读方式失败，不再让新克隆/CI 卡在构建脚本 glob。
+- **范围**：apps/desktop/src-tauri/tauri.conf.json、apps/desktop/src-tauri/build.rs（如需要）、scripts/。
+- **实施边界**：当前 `bundle.resources=["resources/helper/**"]` 在该目录只有 README.txt 时，tauri build 脚本报 `glob pattern resources/helper/** path not found or didn't match any files` 并使 `cargo check --locked --offline` 失败（PM 复跑实证，见 Wave8 证据 iss-009-slice1-RESULT.md）。修法需保证两条路径都成立：(a) 正常的“先 build_helper.sh 再 tauri build”流程仍把冻结树打进 bundle；(b) 未生成产物时 `cargo check` 不因此失败（例如改为显式文件清单 + 在 build.rs 中按存在性生成，或加占位可执行并保持可选）。不得把 helper 产物提交进 Git。
+- **验收**：
+  - [ ] 干净克隆（无 resources/helper/fathom-helper）上 `cargo check --locked --offline` exit 0
+  - [ ] 跑过 build_helper.sh 后 `tauri build` 仍把 helper 树打进 .app 的 Contents/Resources/helper/
+  - [ ] 反例：构建脚本不再因 glob 无匹配而中断；.gitignore 仍排除产物
+- **证据/接续**：不得勾选验收项，需先补复现脚本。
 
 ### ISS-052 · 查询口径 NULL 阈值锚点直接测试
 
@@ -516,6 +529,7 @@
   - [ ] 关闭/退出行为正确；后台未就绪可恢复且不要求 main.py install
   - [ ] 路径含空格/中文，资源只读，端口冲突、二次启动均可控
   - [ ] 构建步骤/支持矩阵/产物校验值记录；未签名内测明确标记，不冒充公开包
+- **切片 1 状态（2026-09-15 00:59，PM）**：代码层已交付 PR [#61](https://github.com/cat-xierluo/fathom/pull/61)（分支 `iss-009-app-bundle`，head `f6dc9bb`，未合并）：`helper.rs` 生命周期（locate/spawn/handshake/让位/端口耗尽/SIGTERM 10s）、`lib.rs` 接入与 tray 退出、tauri bundle 配置、握手页、四个打包/校验脚本。**但三条合同验证命令在 worker 环境未执行**（白名单拒绝），由 PM 复跑，结果：`cargo check --locked --offline` **失败**（`resources/helper/**` glob 无匹配 → 阻断构建，已登记 ISS-053）；`build_app.sh`/`verify_app_bundle.sh` 因依赖已冻结 helper 尚未跑通。**故切片 1 不得合并、不得勾选验收项**，需先修 ISS-053 再继续。另 spawn 的 safe-push 白名单 `--base` 参数生成有误（写成 `main`，脚本要求 `origin/main`），本次由 PM 代推，属需修的工具缺陷。
 - **证据/接续**（2026-09-14 晚，PM 切片决策）：除 ISS-045（Logo/图标方向，人工门）外前置全部 DONE。按用户“不要阻塞”指令，先派**切片 1：壳-helper 生命周期 + 未签名打包流水线**——Tauri 壳启动时拉起内嵌 PyInstaller onedir helper（release 模式，数据根 `~/Library/Application Support/Fathom`），经 `helper-instance.json`/`/health` 握手后导航到本地服务，退出时按身份 SIGTERM 回收；同服务已在运行则复用不重复拉起；`scripts/build_helper.sh` / `build_app.sh` / `verify_app_bundle.sh` 产出未签名 `.app`/`.dmg` 并做结构、只读布局、含空格/中文路径启动、端口冲突让位、二次启动、校验值记录。图标用现有 `icon.png` 生成占位 iconset（**NOT_VERIFIED，公开前必须换 ISS-045 正式图标**）。新账户/断网首启与真实下载产物验收留 `NOT_VERIFIED`（切片 2 或实机验收）。不签名、不公证、不注册 launchd、不改 fathom/ 生产代码。
 
 ### ISS-010 · 登录自启与后台计划

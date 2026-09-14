@@ -273,6 +273,17 @@ BIGFILE_DEFAULT_DAYS = 7
 BIGFILE_DEFAULT_MB = 100
 FREE_ALERT_GB = 10
 
+# 大文件查询预算（ISS-032 Phase 2 写入）。
+# 依据：tests/test_bigfiles.py::TestResourceMeasurement 实测
+#   small (5×200MB / 1GB)  p50 wall 4ms  / rss 1.39MB / 5 行
+#   large (20×200MB / 4GB)  p50 wall 21ms / rss 1.75MB / 20 行
+# 真实 HOME（百 GB 级）按 1.5x 余量提升。
+BIGFILE_FIND_TIMEOUT_S = 30.0      # find 单次墙钟上限（远超 large 21ms）
+BIGFILE_RESULT_CAP = 1000         # find 输出行硬上限（远超 large 20 行）
+BIGFILE_CACHE_TTL_S = 30.0        # 成功结果缓存 TTL（可分辨 expired）
+BIGFILE_LOG_RETENTION_DAYS = 7     # 大文件查询相关本地日志保留天数
+BIGFILE_REPORT_RETENTION_DAYS = 35 # 大文件查询产生的诊断报告保留天数
+
 # launchd 仍是开发版遗留入口；ISS-025 不安装/卸载它。
 LAUNCHAGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 SCAN_LABEL = "com.maoscripts.fathom-scan"

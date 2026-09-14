@@ -256,10 +256,78 @@ function createFixture() {
       });
     }
     if (url.pathname === "/api/bigfiles") {
-      // 字段合同与 fathom/bigfiles.py 一致：[{path, size(字节), mtime 'YYYY-MM-DD HH:MM'}]
-      return json(res, 200, { files: [
-        { path: `${ROOT}/Build/fathom-disk.img`, size: 2 * 1024 ** 3, mtime: "2026-09-12 09:00" },
-      ] });
+      // 字段合同与 fathom/bigfiles.py 一致；ISS-032 扩展：
+      //   state: ok | no_match | permission_denied | failed | truncated | expired
+      //   scope: {root, days, min_mb, topn}
+      //   stats: {wall_ms, peak_rss_bytes, find_output_lines, ...}
+      //   truncated / expired / cached / cache_age_s / error_message / raw_truncated
+      const days = Number(url.searchParams.get("days") || 7);
+      const min_mb = Number(url.searchParams.get("min_mb") || 100);
+      const topn = Number(url.searchParams.get("topn") || 50);
+      const scope = { root: ROOT, days, min_mb, topn };
+      const stats = (extra = {}) => ({
+        wall_ms: 12,
+        peak_rss_bytes: 1392640,
+        find_output_lines: 1,
+        find_exit_code: 0,
+        find_stderr_lines: 0,
+        permission_denied_lines: 0,
+        ...extra,
+      });
+      const fileRow = { path: `${ROOT}/Build/fathom-disk.img`, size: 2 * 1024 ** 3, mtime: "2026-09-12 09:00" };
+      if (state.scenario === "bigfiles-no-match") {
+        return json(res, 200, {
+          state: "no_match", files: [], scope,
+          stats: stats({ find_output_lines: 0 }),
+          truncated: false, raw_truncated: false,
+          expired: false, cached: false, cache_age_s: null,
+          error_message: null,
+        });
+      }
+      if (state.scenario === "bigfiles-truncated") {
+        return json(res, 200, {
+          state: "truncated", files: [fileRow], scope,
+          stats: stats({ find_output_lines: 17 }),
+          truncated: true, raw_truncated: false,
+          expired: false, cached: false, cache_age_s: null,
+          error_message: null,
+        });
+      }
+      if (state.scenario === "bigfiles-expired") {
+        return json(res, 200, {
+          state: "expired", files: [fileRow], scope,
+          stats: stats(),
+          truncated: false, raw_truncated: false,
+          expired: true, cached: true, cache_age_s: 31.2,
+          error_message: null,
+        });
+      }
+      if (state.scenario === "bigfiles-failed") {
+        return json(res, 200, {
+          state: "failed", files: [], scope,
+          stats: stats({ find_exit_code: 23, find_stderr_lines: 2 }),
+          truncated: false, raw_truncated: false,
+          expired: false, cached: false, cache_age_s: null,
+          error_message: "find 退出 23：/scanroot/root: No such file or directory",
+        });
+      }
+      if (state.scenario === "bigfiles-permission-denied") {
+        return json(res, 200, {
+          state: "permission_denied", files: [], scope,
+          stats: stats({ find_exit_code: 1, find_stderr_lines: 3, permission_denied_lines: 3 }),
+          truncated: false, raw_truncated: false,
+          expired: false, cached: false, cache_age_s: null,
+          error_message: "find 退出 1，3 行权限受限",
+        });
+      }
+      // 默认 OK
+      return json(res, 200, {
+        state: "ok", files: [fileRow], scope,
+        stats: stats(),
+        truncated: false, raw_truncated: false,
+        expired: false, cached: false, cache_age_s: null,
+        error_message: null,
+      });
     }
     if (url.pathname === "/api/reveal" && req.method === "POST") return json(res, 200, { ok: true });
     if (url.pathname === "/api/scan" && req.method === "POST") {
@@ -444,6 +512,73 @@ async function main() {
         big.text.includes("fathom-disk.img") && big.svg, big.text.slice(0, 80));
     const bigfilesShot = path.join(evidenceDir, "bigfiles-1220x820.png");
     await page.screenshot({ path: bigfilesShot });
+
+    /* ---------- 大文件状态矩阵（ISS-032） ---------- */
+    // 默认已是 OK；显式遍历其余五态（截断/过期/失败/权限/无匹配）。
+    // 通过 setScenario 切换夹具，然后重新打开页面让前端重发请求。
+    const bigfilesReadBody = async () =>
+      page.evaluate(() => document.querySelector("#tbl-bigfiles tbody").textContent);
+
+    await setScenario("bigfiles-truncated");
+    await openPage("#/bigfiles");
+    await waitForText(page, "#tbl-bigfiles tbody", "结果被截断");
+    const truncated = await bigfilesReadBody();
+    record("bigfiles-truncated-state-shown",
+      truncated.includes("结果被截断") &&
+        truncated.includes("已截断到 top 200") &&
+        truncated.includes("find 行数 17"), truncated.slice(0, 120));
+    const bigfilesTruncatedShot = path.join(evidenceDir, "bigfiles-truncated-1220x820.png");
+    await page.screenshot({ path: bigfilesTruncatedShot });
+
+    await setScenario("bigfiles-expired");
+    await openPage("#/bigfiles");
+    await waitForText(page, "#tbl-bigfiles tbody", "缓存已过期");
+    const expired = await bigfilesReadBody();
+    record("bigfiles-expired-state-shown",
+      expired.includes("缓存已过期") && expired.includes("31.2"),
+      expired.slice(0, 120));
+    const bigfilesExpiredShot = path.join(evidenceDir, "bigfiles-expired-1220x820.png");
+    await page.screenshot({ path: bigfilesExpiredShot });
+
+    await setScenario("bigfiles-failed");
+    await openPage("#/bigfiles");
+    await waitForText(page, "#tbl-bigfiles tbody", "查询失败");
+    const bigFailed = await bigfilesReadBody();
+    record("bigfiles-failed-state-shown",
+      bigFailed.includes("查询失败") &&
+        bigFailed.includes("No such file or directory"),
+      bigFailed.slice(0, 120));
+    const bigfilesFailedShot = path.join(evidenceDir, "bigfiles-failed-1220x820.png");
+    await page.screenshot({ path: bigfilesFailedShot });
+
+    await setScenario("bigfiles-permission-denied");
+    await openPage("#/bigfiles");
+    await waitForText(page, "#tbl-bigfiles tbody", "权限受限");
+    const permDenied = await bigfilesReadBody();
+    record("bigfiles-permission-denied-state-shown",
+      permDenied.includes("权限受限") && permDenied.includes("3 行权限受限"),
+      permDenied.slice(0, 120));
+    const bigfilesPermShot = path.join(evidenceDir, "bigfiles-permission-denied-1220x820.png");
+    await page.screenshot({ path: bigfilesPermShot });
+
+    await setScenario("bigfiles-no-match");
+    await openPage("#/bigfiles");
+    await waitForText(page, "#tbl-bigfiles tbody", "无匹配文件");
+    const noMatch = await bigfilesReadBody();
+    record("bigfiles-no-match-state-shown",
+      noMatch.includes("无匹配文件") &&
+        noMatch.includes("7 天") &&
+        noMatch.includes("100 MB"),
+      noMatch.slice(0, 120));
+    const bigfilesNoMatchShot = path.join(evidenceDir, "bigfiles-no-match-1220x820.png");
+    await page.screenshot({ path: bigfilesNoMatchShot });
+
+    // 收尾：清空 scenario，避免污染后续总览/变化用例
+    await setScenario(null);
+    // 回到默认 OK 状态，以便任何后续断言（若依赖 bigfiles）不踩雷
+    await openPage("#/bigfiles");
+    await page.waitForSelector("#tbl-bigfiles tbody tr");
+    await page.click("#btn-bigfiles");
 
     await openPage("#/settings");
     await page.waitForSelector("#settings-table tbody tr");
@@ -705,7 +840,9 @@ async function main() {
       ok: failed.length === 0,
       passed: checks.length - failed.length,
       failed: failed.length,
-      evidence: [overviewShot, changesShot, browseShot, bigfilesShot],
+      evidence: [overviewShot, changesShot, browseShot, bigfilesShot,
+        bigfilesTruncatedShot, bigfilesExpiredShot, bigfilesFailedShot,
+        bigfilesPermShot, bigfilesNoMatchShot],
       checks,
     }, null, 2) + "\n");
     if (failed.length) process.exitCode = 1;

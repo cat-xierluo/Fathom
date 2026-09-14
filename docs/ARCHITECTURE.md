@@ -84,11 +84,18 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 
 参数校验失败统一返回 400 + 中文 detail（原 FastAPI 默认 422 已全局收敛，前端与测试无 422 依赖）。所有请求只接受回环 Host；带 Origin 的请求只接受同源或允许的 Tauri loader，非安全方法还必须通过进程内写令牌。应用页面使用严格 CSP；`/docs`、`/redoc` 和 `/openapi.json` 仅在精确路径使用文档所需策略。令牌生命周期和桌面发行身份仍需后续任务收口。
 
+### 自包含 helper 的运行合同（ISS-029 切片 2 已落地）
+
+- CLI `serve` 支持 `--port`/`--port-range`：目标端口被占用时按身份判定——`/health` 报告同服务（service=fathom 且 protocol_version 一致）则让位并退出 0；否则在 `port..port+range` 内寻找空闲端口绑定，找不到则以非零退出。全程不向任何外部进程发信号。
+- 端口发现文件写入运行根 `helper-instance.json`（0600，含 pid/port/identity），进程退出时按身份匹配清理。
+- `--version` 与 `/health` 的身份字段同源于 `fathom.__init__` 的常量；`/health` 返回 service/protocol_version/pid/port/runtime_mode/status。
+- 冻结产物（PyInstaller onedir）在无 hidden-import 时可服务；data/reports/logs 由 `FATHOM_RUNTIME_DIR` 指向冻结树之外。x86_64 与 .app 签名公证仍未验证（ISS-041/Tauri 端）。
+
 API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。接口实际合同以后端代码为准，版本同源化归 ISS-037。
 
 ## 当前验证覆盖
 
-当前 main 的精确门禁为 **285 pytest**；另通过 39 项 Chromium/API 检查与 38 项前端模块/生命周期/大文件状态检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
+当前 main 的精确门禁为 **295 pytest**；另通过 39 项 Chromium/API 检查与 38 项前端模块/生命周期/大文件状态检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
 
 实际 Tauri WebView、系统通知、tray、生产 launchd 跨日、自包含发行包、原生 x86_64 冻结、Developer ID 签名、公证/stapling 和真实更新仍为 `NOT_VERIFIED`。
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。

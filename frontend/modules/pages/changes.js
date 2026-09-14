@@ -13,7 +13,7 @@
  * - 目录详情：路径 + 净变化 + 趋势（来自 /api/trend）+ 当前大小（/api/browse）。
  */
 import { fetchJSON, beginRequest, invalidateRequest, revealInFinder } from "../request.js";
-import { fmtKB, fmtDelta, escapeHtml } from "../format.js";
+import { fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, hasChart, clearChart } from "../charts.js";
 import { icon } from "../../icons.js";
 
@@ -361,8 +361,7 @@ function renderDeltaBars(id, rows, color) {
     } },
     grid: { left: 150, right: 50, top: 6, bottom: 24 },
     xAxis: { type: "value", axisLabel: { formatter: (v) => fmtDelta(v) } },
-    yAxis: { type: "category", data: top.map((r) => r.path.length > 32
-      ? r.path.slice(0, 14) + "…" + r.path.slice(-15) : r.path),
+    yAxis: { type: "category", data: top.map((r) => shortPath(r.path, 2)),
       axisLabel: { fontSize: 11, width: 140, overflow: "truncate" } },
     series: [{ type: "bar", data: top.map((r) => ({ value: r.delta_kb, raw: r })),
       itemStyle: { color, borderRadius: [0, 3, 3, 0] },

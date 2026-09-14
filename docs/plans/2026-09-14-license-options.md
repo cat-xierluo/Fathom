@@ -106,3 +106,7 @@ MPL-2.0；只有当"任何场景都不得闭源分叉"是硬目标时才选 AGPL
    Resources；
 5. 如选 MPL-2.0：为自有源文件补许可证头（新任务卡）；如选双许可：
    确定依优先顺序书写。
+
+## 6. 选择结果（2026-09-14）
+
+用户决定：**与 Folia 一致，采用 Apache-2.0**（Folia 仓库根 LICENSE 为 Apache License 2.0，`license = "Apache-2.0"`，版权行 `Copyright 2025-2026 maoking`）。落地：仓库根 LICENSE 复制 Folia 正文（逐字一致），版权行按 Fathom 最早提交年份写 `Copyright 2026 maoking`；`apps/desktop/src-tauri/Cargo.toml` 增加 `license = "Apache-2.0"`；README 与 THIRD_PARTY_NOTICES 联动；DEC-020 记录。第 5 节清单第 1–3 项已执行，第 4 项归 ISS-041 打包，第 5 项不适用（未选 MPL/双许可）。

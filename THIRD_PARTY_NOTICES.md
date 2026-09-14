@@ -1,5 +1,7 @@
 # Third-Party Notices
 
+Fathom 自身采用 Apache License 2.0（见仓库根 `LICENSE`，Copyright 2026 maoking）。
+
 Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文件是
 [依赖与来源清单](docs/plans/2026-09-14-dependency-inventory.md)（SBOM
 等价物）的 notices 配套；版本、证据方式与未核对范围（UNKNOWN）以该清单

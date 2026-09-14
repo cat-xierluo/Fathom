@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/047 已完成，ISS-032 由当前 PM 派发中（IN_PROGRESS，占用 bigfiles/api/config/前端查询区）。新 PM 的默认下一项是 **ISS-029 下一切片**（须待 ISS-032 合并后再动 api/cli/config）；ISS-028 仍待 ISS-026 人工门。ISS-026 与 ISS-045 是两个独立人工视觉门，均不得自动越过。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。新 PM 的默认下一项是 **ISS-029 下一切片**（api/cli/config 已无在途争用）；ISS-028 仍待 ISS-026 人工门。ISS-026 与 ISS-045 是两个独立人工视觉门，均不得自动越过。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -19,7 +19,7 @@
 授权来源：用户在本任务中明确要求“review 合并”，并追加“后续可以自动化推进了吗，你作为 pm 按照 multi-agent-orchestration 去派发对应的 worker”。PM 可在下列范围内派发、验证、创建私有仓库 PR，并在独立审查通过后合并；不逐波重复确认。用户说“暂停自动推进”即停止新派发，先安全收口在途工作；发生一次越界操作即回退逐波确认。
 
 - **范围**：2026-09-13 用户追加授权将当前开发线收敛为 v0.3.0 可分发版本，并要求 PM 派 worker 研究/推进 release、Apple 签名公证与应用内更新。ISS-019/023/025/031 已完成；自动推进当前覆盖 ISS-020/021/026/027/029，以及依赖满足后通往 v0.3.0 的 ISS-009/010/016/024/028/030/032/037/040/041；独立验收发现且会让这些门禁假绿的阻断缺陷可先登记为聚焦修复卡（当前已含 ISS-042/043/044/046）。仍须逐卡通过前置和验收，不因发布目标跳阶段。转公开、公开 Release、向外部测试者发送产物仍是最终人工门。
-- **后继查表**：ISS-020/021/024/027/047 已完成，ISS-032 IN_PROGRESS（PM 两阶段合同：bigfiles 内核先行，api/config/前端接线基于含 ISS-024 的 main）。ISS-029 下一切片占用 api/cli/config，须与 ISS-032 串行；完成后再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线。
+- **后继查表**：ISS-020/021/024/027/032/047 已完成。ISS-029 下一切片占用 api/cli/config，当前无在途争用可直接派发；完成后再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线。
 - **UX**：ISS-026 原型路径登记为 `prototypes/ux/`，仅合成数据，配套 `scripts/verify_ux_prototype.cjs`。交付具体可点击产物供用户评审；未收到反馈时保持 WAITING，不标 DONE，不自动实装 ISS-028。原型的工程交付可建立 PR，用户评审是本卡关闭条件。
 - **角色/所有权**：用户于 2026-09-13 再次明确 PM 尽量只做验收、定方向和关键上下文；实现、测试与返修交给 worker，PM 不代写业务代码。实施 worker 只写合同所列工程文件和自己的 session context；PM 独占 TASKS/AGENTS/ARCHITECTURE/DECISIONS/DESIGN/ROADMAP/README/CHANGELOG/TESTING。worker 提供 WRITEBACK_PROPOSAL，由 PM 按事实更新。非平凡实现需要不同 session/dispatch 的 reviewer；固定 40 位 head，不能自审后直接合并。
 - **并发/资源**：本项目最多 3 个活跃 worker（含 reviewer）；待 PM 验收超过 2 项停止新派。scanner、api/app.js、schema/config 分别串行；全量测试全机一次仅一份，worker 只跑所分配回归。采用已有受支持 provider 配置，派发价值、额度、物理内存和写范围门禁均不得绕过。
@@ -77,7 +77,7 @@
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | IN_PROGRESS | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
 | ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | DONE | — |
-| ISS-032 | 资源预算、大文件查询与诊断 | P1 | M1 | IN_PROGRESS | ISS-020、ISS-025 |
+| ISS-032 | 资源预算、大文件查询与诊断 | P1 | M1 | DONE | ISS-020、ISS-025 |
 | ISS-033 | 外部内测与开放发布验收 | P1 | M3 | BLOCKED | ISS-001、ISS-002、ISS-003、ISS-008、ISS-024、ISS-028、ISS-030、ISS-032、ISS-037、ISS-040、ISS-041 |
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
@@ -370,11 +370,11 @@
 - **范围**：fathom/bigfiles.py、api.py、config.py、日志与对应前端查询区。
 - **实施边界**：大文件查询显式触发，单任务/去重/取消/超时、TTL 与结果上限清楚；find stderr/退出码不能当空结果。原始路径仅本地必要日志，支持脱敏诊断；DB 指标包含 WAL/SHM，日志和报告各设保留策略。先量实际资源再定预算。
 - **验收**：
-  - [ ] 同参数并发只启动一次实际 find，取消/超时后子进程回收
-  - [ ] 无匹配、无权限、失败、截断、过期缓存分别可辨
-  - [ ] du/find 的墙钟/峰值内存/输出量及 DB/WAL/日志增长有小/大样例证据
-  - [ ] 诊断导出不含真实路径/令牌/文件内容，禁止直接整库上传；预算与保留策略写入配置事实
-- **证据/接续**：尚未执行；不得勾选验收项。
+  - [x] 同参数并发只启动一次实际 find，取消/超时后子进程回收
+  - [x] 无匹配、无权限、失败、截断、过期缓存分别可辨
+  - [x] du/find 的墙钟/峰值内存/输出量及 DB/WAL/日志增长有小/大样例证据
+  - [x] 诊断导出不含真实路径/令牌/文件内容，禁止直接整库上传；预算与保留策略写入配置事实
+- **证据/接续**（2026-09-14）：[PR #39](https://github.com/cat-xierluo/fathom/pull/39) head `a8432bf24a1b2a32189c5551fa54490a84425090` squash 合并为 main `855f602`。实现由 MiniMax-M3 worker 两阶段交付（内核 6362113 → api/config/前端接线 4ba1957，PR #37）；验收修复 episode 1（verify 断言 topn 对齐 + 移除误提交的 WRITEBACK_PROPOSAL.md，PM 机械收口为 8e45d51/PR #38）；独立 reviewer 对 8e45d51 **REJECT**（BF-1：TTL 过期缓存为终端态，`submit()` 过期分支不重启 find，显式触发 30s 后永久失效）；修复 episode 2（a8432bf：过期条目锁内驱逐后落入去重与新 find，`find_big_files` 对 EXPIRED 抛 `BigfilesError`，回归先红 2 后绿）经第二位独立 reviewer re_review ACCEPT。`BigfilesManager`：同参数并发去重、进程组 SIGTERM/SIGKILL 回收、TTL 缓存、五态区分、sha8+basename 脱敏日志、`resource.getrusage` 资源量化（小/大样例见 worker RESULT）；config.py 新增 5 个 `BIGFILE_*` 预算/保留常量；前端 `pages/bigfiles.js` 展示进度/范围/失败/截断/过期；verify 脚本扩 5 场景。PM 复验最新 main：285 pytest、39/39 浏览器/API、38/38 前端。登记非阻塞后续：DEBUG 日志 `key=%s` 含未脱敏 root（root 本就经 API 公开，文件级未泄漏）；`test_full_path_not_in_log` 断言偏弱；`BIGFILE_LOG/REPORT_RETENTION_DAYS` 暂无消费方；API `expired` 字段修复后生产恒 False（合同兼容保留）；诊断导出功能未单独实装（日志脱敏已落地，整库上传本就不存在）。DB 含 WAL/SHM 的指标归 status 端点，本卡未改。任务 DONE。
 
 ### ISS-029 · 自包含运行时与后台服务技术验证
 

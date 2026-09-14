@@ -50,7 +50,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import bigfiles, config, db, reports, scan_coordinator
+from . import SERVICE_IDENTITY, __version__, __protocol_version__, bigfiles, config, db, reports, scan_coordinator
 
 app = FastAPI(title="Fathom", version="0.2.0")
 
@@ -182,6 +182,27 @@ def _latest_snapshots(conn: sqlite3.Connection, n: int = 2) -> list[sqlite3.Row]
 def _latest_scan_state(conn: sqlite3.Connection) -> dict:
     """扫描状态来自跨入口生命周期详情；读取本身不推断 owner 已死亡。"""
     return scan_coordinator.latest_scan_state(conn)
+
+
+@app.get("/health")
+def api_health():
+    """发行 helper 身份面（ISS-029 G4）。
+
+    回环 Host 守卫沿用同源合同；不带 Origin/Token 也可读。仅返回身份与
+    进程身份字段（service/version/protocol_version/pid/port/runtime_mode/
+    status），不含令牌/凭据/真实路径（路径由 app 壳读运行根下的 port 文件
+    获取，不进 /health）。同服务身份探测：cli.cmd_serve 在端口被占时
+    比对此响应判让位。
+    """
+    return {
+        "service": SERVICE_IDENTITY,
+        "version": __version__,
+        "protocol_version": __protocol_version__,
+        "status": "ok",
+        "pid": os.getpid(),
+        "port": config.PORT,
+        "runtime_mode": config.get_runtime_config().mode,
+    }
 
 
 @app.get("/api/status")

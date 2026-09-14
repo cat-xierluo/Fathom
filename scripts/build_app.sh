@@ -50,6 +50,12 @@ fi
 
 log_step "3/3 cargo tauri build --bundles app,dmg"
 cd "$ROOT/apps/desktop/src-tauri"
+# ISS-055：tauri-build 的 copy_resources 不清理 target 下旧映射产物（tauri-build
+# 2.6.3 lib.rs copy_resources 无 remove_dir_all），resources 映射变更后旧布局
+# 会在新目标路径留下同名目录，令 fs::copy 报 "Is a directory (os error 21)"
+# 并使 build script 失败。构建前清掉两个 profile 的资源拷贝目录（tauri-build
+# 会按当前 tauri.conf.json 重新生成，仅删副本，安全）。
+rm -rf target/release/helper target/debug/helper
 cargo tauri build --bundles app,dmg 2>&1 | tee "$LOG_DIR/tauri-build.log" || OVERALL_RC=$?
 cd "$ROOT"
 
@@ -105,6 +111,12 @@ echo "=========================================="
 #   - 整体 0：app 至少成功
 #   - 整体 2：app 成功但 dmg 失败（保持 .app 可用）
 #   - 整体 1：app 失败
+# ISS-055：cargo tauri build 自身失败时必须 exit 1（头注合同语义），否则
+# target/ 里残留的旧 .app/.dmg 会让本脚本假报成功（曾掩盖 EISDIR 失败）。
+if [ "$OVERALL_RC" -ne 0 ]; then
+  echo "[build_app] FAIL：cargo tauri build 退出码 $OVERALL_RC，残留产物不可作为成功证据" >&2
+  exit 1
+fi
 if [ "$APP_RC" -ne 0 ]; then
   exit 1
 fi

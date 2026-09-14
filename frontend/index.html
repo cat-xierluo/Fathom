@@ -82,9 +82,26 @@
               <label>基线 <select id="sel-a"></select></label>
               <label>对比 <select id="sel-b"></select></label>
               <button id="btn-diff" class="btn">对比</button>
+              <input id="changes-search" class="ctl-input" type="search"
+                     placeholder="搜索目录" aria-label="搜索目录" autocomplete="off">
             </div>
           </div>
           <p id="diff-status" class="hint" role="status" aria-live="polite">正在加载快照列表…</p>
+          <div class="net-line" id="changes-net" hidden></div>
+          <p class="hint" id="changes-foot" hidden>列表包含父子目录，行值不可相加为净变化；"未记录"不等于新增或删除。</p>
+          <div class="tbl-wrap">
+            <table class="tbl" id="changes-table">
+              <thead><tr>
+                <th><button class="th-sort" data-sort="path" type="button">目录</button></th>
+                <th class="num"><button class="th-sort" data-sort="prev" type="button">之前</button></th>
+                <th class="num"><button class="th-sort" data-sort="curr" type="button">现在</button></th>
+                <th class="num"><button class="th-sort" data-sort="delta" type="button">变化</button></th>
+                <th>状态</th>
+                <th><span class="visually-hidden">操作</span></th>
+              </tr></thead>
+              <tbody id="changes-body"></tbody>
+            </table>
+          </div>
           <div class="diff-grid">
             <div><h3 class="grow"><span data-icon-inline="arrowUpRight"></span>增长最多</h3><div id="chart-grown" class="chart"></div></div>
             <div><h3 class="shrink"><span data-icon-inline="arrowDownRight"></span>缩减最多</h3><div id="chart-shrunk" class="chart"></div></div>
@@ -101,6 +118,8 @@
           <div id="report-list" class="report-list">加载中…</div>
           <div id="report-view" class="report-view hidden"></div>
         </div>
+        <!-- 目录详情侧栏（DESIGN：跨页共享，键盘 Esc 关闭，焦点返回触发行） -->
+        <aside id="changes-detail" class="changes-detail" hidden aria-label="目录详情"></aside>
       </section>
 
       <!-- ===== 分布（旭日图 + 目录浏览器） ===== -->

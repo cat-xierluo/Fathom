@@ -576,3 +576,160 @@ class TestErrorSemantics:
         assert client.get("/api/trees?snapshot_id=1").status_code == 404
         empty = client.get("/api/trees").json()
         assert empty["snapshot_id"] is None
+
+
+# ---------- ISS-052：NULL min_kb (v2 旧记录) 作为最新数据集时的锚点行为 ----------
+#
+# 反例来源：ISS-024 reviewer NB-2（2026-09-14）。`/api/volume-trend` 与
+# `/api/trend` 当前用 `WHERE s.min_kb IS ?` 隔离数据集，对 anchor 是 NULL
+# 的情形依赖 IS NULL 语义。ISS-024 既有用例只覆盖"已知阈值最新"那一侧：
+# - `test_no_cross_threshold_mixing`（volume-trend / path trend）锚点是
+#   4096，验证 1024 旧点不混。
+# - 这里新增 6 项把"NULL 最新（v2 旧记录被当成最新数据集）"补齐为直接测试，
+#   并给出同形状的已知阈值最新对照（不是简单重复既有用例，明确把 NULL 旧
+#   点逐个钉在响应外）。所有断言只用合成数据 + NULL / 1024 / 4096 三种
+#   min_kb，构造的 free_bytes 与 size_kb 让错配集合无法伪装命中。
+
+
+class TestNullMinKbAnchor:
+    """NULL min_kb（v2 旧记录）作为最新数据集时，趋势锚点与数据集隔离。
+
+    设计：anchor 的 min_kb 是关键输入。`WHERE s.min_kb IS ?` 必须随 anchor
+    的值切换匹配集合；anchor=None 时只匹配 NULL 行，anchor=1024 时只匹配
+    1024 行。下文每个自由字节/size 都让错配集合与正确集合在数值上无交集，
+    以便 bug 让错配集合溜入响应时直接断言失败。
+    """
+
+    def test_volume_trend_null_anchor_excludes_known_threshold_points(self, client):
+        """volume-trend：NULL 最新；已知阈值点（1024 / 4096）一行都不混入。"""
+        conn = db.connect()
+        try:
+            _insert_snapshot(conn, "2026-09-01", ROOT_A, min_kb=1024,
+                             entries={ROOT_A: 10_000}, free_bytes=111)
+            _insert_snapshot(conn, "2026-09-02", ROOT_A, min_kb=4096,
+                             entries={ROOT_A: 8_000}, free_bytes=222)
+            # NULL 最新：v2 旧记录（未持久化 min_kb），dataset=(ROOT_A, NULL)
+            _insert_snapshot(conn, "2026-09-03", ROOT_A, min_kb=None,
+                             entries={ROOT_A: 5_000}, free_bytes=333)
+        finally:
+            conn.close()
+        body = client.get("/api/volume-trend").json()
+        # 只允许 NULL 数据集点；1024/4096 的 free_bytes（111/222）不得出现
+        assert _dates(body) == ["2026-09-03"]
+        assert body[0]["free_bytes"] == 333
+        for row in body:
+            assert row["free_bytes"] not in (111, 222)
+
+    def test_volume_trend_null_anchor_limit_window_only_null_dataset(self, client):
+        """volume-trend：NULL 最新 + limit；limit 窗口只命中 NULL 数据集。
+
+        即使 limit 大于 NULL 数据集的全部行数，1024/4096 点也不会被补齐进
+        响应（错配集合与 NULL 集合在 free_bytes 上不重叠）。
+        """
+        conn = db.connect()
+        try:
+            for day in ("2026-09-01", "2026-09-02", "2026-09-03"):
+                _insert_snapshot(conn, day, ROOT_A, min_kb=1024,
+                                 entries={ROOT_A: 10_000}, free_bytes=10)
+            # NULL 最新 3 行；free_bytes 用 9000+ 段确保与 10 不重叠
+            for i, day in enumerate(("2026-09-04", "2026-09-05", "2026-09-06")):
+                _insert_snapshot(conn, day, ROOT_A, min_kb=None,
+                                 entries={ROOT_A: 5_000}, free_bytes=9000 + i)
+        finally:
+            conn.close()
+        body = client.get("/api/volume-trend?limit=4").json()
+        # 全部 NULL 点（3 行 < limit 4），无 1024 点补齐
+        assert _dates(body) == ["2026-09-04", "2026-09-05", "2026-09-06"]
+        assert [r["free_bytes"] for r in body] == [9000, 9001, 9002]
+        for row in body:
+            assert row["free_bytes"] != 10  # 不混 1024 点
+
+    def test_volume_trend_known_threshold_anchor_excludes_null_points(self, client):
+        """volume-trend：已知阈值最新；NULL 旧点不混入（对照组）。"""
+        conn = db.connect()
+        try:
+            # NULL 旧点：v2 旧记录，dataset=(ROOT_A, NULL)，free_bytes 用 1 段
+            for day in ("2026-09-01", "2026-09-02"):
+                _insert_snapshot(conn, day, ROOT_A, min_kb=None,
+                                 entries={ROOT_A: 5_000}, free_bytes=1)
+            # 已知阈值最新：dataset=(ROOT_A, 1024)，free_bytes 用 7000 段
+            _insert_snapshot(conn, "2026-09-03", ROOT_A, min_kb=1024,
+                             entries={ROOT_A: 10_000}, free_bytes=7777)
+        finally:
+            conn.close()
+        body = client.get("/api/volume-trend").json()
+        assert _dates(body) == ["2026-09-03"]
+        assert body[0]["free_bytes"] == 7777
+        for row in body:
+            assert row["free_bytes"] != 1  # NULL 点绝不混入
+
+    def test_path_trend_null_anchor_excludes_known_threshold_points(self, client):
+        """trend?path=：锚点 snapshot 的 min_kb=None；只返回 NULL 数据集内
+        该路径的点；1024 / 4096 数据集内的同名路径点不混入。"""
+        path = f"{ROOT_A}/x"
+        conn = db.connect()
+        try:
+            _insert_snapshot(conn, "2026-09-01", ROOT_A, min_kb=1024,
+                             entries={ROOT_A: 10_000, path: 100})
+            _insert_snapshot(conn, "2026-09-02", ROOT_A, min_kb=4096,
+                             entries={ROOT_A: 8_000, path: 200})
+            # NULL 最新（v2 旧记录），path 仍记录。锚点来自该行 → min_kb=None
+            _insert_snapshot(conn, "2026-09-03", ROOT_A, min_kb=None,
+                             entries={ROOT_A: 5_000, path: 300})
+        finally:
+            conn.close()
+        body = client.get(f"/api/trend?path={path}").json()
+        assert _dates(body["points"]) == ["2026-09-03"]
+        assert body["points"][0]["size_kb"] == 300
+        for p in body["points"]:
+            assert p["size_kb"] not in (100, 200)  # 1024/4096 点不混入
+
+    def test_path_trend_null_anchor_limit_window_only_null_dataset(self, client):
+        """trend?path=：NULL 锚点 + limit；limit 窗口只命中 NULL 数据集点。
+
+        已知阈值（1024）的同名路径点 size_kb 与 NULL 数据集不同集合，确保
+        即便 anchor 选错也回不到正确响应。
+        """
+        path = f"{ROOT_A}/x"
+        conn = db.connect()
+        try:
+            for day, size in (("2026-09-01", 100), ("2026-09-02", 200),
+                              ("2026-09-03", 300)):
+                _insert_snapshot(conn, day, ROOT_A, min_kb=1024,
+                                 entries={ROOT_A: 10_000, path: size})
+            # NULL 数据集：size 用 9000+ 段，确保与 100/200/300 不重叠
+            for i, (day, size) in enumerate(
+                    (("2026-09-04", 9000), ("2026-09-05", 9001),
+                     ("2026-09-06", 9002))):
+                _insert_snapshot(conn, day, ROOT_A, min_kb=None,
+                                 entries={ROOT_A: 5_000, path: size})
+        finally:
+            conn.close()
+        # limit=2：旧实现若用 anchor.min_kb=1024 会拿 (300, 200) 反向；现
+        # 在 anchor 是 NULL，窗口只命中 NULL 数据集
+        body = client.get(f"/api/trend?path={path}&limit=2").json()
+        assert _dates(body["points"]) == ["2026-09-05", "2026-09-06"]
+        assert [p["size_kb"] for p in body["points"]] == [9001, 9002]
+        for p in body["points"]:
+            assert p["size_kb"] not in (100, 200, 300)
+
+    def test_path_trend_known_threshold_anchor_excludes_null_points(self, client):
+        """trend?path=：锚点 snapshot 的 min_kb=1024；NULL 数据集内同名
+        路径点不混入（对照组）。"""
+        path = f"{ROOT_A}/x"
+        conn = db.connect()
+        try:
+            # NULL 旧点
+            for day, size in (("2026-09-01", 11), ("2026-09-02", 22)):
+                _insert_snapshot(conn, day, ROOT_A, min_kb=None,
+                                 entries={ROOT_A: 5_000, path: size})
+            # 已知阈值最新；锚点 snapshot 的 min_kb=1024
+            _insert_snapshot(conn, "2026-09-03", ROOT_A, min_kb=1024,
+                             entries={ROOT_A: 10_000, path: 333})
+        finally:
+            conn.close()
+        body = client.get(f"/api/trend?path={path}").json()
+        assert _dates(body["points"]) == ["2026-09-03"]
+        assert body["points"][0]["size_kb"] == 333
+        for p in body["points"]:
+            assert p["size_kb"] not in (11, 22)  # NULL 点不混入

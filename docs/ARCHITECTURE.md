@@ -95,7 +95,7 @@ API 文档版本为 0.2.0；Tauri config 为 0.3.0，Cargo package 为 0.2.0。�
 
 ## 当前验证覆盖
 
-当前 main 的精确门禁为 **295 pytest**；另通过 39 项 Chromium/API 检查与 38 项前端模块/生命周期/大文件状态检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
+当前 main 的精确门禁为 **308 pytest**；另通过 39 项 Chromium/API 检查与 38 项前端模块/生命周期/大文件状态检查。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0/v1→v2 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
 
 实际 Tauri WebView、系统通知、tray、生产 launchd 跨日、自包含发行包、原生 x86_64 冻结、Developer ID 签名、公证/stapling 和真实更新仍为 `NOT_VERIFIED`。
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。

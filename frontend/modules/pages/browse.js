@@ -1,4 +1,15 @@
-/* 分布页：旭日图 + 目录浏览器（面包屑下钻、行级 Finder 打开、侧栏趋势）。 */
+/* 分布页：旭日图 + 目录浏览器（面包屑下钻、行级 Finder 打开、侧栏趋势）。
+ *
+ * 前端责任（ISS-027 模块合同）：
+ * - beginRequest 世代号 + pageScoped：迟到的旧响应不能覆盖较新查询；
+ * - 仅 frontend/icons.js 的 SVG 图标；零 emoji；
+ *
+ * 展示（ISS-028）：
+ * - 行可聚焦（DESIGN 键盘可达）：Tab 进入、Enter 下钻、Esc 焦点返回；
+ * - 长路径：可一键复制（DESIGN 关键可达性约束）；
+ * - 趋势图与表格不重复：本页已有侧栏趋势，分布面板的图表与下钻表格
+ *   共存于浏览器内（DESIGN：图表有表格替代/并列）。
+ */
 import { fetchJSON, beginRequest, invalidateRequest, revealInFinder } from "../request.js";
 import { fmtBytes, fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, showChartMessage } from "../charts.js";
@@ -53,7 +64,7 @@ async function loadBrowse(path) {
     document.querySelectorAll("#crumbs .crumb").forEach((el) =>
       el.addEventListener("click", () => loadBrowse(el.dataset.path)));
 
-    meta.textContent = `共 ${b.children.length} 个子目录（≥10MB 才入库）`;
+    meta.textContent = `共 ${b.children.length} 个子目录（≥10MB 才入库） · 快照 ${escapeHtml(b.snapshot_at || "—")}`;
     document.getElementById("browser-trend-title").textContent =
       "目录趋势：" + shortPath(b.path, 2);
 
@@ -64,6 +75,11 @@ async function loadBrowse(path) {
     const total = b.size_kb || 1;
     b.children.forEach((c) => {
       const tr = document.createElement("tr");
+      tr.className = "focusable";
+      tr.tabIndex = 0;
+      tr.dataset.path = c.path;
+      tr.setAttribute("role", "button");
+      tr.setAttribute("aria-label", `下钻到 ${c.path}`);
       const deltaCls = c.delta_kb == null || c.delta_kb === 0
         ? "" : (c.delta_kb > 0 ? "delta-grow" : "delta-shrink");
       tr.innerHTML =
@@ -71,10 +87,51 @@ async function loadBrowse(path) {
         `<td class="num">${fmtKB(c.size_kb)}</td>` +
         `<td class="num ${deltaCls}">${c.is_new ? icon("plus", 12) + " " : ""}${fmtDelta(c.delta_kb)}</td>` +
         `<td class="num">${((c.size_kb / total) * 100).toFixed(1)}%</td>` +
-        `<td><button class="btn-mini" data-reveal="${escapeHtml(c.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td>`;
+        `<td>
+          <span class="row-actions">
+            <button class="copy-path" type="button" data-copy="${escapeHtml(c.path)}"
+                    aria-label="复制路径 ${escapeHtml(c.path)}" title="复制路径">复制</button>
+            <button class="btn-mini" data-reveal="${escapeHtml(c.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button>
+          </span>
+        </td>`;
       tbody.appendChild(tr);
-      tr.querySelector(".dir-name").addEventListener("click", () => loadBrowse(c.path));
-      tr.querySelector("[data-reveal]").addEventListener("click", () => revealInFinder(c.path));
+      tr.addEventListener("click", (e) => {
+        // 避免按钮点击冒泡导致下钻
+        if (e.target.closest("button")) return;
+        loadBrowse(c.path);
+      });
+      tr.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          loadBrowse(c.path);
+        }
+      });
+      tr.querySelector("[data-reveal]").addEventListener("click", (e) => {
+        e.stopPropagation();
+        revealInFinder(c.path);
+      });
+      tr.querySelector("[data-copy]").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const text = c.path;
+        const btn = e.currentTarget;
+        try {
+          if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+          else {
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+          }
+          btn.textContent = "已复制";
+          btn.classList.add("copied");
+          setTimeout(() => { btn.textContent = "复制"; btn.classList.remove("copied"); }, 1200);
+        } catch (_) {
+          btn.textContent = "复制失败";
+          setTimeout(() => { btn.textContent = "复制"; }, 1200);
+        }
+      });
     });
 
     // 侧栏趋势
@@ -102,7 +159,6 @@ export const browsePage = {
     loadBrowse(state.browsePath);
   },
   leave() {
-    // 离开页面：作废在途的树/目录请求，防止迟到的响应改写隐藏 DOM
     invalidateRequest("tree");
     invalidateRequest("browse");
   },

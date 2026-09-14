@@ -28,9 +28,9 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
-    "resources": [
-      "resources/helper/**/*"
-    ],
+    "resources": {
+      "resources/helper/fathom-helper/": "helper/"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

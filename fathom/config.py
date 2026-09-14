@@ -88,7 +88,15 @@ class RuntimeConfig:
         env = os.environ if environ is None else environ
         project_root = _absolute_path(project_root, name="project_root")
         home = _absolute_path(home or Path.home(), name="home")
-        mode = env.get("FATHOM_RUNTIME_MODE", "development").strip().lower()
+        # 模式判定（ISS-029 G2）：显式 env 优先；冻结产物（sys.frozen）默认
+        # release 以避免数据被写入只读 bundle；源码 dev 模式行为不变。
+        raw_mode = env.get("FATHOM_RUNTIME_MODE")
+        if raw_mode:
+            mode = raw_mode.strip().lower()
+        elif getattr(sys, "frozen", False):
+            mode = "release"
+        else:
+            mode = "development"
         if mode not in {"development", "release"}:
             raise ConfigurationError(
                 "FATHOM_RUNTIME_MODE 只能是 development 或 release"
@@ -289,3 +297,12 @@ LAUNCHAGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 SCAN_LABEL = "com.maoscripts.fathom-scan"
 WEB_LABEL = "com.maoscripts.fathom-web"
 SCAN_HOUR = 12
+
+# 端口策略（ISS-029 G6）：默认绑定 7952；占用时按 PORT_RANGE 个候选
+# 端口依序让位（7952..7952+PORT_RANGE）。零击杀：从不向任何进程发信号；
+# 同服务身份实例在目标端口时让位退出 0；未知占用者落 exhausted 退 3。
+# 默认 0（不主动让位）以保留 ISS-025 「端口冲突退 3」原合同；应用壳可
+# 通过 ``--port-range N`` 显式启用让位。
+PORT_RANGE = 0
+# helper 进程发现文件（0600）由 cli.cmd_serve 写入运行根供应用壳读取。
+HELPER_INSTANCE_FILENAME = "helper-instance.json"

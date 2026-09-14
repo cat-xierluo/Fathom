@@ -84,7 +84,7 @@ if [ -f "$INFO_PLIST" ]; then
   if [ "$VERSION_OUT" = "0.3.0" ]; then
     record "a-infoplist-version" pass "CFBundleShortVersionString == 0.3.0"
   else
-    record "a-infoplist-version" fail "CFBundleShortVersionString = $VERSION_OUT（预期 0.3.0）"
+    record "a-infoplist-version" fail "CFBundleShortVersionString = ${VERSION_OUT}（预期 0.3.0）"
   fi
 else
   record "a-infoplist-version" fail "Info.plist 不存在"
@@ -101,13 +101,13 @@ fi
 # ---------------------------------------------------------------- (b) 只读布局
 log "=== (b) 只读布局断言 ==="
 FINGER_BEFORE="$(find "$APP_PATH" -type f -print0 | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | awk '{print $1}')"
-log "启动前 .app 指纹：$FINGER_BEFORE"
+log "启动前 .app 指纹：${FINGER_BEFORE}"
 sleep 0.2
 FINGER_AFTER="$(find "$APP_PATH" -type f -print0 | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | awk '{print $1}')"
-if [ "$FINGER_BEFORE" = "$FINGER_AFTER" ]; then
-  record "b-readonly-layout" pass "启动前后 .app 指纹一致（$FINGER_BEFORE）"
+if [ "${FINGER_BEFORE}" = "${FINGER_AFTER}" ]; then
+  record "b-readonly-layout" pass "启动前后 .app 指纹一致（${FINGER_BEFORE}）"
 else
-  record "b-readonly-layout" fail "启动后 .app 指纹漂移：$FINGER_BEFORE → $FINGER_AFTER"
+  record "b-readonly-layout" fail "启动后 .app 指纹漂移：${FINGER_BEFORE} → ${FINGER_AFTER}"
 fi
 
 # ---------------------------------------------------------------- (g) 7952 占用观察（不动）
@@ -178,7 +178,7 @@ if [ -f "$HI_PATH" ]; then
   if [ "$MODE_BITS" = "600" ]; then
     record "c-instance-0600" pass "helper-instance.json 0600：$HI_PATH"
   else
-    record "c-instance-0600" fail "helper-instance.json 权限 $MODE_BITS：$HI_PATH"
+    record "c-instance-0600" fail "helper-instance.json 权限 ${MODE_BITS}：$HI_PATH"
   fi
 else
   record "c-instance-0600" fail "helper-instance.json 未生成：$HI_PATH"
@@ -232,9 +232,9 @@ else
 fi
 
 if [ "$ZERO_OK" = "yes" ]; then
-  record "d-yield-success" pass "helper 让位到 $ZERO_PORT 成功（dummy 占 $DUMMY_PORT）"
+  record "d-yield-success" pass "helper 让位到 ${ZERO_PORT} 成功（dummy 占 ${DUMMY_PORT}）"
 else
-  record "d-yield-success" fail "helper 未在让位段内就绪（dummy 占 $DUMMY_PORT）"
+  record "d-yield-success" fail "helper 未在让位段内就绪（dummy 占 ${DUMMY_PORT}）"
 fi
 
 # 收尾让位 helper
@@ -252,7 +252,7 @@ open -a "$TEST_APP" >> "$LOG" 2>&1 || true
 sleep 3
 HELPER_PIDS_AFTER_2="$(lsof -tiTCP:${HELPER_PORT:-7952} -sTCP:LISTEN -n -P 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$HELPER_PIDS_BEFORE_2" = "$HELPER_PIDS_AFTER_2" ] && [ "$HELPER_PIDS_BEFORE_2" -ge 1 ]; then
-  record "e-second-open-yield" pass "二次 open 后 ${HELPER_PORT:-7952} 上的 helper 数量不变（$HELPER_PIDS_BEFORE_2）"
+  record "e-second-open-yield" pass "二次 open 后 ${HELPER_PORT:-7952} 上的 helper 数量不变（${HELPER_PIDS_BEFORE_2}）"
 else
   record "e-second-open-yield" fail "二次 open 后数量异常：before=$HELPER_PIDS_BEFORE_2 after=$HELPER_PIDS_AFTER_2"
 fi

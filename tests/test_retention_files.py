@@ -14,7 +14,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 from pathlib import Path
-import sqlite3
 
 import pytest
 
@@ -49,13 +48,69 @@ def _age(days: int) -> dt.date:
     return FROZEN_TODAY - dt.timedelta(days=days)
 
 
+def _remaining_names(directory: Path) -> set[str]:
+    """用集合做断言，避免与目录实际排序耦合；只关心文件名是否还在。"""
+    return {p.name for p in directory.iterdir()}
+
+
+def _seed_snapshot(root: Path, *, created_at: str, min_kb: int = 0) -> int:
+    """按 v3 schema 直接塞一份快照；用于让 ``find_same_dataset_predecessor``
+    命中，``write_daily_report`` 不再因"至少需要两个快照"抛错。"""
+    conn = db.connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb, min_kb, collection_status) "
+            "VALUES (?, ?, 0, 0, 0.0, 0, ?, 'full')",
+            (created_at, str(root), min_kb),
+        )
+        sid = int(cur.lastrowid)
+        conn.execute(
+            "INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?, ?, 0)",
+            (sid, str(root)),
+        )
+        conn.commit()
+        return sid
+    finally:
+        conn.close()
+
+
+def _stub_create_snapshot(today: dt.date = FROZEN_TODAY):
+    """返回 ``scanner.create_snapshot`` 的替身：直接 INSERT 一份 created_at
+    为今天 08:00 的快照，跳过真实 du 与磁盘统计；不影响保留阶段逻辑。
+
+    必须显式 ``conn.commit()``：scan_coordinator 在调用 create_snapshot 后
+    立刻关闭 conn，未提交的 INSERT 会随 close 回滚，导致 write_daily_report
+    看不到新快照（"快照不存在" ValueError，report_status=failed）。
+    """
+
+    def _stub(conn, root, *args, **kwargs):
+        created_at = dt.datetime.combine(today, dt.time(8, 0)).isoformat()
+        cur = conn.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb, min_kb, collection_status) "
+            "VALUES (?, ?, 0, 0, 0.0, 0, 0, 'full')",
+            (created_at, str(root)),
+        )
+        sid = int(cur.lastrowid)
+        conn.execute(
+            "INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?, ?, 0)",
+            (sid, str(root)),
+        )
+        conn.commit()
+        return sid
+
+    return _stub
+
+
 # ---- prune_reports -----------------------------------------------------
 
 
 def test_prune_reports_deletes_only_expired_parseable_files():
-    expired_old = _age(40)   # 早于默认 35 天
-    expired_boundary = _age(36)  # 边界外 1 天
-    recent_inside = _age(7)  # 仍在 35 天窗口内
+    """保留策略核心语义：过期且可解析日期 → 删；窗口内 / 不可解析 → 留。"""
+    expired_old = _age(40)        # 早于默认 35 天
+    expired_boundary = _age(36)   # 边界外 1 天
+    recent_inside = _age(7)       # 仍在 35 天窗口内
     recent_today = FROZEN_TODAY
     _touch(config.REPORTS_DIR / f"{expired_old.isoformat()}.md")
     _touch(config.REPORTS_DIR / f"{expired_boundary.isoformat()}.md")
@@ -71,14 +126,15 @@ def test_prune_reports_deletes_only_expired_parseable_files():
 
     assert deleted == 2
     assert warnings == []
-    remaining = sorted(p.name for p in config.REPORTS_DIR.iterdir())
-    assert remaining == [
-        "2026-09-14.md",
-        "2026-09-07.md",
-        "2026-13-99.md",
-        "README.md",
-        "summary-2026.md",
-    ]
+    remaining = _remaining_names(config.REPORTS_DIR)
+    # 集合断言不依赖文件系统排序；2026-09-14 与 2026-09-07 都必须在场
+    assert remaining == {
+        "2026-09-14.md",       # 今天：保留
+        "2026-09-07.md",       # 窗口内：保留
+        "2026-13-99.md",       # 非法日期：保留
+        "README.md",           # 无日期：保留
+        "summary-2026.md",     # 月份只有 1 位（regex 不匹配）：保留
+    }
 
 
 def test_prune_reports_uses_configured_retention_days():
@@ -94,7 +150,7 @@ def test_prune_reports_uses_configured_retention_days():
 
 
 def test_prune_reports_no_directory_is_noop(tmp_path):
-    # 全新空目录
+    """全新空目录：deleted=0、warnings 空、不抛。"""
     empty = tmp_path / "empty-reports"
     empty.mkdir()
     monkeypatch = pytest.MonkeyPatch()
@@ -108,7 +164,7 @@ def test_prune_reports_no_directory_is_noop(tmp_path):
 
 
 def test_prune_reports_keeps_launchd_style_logs_in_logs_dir_separately():
-    """日报命名严格 YYYY-MM-DD.md；logs/ 的清理不会误伤 reports/。"""
+    """``prune_reports`` 只读 ``config.REPORTS_DIR``，不会跨目录误伤 logs/。"""
     _touch(config.REPORTS_DIR / f"{_age(60).isoformat()}.md")
     _touch(config.LOGS_DIR / f"{_age(60).isoformat()}.log")  # 早期日志，留给 prune_logs
     _touch(config.LOGS_DIR / "notify.log")  # 固定名，无日期
@@ -125,7 +181,8 @@ def test_prune_reports_keeps_launchd_style_logs_in_logs_dir_separately():
 
 
 def test_prune_logs_deletes_only_expired_parseable_files():
-    expired_old = _age(10)   # 默认 7 天窗口外
+    """``prune_logs`` 走相同日期-早于-cutoff 才删的语义；固定名 + 非法日期保留。"""
+    expired_old = _age(10)        # 默认 7 天窗口外
     recent_inside = _age(3)
     recent_today = FROZEN_TODAY
     _touch(config.LOGS_DIR / f"{expired_old.isoformat()}.log")
@@ -144,16 +201,15 @@ def test_prune_logs_deletes_only_expired_parseable_files():
 
     assert deleted == 2  # expired_old + bigfiles-expired_old
     assert warnings == []
-    remaining = sorted(p.name for p in config.LOGS_DIR.iterdir())
-    assert remaining == [
-        "2026-09-14.log",
-        "2026-09-11.log",
-        "broken-2026-02-30.log",
-        "launchd-scan.err.log",
-        "launchd-scan.out.log",
-        "notify.log",
-        "session-abc123.log",
-    ]
+    assert _remaining_names(config.LOGS_DIR) == {
+        "2026-09-14.log",          # 今天：保留
+        "2026-09-11.log",          # 窗口内：保留
+        "broken-2026-02-30.log",   # 非法日期：保留
+        "launchd-scan.err.log",    # 固定名：保留
+        "launchd-scan.out.log",    # 固定名：保留
+        "notify.log",              # 固定名：保留
+        "session-abc123.log",      # 无日期：保留
+    }
 
 
 def test_prune_logs_uses_configured_retention_days():
@@ -187,13 +243,13 @@ def test_prune_logs_skips_subdirectories_and_symlinks(tmp_path):
     _touch(sub / f"{_age(60).isoformat()}.log")
     outside = tmp_path / "outside.log"
     _touch(outside, _age(60).isoformat())
-    try:
-        outside_in_logs = config.LOGS_DIR / "outside.log"
-        outside_in_logs.symlink_to(outside)
+    outside_in_logs = config.LOGS_DIR / "outside.log"
+    outside_in_logs.symlink_to(outside)
 
+    try:
         deleted, warnings = reports.prune_logs(today=FROZEN_TODAY)
     finally:
-        if outside_in_logs.exists() or outside_in_logs.is_symlink():
+        if outside_in_logs.is_symlink() or outside_in_logs.exists():
             outside_in_logs.unlink()
 
     assert deleted == 0  # 子目录和 symlink 都未删除
@@ -202,9 +258,10 @@ def test_prune_logs_skips_subdirectories_and_symlinks(tmp_path):
 
 
 def test_prune_logs_reports_warning_when_unlink_fails(monkeypatch):
+    """单文件 unlink 抛 OSError：不抛、不计入删除数、warning 携带原因。"""
     _touch(config.LOGS_DIR / f"{_age(60).isoformat()}.log")
 
-    def _explode(self):
+    def _explode(self, *args, **kwargs):
         raise OSError("permission denied")
 
     monkeypatch.setattr(Path, "unlink", _explode)
@@ -222,36 +279,13 @@ def test_prune_logs_reports_warning_when_unlink_fails(monkeypatch):
 # ---- 集成：scan_coordinator 保留阶段 ----------------------------------
 
 
-def _prepare_minimal_scan(root: Path) -> int:
-    """在 db 里塞一份 created_at 比今天早 1 天的快照，让 ``write_daily_report``
-    视为有同数据集前驱（``find_same_dataset_predecessor`` 找不到则直接抛错）。"""
-    conn = db.connect()
-    try:
-        cur = conn.execute(
-            "INSERT INTO scans(root, min_kb) VALUES (?, ?)", (str(root), 0)
-        )
-        scan_id = int(cur.lastrowid)
-        day_before = (FROZEN_TODAY - dt.timedelta(days=1)).isoformat()
-        cur = conn.execute(
-            "INSERT INTO snapshots(scan_id, root, min_kb, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            (scan_id, str(root), 0, f"{day_before}T08:00:00"),
-        )
-        sid = int(cur.lastrowid)
-        conn.execute(
-            "INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?, ?, ?)",
-            (sid, str(root), 0),
-        )
-        conn.commit()
-        return sid
-    finally:
-        conn.close()
-
-
 def test_scan_coordinator_retention_phase_cleans_files_and_lists_count(monkeypatch):
+    """集成：run_scan 的保留阶段清理过期报告与日志，warnings 文本暴露总数。"""
     root = config.DEFAULT_ROOT
     root.mkdir(parents=True, exist_ok=True)
-    _prepare_minimal_scan(root)
+    # 准备一份同数据集前驱，让 write_daily_report 不再因无基线抛错
+    day_before = (FROZEN_TODAY - dt.timedelta(days=1)).isoformat()
+    _seed_snapshot(root, created_at=f"{day_before}T08:00:00")
 
     # 写一份过期报告与一条过期日志，验证保留阶段清理
     expired_report_date = (FROZEN_TODAY - dt.timedelta(days=60)).isoformat()
@@ -263,31 +297,18 @@ def test_scan_coordinator_retention_phase_cleans_files_and_lists_count(monkeypat
     _touch(config.REPORTS_DIR / f"{inside_report_date}.md")
     _touch(config.LOGS_DIR / "notify.log")  # 固定名永远保留
 
-    # 报告阶段固定走真实 du；用 monkeypatch 短路以免依赖磁盘统计
-    monkeypatch.setattr(
-        scanner, "create_snapshot",
-        lambda conn, r, *a, **kw: (
-            conn.execute(
-                "INSERT INTO scans(root, min_kb) VALUES (?, 0)", (str(r),)
-            ),
-            conn.execute(
-                "INSERT INTO snapshots(scan_id, root, min_kb, created_at) "
-                "VALUES (last_insert_rowid(), ?, 0, ?)",
-                (str(r), dt.datetime.combine(FROZEN_TODAY, dt.time(8, 0)).isoformat()),
-            ),
-            conn.execute("SELECT last_insert_rowid()").fetchone()[0],
-        )[-1],
-    )
+    # 短路真实 du：直接 INSERT 一份 created_at=今天 08:00 的快照
+    monkeypatch.setattr(scanner, "create_snapshot", _stub_create_snapshot())
     # 通知不阻塞：不真实写 osascript
     monkeypatch.setattr(reports, "notify_for_snapshot", lambda conn, sid: True)
 
-    run_id, result = scan_coordinator.run_scan(source="cli", root=root)
+    _run_id, result = scan_coordinator.run_scan(source="cli", root=root)
 
-    assert result["status"] == "done" or "snapshot_id" in result
+    assert result["snapshot_id"] > 0
     assert result["report_status"] in {"written", "not_available"}
     warnings_text = "\n".join(result["warnings"])
     assert "清理运行根过期文件" in warnings_text
-    assert "2" in warnings_text  # 1 报告 + 1 日志
+    assert "2 份" in warnings_text  # 1 报告 + 1 日志
     # 实际文件已被删除
     assert not (config.REPORTS_DIR / f"{expired_report_date}.md").exists()
     assert not (config.LOGS_DIR / f"{expired_log_date}.log").exists()
@@ -299,7 +320,7 @@ def test_scan_coordinator_retention_phase_cleans_files_and_lists_count(monkeypat
     conn = db.connect()
     try:
         rows = conn.execute(
-            "SELECT pruned_count FROM scan_run_details WHERE run_id=?", (run_id,)
+            "SELECT pruned_count FROM scan_run_details ORDER BY run_id DESC LIMIT 1"
         ).fetchall()
     finally:
         conn.close()
@@ -308,30 +329,17 @@ def test_scan_coordinator_retention_phase_cleans_files_and_lists_count(monkeypat
 
 
 def test_scan_coordinator_retention_phase_survives_prune_logs_failure(monkeypatch):
-    """文件清理抛异常不应影响快照写入；warnings 文本携带原因。"""
+    """``prune_logs`` 抛异常不应影响快照写入；warnings 文本携带原因。"""
     root = config.DEFAULT_ROOT
     root.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setattr(
-        scanner, "create_snapshot",
-        lambda conn, r, *a, **kw: (
-            conn.execute(
-                "INSERT INTO scans(root, min_kb) VALUES (?, 0)", (str(r),)
-            ),
-            conn.execute(
-                "INSERT INTO snapshots(scan_id, root, min_kb, created_at) "
-                "VALUES (last_insert_rowid(), ?, 0, ?)",
-                (str(r), dt.datetime.combine(FROZEN_TODAY, dt.time(8, 0)).isoformat()),
-            ),
-            conn.execute("SELECT last_insert_rowid()").fetchone()[0],
-        )[-1],
-    )
+    monkeypatch.setattr(scanner, "create_snapshot", _stub_create_snapshot())
 
-    def _boom(*a, **kw):
+    def _boom(*args, **kwargs):
         raise RuntimeError("logs oops")
 
     monkeypatch.setattr(reports, "prune_logs", _boom)
-    monkeypatch.setattr(reports, "prune_reports", lambda **kw: (0, []))
+    monkeypatch.setattr(reports, "prune_reports", lambda **kwargs: (0, []))
     monkeypatch.setattr(reports, "notify_for_snapshot", lambda conn, sid: True)
 
     _rid, result = scan_coordinator.run_scan(source="cli", root=root)
@@ -340,41 +348,29 @@ def test_scan_coordinator_retention_phase_survives_prune_logs_failure(monkeypatc
     warnings_text = "\n".join(result["warnings"])
     assert "logs 保留清理失败" in warnings_text
     assert "logs oops" in warnings_text
-    # 报告清理成功执行过：0 文件也要出现在流程里，但失败消息优先
+    # reports 清理仍成功（0 文件也算跑过），不要污染失败标记
     assert "reports 保留清理失败" not in warnings_text
 
 
 def test_scan_coordinator_retention_phase_handles_deletion_warning(monkeypatch):
-    """文件清理本身的 OSError 不影响快照与 warnings 透明暴露。"""
+    """单文件 unlink 抛 OSError：保留阶段警告透明，不影响快照。"""
     root = config.DEFAULT_ROOT
     root.mkdir(parents=True, exist_ok=True)
 
     expired = (FROZEN_TODAY - dt.timedelta(days=60)).isoformat()
     _touch(config.REPORTS_DIR / f"{expired}.md")
 
-    monkeypatch.setattr(
-        scanner, "create_snapshot",
-        lambda conn, r, *a, **kw: (
-            conn.execute(
-                "INSERT INTO scans(root, min_kb) VALUES (?, 0)", (str(r),)
-            ),
-            conn.execute(
-                "INSERT INTO snapshots(scan_id, root, min_kb, created_at) "
-                "VALUES (last_insert_rowid(), ?, 0, ?)",
-                (str(r), dt.datetime.combine(FROZEN_TODAY, dt.time(8, 0)).isoformat()),
-            ),
-            conn.execute("SELECT last_insert_rowid()").fetchone()[0],
-        )[-1],
-    )
+    monkeypatch.setattr(scanner, "create_snapshot", _stub_create_snapshot())
     monkeypatch.setattr(reports, "notify_for_snapshot", lambda conn, sid: True)
 
     real_unlink = Path.unlink
+    target_path = config.REPORTS_DIR / f"{expired}.md"
 
-    def _explode(self, *a, **kw):
-        # 只让这一份报告的删除失败，其它（数据库/快照相关）路径不受影响
-        if str(self) == str(config.REPORTS_DIR / f"{expired}.md"):
+    def _explode(self, *args, **kwargs):
+        # 只让这一份过期报告的删除失败，其它（数据库/快照相关）路径不受影响
+        if str(self) == str(target_path):
             raise OSError("EACCES")
-        return real_unlink(self, *a, **kw)
+        return real_unlink(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", _explode)
 
@@ -383,7 +379,7 @@ def test_scan_coordinator_retention_phase_handles_deletion_warning(monkeypatch):
     assert result["snapshot_id"] > 0
     warnings_text = "\n".join(result["warnings"])
     assert "EACCES" in warnings_text
-    # 文件清理总数为 0（这份失败），不应有"清理运行根过期文件 N 份"消息
+    # 这份失败 → 总数 0 → 不出现"清理运行根过期文件 N 份"汇总
     assert "清理运行根过期文件" not in warnings_text
     # 文件仍在原位（删除未成功）
     assert (config.REPORTS_DIR / f"{expired}.md").exists() is True
@@ -410,20 +406,7 @@ def test_scan_coordinator_warning_text_is_json_serializable(monkeypatch):
     expired = (FROZEN_TODAY - dt.timedelta(days=99)).isoformat()
     _touch(config.REPORTS_DIR / f"{expired}.md")
 
-    monkeypatch.setattr(
-        scanner, "create_snapshot",
-        lambda conn, r, *a, **kw: (
-            conn.execute(
-                "INSERT INTO scans(root, min_kb) VALUES (?, 0)", (str(r),)
-            ),
-            conn.execute(
-                "INSERT INTO snapshots(scan_id, root, min_kb, created_at) "
-                "VALUES (last_insert_rowid(), ?, 0, ?)",
-                (str(r), dt.datetime.combine(FROZEN_TODAY, dt.time(8, 0)).isoformat()),
-            ),
-            conn.execute("SELECT last_insert_rowid()").fetchone()[0],
-        )[-1],
-    )
+    monkeypatch.setattr(scanner, "create_snapshot", _stub_create_snapshot())
     monkeypatch.setattr(reports, "notify_for_snapshot", lambda conn, sid: True)
 
     _rid, result = scan_coordinator.run_scan(source="cli", root=root)

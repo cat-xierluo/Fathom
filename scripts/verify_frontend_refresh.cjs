@@ -37,11 +37,12 @@ function json(res, status, body) {
   res.end(data);
 }
 
-function snapshot(id, createdAt) {
+function snapshot(id, createdAt, overrides = {}) {
   return {
     id, created_at: createdAt, root: ROOT, total_kb: 300000,
-    dir_count: 3, denied_count: 0,
+    dir_count: 3, denied_count: 0, collection_status: "full",
     total_bytes: 1024 ** 4, free_bytes: 256 * 1024 ** 3,
+    ...overrides,
   };
 }
 
@@ -64,6 +65,11 @@ function createFixture() {
     const latest = state.version === 3
       ? snapshot(3, "2026-09-13T12:03:00")
       : snapshot(2, "2026-09-13T10:00:00");
+    if (state.mode === "partial") {
+      // 部分权限场景：denied_count > 0 + collection_status=partial
+      return [{ ...latest, denied_count: 6, collection_status: "partial",
+                dir_count: 12 }, snapshot(1, "2026-09-12T10:00:00")];
+    }
     return [latest, snapshot(1, "2026-09-12T10:00:00")];
   };
   const scanning = () => state.scanning || state.mode === "scanning-stuck";
@@ -145,6 +151,33 @@ function createFixture() {
         state.staleDiffs += 1;
         return json(res, 404, { detail: "快照不存在" });
       }
+      if (state.scenario === "net-overlap" || state.scenario === "net-nobaseline") {
+        // 净变化口径夹具（ISS-028 修复验证）：
+        //  - net-overlap：grown 含父子重叠（父 +100 与子 +33/+33 同时入选，DEC-005
+        //    fold_changes 不去重祖先），逐行求和 = +166；根总量 a→b 差 = +100。
+        //    页面必须显示根差分而非行和。
+        //  - net-nobaseline：a/b 缺 total_kb（模拟首扫无基线），页面必须显示
+        //    “无基线”，不得显示 0 或回退行求和（此处行和 = +2.0 MB）。
+        const body = diff(a, b);
+        if (state.scenario === "net-overlap") {
+          body.a = { ...body.a, total_kb: 300000 };
+          body.b = { ...body.b, total_kb: 300100 };
+          body.grown = [
+            { path: `${ROOT}/Parent`, old_kb: 40000, new_kb: 40100, delta_kb: 100 },
+            { path: `${ROOT}/Parent/A`, old_kb: 20000, new_kb: 20033, delta_kb: 33 },
+            { path: `${ROOT}/Parent/B`, old_kb: 20000, new_kb: 20033, delta_kb: 33 },
+          ];
+          body.shrunk = [];
+        } else {
+          const { total_kb: _dropA, ...aMeta } = body.a;
+          const { total_kb: _dropB, ...bMeta } = body.b;
+          body.a = aMeta;
+          body.b = bMeta;
+          body.grown = [{ path: `${ROOT}/Big`, old_kb: 100000, new_kb: 102048, delta_kb: 2048 }];
+          body.shrunk = [];
+        }
+        return json(res, 200, body);
+      }
       if (state.mode === "onlyadded" || state.mode === "addedremoved") {
         const body = diff(a, b);
         body.grown = [];
@@ -177,6 +210,7 @@ function createFixture() {
           children: [{ name: "root", path: ROOT, value: 300000, children: [
             { name, path: `${ROOT}/${name}`, value: 98976 },
           ] }],
+          truncated: false, matched_count: 2, node_count: 2, node_limit: 20000,
         };
         if (call === 1) return later(res, 200, body, 800);
         return json(res, 200, body);
@@ -184,12 +218,19 @@ function createFixture() {
       const rows = snapshots();
       const sid = rows[0] ? rows[0].id : null;
       state.treeSnapshotId = sid;
-      return json(res, 200, sid == null ? { snapshot_id: null, root: null, children: [] } : {
+      const truncated = state.scenario === "trees-truncated";
+      return json(res, 200, sid == null ? { snapshot_id: null, root: null, children: [],
+        truncated: false, matched_count: 0, node_count: 0, node_limit: 20000 } : {
         snapshot_id: sid,
         root: ROOT,
         children: [{ name: "root", path: ROOT, value: 300000, children: [
           { name: "Archive", path: `${ROOT}/Archive`, value: 98976 },
+          { name: "Stable", path: `${ROOT}/Stable`, value: 40000 },
         ] }],
+        truncated,
+        matched_count: truncated ? 47 : 2,
+        node_count: truncated ? 20000 : 2,
+        node_limit: 20000,
       });
     }
     if (url.pathname === "/api/browse") {
@@ -330,6 +371,24 @@ function createFixture() {
       });
     }
     if (url.pathname === "/api/reveal" && req.method === "POST") return json(res, 200, { ok: true });
+    if (url.pathname.startsWith("/api/scan/status")) {
+      // 历史记录（ISS-028 m3 设置页）
+      return json(res, 200, {
+        running: state.scanning,
+        started_at: state.scanning ? "2026-09-13T12:02:00" : null,
+        finished_at: state.version === 3 ? "2026-09-13T12:03:00" : null,
+        source: "api",
+        message: state.scanning ? "进行中" : (state.version === 3 ? "成功 · du 耗时 42 秒" : "—"),
+        runs: [
+          { id: 1, started_at: "2026-09-12T12:00:00", finished_at: "2026-09-12T12:00:42",
+            status: "done", source: "scheduled", phase: "scan", snapshot_id: 2, report_status: "ok",
+            notification_status: "ok", pruned_count: 0, message: "成功 · du 耗时 42 秒" },
+          { id: 2, started_at: "2026-09-11T12:00:00", finished_at: "2026-09-11T12:00:51",
+            status: "done", source: "scheduled", phase: "scan", snapshot_id: 1, report_status: "ok",
+            notification_status: "ok", pruned_count: 0, message: "成功 · du 耗时 51 秒" },
+        ],
+      });
+    }
     if (url.pathname === "/api/scan" && req.method === "POST") {
       if (req.headers["x-fathom-token"] !== TOKEN) return json(res, 403, { detail: "令牌无效" });
       nextCall("scan");
@@ -798,6 +857,39 @@ async function main() {
       accessibleNames.every(([aria, title]) => aria === "在 Finder 中显示" && title === aria),
       JSON.stringify(accessibleNames));
 
+    /* ---------- 净变化口径：根同口径差分，非行求和（ISS-028 修复） ---------- */
+    // 父子重叠：父 +100 KiB 与子 +33/+33 同时入选（DEC-005），行求和 = +166；
+    // 根总量差 = +100。净变化必须等于根差分 +100.0 KB，并与“根目录 X → Y”同源一致
+    //（300000→300100 KiB 显示 293.0 MB → 293.1 MB，差值即 +100 KiB）。
+    await setMode("dual");
+    await setScenario("net-overlap");
+    await openPage("#/changes");
+    await page.waitForSelector("#changes-net:not([hidden])");
+    const netOverlap = await page.evaluate(() => ({
+      strong: document.querySelector("#changes-net strong")?.textContent || "",
+      line: document.getElementById("changes-net").textContent,
+    }));
+    record("changes-net-is-root-diff-not-row-sum",
+      netOverlap.strong === "+100.0 KB" &&
+        netOverlap.line.includes("根同口径差分") &&
+        netOverlap.line.includes("根目录 293.0 MB → 293.1 MB") &&
+        !netOverlap.line.includes("166"),
+      JSON.stringify(netOverlap));
+    // 无基线：a/b 缺 total_kb 时净变化显示“无基线”，不得显示 0 或回退行求和
+    //（夹具行和 = +2048 KiB，若回退会显示 +2.0 MB）。
+    await setScenario("net-nobaseline");
+    await openPage("#/changes");
+    await page.waitForSelector("#changes-net:not([hidden])");
+    const netNoBaseline = await page.evaluate(() => ({
+      strong: document.querySelector("#changes-net strong")?.textContent || "",
+      line: document.getElementById("changes-net").textContent,
+    }));
+    record("changes-net-no-baseline-not-zero-or-sum",
+      netNoBaseline.strong === "无基线" &&
+        !netNoBaseline.line.includes("2.0 MB") && !netNoBaseline.line.includes("+0.0 B"),
+      JSON.stringify(netNoBaseline));
+    await setScenario(null);
+
     /* ---------- Tauri 桥（注入 mock 桥验证有桥路径；真实壳运行见 RESULT 未验证项） ---------- */
     const tpage = await browser.newPage({ viewport: { width: 1220, height: 820 } });
     const tauriErrors = [];
@@ -831,6 +923,245 @@ async function main() {
       trayInvokes >= 2 && fixture.state.version === 3, `invokes=${trayInvokes}`);
     await tpage.close();
 
+    /* ---------- ISS-028 三条关键旅程 ---------- */
+
+    // 旅程 1：首次启动（空库 → 基线已建立）
+    await setMode("empty");
+    await openPage("#/overview");
+    const firstLaunch = await page.evaluate(() => ({
+      latest: document.getElementById("card-latest").textContent,
+      quality: document.getElementById("overview-quality").textContent,
+      summary: document.getElementById("overview-summary").textContent,
+    }));
+    record("journey-first-launch-quality-line",
+      firstLaunch.latest.includes("尚无快照") && firstLaunch.quality.includes("尚无快照") &&
+        !firstLaunch.summary.includes("加载失败"),
+      JSON.stringify({ latest: firstLaunch.latest.slice(0, 40) }));
+    await setMode("single");
+    await openPage("#/overview");
+    await page.waitForFunction(() =>
+      document.getElementById("overview-quality").textContent.includes("基线"));
+    const baselineReady = await page.evaluate(() => ({
+      quality: document.getElementById("overview-quality").textContent,
+      summary: document.getElementById("overview-summary").textContent,
+      scanNote: document.getElementById("overview-scan-note").textContent,
+    }));
+    record("journey-first-launch-baseline-ready",
+      baselineReady.quality.includes("基线") && baselineReady.scanNote.includes("最近扫描"),
+      baselineReady.quality.slice(0, 80));
+    await openPage("#/browse");
+    await page.waitForSelector("#tbl-browse tbody tr");
+    const browseFirstLaunch = await page.locator("#tbl-browse").textContent();
+    record("journey-first-launch-distribution-loads",
+      browseFirstLaunch.includes("Archive") && browseFirstLaunch.includes("—"),
+      browseFirstLaunch.slice(0, 80));
+
+    // 旅程 2：日常定位（总览→变化→详情→证据）
+    await setMode("dual");
+    await openPage("#/overview");
+    await page.waitForSelector("#overview-summary table");
+    await page.click('a[data-page="changes"]');
+    await page.waitForURL("**/#/changes");
+    await page.waitForSelector("#changes-body tr.focusable");
+    // 行可 Tab 聚焦
+    await page.focus("#changes-body tr.focusable");
+    const focusableRow = await page.evaluate(() => ({
+      active: document.activeElement?.dataset?.path || "",
+      tabindex: document.activeElement?.tabIndex,
+      role: document.activeElement?.getAttribute("role"),
+    }));
+    record("journey-daily-row-focusable",
+      Boolean(focusableRow.active) && focusableRow.tabindex === 0 &&
+        focusableRow.role === "button", JSON.stringify(focusableRow));
+    // Enter 打开详情侧栏
+    await page.keyboard.press("Enter");
+    await page.waitForSelector("#changes-detail:not([hidden])");
+    const detail = await page.evaluate(() => ({
+      title: document.querySelector("#changes-detail h2")?.textContent,
+      path: document.querySelector("#changes-detail .detail-path")?.textContent,
+      closeBtn: document.querySelector("#changes-detail .detail-close")?.getAttribute("aria-label"),
+    }));
+    record("journey-daily-detail-opens",
+      detail.title === "目录详情" && detail.path && detail.closeBtn === "关闭详情",
+      JSON.stringify(detail));
+    // Esc 关闭，焦点返回触发行
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => document.getElementById("changes-detail").hidden);
+    const escFocus = await page.evaluate(() => ({
+      hidden: document.getElementById("changes-detail").hidden,
+      focused: document.activeElement?.dataset?.path || "",
+    }));
+    record("journey-daily-esc-returns-focus",
+      escFocus.hidden && escFocus.focused.length > 0, JSON.stringify(escFocus));
+
+    // 旅程 3：失败恢复（离线 → 重连）
+    await setMode("dual");
+    await page.route("**/api/snapshots", (route) => route.abort("internetdisconnected"));
+    await openPage("#/overview");
+    await waitForText(page, "#overview-quality", "无法连接本地服务");
+    const offlineShown = await page.locator("#overview-quality").textContent();
+    record("journey-recovery-offline-explicit",
+      offlineShown.includes("无法连接本地服务") && !offlineShown.includes("加载失败"),
+      offlineShown.slice(0, 60));
+    await page.unroute("**/api/snapshots");
+    await openPage("#/overview");
+    await page.waitForSelector("#overview-quality .path-mono",
+      { timeout: 10000 });
+    const recovered = await page.locator("#overview-quality").textContent();
+    record("journey-recovery-restored-after-reconnect",
+      recovered.includes("/fixture/root") && !recovered.includes("无法连接"),
+      recovered.slice(0, 60));
+
+    /* ---------- 全状态矩阵扩展（ISS-028 m1/m3） ---------- */
+
+    // 部分覆盖：denied_count > 0、collection_status=partial
+    await setMode("partial");
+    await openPage("#/overview");
+    await waitForText(page, "#overview-quality", "部分目录未读取");
+    const partialQuality = await page.locator("#overview-quality").textContent();
+    record("state-matrix-partial-quality-shown",
+      partialQuality.includes("部分目录未读取") && partialQuality.includes("6 个"),
+      partialQuality.slice(0, 80));
+    await waitForText(page, "#overview-scan-note", "读取受限");
+    const partialScanNote = await page.locator("#overview-scan-note").textContent();
+    record("state-matrix-partial-scan-note-shown",
+      partialScanNote.includes("读取受限") && partialScanNote.includes("6 个目录读取受限"),
+      partialScanNote.slice(0, 80));
+
+    // 首扫无日报：单快照 + 报告为空
+    await setMode("single");
+    await openPage("#/changes");
+    await waitForText(page, "#diff-status", "基线已建立");
+    await openPage("#/overview");
+    await page.waitForSelector("#overview-summary");
+    const singleSummary = await page.locator("#overview-summary").textContent();
+    record("state-matrix-first-scan-no-report",
+      singleSummary.includes("还不能比较") && !singleSummary.includes("加载失败"),
+      singleSummary.slice(0, 80));
+
+    // 截断：trees 返回 truncated=true
+    await setMode("dual");
+    await setScenario("trees-truncated");
+    await openPage("#/browse");
+    // 验证 trees 元数据被前端保留（chart 仍显示，table 仍可读）
+    await page.waitForSelector("#chart-sunburst canvas");
+    const treeTruncated = await page.evaluate(() => ({
+      hasCanvas: Boolean(document.querySelector("#chart-sunburst canvas")),
+      hasTableRows: document.querySelectorAll("#tbl-browse tbody tr").length,
+    }));
+    record("state-matrix-tree-truncated-renders-both",
+      treeTruncated.hasCanvas && treeTruncated.hasTableRows > 0,
+      JSON.stringify(treeTruncated));
+    await setScenario(null);
+
+    /* ---------- 长路径可复制（DESIGN 关键可达性） ---------- */
+    await setMode("dual");
+    await openPage("#/changes");
+    await page.waitForSelector("#changes-body tr.focusable");
+    const copyBtn = await page.evaluate(() => {
+      const b = document.querySelector("#changes-body [data-copy]");
+      return { exists: Boolean(b), label: b?.getAttribute("aria-label") || "" };
+    });
+    record("changes-copy-path-button-available",
+      copyBtn.exists && copyBtn.label.startsWith("复制路径"),
+      JSON.stringify(copyBtn));
+    // 模拟复制并观察按钮反馈
+    await page.evaluate(() => {
+      const b = document.querySelector("#changes-body [data-copy]");
+      b.click();
+    });
+    await page.waitForFunction(() => {
+      const b = document.querySelector("#changes-body [data-copy]");
+      return b && (b.textContent === "已复制" || b.textContent === "复制失败");
+    });
+    const copyResult = await page.evaluate(() =>
+      document.querySelector("#changes-body [data-copy]")?.textContent);
+    record("changes-copy-path-feedback-rendered",
+      copyResult === "已复制" || copyResult === "复制失败",
+      copyResult);
+    // 分布页同样有复制按钮
+    await openPage("#/browse");
+    await page.waitForSelector("#tbl-browse tbody tr");
+    const browseCopyBtn = await page.evaluate(() => {
+      const b = document.querySelector("#tbl-browse [data-copy]");
+      return { exists: Boolean(b), path: b?.dataset?.copy || "" };
+    });
+    record("browse-copy-path-button-available",
+      browseCopyBtn.exists && browseCopyBtn.path.startsWith("/"),
+      JSON.stringify(browseCopyBtn));
+
+    /* ---------- 图表与表格等价（DESIGN：图表必须伴随表格替代） ---------- */
+    await openPage("#/overview");
+    await page.waitForSelector("#chart-volume canvas");
+    // 展开"以表格查看"折叠块（<details>/<summary>）
+    await page.evaluate(() => {
+      const det = document.querySelector(".tbl-toggle");
+      if (det && !det.open) det.open = true;
+    });
+    await page.waitForTimeout(120);
+    const volumeEq = await page.evaluate(() => ({
+      canvas: Boolean(document.querySelector("#chart-volume canvas")),
+      tableRows: document.querySelectorAll("#overview-volume-table tbody tr").length,
+    }));
+    record("overview-volume-chart-and-table-coexist",
+      volumeEq.canvas && volumeEq.tableRows >= 2,
+      JSON.stringify(volumeEq));
+    // 分布页：sunburst + 浏览器表格同时存在
+    await openPage("#/browse");
+    await page.waitForSelector("#chart-sunburst canvas");
+    await page.waitForSelector("#tbl-browse tbody tr");
+    const browseEq = await page.evaluate(() => ({
+      canvas: Boolean(document.querySelector("#chart-sunburst canvas")),
+      tableRows: document.querySelectorAll("#tbl-browse tbody tr").length,
+      trend: Boolean(document.querySelector("#chart-browser-trend canvas")),
+    }));
+    record("browse-chart-and-table-coexist",
+      browseEq.canvas && browseEq.tableRows > 0 && browseEq.trend,
+      JSON.stringify(browseEq));
+
+    /* ---------- 设置页扫描运行历史（ISS-028 m3） ---------- */
+    await openPage("#/settings");
+    await page.waitForSelector("#scan-history table, #scan-history .hint");
+    const settingsHistory = await page.locator("#scan-history").textContent();
+    record("settings-scan-history-rendered",
+      settingsHistory.includes("2026-09-12") && settingsHistory.includes("done"),
+      settingsHistory.slice(0, 80));
+
+    /* ---------- 三种视口截图（DESIGN：980×640 / 1220×820 / 1920×1080） ---------- */
+    const viewportScreens = [];
+    for (const v of [
+      { w: 960, h: 640, name: "overview-960x640" },
+      { w: 1220, h: 820, name: "changes-1220x820" },
+      { w: 1920, h: 1080, name: "browse-1920x1080" },
+    ]) {
+      await page.setViewportSize({ width: v.w, height: v.h });
+      const targetHash = v.name.startsWith("changes") ? "#/changes"
+        : v.name.startsWith("browse") ? "#/browse" : "#/overview";
+      await openPage(targetHash);
+      if (targetHash === "#/changes") {
+        await page.waitForSelector("#changes-body tr.focusable, #changes-body tr td.hint",
+          { timeout: 8000 });
+      } else if (targetHash === "#/browse") {
+        await page.waitForSelector("#tbl-browse tbody tr, #chart-sunburst canvas",
+          { timeout: 8000 });
+      } else {
+        await page.waitForSelector("#overview-summary table, #overview-summary p",
+          { timeout: 8000 });
+      }
+      const shot = path.join(evidenceDir, `${v.name}.png`);
+      await page.screenshot({ path: shot });
+      viewportScreens.push(shot);
+      // 不允许横向滚动条
+      const overflow = await page.evaluate(() => ({
+        docW: document.documentElement.clientWidth,
+        scrollW: document.documentElement.scrollWidth,
+        bodyW: document.body.scrollWidth,
+      }));
+      record(`viewport-${v.w}x${v.h}-no-horizontal-overflow`,
+        overflow.scrollW <= overflow.docW + 1,
+        JSON.stringify(overflow));
+    }
+
     /* ---------- 汇总 ---------- */
     record("no-unhandled-page-errors",
       pageErrors.length === 0 && tauriErrors.length === 0,
@@ -842,7 +1173,7 @@ async function main() {
       failed: failed.length,
       evidence: [overviewShot, changesShot, browseShot, bigfilesShot,
         bigfilesTruncatedShot, bigfilesExpiredShot, bigfilesFailedShot,
-        bigfilesPermShot, bigfilesNoMatchShot],
+        bigfilesPermShot, bigfilesNoMatchShot, ...viewportScreens],
       checks,
     }, null, 2) + "\n");
     if (failed.length) process.exitCode = 1;

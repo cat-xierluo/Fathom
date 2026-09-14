@@ -256,7 +256,10 @@ BIN_A="$BUILD_DIR/distA/fathom-helper-exp-a/fathom-helper-exp-a"
 record "freeze-a-built" pass "对照 onedir 构建完成（准备步骤）" preparation
 
 CODE=0
-(cd "$WORK" && FATHOM_RUNTIME_DIR="$WORK/runtime-freeze-a" \
+# exec 让子 shell 被 serve 进程替换：FREEZE_A_PID 记到 serve 自身的 PID，
+# signal_tracked / wait_exit 拿到的就是 serve 的退出码（与 smoke-sigterm-frozen
+# / smoke-g6-fallback-success 用例一致）。
+(cd "$WORK" && exec env FATHOM_RUNTIME_DIR="$WORK/runtime-freeze-a" \
    "$BIN_A" --port "$SMOKE_PORT" --port-range 0 serve) \
   >> "$LOG_OUT" 2>&1 &
 FREEZE_A_PID=$!
@@ -326,7 +329,9 @@ TREE_BEFORE="$(find "$NASTY" -maxdepth 2 -mindepth 1 | sort)"
 log "[smoke] chosen port=$SMOKE_PORT, runtime=$SMOKE_RUNTIME"
 
 CODE=0
-(cd "$NASTY" && FATHOM_RUNTIME_DIR="$SMOKE_RUNTIME" \
+# exec 让子 shell 被 serve 进程替换：SERVE_PID 记到 serve 自身的 PID，
+# signal_tracked / wait_exit 拿到的就是 serve 的退出码（smoke-sigterm-frozen 用例即依赖此语义）。
+(cd "$NASTY" && exec env FATHOM_RUNTIME_DIR="$SMOKE_RUNTIME" \
    "$BIN_N" --port "$SMOKE_PORT" --port-range 3 serve) \
   >> "$LOG_OUT" 2>&1 &
 SERVE_PID=$!
@@ -426,7 +431,10 @@ PYEOF
 YIELD_RT_A="$WORK/runtime-yield-a"
 YIELD_RT_B="$WORK/runtime-yield-b"
 mkdir -p "$YIELD_RT_A" "$YIELD_RT_B"
-(cd "$NASTY" && FATHOM_RUNTIME_DIR="$YIELD_RT_A" \
+# exec 让子 shell 被 serve 进程替换：YIELD_PID 记到 owner serve 自身的 PID，
+# signal_tracked / wait_exit 拿到的就是 owner serve 的退出码（smoke-g6-yield-owner-untouched
+# 用例依赖此语义）。
+(cd "$NASTY" && exec env FATHOM_RUNTIME_DIR="$YIELD_RT_A" \
    "$BIN_N" --port "$YIELD_PORT" --port-range 0 serve) \
   >> "$LOG_OUT" 2>&1 &
 YIELD_PID=$!

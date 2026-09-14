@@ -525,7 +525,7 @@ async function main() {
     const truncated = await bigfilesReadBody();
     record("bigfiles-truncated-state-shown",
       truncated.includes("结果被截断") &&
-        truncated.includes("已截断到 top 50") &&
+        truncated.includes("已截断到 top 200") &&
         truncated.includes("find 行数 17"), truncated.slice(0, 120));
     const bigfilesTruncatedShot = path.join(evidenceDir, "bigfiles-truncated-1220x820.png");
     await page.screenshot({ path: bigfilesTruncatedShot });

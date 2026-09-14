@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -362,3 +364,95 @@ def notify_for_snapshot(conn: sqlite3.Connection, sid: int) -> bool:
     """为已成功写入日报的指定快照尝试通知，不修改报告或快照。"""
     diff, _old_meta, _new_meta, _old_vol, new_vol = _report_inputs(conn, sid)
     return notify.notify_scan_done(diff, new_vol[1] if new_vol else None)
+
+
+# ISS-050 运行根文件保留策略：
+# 日报以 created_at[:10] 即 ``YYYY-MM-DD.md`` 命名（见 write_daily_report），
+# 与 ``/api/report`` 端点（``fathom/api.py``）共享同一约定。运行根的日志
+# 文件目前命名固定（``notify.log``、``launchd-scan.out.log`` 等），暂不
+# 涉及，但保留接口对 ``YYYY-MM-DD.log`` / ``prefix-YYYY-MM-DD.log`` 形式
+# 同样适用——文件名中提取不出 ``YYYY-MM-DD`` 的文件一律保留，避免误删
+# launchd 追加的固定日志与运维现场保留件。
+
+_DATE_IN_NAME = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+
+
+def _date_from_name(name: str) -> dt.date | None:
+    """从文件名中提取 ``YYYY-MM-DD``；无日期或解析失败返回 None。"""
+    match = _DATE_IN_NAME.search(name)
+    if match is None:
+        return None
+    try:
+        return dt.date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        # 形如 2026-13-40 的非法日期不能假装可解析。
+        return None
+
+
+def _prune_files_by_date(
+    directory: Path,
+    *,
+    retention_days: int,
+    today: dt.date,
+) -> tuple[int, list[str]]:
+    """删除 ``directory`` 顶层、文件名含可解析日期且早于保留边界的文件。
+
+    仅扫描顶层（不递归）；目录/非文件对象、非保留边界内的文件、文件名
+    无法解析日期的文件全部保留；删除失败写入警告不抛出（ISS-050 实施边界：
+    删除失败不能反向影响快照与日报）。
+    """
+    if not directory.exists() or not directory.is_dir():
+        return 0, []
+    cutoff = today - dt.timedelta(days=retention_days)
+    deleted = 0
+    warnings: list[str] = []
+    for entry in directory.iterdir():
+        if not entry.is_file() or entry.is_symlink():
+            continue
+        file_date = _date_from_name(entry.name)
+        if file_date is None:
+            continue  # 日期不可解析的一律保留
+        if file_date >= cutoff:
+            continue  # 仍在保留窗口内
+        try:
+            entry.unlink()
+            deleted += 1
+        except OSError as exc:
+            warnings.append(f"删除 {directory.name}/{entry.name} 失败：{exc}")
+    return deleted, warnings
+
+
+def prune_reports(
+    *,
+    retention_days: int | None = None,
+    today: dt.date | None = None,
+) -> tuple[int, list[str]]:
+    """清理运行根 ``reports/`` 下早于保留天数的日报与诊断报告。
+
+    返回 ``(deleted_count, warnings)``。``retention_days`` 默认取
+    ``config.BIGFILE_REPORT_RETENTION_DAYS``；``today`` 仅供测试冻结，
+    生产调用留给 ``dt.date.today()``。
+    """
+    days = config.BIGFILE_REPORT_RETENTION_DAYS if retention_days is None else retention_days
+    reference = today if today is not None else dt.date.today()
+    return _prune_files_by_date(
+        config.REPORTS_DIR, retention_days=days, today=reference,
+    )
+
+
+def prune_logs(
+    *,
+    retention_days: int | None = None,
+    today: dt.date | None = None,
+) -> tuple[int, list[str]]:
+    """清理运行根 ``logs/`` 下早于保留天数且文件名含可解析日期的日志。
+
+    ``notify.log`` / ``launchd-scan.out.log`` 等固定名称不含日期，保留；
+    形如 ``YYYY-MM-DD.log`` / ``prefix-YYYY-MM-DD.log`` 的命名按保留天数
+    清理。返回 ``(deleted_count, warnings)``。
+    """
+    days = config.BIGFILE_LOG_RETENTION_DAYS if retention_days is None else retention_days
+    reference = today if today is not None else dt.date.today()
+    return _prune_files_by_date(
+        config.LOGS_DIR, retention_days=days, today=reference,
+    )

@@ -223,6 +223,24 @@ class ScanSession:
                 if conn is not None:
                     conn.close()
                 conn = None
+
+            # ISS-050：保留阶段顺手清理运行根 reports/ 与 logs/ 内的过期
+            # 文件。快照与日报字段不动；删除数通过 warnings 文本可见，避免
+            # 与 ``pruned_count`` 的快照语义混淆。
+            file_pruned_total = 0
+            for kind, prune_fn in (
+                ("reports", reports.prune_reports),
+                ("logs", reports.prune_logs),
+            ):
+                try:
+                    deleted, file_warnings = prune_fn()
+                except Exception as exc:
+                    warnings.append(f"{kind} 保留清理失败：{exc}")
+                    continue
+                file_pruned_total += deleted
+                warnings.extend(file_warnings)
+            if file_pruned_total:
+                warnings.append(f"清理运行根过期文件 {file_pruned_total} 份")
             result = {
                 "snapshot_id": sid,
                 "report": str(report_path) if report_path else None,

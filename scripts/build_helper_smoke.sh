@@ -487,7 +487,10 @@ register_process "$DUMMY_PID"
 sleep 0.5
 DUMMY_PIDS_BEFORE="$(lsof -tiTCP:${DUMMY_PORT} -sTCP:LISTEN -n -P 2>/dev/null || true)"
 CODE=0
-(cd "$NASTY" && FATHOM_RUNTIME_DIR="$DUMMY_RT" \
+# exec 让子 shell 被 serve 进程替换：ZEROKILL_PID 记到 serve 自身的 PID，
+# signal_tracked / wait_exit 拿到的就是 serve 的退出码，与 smoke-sigterm-frozen 用例一致。
+# （不改其他用例；同样 subshell PID 记账缺陷不在它们的语义范围内。）
+(cd "$NASTY" && exec env FATHOM_RUNTIME_DIR="$DUMMY_RT" \
    "$BIN_N" --port "$DUMMY_PORT" --port-range 4 serve) \
   >> "$LOG_OUT" 2>&1 &
 ZEROKILL_PID=$!

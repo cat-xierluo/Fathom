@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Manager, State, Url, WebviewWindow, WindowEvent,
 };
 
 mod helper;
@@ -153,9 +153,12 @@ fn helper_retry(app: AppHandle, state: State<'_, HelperState>) -> serde_json::Va
 
 /// 导航主窗口到 ``http://127.0.0.1:<port>/``；仅在握手成功时调用。
 fn navigate_main_to(window: &WebviewWindow, port: u16) -> Result<(), String> {
-    let url = format!("http://127.0.0.1:{}/", port);
-    window.navigate(url.as_str()).map_err(|err| {
-        format!("主窗口导航 {} 失败：{}", url, err)
+    let url_str = format!("http://127.0.0.1:{}/", port);
+    let parsed = Url::parse(&url_str).map_err(|err| {
+        format!("主窗口导航 URL 解析 {} 失败：{}", url_str, err)
+    })?;
+    window.navigate(parsed).map_err(|err| {
+        format!("主窗口导航 {} 失败：{}", url_str, err)
     })
 }
 

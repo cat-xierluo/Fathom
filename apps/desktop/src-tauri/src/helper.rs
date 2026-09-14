@@ -343,7 +343,7 @@ impl HelperHandle {
             }
             // 路径 2：候选端口 /health
             for offset in 0..=DEFAULT_PORT_RANGE {
-                let port = port_base.saturating_add(offset);
+                let port = port_base.saturating_add(u16::from(offset));
                 match Self::probe_health(port) {
                     ProbeKind::Ours { port, .. } => {
                         // 让位路径：helper 让位退出 0，外部已是同服务。
@@ -369,7 +369,7 @@ impl HelperHandle {
                 "helper 握手超时（{}s）—未读到 helper-instance.json 且候选端口 127.0.0.1:{}..={} /health 无响应",
                 HANDSHAKE_TIMEOUT_S,
                 port_base,
-                port_base.saturating_add(DEFAULT_PORT_RANGE),
+                port_base.saturating_add(u16::from(DEFAULT_PORT_RANGE)),
             )
         }))
     }
@@ -395,7 +395,7 @@ impl HelperHandle {
         let log_path = self.runtime_dir.join("logs").join("helper.log");
         let log_path = log_path.as_path();
         let mut child = match self.inner.lock() {
-            Ok(guard) => guard.take(),
+            Ok(mut guard) => guard.take(),
             Err(_) => return Err("helper 句柄互斥锁中毒".to_string()),
         };
         let child = match child.as_mut() {

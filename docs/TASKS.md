@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/027 已完成。新 PM 的默认下一项是 **ISS-024**（前置 ISS-021 已满足），可与 ISS-032 并行（后者占用 bigfiles/api/config，注意 api.py 重叠时串行）。ISS-029 下一切片会修改 api/cli/config，应避免与 ISS-024 争用。ISS-026 与 ISS-045 是两个独立人工视觉门，均不得自动越过。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/047 已完成，ISS-032 由当前 PM 派发中（IN_PROGRESS，占用 bigfiles/api/config/前端查询区）。新 PM 的默认下一项是 **ISS-029 下一切片**（须待 ISS-032 合并后再动 api/cli/config）；ISS-028 仍待 ISS-026 人工门。ISS-026 与 ISS-045 是两个独立人工视觉门，均不得自动越过。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -19,7 +19,7 @@
 授权来源：用户在本任务中明确要求“review 合并”，并追加“后续可以自动化推进了吗，你作为 pm 按照 multi-agent-orchestration 去派发对应的 worker”。PM 可在下列范围内派发、验证、创建私有仓库 PR，并在独立审查通过后合并；不逐波重复确认。用户说“暂停自动推进”即停止新派发，先安全收口在途工作；发生一次越界操作即回退逐波确认。
 
 - **范围**：2026-09-13 用户追加授权将当前开发线收敛为 v0.3.0 可分发版本，并要求 PM 派 worker 研究/推进 release、Apple 签名公证与应用内更新。ISS-019/023/025/031 已完成；自动推进当前覆盖 ISS-020/021/026/027/029，以及依赖满足后通往 v0.3.0 的 ISS-009/010/016/024/028/030/032/037/040/041；独立验收发现且会让这些门禁假绿的阻断缺陷可先登记为聚焦修复卡（当前已含 ISS-042/043/044/046）。仍须逐卡通过前置和验收，不因发布目标跳阶段。转公开、公开 Release、向外部测试者发送产物仍是最终人工门。
-- **后继查表**：ISS-020/021/027 已完成。新 PM 默认先做 ISS-024；ISS-032 已 READY，与 ISS-024 并行时注意 api.py 争用需串行。ISS-029 下一切片占用 api/cli/config，须与 ISS-024 串行；完成后再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线。
+- **后继查表**：ISS-020/021/024/027/047 已完成，ISS-032 IN_PROGRESS（PM 两阶段合同：bigfiles 内核先行，api/config/前端接线基于含 ISS-024 的 main）。ISS-029 下一切片占用 api/cli/config，须与 ISS-032 串行；完成后再按 ISS-009/010、ISS-028、ISS-037、ISS-040、ISS-041、ISS-030 收敛。每次重读完整卡片和最新基线。
 - **UX**：ISS-026 原型路径登记为 `prototypes/ux/`，仅合成数据，配套 `scripts/verify_ux_prototype.cjs`。交付具体可点击产物供用户评审；未收到反馈时保持 WAITING，不标 DONE，不自动实装 ISS-028。原型的工程交付可建立 PR，用户评审是本卡关闭条件。
 - **角色/所有权**：用户于 2026-09-13 再次明确 PM 尽量只做验收、定方向和关键上下文；实现、测试与返修交给 worker，PM 不代写业务代码。实施 worker 只写合同所列工程文件和自己的 session context；PM 独占 TASKS/AGENTS/ARCHITECTURE/DECISIONS/DESIGN/ROADMAP/README/CHANGELOG/TESTING。worker 提供 WRITEBACK_PROPOSAL，由 PM 按事实更新。非平凡实现需要不同 session/dispatch 的 reviewer；固定 40 位 head，不能自审后直接合并。
 - **并发/资源**：本项目最多 3 个活跃 worker（含 reviewer）；待 PM 验收超过 2 项停止新派。scanner、api/app.js、schema/config 分别串行；全量测试全机一次仅一份，worker 只跑所分配回归。采用已有受支持 provider 配置，派发价值、额度、物理内存和写范围门禁均不得绕过。
@@ -69,7 +69,7 @@
 | ISS-021 | 同口径差分与缺失语义 | P0 | M0 | DONE | ISS-025 |
 | ISS-022 | 本地 API 与渲染边界 | P0 | M0 | DONE | — |
 | ISS-023 | 修复可见数值与快照刷新缺陷 | P1 | M0 | DONE | — |
-| ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | READY | ISS-021 |
+| ISS-024 | 查询口径、最新窗口与树裁剪 | P1 | M0 | DONE | ISS-021 |
 | ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | DONE | — |
 | ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | WAITING | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | DONE | ISS-023 |
@@ -77,7 +77,7 @@
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | IN_PROGRESS | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
 | ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | DONE | — |
-| ISS-032 | 资源预算、大文件查询与诊断 | P1 | M1 | READY | ISS-020、ISS-025 |
+| ISS-032 | 资源预算、大文件查询与诊断 | P1 | M1 | IN_PROGRESS | ISS-020、ISS-025 |
 | ISS-033 | 外部内测与开放发布验收 | P1 | M3 | BLOCKED | ISS-001、ISS-002、ISS-003、ISS-008、ISS-024、ISS-028、ISS-030、ISS-032、ISS-037、ISS-040、ISS-041 |
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
@@ -92,7 +92,7 @@
 | ISS-044 | 同步扫描协调后的 pytest 精确门禁 | P0 | M0 | DONE | ISS-020 |
 | ISS-045 | Fathom Logo 与应用图标资产 | P1 | M1 | WAITING | — |
 | ISS-046 | 修复 pytest 入口的缺失解释器变量边界 | P0 | M0 | DONE | — |
-| ISS-047 | du 瞬时系统错误（EINTR）不应判为致命无效采集 | P0 | M0 | READY | ISS-018 |
+| ISS-047 | du 瞬时系统错误（EINTR）不应判为致命无效采集 | P0 | M0 | DONE | ISS-018 |
 
 ## 任务卡
 
@@ -105,11 +105,11 @@
 - **范围**：fathom/scanner.py 的 classify_collection 与错误分类、相关测试。
 - **实施边界**：先复现反例（stderr 含 EINTR 行的 DuResult 现状被 InvalidScanError 拒绝）；为瞬时错误定义可解释语义（单独计数、采集如何归类、是否 partial、哪些错误串属于该类），不放松其他致命分类（权限外真实错误仍拒绝、路径名中的错误文字不能冒充证据——沿用 ISS-018 R2 口径）。旧快照不因瞬时错误被覆盖性丢弃；不引入重试循环之外的新并发。
 - **验收**：
-  - [ ] 反例先失败后通过：stderr 仅含瞬时错误行的采集不再整体拒绝，语义（full/partial/计数）有测试钉住
-  - [ ] 瞬时错误与权限错误并存、瞬时与真实致命错误并存的组合分类可解释且被测试覆盖
-  - [ ] 生产语义可解释：错误行属于哪个子树不可知时，不声称该子树数据完整
-  - [ ] 不放松既有致命分类：ISS-018 的既有测试全部保持通过
-- **证据/接续**：2026-09-13 12:00 生产 launchd 定时扫描失败实证：`logs/launchd-scan.err.log` 记录 `du 采集无效：stderr 含非权限错误 2 行（如 'du: .../MessageTemp/...: Interrupted system call'）`，当日快照未写入，ISS-001 的第二个有效日期未产生。ISS-018 验收覆盖了权限/信号/负数/空输出，EINTR 为漏出边界。
+  - [x] 反例先失败后通过：stderr 仅含瞬时错误行的采集不再整体拒绝，语义（full/partial/计数）有测试钉住
+  - [x] 瞬时错误与权限错误并存、瞬时与真实致命错误并存的组合分类可解释且被测试覆盖
+  - [x] 生产语义可解释：错误行属于哪个子树不可知时，不声称该子树数据完整
+  - [x] 不放松既有致命分类：ISS-018 的既有测试全部保持通过
+- **证据/接续**（2026-09-14）：[PR #34](https://github.com/cat-xierluo/fathom/pull/34) head `2e4a542cff5fb1634bedb39c19aee2b16edc011a` 经独立 fixed-head review ACCEPT，squash 合并为 main `ebf1cfee`。`_TRANSIENT_MESSAGES`={Interrupted system call, Resource temporarily unavailable} 按行尾 errno 段精确匹配（ISS-018 R2 口径，路径文字不冒充证据）；`DuResult.transient_error_count/sample` 与 denied_count 严格分离且默认值兼容旧构造；仅瞬时或瞬时+权限且根有效归 partial、瞬时计数非零永不 full（du 累计语义下出错子树祖先均可能偏低）；瞬时与真实致命/信号/负数/缺根/空输出/路径歧义并存仍整体拒绝。新增 tests/test_transient_errors.py 21 项（修复前 21 failed 先红），scoped 44 passed、全量 260 passed、39/39 浏览器检查。快照 schema 未改，瞬时计数持久化留后续卡。主仓已同步至含本修复的 main，2026-09-15 12:00 定时任务将以新代码运行（ISS-001 观察窗口）。任务 DONE。原始反例：2026-09-13 12:00 生产 launchd 定时扫描失败实证：`logs/launchd-scan.err.log` 记录 `du 采集无效：stderr 含非权限错误 2 行（如 'du: .../MessageTemp/...: Interrupted system call'）`，当日快照未写入，ISS-001 的第二个有效日期未产生。ISS-018 验收覆盖了权限/信号/负数/空输出，EINTR 为漏出边界。
 
 ### ISS-046 · 修复 pytest 入口的缺失解释器变量边界
 
@@ -285,11 +285,11 @@
 - **范围**：fathom/api.py 查询端点、相关测试。
 - **实施边界**：volume-trend/trend 先取最新 N 再正序输出；路径缺失点保留 gap；browse 无基线时 delta=null。树节点预算在查询/构建前生效，截断/其他占用可见，子树不能重复归属。校验树阈值/快照ID/日期和 root=/ 边界。
 - **验收**：
-  - [ ] 构造超过 limit 的序列仍包含最新点且不混根
-  - [ ] 单快照子目录不被标成全量增长；无记录/无快照/坏参数错误区别明确
-  - [ ] 小于显示阈值的有效快照显示空结果，根=/ 正常，截断数量可解释
-  - [ ] 大树压力样例响应有明确节点上限和无孤儿重复；前端有等价表格
-- **证据/接续**：AUD-09：趋势使用 ASC LIMIT；AUD-04：首个子目录 delta=全量。
+  - [x] 构造超过 limit 的序列仍包含最新点且不混根
+  - [x] 单快照子目录不被标成全量增长；无记录/无快照/坏参数错误区别明确
+  - [x] 小于显示阈值的有效快照显示空结果，根=/ 正常，截断数量可解释
+  - [x] 大树压力样例响应有明确节点上限和无孤儿重复；前端有等价表格
+- **证据/接续**（2026-09-14）：[PR #35](https://github.com/cat-xierluo/fathom/pull/35) head `b01695651374e9e8cbe0a480e99193753318f566` 经独立 fixed-head review ACCEPT（4 条非阻塞观察），squash 合并为 main `865cb6e5`。volume-trend/trend 改为 DESC LIMIT 后正序并按 (root, min_kb) 数据集隔离（AUD-09 反证 3 项先红后绿）；trees 节点预算移到 SQL 层 LIMIT+1 探测，响应新增 truncated/matched_count/node_count/node_limit，截断后子孙提升无孤儿重复（20005 节点压力样例）；参数校验 422→400 全局收敛（前端/测试无 422 依赖，reviewer grep 核实）；root=/ 归一化；browse 侧栏趋势同数据集且单快照 delta=null 钉住。新增 tests/test_query_scope.py 30 项全合成隔离；scoped 86 passed、全量 260 passed、39/39 浏览器检查（PM 独立复跑）。"前端有等价表格"按响应可直接表格化渲染解释，前端截断信息实装归 ISS-028。reviewer NB-2 登记：NULL min_kb 锚点（v2 旧数据集为最新）无直接测试，依赖 IS 语义间接覆盖，归后续小项。任务 DONE。
 
 ### ISS-007 · 接续 scan_runs 实现审查
 
@@ -398,7 +398,7 @@
   - [ ] 证明来自定时任务而非手动触发，存在两个不同有效日期
   - [ ] 日报基于正确同根快照；无变化也能如实表达
   - [ ] 耗时/覆盖/库及 WAL 增长的匿名摘要有记录；不得贴私人目录清单
-- **证据/接续**：NOT_VERIFIED：本次日期仍为 2026-09-12。原任务“增长非全零”门槛已纠正。
+- **证据/接续**：NOT_VERIFIED。2026-09-14 PM 只读观察：`launchctl list` 显示 `com.maoscripts.fathom-scan` 上次退出码 1；`logs/launchd-scan.err.log` 记录 2026-09-13 12:00 定时任务确实触发（out 日志“开始扫描”），但被 `InvalidScanError`（stderr 两行 `Interrupted system call` 判为非权限致命）拒绝，生产库 `data/fathom.db`（v0 schema）仍仅有 2026-09-12 一个快照，第二个有效日期未产生。根因已由 ISS-047 修复并合并，主仓代码已同步；最早 2026-09-15 12:00 后重新观察。原任务“增长非全零”门槛已纠正。
 
 ### ISS-002 · 权限覆盖与授权说明
 

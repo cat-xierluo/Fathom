@@ -20,6 +20,16 @@
   errno 消息段（行内最后一个 ": " 之后）与权限文案的精确相等，出错
   路径文本含权限措辞不得冒充权限证据（R2 BLK-1），无法证明权限类的
   行保守计为非权限错误。
+- 瞬时系统错误（ISS-047，生产实证 2026-09-13）：du stderr 中可证明为
+  瞬时类的 errno 行（EINTR "Interrupted system call"、EAGAIN/EWOULDBLOCK
+  "Resource temporarily unavailable"；launchd 定时扫描被信号打断目录读）
+  不再判为致命无效采集：与权限类同口径单独计数
+  （DuResult.transient_error_count，不与 denied_count 混同），仅瞬时或
+  瞬时+权限受限且根记录有效时归 partial；瞬时与真实致命错误并存仍整体
+  拒绝（ISS-018 口径不变）。诚实性约束：du 输出是累计大小，瞬时错误行
+  虽指名出错路径，却无法证明任何子树（含其祖先）数据完整，故瞬时计数
+  非零的采集只归 partial、永不 full；瞬时计数经 DuResult 返回值表达，
+  不落快照 schema（持久化留后续卡，见任务卡 ISS-047 实施边界）。
 - 采集质量的持久化（ISS-021）：schema v3 起，快照与 min_kb（入库阈值，
   数据集口径的一部分）和 collection_status（full/partial，来自
   classify_collection）一并落库；v3 之前的旧行两列为 NULL，不补造未知
@@ -50,6 +60,17 @@ from . import config
 # 文案的行一律保守计为非权限错误。
 _PERMISSION_MESSAGES = frozenset({"Operation not permitted", "Permission denied"})
 
+# stderr 瞬时系统错误消息（ISS-047）。EINTR 的 strerror 文案是
+# "Interrupted system call"（macOS/BSD du 实证，launchd 定时扫描被信号
+# 打断目录读），EAGAIN/EWOULDBLOCK 是 "Resource temporarily unavailable"；
+# 两者都是可自行恢复的内核瞬时失败，重跑即可消除，不该让当日快照整体
+# 丢失。分类沿用权限类口径：只认行内最后一个 ": " 之后 errno 消息段与
+# 集合的精确相等，措辞相近（或出错路径文本含瞬时措辞）的行保守计为
+# 非权限错误、维持整体拒绝。
+_TRANSIENT_MESSAGES = frozenset(
+    {"Interrupted system call", "Resource temporarily unavailable"}
+)
+
 
 def _errno_message_segment(line: str) -> str:
     """取 du stderr 错误行最后一个 ": " 之后的 errno 消息段（去尾部空白）。
@@ -62,8 +83,9 @@ def _errno_message_segment(line: str) -> str:
 
 
 class InvalidScanError(RuntimeError):
-    """du 采集无效（缺根记录/空输出、信号终止、非权限或混合错误、负数
-    大小、退出码非零但无权限证据），本次扫描已被整体拒绝。
+    """du 采集无效（缺根记录/空输出、信号终止、非权限且非瞬时的真实
+    错误或其与权限/瞬时的混合、负数大小、退出码非零但无权限/瞬时证据），
+    本次扫描已被整体拒绝。
 
     抛出时数据库没有任何写入，当日旧快照不受影响。
     """
@@ -99,9 +121,14 @@ class DuResult:
     elapsed_seconds 本次采集的实测耗时（time.monotonic 口径）
     stderr_tail    stderr 末尾若干行，仅用于失败诊断显示，不持久化；
                    截尾会遗漏前部错误，不得作为错误判据
-    other_error_count  stderr 全量中非权限错误行数（错误分类判据，
-                       ISS-018 合同修订新增；默认 0 兼容既有构造方）
-    other_error_sample 首条非权限错误行，仅诊断用
+    other_error_count  stderr 全量中非权限且非瞬时的错误行数（错误分类
+                       判据，ISS-018 合同修订新增；默认 0 兼容既有构造方）
+    other_error_sample 首条非权限且非瞬时的错误行，仅诊断用
+    transient_error_count  stderr 全量中瞬时系统错误行数（ISS-047；
+                       EINTR/EAGAIN 等 errno 消息段精确匹配瞬时文案），
+                       单独计数、不与 denied_count 混同；非零时采集只归
+                       partial（不持久化，经本返回值表达）
+    transient_error_sample 首条瞬时错误行，仅诊断用
     path_error_count   stdout 中无法无歧义解析的路径记录数；非零时采集无效
     path_error_sample  首条路径解析错误，仅诊断用
     """
@@ -113,6 +140,8 @@ class DuResult:
     stderr_tail: tuple[str, ...] = ()
     other_error_count: int = 0
     other_error_sample: str = ""
+    transient_error_count: int = 0
+    transient_error_sample: str = ""
     path_error_count: int = 0
     path_error_sample: str = ""
 
@@ -203,10 +232,10 @@ def _validate_du_paths(sizes: dict[str, int], root: Path) -> tuple[int, str]:
 def run_du(root: Path) -> DuResult:
     """执行 du -xk，返回结构化采集结果（大小表、退出码、质量线索、真实耗时）。
 
-    错误分类在采集时点对 stderr 全量逐行进行（权限类 / 非权限类）并固化到
-    DuResult——每行只认最后一个 ": " 之后 errno 消息段与权限文案的精确
-    相等，路径文本不参与判据；有效性判据后续只读这些全量计数，不重新看
-    stderr_tail 截尾。
+    错误分类在采集时点对 stderr 全量逐行进行（权限类 / 瞬时类 / 其他真实
+    错误）并固化到 DuResult——每行只认最后一个 ": " 之后 errno 消息段与
+    各类文案集合的精确相等，路径文本不参与判据；有效性判据后续只读这些
+    全量计数，不重新看 stderr_tail 截尾。
     """
     started = time.monotonic()
     inherited_fd = None
@@ -269,13 +298,20 @@ def run_du(root: Path) -> DuResult:
             path_error_sample = invalid_path_sample
     stderr = _as_bytes(stderr_raw).decode("utf-8", errors="replace")
     denied = 0
+    transient = 0
+    transient_sample = ""
     other_error_count = 0
     other_error_sample = ""
     for line in stderr.splitlines():
         if not line.strip():
             continue
-        if _errno_message_segment(line) in _PERMISSION_MESSAGES:
+        segment = _errno_message_segment(line)
+        if segment in _PERMISSION_MESSAGES:
             denied += 1
+        elif segment in _TRANSIENT_MESSAGES:
+            transient += 1
+            if not transient_sample:
+                transient_sample = line
         else:
             other_error_count += 1
             if not other_error_sample:
@@ -288,6 +324,8 @@ def run_du(root: Path) -> DuResult:
         stderr_tail=tuple(stderr.splitlines()[-4:]),
         other_error_count=other_error_count,
         other_error_sample=other_error_sample,
+        transient_error_count=transient,
+        transient_error_sample=transient_sample,
         path_error_count=path_error_count,
         path_error_sample=path_error_sample,
     )
@@ -299,12 +337,23 @@ def classify_collection(result: DuResult, root_str: str) -> str:
     ISS-018 修复合同（保守收敛）：进入同日替换事务的只有两类采集——
     1. full：干净完整采集（退出码 0 且无任何错误行）；
     2. partial：根记录存在、大小非负、非信号终止，且 stderr 全量错误行均为
-       权限类（denied_count>0、other_error_count=0）。兼容 BSD du 对 000
-       子目录 exit=1 的部分覆盖与空根 0。
+       权限类或瞬时系统错误类（denied_count/transient_error_count 单独
+       计数、other_error_count=0）。权限类兼容 BSD du 对 000 子目录 exit=1
+       的部分覆盖与空根 0；瞬时类（ISS-047：EINTR/EAGAIN，launchd 定时
+       扫描被信号打断目录读的生产实证）不再整体拒绝，当日快照不因单次
+       瞬时内核失败丢失。
     以下情形不能因根记录存在而豁免，一律抛 InvalidScanError：路径输出歧义、
     解码失败或越界，根记录缺失，任意负数大小（含根），信号终止（负退出码），
-    非权限或混合错误，退出码非零但无权限证据（无法证明仅权限受限）。错误
-    分类取自 run_du 时点的结构化计数，不使用截尾 stderr_tail。
+    非权限且非瞬时的真实错误（或其与权限/瞬时的混合），退出码非零但无
+    任何权限/瞬时证据。错误分类取自 run_du 时点的结构化计数，不使用截尾
+    stderr_tail。
+
+    瞬时错误下的诚实归类（ISS-047）：du 输出是累计大小，瞬时错误行虽指名
+    出错路径，却无法证明任何子树（含出错路径的所有祖先）数据完整——被
+    中断子树之上的累计值同样可能偏低。因此瞬时计数非零的采集一律只归
+    partial、永不 full，不声称任何子树数据完整；瞬时缺口数量经
+    DuResult.transient_error_count 返回值表达，不与权限缺口
+    （denied_count）混同，也不落快照 schema。
     """
     if root_str not in result.sizes:
         hint = f"；du stderr：{result.stderr_hint()}" if result.stderr_hint() else ""
@@ -332,8 +381,9 @@ def classify_collection(result: DuResult, root_str: str) -> str:
     if result.other_error_count > 0:
         sample = f"（如 {result.other_error_sample!r}）" if result.other_error_sample else ""
         raise InvalidScanError(
-            f"du 采集无效：stderr 含非权限错误 {result.other_error_count} 行{sample}，"
-            "只有可证明仅权限受限的部分采集才被接受。"
+            f"du 采集无效：stderr 含非权限错误 {result.other_error_count} 行{sample}"
+            "（瞬时错误已单独归类，不计入此处），"
+            "只有可证明仅权限或瞬时受限的部分采集才被接受。"
             "已拒绝本次写入，当日旧快照保持不变"
         )
     if result.path_error_count > 0:
@@ -343,12 +393,21 @@ def classify_collection(result: DuResult, root_str: str) -> str:
             f"{result.path_error_count} 行{sample}。"
             "已拒绝本次写入，当日旧快照保持不变"
         )
-    if result.exit_code != 0 and result.denied_count == 0:
+    if (
+        result.exit_code != 0
+        and result.denied_count == 0
+        and result.transient_error_count == 0
+    ):
         raise InvalidScanError(
             f"du 采集无效：退出码 {result.exit_code} 但无权限受限证据，"
-            "无法证明仅权限限制。已拒绝本次写入，当日旧快照保持不变"
+            "也无瞬时错误证据，无法证明仅权限或瞬时限制。"
+            "已拒绝本次写入，当日旧快照保持不变"
         )
-    if result.exit_code != 0 or result.denied_count > 0:
+    if (
+        result.exit_code != 0
+        or result.denied_count > 0
+        or result.transient_error_count > 0
+    ):
         return "partial"
     return "full"
 
@@ -390,11 +449,12 @@ def create_snapshot(
     min_kb、采集质量（full/partial）一并持久化——数据集身份是
     (root, min_kb)，差分/保留/同日替换都以它分组（ISS-021）。
 
-    采集无效（歧义/不可解码路径、缺根记录/空输出、信号终止、非权限或
-    混合错误、负数大小、退出码非零但无权限证据）时抛 InvalidScanError，
-    数据库不做任何写入，
-    当日旧快照原样保留；可证明仅权限受限且根记录有效时按部分覆盖落库
-    （denied_count 记录缺口数量）。du_seconds 记录本次采集实测耗时。
+    采集无效（歧义/不可解码路径、缺根记录/空输出、信号终止、非权限且
+    非瞬时的真实错误或其与权限/瞬时的混合、负数大小、退出码非零但无
+    权限/瞬时证据）时抛 InvalidScanError，数据库不做任何写入，
+    当日旧快照原样保留；可证明仅权限或瞬时受限且根记录有效时按部分
+    覆盖落库（denied_count 记录权限缺口数量；瞬时缺口不落 schema，经
+    DuResult 返回值表达，ISS-047）。du_seconds 记录本次采集实测耗时。
     """
     root = Path(root) if root else config.DEFAULT_ROOT
     min_kb = config.MIN_DIR_KB if min_kb is None else min_kb

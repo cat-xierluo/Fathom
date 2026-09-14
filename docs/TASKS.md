@@ -98,8 +98,9 @@
 | ISS-050 | 报告与日志保留策略落地 | P2 | M1 | DONE | ISS-032 |
 | ISS-051 | 冻结冒烟脚本统一 exec 进程记账 | P2 | M0 | DONE | ISS-029 |
 | ISS-052 | 查询口径 NULL 阈值锚点直接测试 | P2 | M0 | DONE |
-| ISS-053 | Tauri 资源 glob 在缺少 helper 产物时阻断构建 | P0 | M2 | IN_PROGRESS | ISS-009 |
-| ISS-054 | ISS-009 切片 1 代码编译打通（类型/可变性/图标） | P0 | M2 | READY | ISS-053 | ISS-024 |
+| ISS-053 | Tauri 资源 glob 在缺少 helper 产物时阻断构建 | P0 | M2 | DONE | ISS-009 |
+| ISS-054 | ISS-009 切片 1 代码编译打通（类型/可变性/图标） | P0 | M2 | DONE | ISS-053 |
+| ISS-055 | 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/ | P0 | M2 | READY | ISS-054 | ISS-024 |
 
 ## 任务卡
 
@@ -115,7 +116,19 @@
   - [ ] 干净克隆上 `cargo check --locked --offline` exit 0
   - [ ] 修复仅涉及类型/可变性/图标产物，helper 生命周期语义与 tauri bundle 其它字段未被放松
   - [ ] 图标若为占位：RESULT 明确标注 NOT_VERIFIED 且指向 ISS-045
-- **证据/接续**：不得勾选验收项，先补复现（PM 证据已给出 5 条错误与行号）。
+- **证据/接续**（2026-09-15 完成）：分支 `iss-054-cargo-build-fix` head `c52cdef`（base `0856bf3`）；`helper.rs` 两处改 `u16::from(...)`、`lib.rs` navigate 改用解析后的 `Url`、`helper.rs` guard 加 mut。**PM 独立复跑 `cargo check --locked --offline` exit 0**（仅 2 个 dead_code 警告），切片 1 代码首次编译通过。继续跑打包链（Wave9 证据 iss-054-verify-findings.md）：`build_helper.sh` exit 0（Mach-O arm64、`--version` 报 service/version/protocol_version、SHA256 已记）、`build_app.sh` exit 0（产出 Fathom.app 与 Fathom_0.3.0_aarch64.dmg），但 `verify_app_bundle.sh` exit 1，暴露两项缺陷转 ISS-055。
+
+### ISS-055 · 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/
+
+- **状态**：READY（P0/M2）；来源：PM 在 ISS-054 后跑完整打包链发现（2026-09-15）。
+- **目标**：`bash scripts/verify_app_bundle.sh` 全段通过（exit 0），使打包产物结构与壳的 locate_helper 期望一致。
+- **范围**：apps/desktop/src-tauri/tauri.conf.json（resources 映射）、scripts/verify_app_bundle.sh、必要时 apps/desktop/src-tauri/src/helper.rs（仅路径常量）。
+- **实施边界**：(A) 当前 `bundle.resources=["resources/helper/**/*"]` 会保留原始目录结构，helper 实际落在 `Contents/Resources/resources/helper/fathom-helper/fathom-helper`，比 locate_helper 期望的多一层 `resources/`；需改为不保留前缀的映射形式（tauri 支持 map 形式如 `{"resources/helper/": "helper/"}`），使产物落在 `Contents/Resources/helper/`；同时保持 ISS-053 的修复不回退（无 helper 产物时 cargo check 仍须 exit 0）。(B) `scripts/verify_app_bundle.sh` 第 104 行附近 `FINGER_BEFORE` 变量名含非法字节，导致 `unbound variable` 提前退出、(b)~(g) 段未执行；需修正变量名使全脚本跑通。不得放松任何断言，不得把 helper 产物提交进 Git。
+- **验收**：
+  - [ ] 干净克隆上 `cargo check --locked --offline` 仍 exit 0（不回退 ISS-053/054）
+  - [ ] `build_helper.sh` → `build_app.sh` → `verify_app_bundle.sh` 全链 exit 0，产物内 helper 位于 `Contents/Resources/helper/fathom-helper/fathom-helper` 且可执行
+  - [ ] verify 各段（结构/只读布局/路径含空格中文/端口冲突/二次启动/退出）真实执行并记录
+- **证据/接续**：不得勾选验收项；PM 证据见 .git/orchestration/wave9-evidence/iss-054-verify-findings.md。
 
 ### ISS-053 · Tauri 资源 glob 在缺少 helper 产物时阻断构建
 

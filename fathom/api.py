@@ -52,7 +52,9 @@ from fastapi.staticfiles import StaticFiles
 
 from . import SERVICE_IDENTITY, __version__, __protocol_version__, bigfiles, config, db, reports, scan_coordinator
 
-app = FastAPI(title="Fathom", version="0.2.0")
+# version 只从单一版本源 fathom.__version__ 读取（ISS-037）；本文件内
+# 禁止再出现硬编码语义化版本字面量，校验器会拦截。
+app = FastAPI(title="Fathom", version=__version__)
 
 # Tauri 壳的 loader 页（tauri://localhost）需要跨域探测本服务（只读）
 app.add_middleware(

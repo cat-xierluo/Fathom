@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-029 已 DONE（实机项并入 ISS-009/041）。当前：ISS-028 停 REVIEW_EXTERNAL 待独立 review；**ISS-037 READY**（版本单一源/依赖清单/notices/许可证方案，Logo 与 LICENSE 落地为人工门）；ISS-009 待 ISS-037 与 ISS-045。ISS-045 仍是人工视觉门，不得自动越过。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。新 PM 的默认下一项：**ISS-009**（可分发 app 与安装入口；前置仅剩 ISS-045 Logo 人工门——若用户仍未选图标方向，可先做不依赖图标的打包/安装引导切片并把 iconset 留 NOT_VERIFIED）。ISS-045 仍是人工视觉门，不得自动越过；LICENSE 落地待用户选择许可证。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -73,7 +73,7 @@
 | ISS-025 | 运行目录隔离与版本化数据基础 | P0 | M0 | DONE | — |
 | ISS-026 | 完整 UX 流程与视觉原型 | P1 | M0 | DONE | — |
 | ISS-027 | 原生前端模块与状态生命周期 | P1 | M1 | DONE | ISS-023 |
-| ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | REVIEW_EXTERNAL | ISS-021、ISS-024、ISS-026、ISS-027 |
+| ISS-028 | 总览、变化与目录详情 UX/UI 实装 | P1 | M1 | DONE | ISS-021、ISS-024、ISS-026、ISS-027 |
 | ISS-029 | 自包含运行时与后台服务技术验证 | P1 | M0 | DONE | — |
 | ISS-030 | 安装升级卸载与历史恢复 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-016、ISS-025、ISS-040、ISS-041 |
 | ISS-031 | 可复现测试与 CI 入口 | P1 | M0 | DONE | — |
@@ -82,7 +82,7 @@
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
 | ISS-036 | 目录打标与智能变化解读 | P2 | M4 | DEFERRED | ISS-028、ISS-035 |
-| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | READY | ISS-029、ISS-031、ISS-045 |
+| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | DONE | ISS-029、ISS-031、ISS-045 |
 | ISS-038 | PM 自动推进与监督接续 | P1 | M0 | DONE | — |
 | ISS-039 | 扫描结果合同与安全浏览器夹具兼容 | P0 | M0 | DONE | ISS-018、ISS-022 |
 | ISS-040 | 应用内更新与双架构更新清单 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-028、ISS-031 |
@@ -93,11 +93,11 @@
 | ISS-045 | Fathom Logo 与应用图标资产 | P1 | M1 | WAITING | — |
 | ISS-046 | 修复 pytest 入口的缺失解释器变量边界 | P0 | M0 | DONE | — |
 | ISS-047 | du 瞬时系统错误（EINTR）不应判为致命无效采集 | P0 | M0 | DONE | ISS-018 |
-| ISS-048 | CLI report 统一同数据集前驱选择 | P2 | M0 | READY | ISS-021 |
-| ISS-049 | bigfiles 日志脱敏补全与路径缺席断言 | P2 | M1 | READY | ISS-032 |
-| ISS-050 | 报告与日志保留策略落地 | P2 | M1 | READY | ISS-032 |
-| ISS-051 | 冻结冒烟脚本统一 exec 进程记账 | P2 | M0 | READY | ISS-029 |
-| ISS-052 | 查询口径 NULL 阈值锚点直接测试 | P2 | M0 | READY | ISS-024 |
+| ISS-048 | CLI report 统一同数据集前驱选择 | P2 | M0 | DONE | ISS-021 |
+| ISS-049 | bigfiles 日志脱敏补全与路径缺席断言 | P2 | M1 | DONE | ISS-032 |
+| ISS-050 | 报告与日志保留策略落地 | P2 | M1 | DONE | ISS-032 |
+| ISS-051 | 冻结冒烟脚本统一 exec 进程记账 | P2 | M0 | DONE | ISS-029 |
+| ISS-052 | 查询口径 NULL 阈值锚点直接测试 | P2 | M0 | DONE | ISS-024 |
 
 ## 任务卡
 
@@ -110,9 +110,9 @@
 - **范围**：tests/test_query_scope.py（仅新增用例）。
 - **实施边界**：构造 NULL 阈值旧快照为最新、并混入已知阈值快照的合成库；断言趋势只取 NULL 数据集点、不混入已知阈值点；不改任何生产代码；若发现生产行为与 ISS-021/024 合同不符，在 RESULT 登记而不自行修改。
 - **验收**：
-  - [ ] 新增用例先证明缺口（若行为已正确则用例首轮即绿并注明）后全绿
-  - [ ] 既有 test_query_scope 用例保持通过
-- **证据/接续**：尚未执行；不得勾选验收项。
+  - [x] 新增用例先证明缺口（若行为已正确则用例首轮即绿并注明）后全绿
+  - [x] 既有 test_query_scope 用例保持通过
+- **证据/接续**（2026-09-14）：[PR #54](https://github.com/cat-xierluo/fathom/pull/54) head `bb9819f` → main `eff2ddb`。TestNullMinKbAnchor 6 项覆盖 NULL 阈值旧快照为最新时 volume-trend/trend 的锚点与不混入；36 passed；独立 review ACCEPT。 任务 DONE。
 
 ### ISS-051 · 冻结冒烟脚本统一 exec 进程记账
 
@@ -121,9 +121,9 @@
 - **范围**：scripts/build_helper_smoke.sh。
 - **实施边界**：只改进程启动形态与对应记账，不改任何用例断言口径、不改生产代码；smoke-sigterm-frozen / smoke-g6-yield-* 等用例保持原语义。
 - **验收**：
-  - [ ] `bash scripts/build_helper_smoke.sh` 21/21 pass / verdict=PASS
-  - [ ] 脚本内不再有非 exec 的后台子 shell 启动 serve/owner（grep 可证）
-- **证据/接续**：尚未执行；不得勾选验收项。
+  - [x] `bash scripts/build_helper_smoke.sh` 21/21 pass / verdict=PASS
+  - [x] 脚本内不再有非 exec 的后台子 shell 启动 serve/owner（grep 可证）
+- **证据/接续**（2026-09-14）：[PR #56](https://github.com/cat-xierluo/fathom/pull/56) head `53dfbcc` → main `77af0c4`。4 处后台 serve/owner 启动改为 (cd … && exec env …) & 形态；smoke 21/21 PASS；独立 review ACCEPT。 任务 DONE。
 
 ### ISS-050 · 报告与日志保留策略落地
 
@@ -132,9 +132,9 @@
 - **范围**：fathom/reports.py（新增 prune_reports）、fathom/scan_coordinator.py（保留阶段调用）、fathom/config.py（如需通用化常量命名）、tests/test_retention_files.py（新建）。
 - **实施边界**：只删除运行根内、按文件名日期可解析且早于保留天数的报告/日志；无法解析日期的文件一律保留；删除数计入 `scan_run_details.pruned_count` 或新增可见字段（不改 schema）；失败作为警告不抹掉快照。
 - **验收**：
-  - [ ] 合成运行根中过期/未过期/不可解析三类文件的处理可证
-  - [ ] 既有 test_scan_coordination 全部保持通过；快照保留逻辑不受影响
-- **证据/接续**：尚未执行；不得勾选验收项。
+  - [x] 合成运行根中过期/未过期/不可解析三类文件的处理可证
+  - [x] 既有 test_scan_coordination 全部保持通过；快照保留逻辑不受影响
+- **证据/接续**（2026-09-14）：[PR #55](https://github.com/cat-xierluo/fathom/pull/55) head `d8a9fe0` → main `589277a`。reports.prune_reports/prune_logs 按文件名日期删早于保留天数的文件，不可解析一律保留，失败作 warning；scan_coordinator 保留阶段调用并计数；tests/test_retention_files.py；PM 受控实验（今天/5 天前/40 天前/notes.md，保留 30 天）删 1 留 3；25 passed；独立 review ACCEPT。 任务 DONE。
 
 ### ISS-049 · bigfiles 日志脱敏补全与路径缺席断言
 
@@ -143,9 +143,9 @@
 - **范围**：fathom/bigfiles.py、tests/test_bigfiles.py。
 - **实施边界**：不改任务/缓存/五态语义；只改日志格式化与测试断言。
 - **验收**：
-  - [ ] DEBUG 级捕获日志不含完整 root 路径
-  - [ ] 既有 test_bigfiles 25 项保持通过
-- **证据/接续**：尚未执行；不得勾选验收项。
+  - [x] DEBUG 级捕获日志不含完整 root 路径
+  - [x] 既有 test_bigfiles 25 项保持通过
+- **证据/接续**（2026-09-14）：[PR #52](https://github.com/cat-xierluo/fathom/pull/52) head `59ad1f3` → main `6b10513`。新增 _sanitize_key_for_log，DEBUG/exception 日志 key 经脱敏；test_full_path_not_in_log 在 DEBUG 级断言完整路径缺席；25 passed；独立 review ACCEPT。 任务 DONE。
 
 ### ISS-048 · CLI report 统一同数据集前驱选择
 
@@ -154,9 +154,9 @@
 - **范围**：fathom/cli.py、tests/test_cli_report.py（新建）。
 - **实施边界**：复用 reports.find_same_dataset_predecessor；无同数据集前驱时输出明确文案并非零退出（或与 write_daily_report 的 not_available 语义一致），不伪造报告。
 - **验收**：
-  - [ ] 两根/双阈值混库下 CLI report 不错配
-  - [ ] 无前驱时行为可解释且被测试钉住
-- **证据/接续**：尚未执行；不得勾选验收项。
+  - [x] 两根/双阈值混库下 CLI report 不错配
+  - [x] 无前驱时行为可解释且被测试钉住
+- **证据/接续**（2026-09-14）：[PR #53](https://github.com/cat-xierluo/fathom/pull/53) head `f075996` → main `68f8ad6`。cmd_report 复用 reports.find_same_dataset_predecessor、新增 --snapshot-id、无前驱明确文案+非零退出；tests/test_cli_report.py 8 项；scoped 40 passed；独立 review ACCEPT。 任务 DONE。
 
 ### ISS-047 · du 瞬时系统错误（EINTR）不应判为致命无效采集
 
@@ -420,6 +420,7 @@
 - 修复记录：m2 曾把柱条 yAxis 标签改为“前 14 字符 + 省略号 + 后 15 字符”截断，导致 ISS-031 安全检查 `chart-tooltip-escapes-path` 按类目文本定位恶意条目失败（39→38/39）；修复 commit 恢复 `shortPath(r.path, 2)`。属内部可恢复缺陷，已修复并复验。
 - **未完成**：独立 fixed-head review。首任 reviewer 会话完成实质审查后会话失效未落盘；重派的 `review-wave5-028b` 因 codebuddy-hy4 lane 网关 503 中断无产物。两任均未产出 verdict，因此本卡**不得合并、不得勾验收项**。
 - **解除条件**：额度重置（GLM 20:04 / MiniMax 20:00）或网关恢复后，重派独立 reviewer 审 `c6473a5` 取得 verdict。
+- **DONE（2026-09-14 晚）**：额度重置后重派 reviewer（review-wave5-028c）对 `c6473a5` **REJECT**：变化页“净变化”对 grown/shrunk 显示行（含父子重叠、topn 截断、阈值过滤）求和，违反 DESIGN:56 与 AGENTS 不可累加不变量，且 style.css 注释与实现相反、无测试覆盖。修复 episode 2（`e7303e7`）改为根同口径差分 `b.total_kb − a.total_kb`、缺基线显示“无基线”、新增两项具体值断言（父子重叠场景 +100 非 +166）；第二位 reviewer re_review ACCEPT。[PR #49](https://github.com/cat-xierluo/fathom/pull/49) squash 合并为 main `f08b935`（#42/#43 关闭取代）。最终复验 61/61 前端、39/39 浏览器、全量绿。真实 Tauri WebView 与 StaticFiles MIME/CSP 实机仍 `NOT_VERIFIED`（归 ISS-009 桌面验收）。
 - **2026-09-14 19:32 状态（PM 记录）**：三个 lane 全部不可用——glm-api 0%（20:04 重置）、minimax 0%（20:00 重置）、codebuddy-hy4 health=down（网关 503）。`quota_preflight` 对三者分别给出 lane_below_stop_line / lane_unhealthy，属额度保护的正确 fail-closed 行为，非缺陷。按“不伪造 review 结论”原则，本卡停在 REVIEW_EXTERNAL，不等同 DONE。
 - **接手指引**：恢复后直接 `--api-provider glm-5.3`（或 minimax-M3）派 reviewer，审 `c6473a5b2312feb21a5a3b263af7023130520202`（base f170856），合同命令 `node scripts/verify_frontend_refresh.cjs`（59/59）与 `bash scripts/ci_browser_checks.sh`（39/39）；产出 review JSON 后过 `review-acceptance-gate.py`，再走 PR #43 审计与合并。
 
@@ -564,7 +565,8 @@
   - [ ] 依赖与图标等资源来源及必要 notice 齐全
   - [ ] 用户选定许可证后才落入 LICENSE；未选择则保持任务未完成
   - [ ] 贡献/漏洞反馈与匿名诊断说明可供外部用户理解
-- **证据/接续**：2026-09-14 转 READY（ISS-029 DONE、ISS-031 DONE）。**人工门保留**：ISS-045 Logo 方向与最终 LICENSE 选择由用户决定；worker 交付可自动化部分——单一版本源与 fail-closed 校验器、依赖锁与来源/许可证清单（SBOM 或等价）、第三方 notices、许可证选项对比方案（不落 LICENSE）、贡献/漏洞反馈/匿名诊断说明草案。图标资源来源一项待 ISS-045。
+- **证据/接续**（2026-09-14）：[PR #57](https://github.com/cat-xierluo/fathom/pull/57) head `e23618e` squash 合并为 main `b27404a`（#50 关闭取代）。单一版本源 `fathom.__version__ = 0.3.0`，api.py/Cargo.toml/tauri.conf.json/Cargo.lock 本地包行同源；`scripts/check_version_consistency.sh` fail-closed（一致 0 / 漂移 1 / 缺失 2）覆盖含 Cargo.lock 的全部五处，`tests/test_version_consistency.py` 13 项；依赖来源清单与 THIRD_PARTY_NOTICES（echarts vendored 双版本标识与上游校验和 NOT_VERIFIED 如实登记；Rust 474 条目仅核对主要子集其余 UNKNOWN）；许可证选项方案推荐 Apache-2.0 但 **LICENSE 未创建（待用户选择）**；CONTRIBUTING/SECURITY 草案。首审 REJECT 两条（门禁计数未同步；校验器漏 Cargo.lock——该盲区曾真实发生），修复后 re_review ACCEPT。验收框 1/2/4 满足；框 3（LICENSE）与图标来源（ISS-045）保留人工门，任务按“可自动化部分”DONE，用户选定许可证后另起小卡落 LICENSE。
+- **原 READY 说明**：2026-09-14 转 READY（ISS-029 DONE、ISS-031 DONE）。**人工门保留**：ISS-045 Logo 方向与最终 LICENSE 选择由用户决定；worker 交付可自动化部分——单一版本源与 fail-closed 校验器、依赖锁与来源/许可证清单（SBOM 或等价）、第三方 notices、许可证选项对比方案（不落 LICENSE）、贡献/漏洞反馈/匿名诊断说明草案。图标资源来源一项待 ISS-045。
 
 ### ISS-040 · 应用内更新与双架构更新清单
 

@@ -403,6 +403,82 @@ class TestDefaults:
         assert len(r.files) == 1
 
 
+# ---------- API 接线（Phase 2） ----------
+
+class TestApiEndpoint:
+    """``/api/bigfiles`` 返回 state / scope / stats / truncated / expired 字段。"""
+
+    def _make_client(self, tmp_path):
+        # 隔离运行目录与扫描根
+        import os
+        os.environ["FATHOM_RUNTIME_DIR"] = str(tmp_path / "rt")
+        os.environ["FATHOM_SCAN_ROOT"] = str(tmp_path / "scanroot")
+        # 重置 api 模块的进程级 bigfiles manager 单例
+        from fastapi.testclient import TestClient
+        import fathom.api as api_mod
+        api_mod._BIGFILES_MANAGER = None
+        # 重置配置对象，让新环境变量生效
+        import importlib
+        import fathom.config as cfg_mod
+        importlib.reload(cfg_mod)
+        importlib.reload(api_mod)
+        api_mod._BIGFILES_MANAGER = None
+        client = TestClient(api_mod.app, base_url=f"http://127.0.0.1:{api_mod.config.PORT}")
+        return client, api_mod
+
+    def test_returns_state_scope_stats(self, tmp_path):
+        (tmp_path / "scanroot").mkdir()
+        _make_tree(tmp_path / "scanroot" / "r", large_files=2, mtime_age_days=0)
+        client, api_mod = self._make_client(tmp_path)
+        # 把 _get_bigfiles_manager 默认根重定向到扫描根的子目录
+        api_mod.config.DEFAULT_ROOT = tmp_path / "scanroot" / "r"
+        api_mod._BIGFILES_MANAGER = None
+        r = client.get("/api/bigfiles?days=7&min_mb=1&topn=10")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["state"] in {state.value for state in bigfiles.BigfilesState}
+        assert body["scope"]["days"] == 7
+        assert body["scope"]["min_mb"] == 1
+        assert body["scope"]["topn"] == 10
+        assert body["scope"]["root"].endswith("/r")
+        assert "wall_ms" in body["stats"]
+        assert body["truncated"] is False
+        assert body["expired"] is False
+        assert isinstance(body["files"], list)
+
+    def test_bad_params_returns_400_via_global_validator(self, tmp_path):
+        (tmp_path / "scanroot").mkdir()
+        client, _ = self._make_client(tmp_path)
+        # days > 90 违反 Query(le=90)
+        r = client.get("/api/bigfiles?days=999&min_mb=1&topn=5")
+        assert r.status_code == 400, r.text
+        assert "请求参数无效" in r.json()["detail"]
+
+    def test_no_match_state_when_root_empty(self, tmp_path):
+        (tmp_path / "scanroot" / "empty").mkdir(parents=True)
+        client, api_mod = self._make_client(tmp_path)
+        api_mod.config.DEFAULT_ROOT = tmp_path / "scanroot" / "empty"
+        api_mod._BIGFILES_MANAGER = None
+        r = client.get("/api/bigfiles?days=7&min_mb=100&topn=10")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["state"] == bigfiles.BigfilesState.NO_MATCH.value
+        assert body["files"] == []
+
+    def test_truncated_state_when_topn_caps(self, tmp_path):
+        (tmp_path / "scanroot" / "r").mkdir(parents=True)
+        _make_tree(tmp_path / "scanroot" / "r", large_files=5, mtime_age_days=0)
+        client, api_mod = self._make_client(tmp_path)
+        api_mod.config.DEFAULT_ROOT = tmp_path / "scanroot" / "r"
+        api_mod._BIGFILES_MANAGER = None
+        r = client.get("/api/bigfiles?days=7&min_mb=1&topn=2")
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["state"] == bigfiles.BigfilesState.TRUNCATED.value
+        assert body["truncated"] is True
+        assert len(body["files"]) == 2
+
+
 # ---------- 资源预算测量（Phase 1 收口用） ----------
 
 class TestResourceMeasurement:

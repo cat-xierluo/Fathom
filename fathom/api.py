@@ -33,6 +33,7 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 
 from __future__ import annotations
 
+import concurrent.futures
 import hmac
 import logging
 import os
@@ -426,7 +427,77 @@ def api_trend(path: str = Query(..., min_length=1),
 def api_bigfiles(days: int = Query(7, ge=1, le=90),
                  min_mb: int = Query(100, ge=1, le=10240),
                  topn: int = Query(50, ge=1, le=200)):
-    return {"files": bigfiles.find_big_files(days=days, min_mb=min_mb, topn=topn)}
+    """近期大文件查询（ISS-032）。
+
+    显式触发语义：每次请求经 ``BigfilesManager.submit``；同参数并发请求自动
+    去重；TTL 缓存可命中、过期可辨；find 进程组可被取消/超时回收。返回字段
+    包含 ``state``（ok/no_match/permission_denied/failed/truncated/expired）、
+    ``scope``、``stats``、``truncated``/``expired``/``cached``/``cache_age_s``
+    /``error_message``/``raw_truncated``，前端据此展示进度、范围、失败、截断
+    与过期缓存。失败/权限受限返回 200 + ``state`` 字段（语义可辨），仅坏参
+    数由全局 ``RequestValidationError`` 处理器返回 400。
+    """
+    manager = _get_bigfiles_manager()
+    future = manager.submit(
+        config.DEFAULT_ROOT, days=days, min_mb=min_mb, topn=topn,
+        timeout=config.BIGFILE_FIND_TIMEOUT_S,
+    )
+    try:
+        result = future.result(timeout=config.BIGFILE_FIND_TIMEOUT_S + 1.0)
+    except concurrent.futures.CancelledError:
+        return JSONResponse(
+            {"detail": "大文件查询已取消"},
+            status_code=409,
+        )
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return JSONResponse(
+            {"detail": "大文件查询超时，请稍后重试"},
+            status_code=504,
+        )
+    return {
+        "state": result.state.value,
+        "files": result.files,
+        "scope": {
+            "root": str(config.DEFAULT_ROOT),
+            "days": days,
+            "min_mb": min_mb,
+            "topn": topn,
+        },
+        "stats": {
+            "wall_ms": result.stats.wall_ms,
+            "peak_rss_bytes": result.stats.peak_rss_bytes,
+            "find_output_lines": result.stats.find_output_lines,
+            "find_exit_code": result.stats.find_exit_code,
+            "find_stderr_lines": result.stats.find_stderr_lines,
+            "permission_denied_lines": result.stats.permission_denied_lines,
+        },
+        "truncated": result.truncated,
+        "raw_truncated": result.raw_truncated,
+        "expired": result.state == bigfiles.BigfilesState.EXPIRED,
+        "cached": result.cached,
+        "cache_age_s": result.cache_age_s,
+        "error_message": result.error_message,
+    }
+
+
+_BIGFILES_MANAGER: bigfiles.BigfilesManager | None = None
+_BIGFILES_MANAGER_LOCK = threading.Lock()
+
+
+def _get_bigfiles_manager() -> bigfiles.BigfilesManager:
+    """进程级单例 ``BigfilesManager``；预算与默认 TTL 取自 ``config``。"""
+    global _BIGFILES_MANAGER
+    if _BIGFILES_MANAGER is None:
+        with _BIGFILES_MANAGER_LOCK:
+            if _BIGFILES_MANAGER is None:
+                _BIGFILES_MANAGER = bigfiles.BigfilesManager(
+                    find_path="/usr/bin/find",
+                    default_timeout_s=config.BIGFILE_FIND_TIMEOUT_S,
+                    result_cap=config.BIGFILE_RESULT_CAP,
+                    cache_ttl_s=config.BIGFILE_CACHE_TTL_S,
+                )
+    return _BIGFILES_MANAGER
 
 
 @app.get("/api/bootstrap")

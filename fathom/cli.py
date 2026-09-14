@@ -99,15 +99,39 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
+    """对比并输出 Markdown 日报。
+
+    与 API/日报一致（ISS-021/ISS-048）：选择基线 = ``reports.find_same_dataset_predecessor``，
+    不再取全局最近两条。``--snapshot-id`` 指定 b（默认最新快照）；b 没有同数据集
+    （同根同口径）前驱时输出明确文案并不伪造报告，非零退出。
+    """
     conn = db.connect()
     try:
-        snaps = conn.execute(
-            "SELECT * FROM snapshots ORDER BY created_at DESC, id DESC LIMIT 2"
-        ).fetchall()
-        if len(snaps) < 2:
-            print("至少需要两个快照才能对比", file=sys.stderr)
+        if args.snapshot_id is not None:
+            new_meta = conn.execute(
+                "SELECT * FROM snapshots WHERE id = ?", (args.snapshot_id,)
+            ).fetchone()
+            if new_meta is None:
+                print(f"快照 #{args.snapshot_id} 不存在", file=sys.stderr)
+                return 1
+        else:
+            new_meta = conn.execute(
+                "SELECT * FROM snapshots ORDER BY created_at DESC, id DESC LIMIT 1"
+            ).fetchone()
+            if new_meta is None:
+                print("当前没有任何快照，无法生成对比日报", file=sys.stderr)
+                return 1
+        old_meta = reports.find_same_dataset_predecessor(conn, new_meta["id"])
+        if old_meta is None:
+            # 首扫、升级后首个新口径快照或新监控根首扫都没有可比基线：
+            # 协调器以此语义把报告阶段记为 not_available（ISS-021）。
+            print(
+                f"快照 #{new_meta['id']}（根 `{new_meta['root']}`，"
+                f"min_kb={new_meta['min_kb']}）没有同数据集（同根同口径）前驱快照，"
+                "无法生成对比日报",
+                file=sys.stderr,
+            )
             return 1
-        new_meta, old_meta = snaps[0], snaps[1]
         diff = reports.compute_diff(
             reports.load_snapshot(conn, old_meta["id"]),
             reports.load_snapshot(conn, new_meta["id"]),
@@ -408,7 +432,9 @@ def main(argv: list[str] | None = None) -> int:
                    help=argparse.SUPPRESS)
     p.set_defaults(func=cmd_scan)
 
-    p = sub.add_parser("report", help="对比最近两个快照输出日报")
+    p = sub.add_parser("report", help="对比快照输出日报（默认最新；同数据集前驱）")
+    p.add_argument("--snapshot-id", type=int,
+                   help="作为 b 的快照 ID；缺省取最新快照。基线仍按同数据集前驱选")
     p.add_argument("--with-bigfiles", action="store_true", help="附加近期大文件清单")
     p.set_defaults(func=cmd_report)
 

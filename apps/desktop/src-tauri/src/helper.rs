@@ -534,7 +534,7 @@ impl HelperHandle {
                         // （instance 文件写于 uvicorn 监听就绪前、路径 1 探活
                         // 落空的窗口内会走到这里），不算「复用」，否则退出时
                         // 会因 reused 标记漏回收自己的 helper。
-                        let own_pid = self.own_child_pid().map(|p| i64::from(p));
+                        let own_pid = self.own_child_pid().map(i64::from);
                         if own_pid.is_none() || pid != own_pid {
                             self.reused.store(true, Ordering::SeqCst);
                         }
@@ -674,7 +674,7 @@ impl HelperHandle {
                         .ok()
                         .and_then(|g| *g)
                         .unwrap_or(0);
-                    let event = decode_exit_event(&log_path, log_offset, port_base, &status);
+                    let event = decode_exit_event(log_path, log_offset, port_base, &status);
                     // ISS-059：端口耗尽时把事件还原成 ExhaustedInfo 记入句柄，
                     // helper_status / helper_retry 据此返回 state=exhausted。
                     if let HelperEvent::PortsExhausted {

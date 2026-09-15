@@ -320,3 +320,37 @@ class TestDuTimeoutConfig:
         bad = self._load_config_probe("not-a-number")
         assert bad.returncode != 0, "非数字值必须 fail closed"
         assert "正浮点数" in bad.stderr
+
+    def test_negative_value_fail_closed(self):
+        """ISS-062：-1 是可解析的有限浮点数，必须被 ``<= 0`` 分支拒绝。
+
+        依据 fathom/config.py 的 FATHOM_DU_TIMEOUT_S 段：非空白先 float()
+        解析，再要求 ``math.isfinite`` 且 ``> 0``——负数落入「正的有限
+        浮点数」错误，不能因为可解析而静默生效（负时限等于关掉防护）。"""
+        negative = self._load_config_probe("-1")
+        assert negative.returncode != 0, "FATHOM_DU_TIMEOUT_S=-1 必须 fail closed"
+        assert "正" in negative.stderr  # 消息为“必须是正的有限浮点数…”
+
+    def test_empty_string_falls_back_to_default(self):
+        """ISS-062：空串按 unset 回落默认 14400（断言现状语义，不改 config.py）。
+
+        依据 fathom/config.py 加载段 ``if _raw is None or not _raw.strip()``：
+        strip 后为空的值视同未设置，先于 float() 解析短路，不进入坏值拒绝。"""
+        blank = self._load_config_probe("")
+        assert blank.returncode == 0, blank.stderr
+        assert (
+            json.loads(blank.stdout.strip().splitlines()[-1])["du_timeout_s"]
+            == 14400.0
+        )
+
+    def test_whitespace_only_falls_back_to_default(self):
+        """ISS-062：纯空白与空串同语义——strip 后为空即 unset，回落默认。
+
+        依据同上：``"  ".strip()`` 为空串，走同一 unset 分支而不是
+        ``float("  ")`` 的 ValueError 路径。"""
+        blank = self._load_config_probe("  ")
+        assert blank.returncode == 0, blank.stderr
+        assert (
+            json.loads(blank.stdout.strip().splitlines()[-1])["du_timeout_s"]
+            == 14400.0
+        )

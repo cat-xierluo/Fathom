@@ -1,6 +1,6 @@
 # Fathom 当前架构
 
-**事实基线：main `a57d7fd`（仍为开发版），2026-09-13 核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
+**事实基线：main `a57d7fd`（仍为开发版），2026-09-13 核对；`apps/desktop/` 相关行按 main `a158889`（ISS-009 切片 1 合并，2026-09-15）更新，其余行未在该次重新核对。** 本文件描述该基线代码；通知显示、原生菜单与实际 Tauri WebView 安全边界尚未完成真机验收。待实施设计见 [交付与智能方案](plans/2026-09-12-delivery-and-intelligence.md)。
 
 ## 入口与边界
 
@@ -16,7 +16,7 @@ Tauri loader → 探测 /api/status → 跳转本地 HTTP ─┘
 前端定期 invoke → Rust tray 标题；tray-action → 前端 → /api/scan
 ```
 
-API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周期 `flock` 是跨进程 owner 真值，进程内锁只用于 API 线程状态。协调器不读取或终止外部 PID，只取消并回收自己启动的 `du`。Tauri 仍只承担窗口与 tray，不启动或修复后端；后台服务需通过开发版 `install` 安装，壳与后端生命周期分离。
+API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周期 `flock` 是跨进程 owner 真值，进程内锁只用于 API 线程状态。协调器不读取或终止外部 PID，只取消并回收自己启动的 `du`。开发态 Tauri 只承担窗口与 tray，不启动或修复后端，后台服务需通过开发版 `install` 安装；打包态（`a158889` 起）壳在启动时定位 `Contents/Resources/helper/` 内的冻结 helper，经 `helper-instance.json`（0600）与 `/health` 身份握手后导航，同服务已运行则复用，端口被占按 ISS-029 语义让位且不向外部进程发信号，任何退出路径都只回收本壳拉起的 helper（SIGTERM，10s 上限）。
 
 ## 模块与实际行为
 
@@ -33,8 +33,8 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 | cli.py | scan/report/bigfiles/status/serve/install/uninstall；scan 可标记 cli/scheduled 来源；report 按同数据集前驱生成（可 --snapshot-id 指定 b），无前驱明确文案并非零退出；`--version`；serve 支持 `--port/--port-range` 让位与零击杀 | 与 API 共用协调合同；install/uninstall 仍是开发版入口 |
 | launchd.py | 拼接 XML，安装扫描/常驻 Web 两个 plist | 路径不做 XML 转义；bootstrap 失败只打印，不能可靠表示安装失败 |
 | frontend/ | 无构建链原生 ES modules：modules/ 下 request（世代号+pageScoped 防倒序覆盖）、format、charts（隐藏 stale/重显 resume）、polling（幂等单实例）、tauri（浏览器降级）、router（hash 路由+单一刷新入口）、status 与五页 enter/leave 模块；ECharts 本地 vendor | 真实 Tauri WebView 桥接与真实 FastAPI StaticFiles 下 module MIME/CSP 实机未验证；正式 UX 原型尚未实装到生产页面 |
-| apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行 | bundle.active=false；无自包含 Python、安装/升级/卸载 UI；tray 实机待验 |
-| apps/desktop/experiments/iss029/ | PyInstaller onedir 与 helper 生命周期合同原型；只写指定数据根，结果被版本化规则忽略 | 仅技术验证，尚未接入生产 helper 或 `.app`；冻结健康仍受固定 7952 端口阻塞 |
+| apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行；打包态 `helper.rs` 负责冻结 helper 的 locate/spawn/握手/让位/幂等回收，`bundle.resources` 深键 map 把 helper 落到 `Contents/Resources/helper/`；`scripts/build_helper.sh`/`build_app.sh`/`verify_app_bundle.sh` 产出并校验未签名 .app/.dmg（12 项） | 未签名、未公证、仅 arm64、图标占位（ISS-045）；新账户首启、含空格/中文路径、tray 菜单实机退出未验；陈旧 instance 文件存活校验与 ports-exhausted 状态接线缺（ISS-059） |
+| apps/desktop/experiments/iss029/ | PyInstaller onedir 与 helper 生命周期合同原型；只写指定数据根，结果被版本化规则忽略 | 生产 `build_helper.sh` 默认复用其 `.venv-build`（PyInstaller 6.22.3）冻结 helper 并打进 `.app`（`a158889` 起）；x86_64 未冻结（ISS-041） |
 
 ## SQLite 与保留事实
 

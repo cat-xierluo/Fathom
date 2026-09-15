@@ -17,7 +17,7 @@
 //! 不引入新 crate（--locked --offline 门禁下避免拉不到依赖）；helper 进程
 //! 操作全用 ``std::process::Command`` 与 ``std`` 文件 I/O。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tauri::{
@@ -29,8 +29,8 @@ use tauri::{
 mod helper;
 
 use helper::{
-    default_runtime_dir, locate_helper, spawn_helper, HelperEvent, HelperHandle,
-    HANDSHAKE_TIMEOUT_S, STOP_TIMEOUT_S,
+    default_runtime_dir, exhausted_status_json, locate_helper, spawn_helper, HelperEvent,
+    HelperHandle, HANDSHAKE_TIMEOUT_S, STOP_TIMEOUT_S,
 };
 
 struct TrayStatusMenu(MenuItem<tauri::Wry>);
@@ -77,7 +77,8 @@ fn update_tray_status(app: AppHandle, title: String, tooltip: String) {
 /// - ``state``: ``"ready"`` | ``"starting"`` | ``"reused"`` | ``"exhausted"`` | ``"error"``
 /// - ``port``: u16（ready/reused 时）
 /// - ``log_path``: 错误或诊断时
-/// - ``recovery``: ports-exhausted 时恢复动作
+/// - ``recovery``: exhausted 时恢复信息（``ports`` 候选端口列表 + 各端口占用
+///   pid（未知 null）+ ``hint`` 恢复提示文案键；ISS-059）
 /// - ``error``: error 时
 #[tauri::command]
 fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
@@ -89,6 +90,12 @@ fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
         return serde_json::json!({"state": "starting"});
     };
     let runtime = handle.runtime_dir.clone();
+    // ISS-059：端口耗尽已判定时直接呈现 exhausted（含 recovery），不再重跑
+    // 20s 握手；恢复路径是握手页「重试握手」（helper_retry 用新句柄重新
+    // 走完整流程，耗尽信息随句柄重建而清空）。
+    if let Some(info) = handle.exhausted_info() {
+        return exhausted_status_json(&info, &runtime);
+    }
     match handle.handshake() {
         Ok(Some(instance)) => {
             if handle.reused.load(std::sync::atomic::Ordering::SeqCst) {
@@ -123,7 +130,30 @@ fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
     }
 }
 
+/// ``start_helper_internal`` 失败后的状态 JSON（ISS-059）：端口耗尽（新句柄
+/// 里已记录 ``ExhaustedInfo``）优先呈现 ``state=exhausted``，其余失败保持
+/// ``state=error``——不得把普通 error 误报成 exhausted。
+fn retry_error_json(
+    err: &str,
+    exhausted: Option<helper::ExhaustedInfo>,
+    runtime: &Path,
+) -> serde_json::Value {
+    if let Some(info) = exhausted {
+        return exhausted_status_json(&info, runtime);
+    }
+    serde_json::json!({
+        "state": "error",
+        "error": err,
+        "log_path": runtime.join("logs").join("helper.log").display().to_string(),
+        "runtime_dir": runtime.display().to_string(),
+        "timeout_s": HANDSHAKE_TIMEOUT_S,
+        "stop_timeout_s": STOP_TIMEOUT_S,
+    })
+}
+
 /// 重启 helper：先 stop 当前句柄，再 spawn 新的子进程并握手；返回 ``helper_status`` 同样 JSON。
+/// ISS-059：exhausted 后重试同一流程；仍耗尽则仍返回 exhausted（新句柄会
+/// 记录新的 ``ExhaustedInfo``）。
 #[tauri::command]
 fn helper_retry(app: AppHandle, state: State<'_, HelperState>) -> serde_json::Value {
     let runtime = match state.0.lock() {
@@ -145,12 +175,14 @@ fn helper_retry(app: AppHandle, state: State<'_, HelperState>) -> serde_json::Va
     }
     match start_helper_internal(&app, &state) {
         Ok(_) => helper_status(state),
-        Err(err) => serde_json::json!({
-            "state": "error",
-            "error": err,
-            "log_path": runtime.join("logs").join("helper.log").display().to_string(),
-            "runtime_dir": runtime.display().to_string(),
-        }),
+        Err(err) => {
+            let exhausted = state
+                .0
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().and_then(|h| h.exhausted_info()));
+            retry_error_json(&err, exhausted, &runtime)
+        }
     }
 }
 
@@ -249,6 +281,8 @@ fn start_helper_internal(app: &AppHandle, state: &State<'_, HelperState>) -> Res
                     }
                     Ok(())
                 }
+                // ISS-059：ExhaustedInfo 已由 wait_with_events 记入句柄，
+                // helper_status / helper_retry 据此返回 state=exhausted。
                 Some(HelperEvent::PortsExhausted { .. }) => Err("ports-exhausted".to_string()),
                 _ => Err(err),
             }
@@ -372,4 +406,52 @@ pub fn run() {
             RunEvent::Exit => reap_spawned_helper(app),
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helper::ExhaustedInfo;
+
+    /// ISS-059：给定 PortsExhausted 事件还原的信息 → 状态 JSON 的
+    /// state==exhausted 且 recovery 结构完整（候选端口 + 占用 pid + 提示文案）。
+    #[test]
+    fn retry_error_json_reports_exhausted_with_recovery() {
+        let blocked = serde_json::json!([
+            {"port": 7953, "reason": "occupied-by-unknown", "probe": "refused", "occupied_pid": [111]},
+            {"port": 7954, "reason": "occupied-by-unknown", "probe": "refused", "occupied_pid": []}
+        ]);
+        let info = ExhaustedInfo::from_event(
+            7952,
+            &[7952, 7953, 7954, 7955, 7956],
+            &blocked,
+            &None,
+        );
+        let json = retry_error_json(
+            "ports-exhausted",
+            Some(info),
+            Path::new("/tmp/fathom-rt"),
+        );
+        assert_eq!(json["state"], "exhausted");
+        let ports = json["recovery"]["ports"].as_array().unwrap();
+        assert_eq!(ports.len(), 5, "recovery.ports 覆盖全部候选端口");
+        assert_eq!(ports[1]["occupied_pid"], 111);
+        assert!(ports[0]["occupied_pid"].is_null(), "blocked 未覆盖的候选为 null");
+        assert!(
+            !json["recovery"]["hint"].as_str().unwrap().is_empty(),
+            "hint 兜底文案非空"
+        );
+    }
+
+    /// ISS-059：普通 Err（无耗尽信息）必须仍是 state=error，不得误报 exhausted。
+    #[test]
+    fn retry_error_json_without_exhausted_info_stays_error() {
+        let json = retry_error_json(
+            "helper 握手超时（20s）",
+            None,
+            Path::new("/tmp/fathom-rt"),
+        );
+        assert_eq!(json["state"], "error");
+        assert_eq!(json["error"], "helper 握手超时（20s）");
+    }
 }

@@ -95,7 +95,10 @@ class ScanSession:
         self.source = source
         self.root = root
         self.cancel_event = threading.Event()
-        self.du_timeout_seconds = 3600.0
+        # ISS-061：du 超时由 FATHOM_DU_TIMEOUT_S（默认 14400s）覆盖，
+        # 不再硬编码 3600。超时会作为 ScanInterruptedError 冒到 execute()
+        # 外层，扫描记为 status=interrupted 且保留上次有效快照。
+        self.du_timeout_seconds = config.DU_TIMEOUT_S
         self._finished = False
 
     def cancel(self) -> None:

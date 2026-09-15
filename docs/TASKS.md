@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。新 PM 的默认下一项：**ISS-062**（P3，可自动派发：CLI 时长提示改为基于上次实测 `du_seconds` 与 `FATHOM_DU_TIMEOUT_S` 上限、2 条 clippy 风格 lint、配置测试补负数/空白串用例）；**ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**：ISS-061 合并（main `6789245`，默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期；仍在 14400s 中断则须开自适应/分段扫描新卡。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**当前 READY 队列为空**：剩余均为人工门或 GUI/实机验收。新 PM 的默认下一项：**ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -107,7 +107,7 @@
 | ISS-059 | 壳握手健壮性：陈旧 helper-instance.json 存活校验与 ports-exhausted 状态接线 | P1 | M2 | DONE | ISS-009 |
 | ISS-060 | 切片 1 打包/校验脚本卫生（review 非阻断观察收口） | P3 | M2 | DONE | ISS-009 |
 | ISS-061 | 定时扫描在生产规模下被 3600s du 时限中断 | P0 | M1 | DONE | ISS-001 |
-| ISS-062 | CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口 | P3 | M1 | READY | ISS-061 |
+| ISS-062 | CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口 | P3 | M1 | DONE | ISS-061 |
 
 ## 任务卡
 
@@ -140,16 +140,16 @@
 
 ### ISS-062 · CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口
 
-- **状态**：READY（P3/M1）；来源：PM 整体排查（2026-09-16 00:45）+ ISS-061 wave18 reviewer 非阻断观察 O-2。
+- **状态**：DONE（P3/M1，2026-09-16 01:40）；来源：PM 整体排查（2026-09-16 00:45）+ ISS-061 wave18 reviewer 非阻断观察 O-2。
 - **目标**：`main.py scan` 的开场提示不再给出与现实相悖的固定时长估计；src-tauri 零 clippy 风格警告；`FATHOM_DU_TIMEOUT_S` 非法值矩阵补齐。
 - **范围**：`fathom/cli.py`（`cmd_scan` 提示行）、`tests/test_cli*.py` 或新增定向测试、`apps/desktop/src-tauri/src/helper.rs`（仅两处 lint）、`tests/test_runtime_config.py`。
 - **实施边界**：(a) `fathom/cli.py:61` 写死「1100 万文件量级可能需要 5-15 分钟」，生产实测 09-12 首扫约 47 分钟、09-14/15 超过 60 分钟被中断——改为：若同根有上次成功快照则打印「上次实测 du 耗时约 N 分钟」（只读取 `snapshots.du_seconds`；`du_seconds` 为 0/缺失时不编造数字），并始终打印「本次安全时限 `config.DU_TIMEOUT_S` 秒（可用 FATHOM_DU_TIMEOUT_S 调整）」；不新增 DB 写入、不改扫描逻辑。(b) `cargo clippy` 两条：`helper.rs:537` redundant closure、`helper.rs:677` needless borrow（既有 2 条 dead_code 是设计内的枚举/字段，保留或按注释说明，不为消警告删语义）。(c) `tests/test_runtime_config.py` 子进程矩阵补 `-1`、`""`、`"  "` 三个用例（分别应走 `<=0` 与 unset/strip 分支，与现有用例同形）。
 - **验收**：
-  - [ ] 无快照时提示不含任何具体分钟数；有快照时分钟数来自 `du_seconds`（定向测试用合成库钉住两种输出）；提示含配置上限秒数
-  - [ ] `cargo clippy --locked --offline --manifest-path apps/desktop/src-tauri/Cargo.toml` 除既有 2 条 dead_code 外零 warning；`cargo test` 13/13 不变
-  - [ ] 配置矩阵三用例通过；全量 pytest 计数同步（344 + 新增）
-  - [ ] 不触碰 scanner/scan_coordinator/config 逻辑与生产数据
-- **证据/接续**：不得勾选验收项。PM 排查证据：`logs/launchd-scan.out.log` 三行「5-15 分钟」提示 vs `scan_runs` 实测 ≥60 分钟；`/tmp/clippy.log`（2026-09-16）。
+  - [x] 无快照时提示不含任何具体分钟数；有快照时分钟数来自 `du_seconds`（`tests/test_cli_scan_hint.py` 7 例：无库、空库、合成 du_seconds→"约 48 分钟"、异根不复用、du_seconds=0 回落、不足 1 分钟、cmd_scan 真实打印）；提示含配置上限秒数
+  - [x] `cargo clippy` 除既有 2 条 dead_code 外零 warning；`cargo test` 14/14 不变（main 在 ISS-060 后已是 14，卡片原写 13 系笔误）
+  - [x] 配置矩阵三用例通过（-1 fail-closed；空串/纯空白按 config 现有 strip→unset 语义回落 14400）；全量 pytest 344→**354**（+10），门禁计数已同步 ci_pytest.sh/ci.yml/TESTING/ARCHITECTURE
+  - [x] 不触碰 scanner/scan_coordinator/config 逻辑与生产数据（diff 仅 cli.py/helper.rs/两测试文件；db.py 未动；测试用隔离运行根）
+- **证据/接续**（2026-09-16 DONE）：worker ctx_b2c86aed62a9（iss-062-scan-hint-hygiene，base `42cf378`）交付 `c4674b0`（cli：`_last_measured_du_seconds` 以 `mode=ro` URI 只读查同根上次快照，任何失败回落 None 不影响扫描；`_scan_duration_hint` 拼文案）、`daad874`（配置矩阵）、`f7c1812`（clippy 两条）。PM 独立复跑：定向 32、全量 354、clippy 仅 2 条既有 dead_code、cargo test 14。独立 reviewer ctx_f010f67a0ba7（review-wave19-062）**ACCEPT**（0 blocking）；非阻断 **O-1 记为遗留**：`_last_measured_du_seconds` 过滤为 `seconds > 0` 未加 `math.isfinite`，若库中存在字面 `inf` 的 `du_seconds`，`int(minutes+0.5)` 会 OverflowError 且发生在 try 之外——产品唯一写路径（scanner 实测墙钟）不可能写入 inf，故非阻断；下次卫生波补一行 `math.isfinite(seconds) and seconds > 0`。O-3：同根匹配为字符串精确匹配（尾斜杠/`/private` 形态回落"无记录"），与 ISS-021 数据集身份约定一致。`worker-value-postflight` ok、`pr-audit` adopt。[PR #79](https://github.com/cat-xierluo/fathom/pull/79) squash 合并为 main `47391ae`；合并后 main：pytest 354、浏览器 39、版本一致性 ok。证据：`.git/orchestration/wave18-evidence/{iss062-spec,iss062-postflight,pr79-audit,REVIEW-ISS-062}.json`。
 
 ### ISS-061 · 定时扫描在生产规模下被 3600s du 时限中断
 

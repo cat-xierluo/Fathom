@@ -16,6 +16,7 @@ Tauri 0.3.0 四处漂移且无校验拦截。
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -130,12 +131,13 @@ def test_api_hardcoded_stale_version_reintroduced(tmp_path: Path) -> None:
 
 def test_tauri_nested_prerelease_version_drift(tmp_path: Path) -> None:
     # 预发行配置（bundle 等）未来若新增 version 键，同样纳入比对。
+    # ISS-009 切片 1 起 bundle 内键形（active/targets/resources/…）多变，
+    # 字面锚点不再稳定：按 JSON 对象注入嵌套 version，不依赖具体键布局。
     root = _make_copy(tmp_path)
-    _rewrite(
-        root / "apps/desktop/src-tauri/tauri.conf.json",
-        '"bundle": {\n    "active": false\n  }',
-        '"bundle": {\n    "active": false,\n    "version": "0.2.0"\n  }',
-    )
+    conf = root / "apps/desktop/src-tauri/tauri.conf.json"
+    data = json.loads(conf.read_text(encoding="utf-8"))
+    data.setdefault("bundle", {})["version"] = "0.2.0"
+    conf.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     result = _run_checker(root)
     assert result.returncode == 1, result.stdout + result.stderr
 

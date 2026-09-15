@@ -106,6 +106,7 @@
 | ISS-058 | 版本一致性测试夹具按切片 1 新 bundle 形态定位（main 门禁 337/338 转绿） | P0 | M2 | DONE | ISS-009 |
 | ISS-059 | 壳握手健壮性：陈旧 helper-instance.json 存活校验与 ports-exhausted 状态接线 | P1 | M2 | DONE | ISS-009 |
 | ISS-060 | 切片 1 打包/校验脚本卫生（review 非阻断观察收口） | P3 | M2 | DONE | ISS-009 |
+| ISS-061 | 定时扫描在生产规模下被 3600s du 时限中断 | P0 | M1 | READY | ISS-001 |
 
 ## 任务卡
 
@@ -135,6 +136,23 @@
   - [ ] 反例：端口范围全部被占 → 握手页显示 ports-exhausted 与恢复指引，无未知进程被发信号 —— 机器可验部分全 pass（verify `i-no-fathom-health` / `i-zero-kill`（7953..7956 dummy pid 前后一致）/ `i-shell-alive` / `i-ports-exhausted-marker` / `i-exit-cleanup`；单测 `ports_exhausted_status_json_shape` 等 4 项覆盖 `state=exhausted`+`recovery`，reviewer 逐行确认前端字段名一致）；**握手页实机渲染截图 `NOT_VERIFIED`**（GUI 交互），并入 ISS-009 验收框"后台未就绪可恢复"
   - [x] `verify_app_bundle.sh` 既有 12 段仍全 pass（record 名与断言一字未改，汇总 12→20）；cargo check exit 0（仅既有 2 个 dead_code warning）
 - **证据/接续**（2026-09-15 DONE）：worker ctx_8d7cfc67c0d0（iss-059-handshake-liveness，base `f87bc76`）交付 3 commits：`a378f57`（A：路径 1 命中身份匹配 instance 后 `probe_health`；不健康且 pid 不在运行——`ps -p` 只读判定、不发任何信号含信号 0——判陈旧删文件走 spawn，pid 仍在则保留等待；决策拆为可注入纯函数 `instance_disposition`；**附带修复**路径 2 命中本壳刚拉起的子进程被误标 `reused` 致退出漏回收）、`6223da1`（B：`PortsExhausted{candidates}` 记入 `ExhaustedInfo`，`helper_status` 返回 `state=exhausted`+`recovery{ports[{port,occupied_pid}],hint}`，`helper_retry` 仍耗尽保持 exhausted、普通 Err 仍 error；index.html 分派由从不发出的 `"ports-exhausted"` 改匹配 `"exhausted"` 并渲染端口占用表）、`24c08a2`（C：verify 新增 h×3 + i×5 段）。**三方独立验证一致**：worker / PM（在 worker worktree）/ reviewer（自建 worktree）各自 cargo check exit 0、`cargo test` 13/13（5 旧 + 8 新）、build_helper SHA256 `95756a0e…`、build_app ok、verify **20/20 PASS**。独立 reviewer ctx_bd79c7c0b366（review-iss059）7 条要点全 CONFIRMED **ACCEPT**、`review-acceptance-gate` ok；`worker-value-postflight` ok；`pr-audit` adopt。[PR #71](https://github.com/cat-xierluo/fathom/pull/71) squash 合并为 main `d53a7af`；合并后 main：pytest 338、浏览器 39、版本一致性 ok、cargo test 13/13。云端 CI 停用（DEC-021）。reviewer 非阻断观察转 ISS-060（`handshake_rejects_wrong_identity` 断言弱、`decode_exit_event` 扫整份 helper.log）。证据：`.git/orchestration/wave10-evidence/{iss059-spec,iss059-postflight,pr71-audit,REVIEW-ISS-059}.json`、`archived-sessions/iss-059-handshake-liveness/`。
+
+### ISS-061 · 定时扫描在生产规模下被 3600s du 时限中断
+
+- **状态**：READY（P0/M1）；来源：PM 只读生产观察（2026-09-15 17:33，ISS-001 观察窗口）。
+- **目标**：让真实生产规模的每日扫描能跑完并产出快照，或明确以可恢复方式表达「未能完成」而不是静默丢失当天快照。
+- **范围**：fathom/scan_coordinator.py、fathom/scanner.py（超时相关）、fathom/config.py（如引入可配置上限）、相关测试。
+- **实施边界（PM 只读证据）**：生产库 `data/fathom.db`（只读打开）`scan_runs` 表实测：
+  - run 2：started 2026-09-15T12:00:07 → finished 2026-09-15T13:00:07，status `interrupted`，message `du 超过 3600 秒安全时限`
+  - run 1：started 2026-09-14T12:00:06 → finished 2026-09-14T13:00:06，status `interrupted`，message 同上
+  即**连续两天定时扫描都在整 1 小时被中断**，`snapshots` 表仍只有 2026-09-12 一条。硬编码 `du_timeout_seconds = 3600.0`（`fathom/scan_coordinator.py:98`；`scanner.py:103` 形参默认亦为 3600）。生产根 `/Users/maoking` 规模：上次成功快照 `dir_count=937393`、约 1100 万文件量级（日志自述 5–15 分钟，但实测远超）。
+  要求：不得为通过验证而伪造/回填快照日期；不得直接放宽到无限超时而不留可恢复语义；应给出可解释的方案（例如按规模自适应或可配置上限 + 超时后明确记录并保留上次有效数据，并在超时时以可诊断方式留痕）。**必须与 ISS-047（EINTR 瞬时错误）区分**：那是"被拒即失败"，本卡是"跑不完被中断"。
+- **验收**：
+  - [ ] 反例先红后绿：构造「扫描耗时超过配置上限」的用例，断言超时路径产出可解释结果且不丢上次有效快照
+  - [ ] 真实生产规模下（或可复现的等价夹具）扫描能完成并写入快照，或按合同明确记录为未完成且可恢复
+  - [ ] 超时上限可配置且有文档；未引入无限阻塞
+  - [ ] 与 ISS-047 的 EINTR 语义不冲突（两者各有测试钉住）
+- **证据/接续**：不得勾选验收项。ISS-001 的最新观察记录将同步更新为「已定位为 ISS-061」。
 
 ### ISS-060 · 切片 1 打包/校验脚本卫生（review 非阻断观察收口）
 

@@ -602,6 +602,7 @@
   - [ ] 日报基于正确同根快照；无变化也能如实表达
   - [ ] 耗时/覆盖/库及 WAL 增长的匿名摘要有记录；不得贴私人目录清单
 - **证据/接续**：NOT_VERIFIED。2026-09-14 PM 只读观察：`launchctl list` 显示 `com.maoscripts.fathom-scan` 上次退出码 1；`logs/launchd-scan.err.log` 记录 2026-09-13 12:00 定时任务确实触发（out 日志“开始扫描”），但被 `InvalidScanError`（stderr 两行 `Interrupted system call` 判为非权限致命）拒绝，生产库 `data/fathom.db`（v0 schema）仍仅有 2026-09-12 一个快照，第二个有效日期未产生。根因已由 ISS-047 修复并合并，主仓代码已同步；最早 2026-09-15 12:00 后重新观察。原任务“增长非全零”门槛已纠正。
+  **2026-09-15 17:33 PM 只读复查（窗口已到）**：定时任务确实按时触发（`logs/launchd-scan.out.log` 09-15 有新“开始扫描”行；launchd 上次退出码仍 1），但**第二个快照依然未产生**。生产库只读读取 `scan_runs`：run 2（09-15 12:00:07→13:00:07）与 run 1（09-14 12:00:06→13:00:06）**均为 `interrupted`，message 为 `du 超过 3600 秒安全时限`**——即连续两天在整 1 小时被中断，与 ISS-047 的 EINTR 问题**不同**。err 日志内 19 行均为 ISS-047 合并前的历史内容（无“瞬时/partial”新措辞），`.venv` 导入的主仓代码已含 ISS-047 修复（`_TRANSIENT_MESSAGES`/`transient_error_count` 在）。本卡阻塞已定位并转 **ISS-061**；观察窗口续等 ISS-061 修复后。
 
 ### ISS-002 · 权限覆盖与授权说明
 

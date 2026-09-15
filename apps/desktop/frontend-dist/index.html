@@ -48,7 +48,8 @@
   // 握手页：状态由 Rust 端 helper_status / helper_retry 决定
   // - ready / reused：直接 navigate 到 http://127.0.0.1:<port>/
   // - starting：每 1s 轮询一次
-  // - ports-exhausted：展示恢复动作 + 端口冲突表
+  // - exhausted（ISS-059）：展示恢复动作 + 端口占用表（recovery.ports /
+  //   recovery.hint）
   // - error：展示错误 + 日志路径 + runtime 路径
   // 零 emoji；与现有占位样式一致
   function invoke(cmd, args) {
@@ -91,7 +92,21 @@
     $extra.innerHTML = "";
     const rec = document.createElement("pre");
     rec.className = "recovery";
-    rec.textContent = state.recovery || "请检查端口 7952..7956 的占用进程并释放，或使用其他启动端口。";
+    const fallbackHint = "请检查端口 7952..7956 的占用进程并释放，或使用其他启动端口。";
+    const recovery = state.recovery;
+    if (recovery && typeof recovery === "object") {
+      // ISS-059：recovery = { ports: [{port, occupied_pid}], hint }
+      const lines = [];
+      if (Array.isArray(recovery.ports) && recovery.ports.length > 0) {
+        for (const p of recovery.ports) {
+          lines.push("端口 " + p.port + "：" + (p.occupied_pid == null ? "占用进程未知" : "PID " + p.occupied_pid));
+        }
+        lines.push("");
+      }
+      rec.textContent = (recovery.hint || fallbackHint) + (lines.length > 0 ? "\n" + lines.join("\n") : "");
+    } else {
+      rec.textContent = recovery || fallbackHint;
+    }
     $extra.appendChild(rec);
     $retry.hidden = false;
     $openLog.hidden = false;
@@ -125,7 +140,7 @@
       case "reused":
         renderReady(state);
         break;
-      case "ports-exhausted":
+      case "exhausted":
         renderExhausted(state);
         break;
       case "error":

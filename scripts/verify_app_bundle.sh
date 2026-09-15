@@ -27,6 +27,12 @@
 #       bounded 等待后确认 helper 进程消失、端口关闭、helper-instance.json
 #       被清理
 #   (g) 全程不触碰当前占用 7952 的生产进程（PID 6026 或其他），只观察不干预
+#   (h) ISS-059：预写身份匹配但陈旧的 helper-instance.json（pid 不存在、
+#       端口无监听）→ 壳探活后不导航死端口，重新拉起 helper 就绪、instance
+#       文件被重写（pid 存活、port 与就绪端口一致）；全程零信号
+#   (i) ISS-059：dummy 占满候选范围内所有未被外部占用的端口 → 壳不拉起
+#       任何 fathom /health、dummy PID 集合不变（零击杀）、壳进程存活，
+#       运行根 logs/helper.log 含 ports-exhausted 结构化标记
 #
 # 退出码：
 #   0 全过
@@ -310,6 +316,336 @@ fi
 if [ "$LAUNCHCTL_SETENV_OK" = "yes" ]; then
   rm -rf "$NASTY_DIR_BASE"
 fi
+
+# ---------------------------------------------------------------- (h) 陈旧 instance 文件 respawn（ISS-059）
+log "=== (h) 陈旧 helper-instance.json：探活后 respawn ==="
+H_BASE="$(mktemp -d -t fathom-verify-h-XXXXXX)"
+H_APP_DIR="$H_BASE/appdir"
+mkdir -p "$H_APP_DIR"
+cp -R "$APP_PATH" "$H_APP_DIR/Fathom.app"
+H_APP="$H_APP_DIR/Fathom.app"
+H_RUNTIME="$H_BASE/runtime"
+mkdir -p "$H_RUNTIME"
+
+# 前置 1：确认不存在的假 pid（macOS pid 上限 99998，从 4000000 起必不存在；仍用 ps 复核）
+H_FAKE_PID=4000000
+while ps -p "$H_FAKE_PID" -o pid= >/dev/null 2>&1; do
+  H_FAKE_PID=$((H_FAKE_PID + 1))
+done
+log "(h) 假 pid=${H_FAKE_PID}（ps 确认不存在）"
+
+# 前置 2：确认无监听的候选端口；同时记下启动前已有监听的候选端口（就绪轮询跳过，
+# 避免把外部既有监听（如生产 7952）误判为本次 respawn 的 helper）
+H_STALE_PORT=""
+H_PRE_OCCUPIED=" "
+for port in 7952 7953 7954 7955 7956; do
+  if [ -n "$(lsof -tiTCP:${port} -sTCP:LISTEN -n -P 2>/dev/null || true)" ]; then
+    H_PRE_OCCUPIED="${H_PRE_OCCUPIED}${port} "
+  elif [ -z "$H_STALE_PORT" ]; then
+    H_STALE_PORT="$port"
+  fi
+done
+log "(h) 陈旧文件预写端口=${H_STALE_PORT}；启动前已占用候选端口：${H_PRE_OCCUPIED}"
+
+H_PRECONDITION_OK=yes
+if [ -z "$H_STALE_PORT" ]; then
+  record "h-stale-instance-respawn" fail "候选端口 7952..7956 全部有监听，无法构造陈旧文件反例"
+  H_PRECONDITION_OK=no
+fi
+
+if [ "$H_PRECONDITION_OK" = "yes" ]; then
+  # 预写身份匹配但陈旧的 helper-instance.json（0600，与 helper 写出形态一致）
+  python3 - "$H_RUNTIME" "$H_FAKE_PID" "$H_STALE_PORT" >> "$LOG" 2>&1 <<'PYEOF'
+import json, os, sys
+runtime, pid, port = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+path = os.path.join(runtime, "helper-instance.json")
+with open(path, "w") as f:
+    json.dump({"service": "fathom", "protocol_version": 1, "pid": pid, "port": port,
+               "version": "0.3.0", "instance_id": "stale-baseline", "runtime_mode": "release"}, f)
+os.chmod(path, 0o600)
+print(f"pre-wrote stale helper-instance.json: pid={pid} port={port}")
+PYEOF
+
+  # 对照 dummy：占一个候选范围之外的端口，验证前后 PID 集合一致（零信号）
+  H_DUMMY_PORT="$(python3 -c '
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+')"
+  python3 - "$H_DUMMY_PORT" >> "$LOG" 2>&1 <<'PYEOF' &
+import socket, sys, time
+port = int(sys.argv[1])
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port))
+s.listen(8)
+print(f"dummy listening on {port}", flush=True)
+while True:
+    time.sleep(60)
+PYEOF
+  H_DUMMY_PID=$!
+  disown "$H_DUMMY_PID" 2>/dev/null || true
+  sleep 0.5
+  H_DUMMY_PIDS_BEFORE="$(lsof -tiTCP:${H_DUMMY_PORT} -sTCP:LISTEN -n -P 2>/dev/null || true)"
+
+  launchctl setenv FATHOM_RUNTIME_DIR "$H_RUNTIME" 2>/dev/null || true
+  open -a "$H_APP" >> "$LOG" 2>&1 || true
+
+  # 断言 1：30s 内某个此前无监听的候选端口 /health 就绪
+  H_READY=no
+  H_PORT=""
+  for _ in $(seq 1 30); do
+    for port in 7952 7953 7954 7955 7956; do
+      case "$H_PRE_OCCUPIED" in
+        *" ${port} "*) continue ;;
+      esac
+      code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:${port}/health" 2>/dev/null || true)"
+      if [ "$code" = "200" ]; then
+        H_READY=yes
+        H_PORT="$port"
+        break 2
+      fi
+    done
+    sleep 1
+  done
+
+  # 断言 2：instance 文件被重写——pid 对应进程存在、port 与就绪端口一致、不再是假 pid
+  H_FILE_OK=no
+  H_FILE_DETAIL="未读取"
+  if [ "$H_READY" = "yes" ]; then
+    H_FILE_DETAIL="$(python3 - "$H_RUNTIME/helper-instance.json" "$H_PORT" "$H_FAKE_PID" 2>&1 <<'PYEOF'
+import json, sys
+path, ready_port, fake_pid = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+try:
+    with open(path) as f:
+        inst = json.load(f)
+except Exception as exc:
+    print(f"ERR read {path}: {exc}")
+    raise SystemExit(0)
+print(f"{inst.get('pid')} {inst.get('port')}")
+raise SystemExit(0)
+PYEOF
+)"
+    H_NEW_PID="$(printf '%s\n' "$H_FILE_DETAIL" | awk '{print $1}')"
+    H_NEW_PORT="$(printf '%s\n' "$H_FILE_DETAIL" | awk '{print $2}')"
+    if [ "$H_NEW_PID" = "$H_FAKE_PID" ] || [ -z "$H_NEW_PID" ] || [ "$H_NEW_PORT" != "$H_PORT" ]; then
+      H_FILE_OK=no
+    elif ps -p "$H_NEW_PID" -o pid= >/dev/null 2>&1; then
+      H_FILE_OK=yes
+    fi
+  fi
+
+  if [ "$H_READY" = "yes" ] && [ "$H_FILE_OK" = "yes" ]; then
+    record "h-stale-instance-respawn" pass "陈旧文件（pid=${H_FAKE_PID} 死、port=${H_STALE_PORT} 无监听）未阻止 respawn：/health 就绪于 ${H_PORT}，instance 已重写为存活 pid=${H_NEW_PID} port=${H_NEW_PORT}"
+  else
+    record "h-stale-instance-respawn" fail "respawn 未完成：ready=${H_READY} port=${H_PORT:-none} file_ok=${H_FILE_OK}（文件读数：${H_FILE_DETAIL}）"
+  fi
+
+  # 断言 3：零信号——对照 dummy PID 集合前后一致，假 pid 仍不存在
+  H_DUMMY_PIDS_AFTER="$(lsof -tiTCP:${H_DUMMY_PORT} -sTCP:LISTEN -n -P 2>/dev/null || true)"
+  H_FAKE_STILL_DEAD=no
+  if ! ps -p "$H_FAKE_PID" -o pid= >/dev/null 2>&1; then
+    H_FAKE_STILL_DEAD=yes
+  fi
+  if [ "$H_DUMMY_PIDS_BEFORE" = "$H_DUMMY_PIDS_AFTER" ] && [ -n "$H_DUMMY_PIDS_BEFORE" ] && [ "$H_FAKE_STILL_DEAD" = "yes" ]; then
+    record "h-zero-kill" pass "对照 dummy PID 集合前后一致（${H_DUMMY_PIDS_BEFORE}）；假 pid ${H_FAKE_PID} 仍不存在（零信号）"
+  else
+    record "h-zero-kill" fail "dummy 漂移：before=${H_DUMMY_PIDS_BEFORE} after=${H_DUMMY_PIDS_AFTER}；假 pid 仍不存在=${H_FAKE_STILL_DEAD}"
+  fi
+
+  # 收尾：按 (f) 同法退出并确认端口关闭
+  osascript -e 'tell application "Fathom" to quit' >> "$LOG" 2>&1 || true
+  sleep 6
+  H_CLEAN_DETAIL="无就绪端口可验证"
+  H_CLEAN_OK=no
+  if [ -n "$H_PORT" ]; then
+    H_CODE_AFTER="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:${H_PORT}/health" 2>/dev/null || true)"
+    if [ "$H_CODE_AFTER" != "200" ]; then
+      H_CLEAN_OK=yes
+      H_CLEAN_DETAIL="退出后 ${H_PORT}/health 不再 200"
+    else
+      H_CLEAN_DETAIL="退出 6s 后 ${H_PORT}/health 仍 200"
+    fi
+  else
+    H_CLEAN_OK=yes
+  fi
+  kill -TERM "$H_DUMMY_PID" 2>/dev/null || true
+  sleep 0.5
+  kill -KILL "$H_DUMMY_PID" 2>/dev/null || true
+  launchctl unsetenv FATHOM_RUNTIME_DIR 2>/dev/null || true
+  if [ "$H_CLEAN_OK" = "yes" ]; then
+    record "h-exit-cleanup" pass "壳退出后端口关闭（${H_CLEAN_DETAIL}）；对照 dummy 已由脚本回收"
+  else
+    record "h-exit-cleanup" fail "${H_CLEAN_DETAIL}"
+  fi
+fi
+rm -rf "$H_BASE"
+
+# ---------------------------------------------------------------- (i) 端口耗尽零击杀（ISS-059）
+log "=== (i) 候选端口全占：ports-exhausted 与零击杀 ==="
+I_BASE="$(mktemp -d -t fathom-verify-i-XXXXXX)"
+I_APP_DIR="$I_BASE/appdir"
+mkdir -p "$I_APP_DIR"
+cp -R "$APP_PATH" "$I_APP_DIR/Fathom.app"
+I_APP="$I_APP_DIR/Fathom.app"
+I_RUNTIME="$I_BASE/runtime"
+mkdir -p "$I_RUNTIME"
+
+# 选出候选范围内所有未被外部占用的端口，用 dummy 一并占满（7952 被生产占用时
+# 只占 7953..7956；7952 空闲则一并占）
+I_DUMMY_PORTS=""
+I_PRE_OCCUPIED=" "
+for port in 7952 7953 7954 7955 7956; do
+  if [ -n "$(lsof -tiTCP:${port} -sTCP:LISTEN -n -P 2>/dev/null || true)" ]; then
+    I_PRE_OCCUPIED="${I_PRE_OCCUPIED}${port} "
+  else
+    I_DUMMY_PORTS="${I_DUMMY_PORTS}${port} "
+  fi
+done
+log "(i) dummy 占用端口：${I_DUMMY_PORTS:-（无，候选已全部被外部占用）}；外部既有监听：${I_PRE_OCCUPIED}"
+
+# 外部既有监听（如生产 7952）的 /health 状态码快照，结束时必须不变（只观察不干预）
+I_PRE_STATE_SNAPSHOT=" "
+for port in $I_PRE_OCCUPIED; do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:${port}/health" 2>/dev/null || true)"
+  I_PRE_STATE_SNAPSHOT="${I_PRE_STATE_SNAPSHOT}${port}:${code} "
+done
+log "(i) 外部既有监听 /health 快照：${I_PRE_STATE_SNAPSHOT}"
+
+# dummy 监听：沿用 (d) 段 python3 - heredoc 写法，一个进程绑定全部待占端口
+if [ -n "$I_DUMMY_PORTS" ]; then
+  # shellcheck disable=SC2086
+  python3 - $I_DUMMY_PORTS >> "$LOG" 2>&1 <<'PYEOF' &
+import socket, sys, time
+ports = [int(p) for p in sys.argv[1:]]
+socks = []
+for p in ports:
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", p))
+    s.listen(8)
+    socks.append(s)
+    print(f"dummy listening on {p}", flush=True)
+while True:
+    time.sleep(60)
+PYEOF
+  I_DUMMY_PID=$!
+  disown "$I_DUMMY_PID" 2>/dev/null || true
+  sleep 0.8
+fi
+
+I_DUMMY_SNAPSHOT_BEFORE=" "
+for port in $I_DUMMY_PORTS; do
+  pids="$(lsof -tiTCP:${port} -sTCP:LISTEN -n -P 2>/dev/null || true)"
+  I_DUMMY_SNAPSHOT_BEFORE="${I_DUMMY_SNAPSHOT_BEFORE}${port}=${pids};"
+done
+log "(i) dummy PID 快照：${I_DUMMY_SNAPSHOT_BEFORE}"
+
+launchctl setenv FATHOM_RUNTIME_DIR "$I_RUNTIME" 2>/dev/null || true
+open -a "$I_APP" >> "$LOG" 2>&1 || true
+sleep 2
+I_SHELL_PIDS_BEFORE="$(pgrep -f "${I_APP}/Contents/MacOS" 2>/dev/null || true)"
+log "(i) 壳进程 PID：${I_SHELL_PIDS_BEFORE:-（未捕获）}"
+
+# 观察窗口 40s（壳握手 20s + 余量）：断言候选范围内不出现 fathom /health，
+# 且运行根 helper.log 出现 ports-exhausted 结构化标记
+I_NEW_FATHOM_SEEN="no"
+I_MARKER_SEEN="no"
+for _ in $(seq 1 20); do
+  if [ "$I_MARKER_SEEN" = "no" ] && grep -q "ports-exhausted" "$I_RUNTIME/logs/helper.log" 2>/dev/null; then
+    I_MARKER_SEEN="yes"
+    log "(i) helper.log 出现 ports-exhausted 标记"
+  fi
+  for port in $I_DUMMY_PORTS; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:${port}/health" 2>/dev/null || true)"
+    if [ "$code" = "200" ]; then
+      body="$(curl -s --max-time 1 "http://127.0.0.1:${port}/health" 2>/dev/null || true)"
+      if printf '%s' "$body" | grep -q '"service".*"fathom"'; then
+        I_NEW_FATHOM_SEEN="yes@${port}"
+      fi
+    fi
+  done
+  if [ "$I_MARKER_SEEN" = "yes" ]; then
+    break
+  fi
+  sleep 2
+done
+
+# 断言 1：dummy 端口上没有出现 fathom /health（壳没能也不该拉起）
+if [ "$I_NEW_FATHOM_SEEN" = "no" ]; then
+  record "i-no-fathom-health" pass "观察窗口内候选 dummy 端口未出现 fathom /health（壳未拉起任何实例）"
+else
+  record "i-no-fathom-health" fail "dummy 端口 ${I_NEW_FATHOM_SEEN#yes@} 出现了 fathom /health"
+fi
+
+# 断言 2：零击杀——所有 dummy 端口的 PID 集合前后一致
+I_DUMMY_SNAPSHOT_AFTER=" "
+for port in $I_DUMMY_PORTS; do
+  pids="$(lsof -tiTCP:${port} -sTCP:LISTEN -n -P 2>/dev/null || true)"
+  I_DUMMY_SNAPSHOT_AFTER="${I_DUMMY_SNAPSHOT_AFTER}${port}=${pids};"
+done
+I_ALL_DUMMY_OCCUPIED=yes
+for port in $I_DUMMY_PORTS; do
+  case "$I_DUMMY_SNAPSHOT_AFTER" in
+    *"${port}=;"*) I_ALL_DUMMY_OCCUPIED=no ;;
+  esac
+done
+if [ "$I_DUMMY_SNAPSHOT_BEFORE" = "$I_DUMMY_SNAPSHOT_AFTER" ] && [ "$I_ALL_DUMMY_OCCUPIED" = "yes" ]; then
+  record "i-zero-kill" pass "dummy PID 集合前后一致且全部在监听（${I_DUMMY_SNAPSHOT_AFTER}）"
+elif [ -z "$I_DUMMY_PORTS" ]; then
+  record "i-zero-kill" pass "候选端口已全部被外部占用，无需 dummy（零信号仅观察）"
+else
+  record "i-zero-kill" fail "dummy PID 漂移或失守：before=${I_DUMMY_SNAPSHOT_BEFORE} after=${I_DUMMY_SNAPSHOT_AFTER}"
+fi
+
+# 断言 3：壳进程仍存活（未崩溃）
+I_SHELL_PIDS_AFTER="$(pgrep -f "${I_APP}/Contents/MacOS" 2>/dev/null || true)"
+if [ -n "$I_SHELL_PIDS_BEFORE" ] && [ "$I_SHELL_PIDS_BEFORE" = "$I_SHELL_PIDS_AFTER" ]; then
+  record "i-shell-alive" pass "端口耗尽后壳进程仍存活（PID ${I_SHELL_PIDS_BEFORE}，握手页呈现恢复动作）"
+else
+  record "i-shell-alive" fail "壳进程异常：before=${I_SHELL_PIDS_BEFORE:-none} after=${I_SHELL_PIDS_AFTER:-none}"
+fi
+
+# 断言 4：壳的可观察输出（运行根 logs/helper.log）含 ports-exhausted 标记
+if [ "$I_MARKER_SEEN" = "yes" ]; then
+  record "i-ports-exhausted-marker" pass "helper.log 含 ports-exhausted 结构化标记：$(grep -m1 "ports-exhausted" "$I_RUNTIME/logs/helper.log" 2>/dev/null | cut -c1-80)"
+else
+  record "i-ports-exhausted-marker" fail "$I_RUNTIME/logs/helper.log 未出现 ports-exhausted 标记"
+fi
+
+# 收尾：退出壳、回收 dummy、确认无残留。壳的 setup 握手最长 20s，退出请求
+# 会排队到 setup 完成后才处理，因此轮询等待而非固定 sleep
+osascript -e 'tell application "Fathom" to quit' >> "$LOG" 2>&1 || true
+for _ in $(seq 1 35); do
+  if [ -z "$(pgrep -f "${I_APP}/Contents/MacOS" 2>/dev/null || true)" ]; then
+    break
+  fi
+  sleep 1
+done
+I_SHELL_PIDS_FINAL="$(pgrep -f "${I_APP}/Contents/MacOS" 2>/dev/null || true)"
+if [ -n "$I_DUMMY_PORTS" ]; then
+  kill -TERM "$I_DUMMY_PID" 2>/dev/null || true
+  sleep 0.5
+  kill -KILL "$I_DUMMY_PID" 2>/dev/null || true
+fi
+launchctl unsetenv FATHOM_RUNTIME_DIR 2>/dev/null || true
+I_RESIDUE="$(for port in $I_DUMMY_PORTS; do
+  lsof -tiTCP:${port} -sTCP:LISTEN -n -P 2>/dev/null || true
+done)"
+# 外部既有监听（如生产 7952）必须保持原样：状态码快照逐一对比
+I_PRE_STATE_FINAL=" "
+for port in $I_PRE_OCCUPIED; do
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 1 "http://127.0.0.1:${port}/health" 2>/dev/null || true)"
+  I_PRE_STATE_FINAL="${I_PRE_STATE_FINAL}${port}:${code} "
+done
+if [ -z "$I_SHELL_PIDS_FINAL" ] && [ -z "$I_RESIDUE" ] && [ "$I_PRE_STATE_FINAL" = "$I_PRE_STATE_SNAPSHOT" ]; then
+  record "i-exit-cleanup" pass "壳已退出、dummy 端口无残留、外部既有监听状态不变（${I_PRE_STATE_FINAL}）"
+else
+  record "i-exit-cleanup" fail "残留：shell=${I_SHELL_PIDS_FINAL:-none} dummy_listen=${I_RESIDUE:-none}；外部监听 ${I_PRE_STATE_SNAPSHOT}→${I_PRE_STATE_FINAL}"
+fi
+rm -rf "$I_BASE"
 
 # ---------------------------------------------------------------- 汇总
 VERDICT="PASS"

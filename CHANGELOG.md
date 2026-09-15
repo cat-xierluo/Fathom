@@ -10,6 +10,7 @@
 
 - Tauri 壳在打包态启动时拉起内嵌的 PyInstaller 冻结 helper（`Contents/Resources/helper/`），经 `helper-instance.json` 与 `/health` 身份握手后导航到本地服务；同服务已在运行则复用、不重复拉起；端口被占用时按 ISS-029 语义让位且不向任何外部进程发信号。
 - 退出回收覆盖所有路径：tray 菜单退出、Cmd+Q、AppleScript quit、系统注销等都通过同一幂等钩子回收本壳拉起的 helper（SIGTERM，10 秒上限），复用模式不发信号，不再留下被 launchd 收养的孤儿 helper。
+- 握手更健壮（PR #71 / ISS-059）：壳读到身份匹配的 `helper-instance.json` 后先探测 `/health`，上次崩溃残留的陈旧文件不再把窗口导航到已死端口，而是重新拉起 helper（判定只读、不向任何进程发信号）；候选端口全部被占时握手页显示端口占用表与恢复提示并可重试，不再显示为笼统错误。
 - 新增 `scripts/build_helper.sh` / `build_app.sh` / `verify_app_bundle.sh`：产出未签名 `.app` 与 `.dmg`，校验 bundle 结构、只读布局指纹、启动就绪、端口冲突让位、零击杀、二次启动与退出清理（当前 12 项全部通过）。构建脚本在 tauri build 失败时不再被残留产物掩盖为成功；无 helper 产物时 `cargo check` 不再被资源 glob 阻断。
 - 限制：仅 arm64、未签名未公证、图标为占位（正式 Logo 待 ISS-045）、未在无开发环境的新账户实测、含空格/中文路径与 tray 菜单实机退出未验证；云端 CI 因 GitHub Actions 计费被拒记为未运行，合并依据为本地全量验证与独立 review。合并后一项版本一致性测试夹具因 bundle 配置形态变化失败（337/338），已由 PR #68（ISS-058）改为按 JSON 对象注入嵌套版本键修复，全量 338/338。
 

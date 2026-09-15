@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）。新 PM 的默认下一项：**ISS-059**（P1 握手健壮性：陈旧 instance 存活校验 + ports-exhausted 接线）与 ISS-009 切片 2（新账户/断网首启、tray 菜单实机退出、含空格/中文路径启动）可并行；ISS-060（P3 脚本卫生）可作低额度时段的填充任务。ISS-045 仍是人工视觉门，不得自动越过；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。新 PM 的默认下一项：**ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户）；**ISS-060**（P3 脚本卫生，含 ISS-059 reviewer 补充的 (e)(f)）可作低额度时段的填充任务并可自动派发。ISS-045 仍是人工视觉门，不得自动越过；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -104,7 +104,7 @@
 | ISS-056 | verify_app_bundle 启动/就绪判定改为不依赖 GUI 上下文 | P1 | M2 | DONE | ISS-055 |
 | ISS-057 | 壳在非 tray 退出路径也须回收自己拉起的 helper | P0 | M2 | DONE | ISS-055 |
 | ISS-058 | 版本一致性测试夹具按切片 1 新 bundle 形态定位（main 门禁 337/338 转绿） | P0 | M2 | DONE | ISS-009 |
-| ISS-059 | 壳握手健壮性：陈旧 helper-instance.json 存活校验与 ports-exhausted 状态接线 | P1 | M2 | READY | ISS-009 |
+| ISS-059 | 壳握手健壮性：陈旧 helper-instance.json 存活校验与 ports-exhausted 状态接线 | P1 | M2 | DONE | ISS-009 |
 | ISS-060 | 切片 1 打包/校验脚本卫生（review 非阻断观察收口） | P3 | M2 | READY | ISS-009 |
 
 ## 任务卡
@@ -126,24 +126,24 @@
 
 ### ISS-059 · 壳握手健壮性：陈旧 helper-instance.json 存活校验与 ports-exhausted 状态接线
 
-- **状态**：READY（P1/M2）；来源：PR #61 独立 reviewer 非阻断观察（2026-09-15，`wave10-evidence/REVIEW-ISS-009-CHAIN.json`）。
+- **状态**：DONE（P1/M2，2026-09-15）；来源：PR #61 独立 reviewer 非阻断观察（2026-09-15，`wave10-evidence/REVIEW-ISS-009-CHAIN.json`）。
 - **目标**：壳在导航到本地服务前确认目标 helper 真实存活；端口耗尽等失败分支在握手页可见并可恢复，而不是只在 stderr 打印。
 - **范围**：`apps/desktop/src-tauri/src/helper.rs`（handshake 路径 1）、`apps/desktop/src-tauri/src/lib.rs`（`helper_status` 命令）、`apps/desktop/frontend-dist/index.html`（握手页状态分支）、必要时 `scripts/verify_app_bundle.sh` 新增反例段。
 - **实施边界**：(1) 当前 handshake 读到身份匹配的 `helper-instance.json` 即返回，未校验 pid 存活或 `/health` 可达；若上次 helper 崩溃残留陈旧文件（正常退出会自清理），壳会导航到已死端口。修法：命中 instance 文件后先做 `/health` 探测（只读 GET，超时短），失败则视为陈旧 → 走 spawn 路径并清理陈旧文件（仅当身份匹配且 pid 不存活时；**不得向任何未知 pid 发信号**）。(2) `helper_status` 只返回 ready/reused/starting/error，`PortsExhausted` 仅 `eprintln`，握手页 `renderExhausted`（index.html:88-98）不可达；需把该状态接入命令返回并让页面渲染重试/说明。保持 ISS-029/切片 1 已验证的让位/零击杀/复用语义不变。
 - **验收**：
-  - [ ] 反例：手工放置身份匹配但 pid 已不存在的陈旧 instance 文件 → 壳不导航到死端口，而是重新拉起并就绪；verify 新增段或 Rust 单测覆盖
-  - [ ] 反例：端口范围全部被占（dummy 占满）→ 握手页显示 ports-exhausted 与恢复指引，无未知进程被发信号
-  - [ ] `verify_app_bundle.sh` 既有 12 段仍全 pass；cargo check exit 0
-- **证据/接续**：不得勾选验收项。
+  - [x] 反例：手工放置身份匹配但 pid 已不存在的陈旧 instance 文件 → 壳不导航到死端口，而是重新拉起并就绪（verify `h-stale-instance-respawn`：陈旧 pid=4000000/port=7953 → /health 就绪于 7954，instance 重写为存活 pid；`h-zero-kill` 假 pid 与对照 dummy 零信号；单测 `stale_instance_file_is_removed_and_not_returned` / `instance_disposition_matrix`；旧代码基线临时单测跑红"返回了陈旧实例…死端口"）
+  - [ ] 反例：端口范围全部被占 → 握手页显示 ports-exhausted 与恢复指引，无未知进程被发信号 —— 机器可验部分全 pass（verify `i-no-fathom-health` / `i-zero-kill`（7953..7956 dummy pid 前后一致）/ `i-shell-alive` / `i-ports-exhausted-marker` / `i-exit-cleanup`；单测 `ports_exhausted_status_json_shape` 等 4 项覆盖 `state=exhausted`+`recovery`，reviewer 逐行确认前端字段名一致）；**握手页实机渲染截图 `NOT_VERIFIED`**（GUI 交互），并入 ISS-009 验收框"后台未就绪可恢复"
+  - [x] `verify_app_bundle.sh` 既有 12 段仍全 pass（record 名与断言一字未改，汇总 12→20）；cargo check exit 0（仅既有 2 个 dead_code warning）
+- **证据/接续**（2026-09-15 DONE）：worker ctx_8d7cfc67c0d0（iss-059-handshake-liveness，base `f87bc76`）交付 3 commits：`a378f57`（A：路径 1 命中身份匹配 instance 后 `probe_health`；不健康且 pid 不在运行——`ps -p` 只读判定、不发任何信号含信号 0——判陈旧删文件走 spawn，pid 仍在则保留等待；决策拆为可注入纯函数 `instance_disposition`；**附带修复**路径 2 命中本壳刚拉起的子进程被误标 `reused` 致退出漏回收）、`6223da1`（B：`PortsExhausted{candidates}` 记入 `ExhaustedInfo`，`helper_status` 返回 `state=exhausted`+`recovery{ports[{port,occupied_pid}],hint}`，`helper_retry` 仍耗尽保持 exhausted、普通 Err 仍 error；index.html 分派由从不发出的 `"ports-exhausted"` 改匹配 `"exhausted"` 并渲染端口占用表）、`24c08a2`（C：verify 新增 h×3 + i×5 段）。**三方独立验证一致**：worker / PM（在 worker worktree）/ reviewer（自建 worktree）各自 cargo check exit 0、`cargo test` 13/13（5 旧 + 8 新）、build_helper SHA256 `95756a0e…`、build_app ok、verify **20/20 PASS**。独立 reviewer ctx_bd79c7c0b366（review-iss059）7 条要点全 CONFIRMED **ACCEPT**、`review-acceptance-gate` ok；`worker-value-postflight` ok；`pr-audit` adopt。[PR #71](https://github.com/cat-xierluo/fathom/pull/71) squash 合并为 main `d53a7af`；合并后 main：pytest 338、浏览器 39、版本一致性 ok、cargo test 13/13。云端 CI 停用（DEC-021）。reviewer 非阻断观察转 ISS-060（`handshake_rejects_wrong_identity` 断言弱、`decode_exit_event` 扫整份 helper.log）。证据：`.git/orchestration/wave10-evidence/{iss059-spec,iss059-postflight,pr71-audit,REVIEW-ISS-059}.json`、`archived-sessions/iss-059-handshake-liveness/`。
 
 ### ISS-060 · 切片 1 打包/校验脚本卫生（review 非阻断观察收口）
 
 - **状态**：READY（P3/M2）；来源：PR #61 独立 reviewer 非阻断观察（2026-09-15）。
 - **目标**：清理切片 1 脚本与退出路径中的死分支、过时假设与静默丢错，不改变任何已验证行为。
 - **范围**：`scripts/repro_iss053_resource_glob.sh`、`scripts/build_helper.sh`、`scripts/verify_app_bundle.sh`、`apps/desktop/src-tauri/src/lib.rs`（仅日志）。
-- **实施边界**：(a) `repro_iss053_resource_glob.sh` 假定 `bundle.resources` 为字符串数组，在 map 形态下会把 conf 临时降级回数组 glob，`EXPECTED_HEAD` 钉在 `f6dc9bb`——按 map 形态更新或明确归档为历史复现脚本；(b) `build_helper.sh:41` 创建从未写入的 `resources/helper/log/`，`:101-106` 的 `--version` 退出码检查在 `set -e` 下为死分支——删或改为可读报错；(c) `verify_app_bundle.sh:254-256` (d) 段收尾对让位 helper TERM 0.5s 后 KILL 可能来不及清理 instance 文件导致 f-instance-cleaned 假败（只会多败不假过）——加长 TERM 等待或分离运行根；(d) `reap_spawned_helper`/`quit_with_helper` 中 `let _ = handle.stop()` 丢弃错误无日志——至少 `eprintln`，并在注释明确"零击杀指外部进程；对本壳子进程 bounded 10s 后 SIGKILL 属设计内"。
+- **实施边界**：(a) `repro_iss053_resource_glob.sh` 假定 `bundle.resources` 为字符串数组，在 map 形态下会把 conf 临时降级回数组 glob，`EXPECTED_HEAD` 钉在 `f6dc9bb`——按 map 形态更新或明确归档为历史复现脚本；(b) `build_helper.sh:41` 创建从未写入的 `resources/helper/log/`，`:101-106` 的 `--version` 退出码检查在 `set -e` 下为死分支——删或改为可读报错；(c) `verify_app_bundle.sh:254-256` (d) 段收尾对让位 helper TERM 0.5s 后 KILL 可能来不及清理 instance 文件导致 f-instance-cleaned 假败（只会多败不假过）——加长 TERM 等待或分离运行根；(d) `reap_spawned_helper`/`quit_with_helper` 中 `let _ = handle.stop()` 丢弃错误无日志——至少 `eprintln`，并在注释明确"零击杀指外部进程；对本壳子进程 bounded 10s 后 SIGKILL 属设计内"；(e)（ISS-059 reviewer 补充）既有单测 `handshake_rejects_wrong_identity` 只断言 `read_helper_instance` 原始字段、未真正断言 handshake 拒绝行为——补强为经 `instance_disposition` 的拒绝路径断言；(f)（同上）`decode_exit_event` 扫描整份追加式 `helper.log` 取最后事件行，跨运行长驻日志理论上可复活旧事件——按运行根/启动时间截断或只读本次 spawn 之后的追加段。
 - **验收**：
-  - [ ] 修改后 `verify_app_bundle.sh` 12/12 仍 pass、cargo check exit 0、`repro_iss053` 在当前 main 形态下不误报
+  - [ ] 修改后 `verify_app_bundle.sh` 20/20 仍 pass（ISS-059 起 12→20 段）、cargo check exit 0、cargo test 全绿、`repro_iss053` 在当前 main 形态下不误报
   - [ ] 无行为变化：让位/零击杀/复用/退出语义与验证断言保持
 - **证据/接续**：不得勾选验收项。
 

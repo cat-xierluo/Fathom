@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。新 PM 的默认下一项：**ISS-009**（可分发 app 与安装入口；前置仅剩 ISS-045 Logo 人工门——若用户仍未选图标方向，可先做不依赖图标的打包/安装引导切片并把 iconset 留 NOT_VERIFIED）。ISS-045 仍是人工视觉门，不得自动越过；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**，但合并后 main 全量 pytest 337/338（`test_tauri_nested_prerelease_version_drift` 夹具锚点仍指旧 `bundle.active=false` 形态），已登记 **ISS-058**。新 PM 的默认下一项：**ISS-058**（P0，先把 main 门禁转绿），随后 ISS-059（握手健壮性）与 ISS-009 切片 2（新账户/断网首启、tray 菜单实机退出、含空格/中文路径启动）。ISS-045 仍是人工视觉门，不得自动越过；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -100,13 +100,52 @@
 | ISS-052 | 查询口径 NULL 阈值锚点直接测试 | P2 | M0 | DONE |
 | ISS-053 | Tauri 资源 glob 在缺少 helper 产物时阻断构建 | P0 | M2 | DONE | ISS-009 |
 | ISS-054 | ISS-009 切片 1 代码编译打通（类型/可变性/图标） | P0 | M2 | DONE | ISS-053 |
-| ISS-055 | 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/ | P0 | M2 | IN_PROGRESS | ISS-054 |
+| ISS-055 | 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/ | P0 | M2 | DONE | ISS-054 |
 | ISS-056 | verify_app_bundle 启动/就绪判定改为不依赖 GUI 上下文 | P1 | M2 | DONE | ISS-055 |
-| ISS-057 | 壳在非 tray 退出路径也须回收自己拉起的 helper | P0 | M2 | READY | ISS-055 | ISS-024 |
+| ISS-057 | 壳在非 tray 退出路径也须回收自己拉起的 helper | P0 | M2 | DONE | ISS-055 |
+| ISS-058 | 版本一致性测试夹具按切片 1 新 bundle 形态定位（main 门禁 337/338 转绿） | P0 | M2 | READY | ISS-009 |
+| ISS-059 | 壳握手健壮性：陈旧 helper-instance.json 存活校验与 ports-exhausted 状态接线 | P1 | M2 | READY | ISS-009 |
+| ISS-060 | 切片 1 打包/校验脚本卫生（review 非阻断观察收口） | P3 | M2 | READY | ISS-009 |
 
 ## 任务卡
 
 字段合同：目标 → 范围 → 实施边界 → 验收 → 证据。优先级/阶段/状态/依赖以索引为唯一来源。验收框仅在取得证据后勾选。
+
+### ISS-058 · 版本一致性测试夹具按切片 1 新 bundle 形态定位
+
+- **状态**：READY（P0/M2）；来源：PM 在 PR #61 合并后于 main `a158889` 跑全量门禁发现（2026-09-15）。
+- **目标**：main 上 `.runtime/bin/python -m pytest tests -q` 恢复 338 passed / 0 failed；`test_tauri_nested_prerelease_version_drift` 的反例（bundle 内嵌套 `version` 漂移应被 `check_version_consistency.sh` 捕获）仍真实成立。
+- **范围**：仅 `tests/test_version_consistency.py`。不得改 `scripts/check_version_consistency.sh`、`tauri.conf.json` 或任何生产代码。
+- **实施边界**：失败点是夹具而非被测逻辑：`tests/test_version_consistency.py:134-137` 用字面串 `'"bundle": {\n    "active": false\n  }'` 定位 bundle 块注入 `"version": "0.2.0"`；切片 1 已把 bundle 改为 `"active": true` + `targets`/`resources`/`icon`/`macOS` 等键，字面串不存在 → `_rewrite` 在"反例前置失败"断言处退出。修法：让注入不依赖旧字面形态——推荐 `json.loads` → 在 `bundle` 对象上设置 `version` → `json.dumps(indent=2)` 回写（或至少把锚点改为 `'"bundle": {\n    "active": true,'` 并在其后注入）；同文件其它 `_rewrite` 锚点（`"version": "0.3.0"`、Cargo `version = "0.3.0"`、`__version__`）须逐一确认在当前 main 仍存在。先在当前 main 复现失败（1 failed / 337 passed），修后必须再确认**反例仍红**：把 checker 对嵌套 version 的比对临时绕过（本地不提交）时该测试应失败，证明测试没有变成恒真。
+- **验收**：
+  - [ ] `.runtime/bin/python -m pytest tests/test_version_consistency.py -q` 全绿
+  - [ ] `.runtime/bin/python -m pytest tests -q` 338 passed / 0 failed
+  - [ ] 反例仍成立：注入嵌套 `bundle.version` 漂移后 checker exit 1（测试内断言保持，RESULT 给出证明方式）
+  - [ ] 未改动 tests/ 之外任何文件
+- **证据/接续**：不得勾选验收项；PM 复现日志 `/tmp/main-pytest.log`（2026-09-15 09:50，`AssertionError: 反例前置失败 … 找不到待替换片段`）。
+
+### ISS-059 · 壳握手健壮性：陈旧 helper-instance.json 存活校验与 ports-exhausted 状态接线
+
+- **状态**：READY（P1/M2）；来源：PR #61 独立 reviewer 非阻断观察（2026-09-15，`wave10-evidence/REVIEW-ISS-009-CHAIN.json`）。
+- **目标**：壳在导航到本地服务前确认目标 helper 真实存活；端口耗尽等失败分支在握手页可见并可恢复，而不是只在 stderr 打印。
+- **范围**：`apps/desktop/src-tauri/src/helper.rs`（handshake 路径 1）、`apps/desktop/src-tauri/src/lib.rs`（`helper_status` 命令）、`apps/desktop/frontend-dist/index.html`（握手页状态分支）、必要时 `scripts/verify_app_bundle.sh` 新增反例段。
+- **实施边界**：(1) 当前 handshake 读到身份匹配的 `helper-instance.json` 即返回，未校验 pid 存活或 `/health` 可达；若上次 helper 崩溃残留陈旧文件（正常退出会自清理），壳会导航到已死端口。修法：命中 instance 文件后先做 `/health` 探测（只读 GET，超时短），失败则视为陈旧 → 走 spawn 路径并清理陈旧文件（仅当身份匹配且 pid 不存活时；**不得向任何未知 pid 发信号**）。(2) `helper_status` 只返回 ready/reused/starting/error，`PortsExhausted` 仅 `eprintln`，握手页 `renderExhausted`（index.html:88-98）不可达；需把该状态接入命令返回并让页面渲染重试/说明。保持 ISS-029/切片 1 已验证的让位/零击杀/复用语义不变。
+- **验收**：
+  - [ ] 反例：手工放置身份匹配但 pid 已不存在的陈旧 instance 文件 → 壳不导航到死端口，而是重新拉起并就绪；verify 新增段或 Rust 单测覆盖
+  - [ ] 反例：端口范围全部被占（dummy 占满）→ 握手页显示 ports-exhausted 与恢复指引，无未知进程被发信号
+  - [ ] `verify_app_bundle.sh` 既有 12 段仍全 pass；cargo check exit 0
+- **证据/接续**：不得勾选验收项。
+
+### ISS-060 · 切片 1 打包/校验脚本卫生（review 非阻断观察收口）
+
+- **状态**：READY（P3/M2）；来源：PR #61 独立 reviewer 非阻断观察（2026-09-15）。
+- **目标**：清理切片 1 脚本与退出路径中的死分支、过时假设与静默丢错，不改变任何已验证行为。
+- **范围**：`scripts/repro_iss053_resource_glob.sh`、`scripts/build_helper.sh`、`scripts/verify_app_bundle.sh`、`apps/desktop/src-tauri/src/lib.rs`（仅日志）。
+- **实施边界**：(a) `repro_iss053_resource_glob.sh` 假定 `bundle.resources` 为字符串数组，在 map 形态下会把 conf 临时降级回数组 glob，`EXPECTED_HEAD` 钉在 `f6dc9bb`——按 map 形态更新或明确归档为历史复现脚本；(b) `build_helper.sh:41` 创建从未写入的 `resources/helper/log/`，`:101-106` 的 `--version` 退出码检查在 `set -e` 下为死分支——删或改为可读报错；(c) `verify_app_bundle.sh:254-256` (d) 段收尾对让位 helper TERM 0.5s 后 KILL 可能来不及清理 instance 文件导致 f-instance-cleaned 假败（只会多败不假过）——加长 TERM 等待或分离运行根；(d) `reap_spawned_helper`/`quit_with_helper` 中 `let _ = handle.stop()` 丢弃错误无日志——至少 `eprintln`，并在注释明确"零击杀指外部进程；对本壳子进程 bounded 10s 后 SIGKILL 属设计内"。
+- **验收**：
+  - [ ] 修改后 `verify_app_bundle.sh` 12/12 仍 pass、cargo check exit 0、`repro_iss053` 在当前 main 形态下不误报
+  - [ ] 无行为变化：让位/零击杀/复用/退出语义与验证断言保持
+- **证据/接续**：不得勾选验收项。
 
 ### ISS-054 · ISS-009 切片 1 代码编译打通（类型/可变性/图标）
 
@@ -137,28 +176,28 @@
 
 ### ISS-057 · 壳在非 tray 退出路径也须回收自己拉起的 helper
 
-- **状态**：READY（P0/M2）；来源：PM 复跑 verify_app_bundle.sh 发现（2026-09-15）。
+- **状态**：DONE（P0/M2，2026-09-15）；来源：PM 复跑 verify_app_bundle.sh 发现（2026-09-15）。
 - **目标**：app 以任何方式退出（tray 菜单退出、SIGTERM、系统注销/重启、osascript quit）后，本壳拉起的 helper 都被回收，`f-port-closed` 通过。
 - **范围**：apps/desktop/src-tauri/src/lib.rs（退出路径）、必要时 apps/desktop/src-tauri/src/helper.rs（stop/生命周期）。
 - **实施边界**：PM 实测残留 helper pid 41268 **ppid=1（被 launchd 收养）**，仍在原端口监听 /health。根因：`lib.rs:264 quit_with_helper` 只在 tray 菜单退出路径调用 `h.stop()`（SIGTERM）；verify 脚本用 osascript/open 关闭 app 时走**非 tray 退出路径**，壳未回收 helper → 孤儿进程。修法：在壳的全局退出钩子（如 `RunEvent::ExitRequested` / `RunEvent::Exit`）也调用同一回收逻辑，保证“只回收本壳拉起的 helper、复用模式不发信号、SIGTERM 有 bounded 等待”这三条既有语义不变；不得改为向未知进程发信号。
 - **验收**：
-  - [ ] 关闭/退出 app 后 11s 内原端口 /health 不再 200（f-port-closed pass）
-  - [ ] tray 退出路径仍正常回收且退出码 0
-  - [ ] 复用模式（helper 由他者持有）退出时不对其发信号
-  - [ ] verify_app_bundle.sh 全段 12/12 pass
-- **证据/接续**：见 .git/orchestration/wave9-evidence/iss-055-v2-verify.md。
+  - [x] 关闭/退出 app 后 11s 内原端口 /health 不再 200（f-port-closed pass）
+  - [ ] tray 退出路径仍正常回收且退出码 0 —— tray 菜单真实点击属 GUI 交互，本卡 `NOT_VERIFIED`；代码层 tray 路径 `quit_with_helper` 与全局钩子汇合到同一 `reap_spawned_helper`（reviewer 逐行 CONFIRMED，lib.rs:275-291/370-374），实机点击并入 ISS-009 验收框"关闭/退出行为正确"
+  - [x] 复用模式（helper 由他者持有）退出时不对其发信号（d-zero-kill pass；`helper.rs:436-440` reused 分支零信号，reviewer CONFIRMED）
+  - [x] verify_app_bundle.sh 全段 12/12 pass
+- **证据/接续**（2026-09-15 DONE）：实现 commit `b880939`（worker ctx_247072743cc9，Dispatch 因额度中断 failed 未发 worker_done，实现已完成、工作区干净，由 PM 承接验收）：抽出幂等 `reap_spawned_helper`（`take()` 后 `stop()`），`quit_with_helper` 与 `.build(ctx).run(|app, event| ...)` 的 `RunEvent::ExitRequested` / `RunEvent::Exit` 三条路径汇合；三条既有语义由 `HelperHandle::stop` 自身保证未绕过。**PM 两次独立复跑**（06:25 与 09:05，iss-057 worktree）：cargo check exit 0、build_helper exit 0、build_app exit 0、`verify_app_bundle.sh` **12 passed / 0 failed**（含 f-port-closed：退出后 7953/health 不再 200；result.json `20260915T010503Z`）。独立 fixed-head reviewer（ctx_8c27cf67ee44，review-iss009-chain）对 PR #61 全链 **ACCEPT**，`review-acceptance-gate.py` ok；reviewer 亲跑 cargo check exit 0，并对照 tauri 2.11.5 `app.rs:2449-2452` 确认 `.run`→`.build().run` 启动语义不变、无吞错。随 [PR #61](https://github.com/cat-xierluo/fathom/pull/61) squash 合并为 main `a158889`。证据：`.git/orchestration/wave9-evidence/iss-057-verify-pass.md`、`wave10-evidence/REVIEW-ISS-009-CHAIN.json`。非阻断观察（`let _ = handle.stop()` 静默丢错、注释可更明确"零击杀指外部进程"）转 ISS-060。
 
 ### ISS-055 · 修正 bundle resources 映射使 helper 落到 Contents/Resources/helper/
 
-- **状态**：READY（P0/M2）；来源：PM 在 ISS-054 后跑完整打包链发现（2026-09-15）。
+- **状态**：DONE（P0/M2，2026-09-15）；来源：PM 在 ISS-054 后跑完整打包链发现（2026-09-15）。
 - **目标**：`bash scripts/verify_app_bundle.sh` 全段通过（exit 0），使打包产物结构与壳的 locate_helper 期望一致。
 - **范围**：apps/desktop/src-tauri/tauri.conf.json（resources 映射）、scripts/verify_app_bundle.sh、必要时 apps/desktop/src-tauri/src/helper.rs（仅路径常量）。
 - **实施边界**：(A) 当前 `bundle.resources=["resources/helper/**/*"]` 会保留原始目录结构，helper 实际落在 `Contents/Resources/resources/helper/fathom-helper/fathom-helper`，比 locate_helper 期望的多一层 `resources/`；需改为不保留前缀的映射形式（tauri 支持 map 形式如 `{"resources/helper/": "helper/"}`），使产物落在 `Contents/Resources/helper/`；同时保持 ISS-053 的修复不回退（无 helper 产物时 cargo check 仍须 exit 0）。(B) `scripts/verify_app_bundle.sh` 第 104 行附近 `FINGER_BEFORE` 变量名含非法字节，导致 `unbound variable` 提前退出、(b)~(g) 段未执行；需修正变量名使全脚本跑通。不得放松任何断言，不得把 helper 产物提交进 Git。
 - **验收**：
-  - [ ] 干净克隆上 `cargo check --locked --offline` 仍 exit 0（不回退 ISS-053/054）
-  - [ ] `build_helper.sh` → `build_app.sh` → `verify_app_bundle.sh` 全链 exit 0，产物内 helper 位于 `Contents/Resources/helper/fathom-helper/fathom-helper` 且可执行
-  - [ ] verify 各段（结构/只读布局/路径含空格中文/端口冲突/二次启动/退出）真实执行并记录
-- **证据/接续**：不得勾选验收项；PM 证据见 .git/orchestration/wave9-evidence/iss-054-verify-findings.md。
+  - [x] 干净克隆上 `cargo check --locked --offline` 仍 exit 0（不回退 ISS-053/054）—— PM 与 reviewer 在无 helper 产物的新 worktree 各自实证 exit 0
+  - [x] `build_helper.sh` → `build_app.sh` → `verify_app_bundle.sh` 全链 exit 0，产物内 helper 位于 `Contents/Resources/helper/fathom-helper/fathom-helper` 且为 Mach-O arm64 可执行文件（`file` 实证，非目录）
+  - [x] verify 各段真实执行并记录：(a) 结构 3/3、(b) 只读布局指纹一致、(g) 生产 7952 不触碰、(c) 壳拉起 helper 在 7953 就绪 + instance 0600、(d) dummy 零击杀 + 让位到 56017、(e) 二次启动不重复拉起、(f) 退出后端口关闭 + instance 清理；含空格/中文路径启动**未在本卡覆盖**（verify 脚本当前无该段），留 ISS-009 切片 2
+- **证据/接续**（2026-09-15 DONE）：worker ctx_6d4fb9c6ff14（iss-055-bundle-resource-map）交付 `b08a5c1`（任务 A：任务卡示例浅键 `{"resources/helper/": "helper/"}` 经真实 bundle 实测会多一层目录，改为**深键** `{"resources/helper/fathom-helper/": "helper/"}`，依据 tauri-utils 2.9.3 `resources.rs` strip_prefix 语义；README.txt 占位 + .gitignore 取反保证产物零入库）、`d3daea0`（任务 B：六处紧邻全角字符的 `$VAR` 改 `${VAR}`，PM 报的"非法字节"实为全角字符 UTF-8 首字节与变量名粘连）、`5ddaf57`（(d) 段 dummy 缺 stdin 监听体致 d-zero-kill 恒败，补 heredoc）；PM 补 `af55513`（build_app 清理 tauri-build 旧映射副本防 EISDIR，且 cargo tauri build 非零退出不再被残留产物掩盖）。PM 两次独立复跑全链 exit 0、verify 12/12（详见 ISS-057 证据）。独立 reviewer 对 map 深键落位、.gitignore 逐条、三修脚本零断言变化、build_app OVERALL_RC 先于产物检查均 CONFIRMED。随 [PR #61](https://github.com/cat-xierluo/fathom/pull/61) 合并为 main `a158889`。证据：`.git/orchestration/wave9-evidence/iss-055-{verify-findings,v2-verify}.md`、worker RESULT（session context）。
 
 ### ISS-053 · Tauri 资源 glob 在缺少 helper 产物时阻断构建
 
@@ -587,6 +626,7 @@
   - [ ] 关闭/退出行为正确；后台未就绪可恢复且不要求 main.py install
   - [ ] 路径含空格/中文，资源只读，端口冲突、二次启动均可控
   - [ ] 构建步骤/支持矩阵/产物校验值记录；未签名内测明确标记，不冒充公开包
+- **切片 1 已合并（2026-09-15 09:47，PM）**：[PR #61](https://github.com/cat-xierluo/fathom/pull/61) head `b880939`（8 commits：f6dc9bb 原始实现 + ISS-053/054/055×4/057 修复链）squash 合并为 main `a158889`。合并依据（TASKS 策略第 11 条 / DEC-018 本地门禁）：PM 两次独立复跑打包链（06:25、09:05）`cargo check` exit 0 → `build_helper` exit 0（arm64 Mach-O，SHA256 `95756a0e…`）→ `build_app` exit 0（Fathom.app + Fathom_0.3.0_aarch64.dmg）→ `verify_app_bundle.sh` **12/12 PASS**；独立 fixed-head reviewer（ctx_8c27cf67ee44）7 条要点全 CONFIRMED **ACCEPT**、`review-acceptance-gate` ok；`pr-audit` suspected 仅因 `same_base_ref_different_base_sha`（#62–#66 docs 在后落地）+ 指纹格式差异，`git merge-tree` 无冲突且 main→合并树与 base→head 的 `patch-id` 相同（`efca027f`），文件集与 main 前进零交集。**云端 CI 5 个 job 记 `NOT_RUN`**（GitHub billing 在执行前拒绝，自 09-14 起所有 run 同状态）。合并后 main 门禁：cargo check ok、版本一致性 ok、浏览器 39/39、前端刷新 61/61、**pytest 337/338**（夹具锚点过时，转 ISS-058，P0）。本卡验收框保持未勾：无 Python/Rust 测试账户首启、tray 菜单实机退出、含空格/中文路径、真实下载产物、签名/公证仍 `NOT_VERIFIED`，归切片 2 与发行验收；verify 已覆盖的子项（只读布局、端口冲突让位、二次启动、退出回收）在切片 2 复用。reviewer 非阻断观察转 ISS-059（握手 liveness / ports-exhausted 接线）与 ISS-060（脚本卫生）；AGENTS/ARCHITECTURE 的 apps/desktop 描述已随本 PR 同步。
 - **切片 1 状态（2026-09-15 00:59，PM）**：代码层已交付 PR [#61](https://github.com/cat-xierluo/fathom/pull/61)（分支 `iss-009-app-bundle`，head `f6dc9bb`，未合并）：`helper.rs` 生命周期（locate/spawn/handshake/让位/端口耗尽/SIGTERM 10s）、`lib.rs` 接入与 tray 退出、tauri bundle 配置、握手页、四个打包/校验脚本。**但三条合同验证命令在 worker 环境未执行**（白名单拒绝），由 PM 复跑，结果：`cargo check --locked --offline` **失败**（`resources/helper/**` glob 无匹配 → 阻断构建，已登记 ISS-053）；`build_app.sh`/`verify_app_bundle.sh` 因依赖已冻结 helper 尚未跑通。**故切片 1 不得合并、不得勾选验收项**，需先修 ISS-053 再继续。另 spawn 的 safe-push 白名单 `--base` 参数生成有误（写成 `main`，脚本要求 `origin/main`），本次由 PM 代推，属需修的工具缺陷。
 - **证据/接续**（2026-09-14 晚，PM 切片决策）：除 ISS-045（Logo/图标方向，人工门）外前置全部 DONE。按用户“不要阻塞”指令，先派**切片 1：壳-helper 生命周期 + 未签名打包流水线**——Tauri 壳启动时拉起内嵌 PyInstaller onedir helper（release 模式，数据根 `~/Library/Application Support/Fathom`），经 `helper-instance.json`/`/health` 握手后导航到本地服务，退出时按身份 SIGTERM 回收；同服务已在运行则复用不重复拉起；`scripts/build_helper.sh` / `build_app.sh` / `verify_app_bundle.sh` 产出未签名 `.app`/`.dmg` 并做结构、只读布局、含空格/中文路径启动、端口冲突让位、二次启动、校验值记录。图标用现有 `icon.png` 生成占位 iconset（**NOT_VERIFIED，公开前必须换 ISS-045 正式图标**）。新账户/断网首启与真实下载产物验收留 `NOT_VERIFIED`（切片 2 或实机验收）。不签名、不公证、不注册 launchd、不改 fathom/ 生产代码。
 

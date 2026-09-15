@@ -34,7 +34,7 @@
 - `fathom/scan_coordinator.py`：API/CLI/定时扫描的统一生命周期、跨进程 `flock` 与分阶段状态；`fathom/api.py`：HTTP 查询/入口；`fathom/cli.py`：CLI；`main.py` 是入口包装。
 - `fathom/config.py`：当前常量与路径；`fathom/launchd.py`：开发版后台任务安装。
 - `frontend/`：无构建链 HTML/JS/CSS，ECharts 本地资源。SVG 图标只在 `frontend/icons.js` 集中维护，禁止装饰 emoji。
-- `apps/desktop/`：Tauri 壳；当前依赖独立运行的 FastAPI，不能宣称包已自包含。
+- `apps/desktop/`：Tauri 壳。打包态（ISS-009 切片 1 起）由壳拉起 `Contents/Resources/helper/` 内的 PyInstaller 冻结 helper 并按身份握手/让位/回收（`src-tauri/src/helper.rs`）；开发态仍依赖独立运行的 FastAPI。产物未签名、未公证、仅 arm64、未在新账户实测，不得宣称为可分发的自包含包。
 - 新模块只按任务卡引入，未来模块/接口先看目标方案中的“拟新增”，不要从文档假定文件已存在。
 
 ## 数据与操作不变量

@@ -38,10 +38,9 @@ PIN_PYINSTALLER="$(sed -n 's/^pyinstaller==//p' "$ROOT/requirements-runtime-buil
 [ -n "$PIN_PYINSTALLER" ] || PIN_PYINSTALLER="6.22.3"
 OUT_DIR="$ROOT/apps/desktop/src-tauri/resources/helper/fathom-helper"
 WORK_DIR="$ROOT/apps/desktop/src-tauri/resources/helper/work"
-LOG_DIR="$ROOT/apps/desktop/src-tauri/resources/helper/log"
 MAIN_PY="$ROOT/main.py"
 
-mkdir -p "$OUT_DIR" "$WORK_DIR" "$LOG_DIR"
+mkdir -p "$OUT_DIR" "$WORK_DIR"
 
 PIN_PY="$VENV/bin/pyinstaller"
 PIN_PYTHON="$VENV/bin/python"
@@ -97,13 +96,13 @@ case "$HOST_ARCH" in
     ;;
 esac
 
-# --version 身份面
-OUT_VERSION="$("$BIN" --version 2>&1)"
-CODE=$?
-if [ "$CODE" -ne 0 ]; then
-  echo "[build_helper] FAIL：--version 退出码 $CODE，输出：$OUT_VERSION" >&2
+# --version 身份面。``set -e`` 下 ``OUT_VERSION=...`` 的命令替换若失败
+# 会直接退出脚本，原写法再检查 ``$CODE`` 是死分支——这里改用 ``||`` 显式
+# 保留「可读失败输出 + 非零退出」语义，让 CI / 上层调用方能拿到原始 stderr。
+OUT_VERSION="$("$BIN" --version 2>&1)" || {
+  echo "[build_helper] FAIL：--version 退出非零，输出：$OUT_VERSION" >&2
   exit 1
-fi
+}
 echo "[build_helper] --version: $OUT_VERSION"
 if ! printf '%s' "$OUT_VERSION" | python3 -c '
 import json, sys

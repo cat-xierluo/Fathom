@@ -219,10 +219,16 @@ disown "$DUMMY_PID" 2>/dev/null || true
 sleep 0.5
 DUMMY_PIDS_BEFORE="$(lsof -tiTCP:${DUMMY_PORT} -sTCP:LISTEN -n -P 2>/dev/null || true)"
 
+# ISS-060 (c)：为让位 helper 单独建运行根，避免其 helper-instance.json 与
+# (c) 段 TEST_RUNTIME 共享，导致 (d) SIGTERM → SIGKILL 的 0.5s 间隙内未来
+# 得及清文件、进而污染 (f) f-instance-cleaned 断言（只能多败不假过）。
+D_RUNTIME_DIR="$NASTY_DIR_BASE/runtime-d"
+mkdir -p "$D_RUNTIME_DIR"
+
 # 通过 launchctl setenv 把 FATHOM_PORT 传给已启动的 app 后续 spawn 的 helper；
 # 这里测试的是「脚本自起 helper 二进制」能否让位，不依赖 app 已开窗口
 "$HELPER_BIN" --runtime-mode release --port "$DUMMY_PORT" --port-range 4 \
-  --runtime-dir "$TEST_RUNTIME" serve >> "$LOG" 2>&1 &
+  --runtime-dir "$D_RUNTIME_DIR" serve >> "$LOG" 2>&1 &
 ZERO_HELPER_PID=$!
 disown "$ZERO_HELPER_PID" 2>/dev/null || true
 
@@ -256,12 +262,22 @@ else
   record "d-yield-success" fail "helper 未在让位段内就绪（dummy 占 ${DUMMY_PORT}）"
 fi
 
-# 收尾让位 helper
+# 收尾让位 helper：先 SIGTERM 等 helper 自身 unlink helper-instance.json，
+# 再 SIGKILL 兜底。wait 窗口由 0.5s 加长到 3s，覆盖 uvicorn + 信号处理
+# 的 worst case；helper 实例身份匹配自己的 pid 才删文件（cli.py
+# `remove_helper_instance`），不会出现「误删别人 instance」的风险。
 kill -TERM "$ZERO_HELPER_PID" 2>/dev/null || true
-sleep 0.5
+ZERO_TERM_WAIT_S="${ZERO_TERM_WAIT_S:-3}"
+# 等进程真退出（bounded）；不用固定 sleep，避免在快机器上空等
+ZERO_TERM_DEADLINE=$(( $(date +%s) + ZERO_TERM_WAIT_S ))
+while kill -0 "$ZERO_HELPER_PID" 2>/dev/null; do
+  if [ "$(date +%s)" -ge "$ZERO_TERM_DEADLINE" ]; then break; fi
+  sleep 0.2
+done
 kill -KILL "$ZERO_HELPER_PID" 2>/dev/null || true
 kill -TERM "$DUMMY_PID" 2>/dev/null || true
 sleep 0.3
+# 让 (d) helper 的运行根随 NASTY_DIR_BASE 一并在文末清理，避免泄漏。
 
 # ---------------------------------------------------------------- (e) 二次启动
 log "=== (e) 二次启动：让位 ==="

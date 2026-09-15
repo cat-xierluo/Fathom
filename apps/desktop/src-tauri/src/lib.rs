@@ -163,11 +163,18 @@ fn helper_retry(app: AppHandle, state: State<'_, HelperState>) -> serde_json::Va
         },
         Err(_) => return serde_json::json!({"state": "error", "error": "helper 句柄锁中毒"}),
     };
-    // 先 stop
-    if let Ok(g) = state.0.lock() {
-        if let Some(h) = g.as_ref() {
-            let _ = h.stop();
+    // 先 stop（ISS-060 (d)：错误不再静默丢弃，落 eprintln 便于排查）。
+    // 既有语义由 ``HelperHandle::stop`` 自身保证：复用模式零信号、
+    // 本壳子进程 bounded 10s SIGTERM → SIGKILL 兜底属设计内。
+    match state.0.lock() {
+        Ok(g) => {
+            if let Some(h) = g.as_ref() {
+                if let Err(err) = h.stop() {
+                    eprintln!("[helper] helper_retry: stop() 失败：{err}");
+                }
+            }
         }
+        Err(_) => eprintln!("[helper] helper_retry: HelperState 锁中毒，跳过 stop()"),
     }
     // 重置 handle
     if let Ok(mut g) = state.0.lock() {
@@ -210,14 +217,14 @@ fn start_helper_internal(app: &AppHandle, state: &State<'_, HelperState>) -> Res
         .map(|h| h.runtime_dir.clone())
         .unwrap_or_else(default_runtime_dir);
 
-    let child = spawn_helper(&bin, &runtime)?;
+    let (child, log_offset) = spawn_helper(&bin, &runtime)?;
     let port = std::env::var("FATHOM_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(helper::DEFAULT_PORT);
     if let Ok(mut g) = state.0.lock() {
         if let Some(h) = g.as_mut() {
-            h.adopt(child, port);
+            h.adopt(child, port, log_offset);
         }
     }
 
@@ -303,18 +310,28 @@ fn show_main(app: &AppHandle) {
 /// 直接返回，不会对同一 helper 重复发信号。
 ///
 /// 既有三条语义由 ``HelperHandle::stop`` 自身保证，此处不绕过：
-/// a) 复用模式（reused=true，helper 为外部/他实例持有）不发信号；
-/// b) SIGTERM 后 bounded 等待（10s 上限），不会无限阻塞退出；
-/// c) 只向本壳 spawn 的子进程发信号（零击杀）。
+/// a) 复用模式（reused=true，helper 为外部/他实例持有）不发信号——「零击杀」
+///    指外部/他实例进程；
+/// b) 对本壳自己拉起的子进程：SIGTERM 后 bounded 等待（``STOP_TIMEOUT_S``，
+///    10s 上限），超时后 ``kill -KILL`` 兜底属设计内（不让本壳因 helper
+///    卡死而无法退出，会留下孤儿进程）；
+/// c) 只向本壳 spawn 的子进程发信号（不向任何外部 PID 发信号）。
+///
+/// ISS-060 (d)：stop() 的错误（如 SIGKILL 兜底后进程仍未释放、wait 锁
+/// 中毒等）不再静默丢弃——通过 ``eprintln`` 落日志，便于事后排查。
 fn reap_spawned_helper(app: &AppHandle) {
     let Some(state) = app.try_state::<HelperState>() else {
         return;
     };
     let Ok(mut guard) = state.0.lock() else {
+        eprintln!("[helper] reap_spawned_helper: HelperState 锁中毒，跳过本轮回收");
         return;
     };
-    if let Some(handle) = guard.take() {
-        let _ = handle.stop();
+    let Some(handle) = guard.take() else {
+        return;
+    };
+    if let Err(err) = handle.stop() {
+        eprintln!("[helper] reap_spawned_helper: helper.stop() 失败：{err}");
     }
 }
 

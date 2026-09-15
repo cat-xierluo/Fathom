@@ -1,18 +1,41 @@
 #!/usr/bin/env bash
 #
-# ISS-053 · 复现与验证 bundle.resources glob 修复
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║  ⚠  历史归档脚本 / HISTORICAL REPRO ONLY（ISS-060 (a2)）                ║
+# ║                                                                         ║
+# ║  本脚本对应 ISS-053 的修复点：tauri.conf.json 的 bundle.resources 由     ║
+# ║  `resources/helper/**`（glob crate 的 ** 仅匹配路径段、不匹配叶文件） ║
+# ║  改为 `resources/helper/**/*`，并假定 bundle.resources 是「字符串数组」 ║
+# ║  形态。脚本里 `restore_conf_with` 仍按数组形态回写。                    ║
+# ║                                                                         ║
+# ║  **当前 main 已不再是该形态**：                                         ║
+# ║  - ISS-055 已把 bundle.resources 改为「map 形态」                        ║
+# ║      `{"resources/helper/fathom-helper/": "helper/"}`                    ║
+# ║    以避免 `resources/helper/_internal/**` 等 PyInstaller onedir 残留被   ║
+# ║    无差别打进 .app/Contents/Resources/。                                ║
+# ║  - 在 map 形态下，本脚本的 `restore_conf_with "resources/helper/**"`    ║
+# ║    会把 conf 临时降级回数组 glob，**不能真实反映当前 main 的打包行为**。 ║
+# ║  - EXPECTED_HEAD 钉在 `f6dc9bb`，当前 main = `f4bc9e1`。                ║
+# ║                                                                         ║
+# ║  本脚本现作为「ISS-053 历史复现」归档，**保留**：                        ║
+# ║  - 在 checkout 到 `f6dc9bb` 前后形态时仍可复现 ISS-053 的原始问题。      ║
+# ║  - 跑出"原始配置阶段硬错误 / 修复后阶段通过"两条对照的语义不变。          ║
+# ║                                                                         ║
+# ║  如需验证当前 main 的打包 / helper 产物行为，请改用：                   ║
+# ║    bash scripts/verify_app_bundle.sh                                    ║
+# ║  （20 段断言，含 (a)~(i)；ISS-059 起新增 (h) 陈旧 instance respawn 与  ║
+# ║   (i) 候选端口耗尽零击杀两段。）                                        ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
 #
-# 在干净克隆（HEAD = f6dc9bb）上复现「两条路径都要成立」：
+# ISS-053 · 复现与验证 bundle.resources glob 修复（在 f6dc9bb 形态下）
+#
+# 复现目标（仅适用于 f6dc9bb 前后形态）：
 #   路径 A — 未跑 build_helper.sh：resources/helper/ 仅含 README.txt
 #            tauri-build 的 glob 必须匹配到至少一个文件
 #   路径 B — 已跑 build_helper.sh：resources/helper/fathom-helper/
 #            含二进制 + _internal/；glob 必须匹配到打包目标文件
 #
-# 修复点：tauri.conf.json 的 bundle.resources 由 `resources/helper/**`
-#         改为 `resources/helper/**/*`（glob crate 的 ** 仅匹配路径段、
-#         不匹配叶文件；**/* 才是「零或多级目录 + 一个文件」的常用写法）。
-#
-# 用法：
+# 用法（仅历史复现用）：
 #   bash scripts/repro_iss053_resource_glob.sh            # 完整跑两条路径
 #   bash scripts/repro_iss053_resource_glob.sh --no-b      # 只跑路径 A
 #

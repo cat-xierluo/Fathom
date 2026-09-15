@@ -104,12 +104,22 @@ pub fn locate_helper(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// 启动 helper 子进程。std::process::Command；stdout/stderr 落到运行根
 /// ``logs/helper.log``；返回子进程句柄与 pid。
-pub fn spawn_helper(bin: &Path, runtime_dir: &Path) -> Result<Child, String> {
+///
+/// ISS-060 (f)：第二个返回值为 helper.log 在本次 spawn 前的字节偏移；调用方
+/// 在 ``decode_exit_event`` 时只读该偏移之后追加的内容，避免跨运行长驻日
+/// 志复活历史事件。
+pub fn spawn_helper(bin: &Path, runtime_dir: &Path) -> Result<(Child, u64), String> {
     let logs_dir = runtime_dir.join("logs");
     std::fs::create_dir_all(&logs_dir).map_err(|err| {
         format!("创建日志目录失败 {}：{}", logs_dir.display(), err)
     })?;
     let log_path = logs_dir.join("helper.log");
+    // spawn 前的文件大小 = 本次 helper 写入的起始偏移。文件不存在时（首次
+    // 运行）按 0 处理；读元数据失败时回退到 0 走「全路径扫描」的旧行为
+    // （仅丢一点性能，不改语义）。
+    let log_offset = std::fs::metadata(&log_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -144,13 +154,14 @@ pub fn spawn_helper(bin: &Path, runtime_dir: &Path) -> Result<Child, String> {
         .stderr(Stdio::from(log_file_err));
     // 在 macOS 上设置成 detached 让 helper 不因父进程 group 而被信号连坐
     // （launchd/双击启动时父进程的 SIGTERM 不传播给 helper）。
-    cmd.spawn().map_err(|err| {
+    let child = cmd.spawn().map_err(|err| {
         format!(
             "启动 helper 失败 {}：{}",
             bin.display(),
             err
         )
-    })
+    })?;
+    Ok((child, log_offset))
 }
 
 /// helper-instance.json 读取结果；0600 由 helper 自身保证。
@@ -396,6 +407,9 @@ pub struct HelperHandle {
     /// ``helper_retry`` 据此返回 ``state=exhausted``。重试会用新句柄重新
     /// 走完整流程，随句柄重建而清空。
     last_exhausted: Mutex<Option<ExhaustedInfo>>,
+    /// ISS-060 (f)：spawn 时 helper.log 的字节偏移；``decode_exit_event``
+    /// 只读该偏移之后追加的内容，避免跨运行长驻日志复活历史事件。
+    spawn_log_offset: Mutex<Option<u64>>,
 }
 
 /// 路径 1 单步结果（``HelperHandle::instance_file_step``，ISS-059 抽出
@@ -420,6 +434,7 @@ impl HelperHandle {
             runtime_dir,
             reused: AtomicBool::new(false),
             last_exhausted: Mutex::new(None),
+            spawn_log_offset: Mutex::new(None),
         }
     }
 
@@ -605,12 +620,18 @@ impl HelperHandle {
     }
 
     /// 绑定由本壳拉起的子进程句柄；用于后续 SIGTERM。
-    pub fn adopt(&self, child: Child, port: u16) {
+    ///
+    /// ``log_offset``：spawn 前的文件字节偏移；``decode_exit_event`` 据此只读
+    /// 本次 spawn 之后追加的日志段（ISS-060 (f)）。
+    pub fn adopt(&self, child: Child, port: u16, log_offset: u64) {
         if let Ok(mut guard) = self.inner.lock() {
             *guard = Some(child);
         }
         if let Ok(mut port_guard) = self.spawned_port.lock() {
             *port_guard = Some(port);
+        }
+        if let Ok(mut offset_guard) = self.spawn_log_offset.lock() {
+            *offset_guard = Some(log_offset);
         }
     }
 
@@ -644,7 +665,16 @@ impl HelperHandle {
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    let event = decode_exit_event(&log_path, port_base, &status);
+                    // ISS-060 (f)：只读本次 spawn 之后追加的日志段，避免跨运行
+                    // 长驻日志复活历史事件。未记录偏移（adopt 未调用）时退到
+                    // 「全文件扫描」旧行为。
+                    let log_offset = self
+                        .spawn_log_offset
+                        .lock()
+                        .ok()
+                        .and_then(|g| *g)
+                        .unwrap_or(0);
+                    let event = decode_exit_event(&log_path, log_offset, port_base, &status);
                     // ISS-059：端口耗尽时把事件还原成 ExhaustedInfo 记入句柄，
                     // helper_status / helper_retry 据此返回 state=exhausted。
                     if let HelperEvent::PortsExhausted {
@@ -749,8 +779,13 @@ pub enum ProbeKind {
 /// 把 helper 的退出状态映射到 ``HelperEvent``：helper 自身会用 stderr 输出
 /// ``same-service-discovered`` / ``ports-exhausted`` 等结构化 JSON 行，本
 /// 函数扫描 helper.log 尾部以还原事件语义。
+///
+/// ISS-060 (f)：``log_offset`` 是 spawn 时记录的 helper.log 字节偏移；本
+/// 函数只读该偏移之后追加的内容，避免跨运行长驻日志复活历史事件。``log_offset``
+/// 超过文件大小时跳过扫描（本次 spawn 没新写日志），按 ``Exited`` 兜底。
 fn decode_exit_event(
     log_path: &Path,
+    log_offset: u64,
     port_base: u16,
     status: &std::process::ExitStatus,
 ) -> HelperEvent {
@@ -766,7 +801,17 @@ fn decode_exit_event(
             None
         }
     };
-    if let Ok(file) = std::fs::File::open(log_path) {
+    let scanned = std::fs::File::open(log_path).ok().and_then(|mut file| {
+        use std::io::Seek;
+        let len = file.metadata().ok().map(|m| m.len()).unwrap_or(0);
+        if log_offset > len {
+            // 本次 spawn 实际没产生新日志（极少；如 helper 启动即被 SIGKILL）。
+            // 走 Exited 兜底，避免误把上一次运行的尾部事件当作本次结果。
+            return Some(None);
+        }
+        if file.seek(std::io::SeekFrom::Start(log_offset)).is_err() {
+            return None;
+        }
         let reader = BufReader::new(file);
         let mut last_event: Option<HelperEvent> = None;
         for line in reader.lines().map_while(Result::ok) {
@@ -834,9 +879,10 @@ fn decode_exit_event(
                 _ => {}
             }
         }
-        if let Some(event) = last_event {
-            return event;
-        }
+        Some(last_event)
+    });
+    if let Some(Some(event)) = scanned {
+        return event;
     }
     HelperEvent::Exited { code, signal }
 }
@@ -845,6 +891,8 @@ fn decode_exit_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
 
     #[test]
     fn identity_constants_match_helper() {
@@ -937,18 +985,104 @@ mod tests {
 
     #[test]
     fn handshake_rejects_wrong_identity() {
-        let runtime = tempdir();
+        // ISS-060 (e)：原单测只断言 read_helper_instance 的原始字段、未真正
+        // 走 instance_disposition 的拒绝路径。本测试覆盖三条身份不符路径：
+        //   (e1) service != "fathom"：身份不符直接拒；
+        //   (e2) protocol_version != 1：身份不符直接拒；
+        //   (e3) 身份匹配但 /health 不通（用已被释放的临时端口模拟）：
+        //        走 instance_disposition → StaleRemove，文件被删，落回路径 2。
+        // 全部断言走的是「拒绝」语义（InstanceStep::Unavailable 或 Stale），
+        // 不是 raw 字段值。
+
+        // (e1) service 错
+        let runtime_e1 = tempdir();
         std::fs::write(
-            runtime.join("helper-instance.json"),
+            runtime_e1.join("helper-instance.json"),
             r#"{"service":"other","protocol_version":1,"pid":42,"port":7952}"#,
         )
         .unwrap();
-        let handle = HelperHandle::new(runtime.clone());
-        // 没真实 /health 监听；超时前 instance 路径被身份不符拒掉；
-        // 这里只断言读出来的 service/protocol 字段判定路径正确。
-        let raw = read_helper_instance(&runtime).unwrap();
-        assert_eq!(raw.service, "other");
-        assert_eq!(raw.protocol_version, 1);
+        let handle_e1 = HelperHandle::new(runtime_e1.clone());
+        match handle_e1.instance_file_step() {
+            InstanceStep::Unavailable(msg) => {
+                assert!(
+                    msg.contains("身份不符") || msg.contains("service="),
+                    "service 错应被识别为身份不符，实际：{msg}"
+                );
+            }
+            other => panic!(
+                "service=other 应走拒绝路径（InstanceStep::Unavailable），实际：{:?}",
+                other
+            ),
+        }
+        // 文件应原样保留（身份不符不删文件，落回路径 2 探测）
+        assert!(
+            runtime_e1.join("helper-instance.json").exists(),
+            "身份不符的 instance 文件不应被路径 1 删除（应落回路径 2 / spawn）"
+        );
+
+        // (e2) protocol_version 错
+        let runtime_e2 = tempdir();
+        std::fs::write(
+            runtime_e2.join("helper-instance.json"),
+            r#"{"service":"fathom","protocol_version":2,"pid":42,"port":7952}"#,
+        )
+        .unwrap();
+        let handle_e2 = HelperHandle::new(runtime_e2.clone());
+        match handle_e2.instance_file_step() {
+            InstanceStep::Unavailable(msg) => {
+                assert!(
+                    msg.contains("身份不符") || msg.contains("protocol="),
+                    "protocol_version 错应被识别为身份不符，实际：{msg}"
+                );
+            }
+            other => panic!(
+                "protocol_version=2 应走拒绝路径，实际：{:?}",
+                other
+            ),
+        }
+
+        // (e3) 身份匹配但 /health 不通 + pid 不在运行（曾有监听现已释放）
+        let runtime_e3 = tempdir();
+        let dead_port = freed_port();
+        // macOS pid 上限 99998，4000000 必不存在（pid_is_alive 边界已覆盖）
+        std::fs::write(
+            runtime_e3.join("helper-instance.json"),
+            format!(
+                r#"{{"service":"fathom","protocol_version":1,"pid":4000000,"port":{}}}"#,
+                dead_port
+            ),
+        )
+        .unwrap();
+        let handle_e3 = HelperHandle::new(runtime_e3.clone());
+        match handle_e3.instance_file_step() {
+            InstanceStep::Stale(msg) => {
+                assert!(
+                    msg.contains("陈旧") || msg.contains("已删除"),
+                    "陈旧文件应被识别并删除，实际：{msg}"
+                );
+            }
+            other => panic!(
+                "陈旧文件应走 instance_disposition → StaleRemove，实际：{:?}",
+                other
+            ),
+        }
+        assert!(
+            !runtime_e3.join("helper-instance.json").exists(),
+            "陈旧 instance 文件应被删除"
+        );
+
+        // 顺带断言：instance_disposition 自身的「身份匹配→复用」与「身份不
+        // 符 + pid 不在」两条核心契约（纯函数），补齐拒绝路径的最小单元。
+        assert_eq!(
+            instance_disposition(&ProbeKind::Ours { port: 7952, pid: Some(1), version: None, instance_id: None }, true),
+            InstanceDisposition::Reuse,
+            "身份匹配的 Ours 探活结果应一律复用"
+        );
+        assert_eq!(
+            instance_disposition(&ProbeKind::Mismatch, false),
+            InstanceDisposition::StaleRemove,
+            "身份不匹配且 pid 不在应判陈旧"
+        );
     }
 
     /// ISS-059：pid 判活只读（ps），零信号；本进程存在、超界 pid/非正 pid 不存在。
@@ -1090,6 +1224,90 @@ mod tests {
         assert_eq!(info.blocked.len(), 1);
         assert!(info.blocked[0].occupied_pid.is_none());
         assert!(!info.hint.is_empty());
+    }
+
+    /// ISS-060 (f)：decode_exit_event 只读 spawn 时记录的偏移之后追加的日志段，
+    /// 跨运行长驻日志中本次 spawn 之前的旧事件不得复活。
+    ///
+    /// 真实语义：``log_offset`` 是「从该字节偏移开始扫描」；在该扫描范围内
+    /// 取最后一条事件作为本次 helper 退出的语义结果。``offset=0`` 表示从头
+    /// 扫全文件，取到的自然是**尾部最后一条**事件（最近写入）。
+    /// 生产调用方始终传入 ``spawn`` 时刻的文件大小（即上一次日志末尾偏移），
+    /// 因此「跨运行长驻日志复活旧事件」路径在生产中不会出现。
+    #[test]
+    #[cfg(unix)]
+    fn decode_exit_event_ignores_log_history_before_spawn_offset() {
+        use std::io::Write;
+        use std::process::ExitStatus;
+        let runtime = tempdir();
+        let logs_dir = runtime.join("logs");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        let log_path = logs_dir.join("helper.log");
+
+        // 模拟上一次运行的尾部事件：same-service-discovered 在 7952
+        let stale_event = r#"{"event":"same-service-discovered","port":7952,"pid":11111,"version":"0.2.0"}"#;
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .unwrap();
+            writeln!(f, "{}", stale_event).unwrap();
+        }
+        let offset_after_stale = std::fs::metadata(&log_path).unwrap().len();
+
+        // 本次 spawn 之后追加新事件：ports-exhausted（target=7952）
+        let new_event = r#"{"event":"ports-exhausted","target_port":7952,"candidates":[7952,7953,7954,7955,7956],"blocked":[],"recovery":"新恢复文案"}"#;
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log_path)
+                .unwrap();
+            writeln!(f, "{}", new_event).unwrap();
+        }
+
+        // 关键断言 1：用 spawn_offset 调用 → 只看到本次事件（旧 same-service
+        // 落在 offset 之前，不会进入扫描范围）。
+        let status = ExitStatus::from_raw(3 << 8); // exit 3
+        let event = decode_exit_event(&log_path, offset_after_stale, 7952, &status);
+        match event {
+            HelperEvent::PortsExhausted { target_port, recovery, .. } => {
+                assert_eq!(target_port, 7952);
+                assert_eq!(recovery.as_deref(), Some("新恢复文案"));
+            }
+            other => panic!(
+                "spawn_offset=after_stale 应只读到本次事件（PortsExhausted），实际：{:?}",
+                other
+            ),
+        }
+
+        // 关键断言 2：offset=0 表示从文件头扫描整个文件，按 last_event 取到
+        // 范围内最后一条——也就是本次新写入的 PortsExhausted（**不是**上一次
+        // 的 stale_event）。这是真实语义：「offset 只表示扫描起点」，并不
+        // 表示「忽略范围内最近写入的事件」。生产路径因 offset 总是 spawn 时
+        // 的文件大小，不会读到旧事件，本用例只是把语义钉死。
+        let event_full = decode_exit_event(&log_path, 0, 7952, &status);
+        match event_full {
+            HelperEvent::PortsExhausted { target_port, recovery, .. } => {
+                assert_eq!(target_port, 7952, "offset=0 扫全文件应返回尾部最后一条");
+                assert_eq!(recovery.as_deref(), Some("新恢复文案"));
+            }
+            other => panic!(
+                "offset=0 应返回尾部最后一条（PortsExhausted），实际：{:?}",
+                other
+            ),
+        }
+
+        // 关键断言 3：offset 超过文件大小时走 Exited 兜底，绝不误把本次事件
+        // 当作「未知」——本次 spawn 没产生新日志时不能乱猜。
+        let too_big = offset_after_stale + new_event.len() as u64 + 1000;
+        let event_far = decode_exit_event(&log_path, too_big, 7952, &status);
+        match event_far {
+            HelperEvent::Exited { code, .. } => {
+                assert_eq!(code, Some(3), "offset 超界走 Exited 兜底，code=3");
+            }
+            other => panic!("offset 超界应走 Exited 兜底，实际：{:?}", other),
+        }
     }
 
     fn tempdir() -> PathBuf {

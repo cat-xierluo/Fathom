@@ -431,3 +431,253 @@ def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
     lock_path = runtime / "data" / "fathom.db.scan.lock"
     lease = scan_coordinator.ScanLease.acquire(lock_path, source="cli")
     lease.release()
+
+
+class TestScanTimeoutConfigurable:
+    """ISS-061：du 超时可配置（环境/默认），超时后可解释且保留上次有效快照。
+
+    生产证据（PM 只读实测）：run 1/2 状态=interrupted、message="du 超过
+    3600 秒安全时限"，快照停在 2026-09-12；硬编码 3600 在 ~11M 文件 /
+    937k 目录的 /Users/maoking 上无解释地截断每日扫描。新合同：超时上限
+    由 config.DU_TIMEOUT_S（默认 14400s；FATHOM_DU_TIMEOUT_S 覆盖）提供，
+    触发后 ScanInterruptedError 冒到外层，scan_runs 落 status=interrupted
+    + 含秒数与单位的消息，**不写新快照**，旧有效快照原样保留。
+    """
+
+    @staticmethod
+    def _insert_valid_snapshot(conn, *, when: str, root: str) -> int:
+        cur = conn.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb, min_kb, collection_status) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (when, root, 3, 0, 12.0, 1024, config.MIN_DIR_KB, "full"),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+    def test_session_du_timeout_reads_from_config_not_hardcoded(
+        self, tmp_path, monkeypatch
+    ):
+        """ScanSession.du_timeout_seconds 必须等于 config.DU_TIMEOUT_S。
+
+        反例：把 DU_TIMEOUT_S 改到 12.5 后 start_scan() 拿到的会话必须读
+        12.5；旧硬编码 3600.0 在生产根 ~11M 文件上无解释地截断扫描。
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+        runtime = tmp_path / "runtime"
+        monkeypatch.setattr(config, "DB_PATH", runtime / "data" / "fathom.db")
+        monkeypatch.setattr(config, "REPORTS_DIR", runtime / "reports")
+        monkeypatch.setattr(config, "LOGS_DIR", runtime / "logs")
+        monkeypatch.setattr(config, "DEFAULT_ROOT", root)
+        monkeypatch.setattr(config, "DU_TIMEOUT_S", 12.5)
+        session = scan_coordinator.start_scan(source="cli")
+        try:
+            assert session.du_timeout_seconds == 12.5
+            # 关键不变量：永远不是原硬编码 3600.0（除非配置显式设回）。
+            assert session.du_timeout_seconds != 3600.0
+        finally:
+            session.lease.release()
+
+    def test_timeout_marks_interrupted_preserves_last_snapshot_and_releases_lock(
+        self, tmp_path, monkeypatch
+    ):
+        """du 超过配置上限 → status=interrupted，旧快照原样保留，租约释放。
+
+        不真跑 1 小时：把 DU_TIMEOUT_S 调到 0.1s，把 Popen 替成 /bin/sleep 30，
+        让协调器真触达 du_process_context 里的 deadline 检查并冒
+        ScanInterruptedError。须同时满足三条 ISS-018/ISS-020 不变量：
+          (1) 扫描事实：scan_runs.status='interrupted' 且 message 含 "du 超过
+              0.1 秒安全时限"（运行可解释）。
+          (2) 写库边界：当日不写新 snapshots/entries/volume_stats；旧快照
+              的 id、root、total_kb 等关键列原样保留（ISS-018 R1）。
+          (3) 资源回收：本进程创建的 child du 被回收（SIGTERM 路径），租约
+              锁立即可被新进程取走。
+        """
+        runtime = tmp_path / "runtime"
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "x.txt").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(config, "DB_PATH", runtime / "data" / "fathom.db")
+        monkeypatch.setattr(config, "REPORTS_DIR", runtime / "reports")
+        monkeypatch.setattr(config, "LOGS_DIR", runtime / "logs")
+        monkeypatch.setattr(config, "DEFAULT_ROOT", root)
+        monkeypatch.setattr(config, "DU_TIMEOUT_S", 0.1)
+
+        # 注入一次旧有效快照（生产实证：2026-09-12），新扫描若成功本应
+        # 替换当日；超时路径必须**不动**这条旧快照。用 db.connect() 建库
+        # 让 schema 自动初始化，避免 sqlite3 直连时缺表（ISS-025 合同）。
+        config.ensure_runtime_dirs()
+        seed_conn = db.connect()
+        try:
+            old_id = self._insert_valid_snapshot(
+                seed_conn, when="2026-09-12T08:00:00", root=str(root),
+            )
+            old_total = seed_conn.execute(
+                "SELECT total_kb FROM snapshots WHERE id=?", (old_id,)
+            ).fetchone()[0]
+        finally:
+            seed_conn.close()
+
+        # 替 Popen 为 /bin/sleep 30，让 du 实际"超过" 0.1s 阈值。
+        real_popen = subprocess.Popen
+        child_pid: list[int] = []
+
+        def sleeping_popen(*args, **kwargs):
+            proc = real_popen(
+                ["/bin/sleep", "30"], stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, start_new_session=True,
+                pass_fds=kwargs.get("pass_fds", ()),
+            )
+            child_pid.append(proc.pid)
+            return proc
+
+        monkeypatch.setattr(scanner.subprocess, "Popen", sleeping_popen)
+
+        # 触发扫描并断言 ScanInterruptedError 冒到 run_scan 外层。
+        with pytest.raises(scanner.ScanInterruptedError, match="du 超过 0.1 秒安全时限"):
+            scan_coordinator.run_scan(source="cli", root=root)
+
+        # (1) 扫描事实可解释。
+        conn = db.connect()
+        try:
+            row = conn.execute(
+                "SELECT status, message, started_at, finished_at FROM scan_runs "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            assert row["status"] == "interrupted"
+            assert row["message"] is not None and "du 超过 0.1 秒安全时限" in row["message"]
+            assert row["started_at"] is not None and row["finished_at"] is not None
+            # 状态机：interrupted 不算 done/failed，且没残留 running。
+            statuses = [r[0] for r in conn.execute("SELECT status FROM scan_runs ORDER BY id")]
+            assert "running" not in statuses
+
+            # (2) 写库边界：仅保留旧快照；当日未写新快照/entries/volume_stats。
+            snap_rows = list(conn.execute(
+                "SELECT id, created_at, total_kb, collection_status "
+                "FROM snapshots ORDER BY id"
+            ))
+            assert [(r["id"], r["created_at"]) for r in snap_rows] == [
+                (old_id, "2026-09-12T08:00:00")
+            ]
+            assert snap_rows[0]["total_kb"] == old_total
+            assert conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM volume_stats").fetchone()[0] == 0
+            # scan_run_details 的 phase 不应为半写的 snapshot。
+            detail = conn.execute(
+                "SELECT phase, snapshot_id FROM scan_run_details "
+                "WHERE run_id=(SELECT MAX(id) FROM scan_runs)"
+            ).fetchone()
+            # 走到 du 阶段才超时；snapshot_id 必须保持 NULL（未提交）。
+            assert detail["snapshot_id"] is None
+        finally:
+            conn.close()
+
+        # (3) 资源回收：子进程 du 已被回收 + 锁立即可被新进程取走。
+        assert child_pid, "sleeping_popen 没有被实际调用，测试未达超时路径"
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid[0], 0)
+        lock_path = runtime / "data" / "fathom.db.scan.lock"
+        new_lease = scan_coordinator.ScanLease.acquire(lock_path, source="cli")
+        new_lease.release()
+
+    def test_eintr_path_remains_independent_from_timeout(
+        self, tmp_path, monkeypatch
+    ):
+        """ISS-047（瞬时 EINTR）与 ISS-061（du 超时）是两条独立路径，
+        不得互相掩盖：瞬时错误走 classify_collection 的 partial 分支
+        并落 snapshot，超时路径不写 snapshot 并落 status=interrupted。
+
+        反例：两次相邻扫描——第一次让 ``run_du`` 返回瞬时计数非零的
+        DuResult（ISS-047 合同：归 partial、status=done）；第二次让
+        ``run_du`` 抛 ``ScanInterruptedError("du 超过 0.1 秒安全时限")``
+        模拟 ISS-061 超时。两次扫描必须分别落不同 status，不可被 transient
+        path 的 partial 行为掩盖；锁必须仍可被新进程取走。
+        """
+        runtime = tmp_path / "runtime"
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.txt").write_text("a", encoding="utf-8")
+        monkeypatch.setattr(config, "DB_PATH", runtime / "data" / "fathom.db")
+        monkeypatch.setattr(config, "REPORTS_DIR", runtime / "reports")
+        monkeypatch.setattr(config, "LOGS_DIR", runtime / "logs")
+        monkeypatch.setattr(config, "DEFAULT_ROOT", root)
+        # 给超时一个足够大的值，确保 EINTR 路径先于超时触发。
+        monkeypatch.setattr(config, "DU_TIMEOUT_S", 60.0)
+
+        # 用闭包变量切换 run_du 的行为，避免 monkeypatch 覆盖不到第二次。
+        mode = {"kind": "eintr"}
+
+        def fake_run_du(target):
+            if mode["kind"] == "eintr":
+                return scanner.DuResult(
+                    sizes={str(target): 4096},
+                    exit_code=1,
+                    denied_count=0,
+                    transient_error_count=2,
+                    transient_error_sample=(
+                        f"du: {target}/Mail/MessageTemp/1/E.eml: "
+                        "Interrupted system call"
+                    ),
+                    elapsed_seconds=0.05,
+                    stderr_tail=(
+                        f"du: {target}/Mail/MessageTemp/1/E.eml: "
+                        "Interrupted system call",
+                        f"du: {target}/Mail/MessageTemp/2/E.eml: "
+                        "Interrupted system call",
+                    ),
+                )
+            # 第二次：模拟 ISS-061 超时（与 run_du 真实 timeout 分支同形态）。
+            raise scanner.ScanInterruptedError(
+                f"du 超过 {config.DU_TIMEOUT_S:g} 秒安全时限"
+            )
+
+        monkeypatch.setattr(scan_coordinator.scanner, "run_du", fake_run_du)
+        # 报告/通知在临时目录上跑会失败，但不会反向撤销快照（ISS-020）。
+        monkeypatch.setattr(scan_coordinator.reports, "notify_for_snapshot",
+                            lambda conn, sid: True)
+
+        # 第一次：EINTR 路径 → status=done，snapshot collection_status=partial。
+        _rid, result = scan_coordinator.run_scan(source="cli", root=root)
+        assert result["report_status"] in {"not_available", "written"}
+        conn = db.connect()
+        try:
+            run = conn.execute(
+                "SELECT status FROM scan_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            assert run["status"] == "done"
+            snap = conn.execute(
+                "SELECT collection_status, denied_count, total_kb "
+                "FROM snapshots ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            # ISS-047 合同：瞬时错误非零永不 full，归 partial；denied_count
+            # 单独计数、不与 transient 混同。
+            assert snap["collection_status"] == "partial"
+            assert snap["denied_count"] == 0
+            assert snap["total_kb"] >= 0
+        finally:
+            conn.close()
+
+        # 反例二：把 DU_TIMEOUT_S 调成 0.1s + 让 run_du 抛超时异常。
+        # 锁路径与进程回收由 ScanInterruptedError 处理器负责（与 ISS-020
+        # 既有的 cancel 路径共用），故不需再注入 Popen。
+        monkeypatch.setattr(config, "DU_TIMEOUT_S", 0.1)
+        mode["kind"] = "timeout"
+        with pytest.raises(scanner.ScanInterruptedError, match="du 超过 0.1 秒安全时限"):
+            scan_coordinator.run_scan(source="cli", root=root)
+
+        conn = db.connect()
+        try:
+            statuses = [r[0] for r in conn.execute(
+                "SELECT status FROM scan_runs ORDER BY id"
+            )]
+            # 第一次 EINTR 路径 = done；第二次超时 = interrupted。两条独立。
+            assert statuses == ["done", "interrupted"]
+            # 超时后快照数不再增长（partial 那条 + 0 新增）。
+            assert conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 1
+        finally:
+            conn.close()
+        # 锁仍可被新进程取走。
+        lock_path = runtime / "data" / "fathom.db.scan.lock"
+        new_lease = scan_coordinator.ScanLease.acquire(lock_path, source="cli")
+        new_lease.release()

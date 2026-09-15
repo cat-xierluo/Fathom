@@ -100,11 +100,20 @@ _DU_CONTEXT = threading.local()
 
 @contextmanager
 def du_process_context(
-    *, inherited_fd: int, cancel_event: threading.Event, timeout_seconds: float = 3600
+    *, inherited_fd: int, cancel_event: threading.Event,
+    timeout_seconds: float | None = None,
 ):
-    """只把本次扫描锁传给本任务创建的 du，并提供协作式取消。"""
+    """只把本次扫描锁传给本任务创建的 du，并提供协作式取消。
+
+    ``timeout_seconds=None``（默认值）时按 ``config.DU_TIMEOUT_S`` 取
+    （ISS-061：FATHOM_DU_TIMEOUT_S，默认 14400s）。原 3600s 硬编码已
+    删除——生产 /Users/maoking 一次扫描远超 1 小时，硬编码会无解释地
+    截断并把当日快照丢失为 status=interrupted。调用方（scan_coordinator）
+    总是显式传入，故此默认只影响把扫描器当库直接调用的场景。
+    """
+    effective = config.DU_TIMEOUT_S if timeout_seconds is None else timeout_seconds
     previous = getattr(_DU_CONTEXT, "value", None)
-    _DU_CONTEXT.value = (inherited_fd, cancel_event, timeout_seconds)
+    _DU_CONTEXT.value = (inherited_fd, cancel_event, effective)
     try:
         yield
     finally:

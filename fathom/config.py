@@ -292,6 +292,28 @@ BIGFILE_CACHE_TTL_S = 30.0        # 成功结果缓存 TTL（可分辨 expired�
 BIGFILE_LOG_RETENTION_DAYS = 7     # 大文件查询相关本地日志保留天数
 BIGFILE_REPORT_RETENTION_DAYS = 35 # 大文件查询产生的诊断报告保留天数
 
+# du 采集超时（ISS-061）。原 3600s 硬编码在 2026-09-14/15 把生产扫描
+# 截断为 status=interrupted / message="du 超过 3600 秒安全时限"（生产根
+# /Users/maoking 含 ~11M 文件、937k 目录，一次扫描远超 1 小时），当日
+# 快照因此被安全保留为 2026-09-12。默认上调至 14400s（4 小时）作为
+# 兼容 + 留出余量的基线；测试与运维可通过环境变量覆盖，无需改代码。
+_DU_TIMEOUT_S_DEFAULT = 14400.0
+_raw_du_timeout = os.environ.get("FATHOM_DU_TIMEOUT_S")
+if _raw_du_timeout is None or not _raw_du_timeout.strip():
+    DU_TIMEOUT_S = _DU_TIMEOUT_S_DEFAULT
+else:
+    try:
+        DU_TIMEOUT_S = float(_raw_du_timeout)
+    except ValueError as exc:
+        raise ConfigurationError(
+            f"FATHOM_DU_TIMEOUT_S 必须是正浮点数：{_raw_du_timeout!r}"
+        ) from exc
+    if DU_TIMEOUT_S <= 0:
+        raise ConfigurationError(
+            f"FATHOM_DU_TIMEOUT_S 必须是正数：{DU_TIMEOUT_S}"
+        )
+del _raw_du_timeout
+
 # launchd 仍是开发版遗留入口；ISS-025 不安装/卸载它。
 LAUNCHAGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 SCAN_LABEL = "com.maoscripts.fathom-scan"

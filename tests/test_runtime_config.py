@@ -258,3 +258,36 @@ def test_occupied_port_exits_nonzero_without_touching_owner(tmp_path):
         assert listener.getsockname()[1] == port
     finally:
         listener.close()
+
+
+class TestDuTimeoutConfig:
+    """ISS-061：du 超时上限由 FATHOM_DU_TIMEOUT_S 配置；默认值与拒绝坏值
+    在 config 模块加载时点完成，扫描器和协调器随后只读这一常量。"""
+
+    def test_default_when_env_unset(self, monkeypatch):
+        """未设 FATHOM_DU_TIMEOUT_S 时使用文档化的 14400s 默认值。
+        反例：原硬编码 3600 在生产 /Users/maoking（~11M 文件）上无解释地
+        截断扫描；现默认 4 小时为兼容基线，运维可显式覆盖。"""
+        monkeypatch.delenv("FATHOM_DU_TIMEOUT_S", raising=False)
+        # 重新执行模块加载，验证默认值。
+        import importlib
+        reloaded = importlib.reload(config)
+        assert reloaded.DU_TIMEOUT_S == 14400.0
+
+    def test_env_override_takes_precedence(self, monkeypatch):
+        """合法 FATHOM_DU_TIMEOUT_S 覆盖默认值；非法值必须 fail closed。"""
+        monkeypatch.setenv("FATHOM_DU_TIMEOUT_S", "5.5")
+        import importlib
+        reloaded = importlib.reload(config)
+        assert reloaded.DU_TIMEOUT_S == 5.5
+
+        monkeypatch.setenv("FATHOM_DU_TIMEOUT_S", "0")
+        with pytest.raises(config.ConfigurationError, match="正数"):
+            importlib.reload(config)
+
+        monkeypatch.setenv("FATHOM_DU_TIMEOUT_S", "not-a-number")
+        with pytest.raises(config.ConfigurationError, match="正浮点数"):
+            importlib.reload(config)
+
+        monkeypatch.delenv("FATHOM_DU_TIMEOUT_S", raising=False)
+        importlib.reload(config)

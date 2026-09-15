@@ -5,6 +5,18 @@
 
 ---
 
+### [DEC-021] - 2026-09-15 - 账户 Actions 额度耗尽期间停用 CI workflow，以本地同口径门禁为主
+
+**背景**：DEC-018 生效后，`CI` workflow 仍对每个 pull_request 与每次 push main 触发 5 个 macOS runner job（私有仓 macOS 分钟按 10 倍计费），自 2026-09-14T16:58Z 起全部在执行任何步骤前被 billing 拒绝（check-run annotation "The job was not started because recent account payments have failed or your spending limit needs to be increased"），累计 108 个 run 无一执行，另有 1 个 run 长期卡在 queued。用户 2026-09-15 确认账户额度已用光，要求能本地跑的 CI 就本地跑、收回 Actions 消耗。
+
+**决策**：经 REST API 把 workflow `CI`（id `356941919`，`.github/workflows/ci.yml`）置为 `disabled_manually`，**不修改 ci.yml**；此后 push/PR 不再创建 run，也不会在计费恢复的瞬间自动开跑。恢复只需一步：`gh api -X PUT repos/cat-xierluo/fathom/actions/workflows/356941919/enable`，须由用户在额度恢复后确认执行。停用期间合并门禁仍按 DEC-018 四项组合执行，其中"本地全量检查"以 CI 同款 fail-closed 脚本为准（见 [TESTING §1.1](TESTING.md#11-actions-无额度期间的临时本地合并门禁)）：`scripts/ci_pytest.sh`（断言 338）、`scripts/ci_browser_checks.sh`（断言 39）、`scripts/ci_cargo_locked.sh`（arm64 锁定离线构建），并新增 x86_64 交叉检查：`RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" rustup run stable cargo check --target x86_64-apple-darwin --locked --offline --manifest-path apps/desktop/src-tauri/Cargo.toml`（本机 rustup `stable` 恰为 CI 钉定的 Rust 1.88.0；必须显式 `RUSTC`，否则 rustup 的 cargo 会按 PATH 拿到 Homebrew rustc 1.98 而报 `E0463 can't find crate for std`）。
+
+**验证**：2026-09-15 于 main `73e0798` 本地复跑全部通过：`ci_pytest.sh` 338 passed；`ci_browser_checks.sh` 39 passed；`ci_cargo_locked.sh` ok（PATH 上为 Homebrew cargo 1.98）；rustup 1.88 arm64 `cargo build --locked --offline` ok；x86_64 交叉 `cargo check --locked --offline` ok（仅 2 个既有 dead_code warning）。`gh api repos/cat-xierluo/fathom/actions/workflows/356941919` 返回 `state=disabled_manually`。
+
+**影响/重评条件**：本地覆盖 CI 5 个 job 中的 4 个。**x86_64 pytest 无法本地覆盖**（本机无 x86_64 Python），x86_64 cargo 为交叉 `check` 而非原生 runner 上的 `build`——两者继续按 DEC-018 记 `NOT_RUN`，不得写成通过。本地 PATH 的 Homebrew Rust 1.98 与 CI 钉定 1.88 不一致：需要与 CI 同版本证据时走 `rustup run stable` 路径。额度恢复后先 enable、让一次完整云端 run 转绿，再撤回本决定的"停用"部分；DEC-018 其余条款不变。
+
+---
+
 ### [DEC-020] - 2026-09-14 - 项目许可证采用 Apache-2.0（与 Folia 一致）
 
 **背景**：ISS-037 交付了许可证选项对比（MIT / Apache-2.0 / MPL-2.0 / AGPL-3.0）并推荐 Apache-2.0，但按合同不落 LICENSE，等用户选择。依赖侧 PyInstaller 为 GPLv2 + 允许冻结产物以任意许可分发的例外条款、Tauri/tao 系 crate 与 ECharts 为 Apache-2.0/MIT，均与 Apache-2.0 兼容。

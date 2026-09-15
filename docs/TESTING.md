@@ -38,6 +38,20 @@ GitHub CI 设计为在原生 Apple Silicon 与 Intel runner 上分别执行 pyte
 
 云端 job 在步骤前被 billing 拒绝时只记 `NOT_RUN`。本地 arm64 通过不能替代原生 x86_64；普通测试不能替代下文的 Tauri GUI、隔离安装、签名、公证、stapling 或真实更新门禁。额度恢复后重新启用普通 CI，详见 [DEC-018](DECISIONS.md#dec-018---2026-09-13---github-actions-无额度期间采用固定候选本地门禁)。
 
+**2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，[DEC-021](DECISIONS.md#dec-021---2026-09-15---账户-actions-额度耗尽期间停用-ci-workflow以本地同口径门禁为主)）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
+
+```bash
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 338
+/bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)，断言 39
+/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)
+RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
+  rustup run stable cargo check --target x86_64-apple-darwin --locked --offline \
+  --manifest-path apps/desktop/src-tauri/Cargo.toml  # ≈ cargo locked offline (x86_64)：交叉 check，非原生 build
+# pytest (x86_64)：本机无 x86_64 Python，无法本地覆盖，记 NOT_RUN
+```
+
+x86_64 行必须显式 `RUSTC`：rustup 的 cargo 会按 PATH 找到 Homebrew 的 rustc 1.98（无 x86_64 std）而报 `E0463`；`rustup run stable` 的 rustc 恰为 CI 钉定的 1.88.0。恢复云端 CI：`gh api -X PUT repos/cat-xierluo/fathom/actions/workflows/356941919/enable`（用户确认额度恢复后执行）。
+
 不复制生产库到仓库，不在报告贴私人路径。数据量测试用合成目录或经用户选择的测试范围。故障测试 mock `open`、通知、launchctl 等系统动作，检查“有没有被调用”，不实际动生产服务。
 
 针对 Wave 1 的回归入口：

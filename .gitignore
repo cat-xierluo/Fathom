@@ -14,6 +14,17 @@ __pycache__/
 
 # Rust/Tauri 构建产物
 apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/build-logs/
+apps/desktop/src-tauri/verify-results/
+
+# ISS-009 切片 1：生产 helper 冻结产物（PyInstaller onedir）
+# ISS-055：resources map 源目录改到 fathom-helper/，README.txt 占位保留入库
+apps/desktop/src-tauri/resources/helper/fathom-helper/**
+!apps/desktop/src-tauri/resources/helper/fathom-helper/README.txt
+apps/desktop/src-tauri/resources/helper/work/
+
+# 占位 iconset（中间产物，最终保留 icon.icns / *.png 单文件）
+apps/desktop/src-tauri/icons/icon.iconset/
 
 # macOS
 .DS_Store

@@ -262,32 +262,52 @@ def test_occupied_port_exits_nonzero_without_touching_owner(tmp_path):
 
 class TestDuTimeoutConfig:
     """ISS-061：du 超时上限由 FATHOM_DU_TIMEOUT_S 配置；默认值与拒绝坏值
-    在 config 模块加载时点完成，扫描器和协调器随后只读这一常量。"""
+    在 config 模块加载时点完成，扫描器和协调器随后只读这一常量。
 
-    def test_default_when_env_unset(self, monkeypatch):
+    实现说明：加载时点的判定用**子进程**执行（每次 import fathom.config 都是
+    干净进程）。理由：在同一进程里连续 importlib.reload 一个会在加载期抛异常的
+    模块，会把模块对象留在半初始化状态——既可能让 pytest.raises 取到与抛出方
+    不同一的异常类而漏捕，也会污染后续用例（实测表现为本文件与
+    test_scan_coordination 同跑时才失败）。子进程隔离同时覆盖“值生效”与
+    “坏值 fail-closed”两条，且不留下任何跨用例状态。
+    """
+
+    @staticmethod
+    def _load_config_probe(env_value: str | None) -> subprocess.CompletedProcess:
+        """在干净子进程里 import fathom.config 并打印 DU_TIMEOUT_S。"""
+        env = dict(os.environ)
+        if env_value is None:
+            env.pop("FATHOM_DU_TIMEOUT_S", None)
+        else:
+            env["FATHOM_DU_TIMEOUT_S"] = env_value
+        code = (
+            "import json;"
+            "from fathom import config;"
+            "print(json.dumps({'du_timeout_s': config.DU_TIMEOUT_S}))"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=60,
+        )
+
+    def test_default_when_env_unset(self):
         """未设 FATHOM_DU_TIMEOUT_S 时使用文档化的 14400s 默认值。
         反例：原硬编码 3600 在生产 /Users/maoking（~11M 文件）上无解释地
         截断扫描；现默认 4 小时为兼容基线，运维可显式覆盖。"""
-        monkeypatch.delenv("FATHOM_DU_TIMEOUT_S", raising=False)
-        # 重新执行模块加载，验证默认值。
-        import importlib
-        reloaded = importlib.reload(config)
-        assert reloaded.DU_TIMEOUT_S == 14400.0
+        proc = self._load_config_probe(None)
+        assert proc.returncode == 0, proc.stderr
+        assert json.loads(proc.stdout.strip().splitlines()[-1])["du_timeout_s"] == 14400.0
 
-    def test_env_override_takes_precedence(self, monkeypatch):
+    def test_env_override_takes_precedence(self):
         """合法 FATHOM_DU_TIMEOUT_S 覆盖默认值；非法值必须 fail closed。"""
-        monkeypatch.setenv("FATHOM_DU_TIMEOUT_S", "5.5")
-        import importlib
-        reloaded = importlib.reload(config)
-        assert reloaded.DU_TIMEOUT_S == 5.5
+        ok = self._load_config_probe("5.5")
+        assert ok.returncode == 0, ok.stderr
+        assert json.loads(ok.stdout.strip().splitlines()[-1])["du_timeout_s"] == 5.5
 
-        monkeypatch.setenv("FATHOM_DU_TIMEOUT_S", "0")
-        with pytest.raises(config.ConfigurationError, match="正数"):
-            importlib.reload(config)
+        zero = self._load_config_probe("0")
+        assert zero.returncode != 0, "FATHOM_DU_TIMEOUT_S=0 必须 fail closed"
+        assert "正数" in zero.stderr
 
-        monkeypatch.setenv("FATHOM_DU_TIMEOUT_S", "not-a-number")
-        with pytest.raises(config.ConfigurationError, match="正浮点数"):
-            importlib.reload(config)
-
-        monkeypatch.delenv("FATHOM_DU_TIMEOUT_S", raising=False)
-        importlib.reload(config)
+        bad = self._load_config_probe("not-a-number")
+        assert bad.returncode != 0, "非数字值必须 fail closed"
+        assert "正浮点数" in bad.stderr

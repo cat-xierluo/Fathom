@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。新 PM 的默认下一项：**ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户）；**ISS-060**（P3 脚本卫生，含 ISS-059 reviewer 补充的 (e)(f)）可作低额度时段的填充任务并可自动派发。ISS-045 仍是人工视觉门，不得自动越过；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。新 PM 的默认下一项：**ISS-062**（P3，可自动派发：CLI 时长提示改为基于上次实测 `du_seconds` 与 `FATHOM_DU_TIMEOUT_S` 上限、2 条 clippy 风格 lint、配置测试补负数/空白串用例）；**ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**：ISS-061 合并（main `6789245`，默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期；仍在 14400s 中断则须开自适应/分段扫描新卡。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -106,7 +106,8 @@
 | ISS-058 | 版本一致性测试夹具按切片 1 新 bundle 形态定位（main 门禁 337/338 转绿） | P0 | M2 | DONE | ISS-009 |
 | ISS-059 | 壳握手健壮性：陈旧 helper-instance.json 存活校验与 ports-exhausted 状态接线 | P1 | M2 | DONE | ISS-009 |
 | ISS-060 | 切片 1 打包/校验脚本卫生（review 非阻断观察收口） | P3 | M2 | DONE | ISS-009 |
-| ISS-061 | 定时扫描在生产规模下被 3600s du 时限中断 | P0 | M1 | READY | ISS-001 |
+| ISS-061 | 定时扫描在生产规模下被 3600s du 时限中断 | P0 | M1 | DONE | ISS-001 |
+| ISS-062 | CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口 | P3 | M1 | READY | ISS-061 |
 
 ## 任务卡
 
@@ -137,9 +138,22 @@
   - [x] `verify_app_bundle.sh` 既有 12 段仍全 pass（record 名与断言一字未改，汇总 12→20）；cargo check exit 0（仅既有 2 个 dead_code warning）
 - **证据/接续**（2026-09-15 DONE）：worker ctx_8d7cfc67c0d0（iss-059-handshake-liveness，base `f87bc76`）交付 3 commits：`a378f57`（A：路径 1 命中身份匹配 instance 后 `probe_health`；不健康且 pid 不在运行——`ps -p` 只读判定、不发任何信号含信号 0——判陈旧删文件走 spawn，pid 仍在则保留等待；决策拆为可注入纯函数 `instance_disposition`；**附带修复**路径 2 命中本壳刚拉起的子进程被误标 `reused` 致退出漏回收）、`6223da1`（B：`PortsExhausted{candidates}` 记入 `ExhaustedInfo`，`helper_status` 返回 `state=exhausted`+`recovery{ports[{port,occupied_pid}],hint}`，`helper_retry` 仍耗尽保持 exhausted、普通 Err 仍 error；index.html 分派由从不发出的 `"ports-exhausted"` 改匹配 `"exhausted"` 并渲染端口占用表）、`24c08a2`（C：verify 新增 h×3 + i×5 段）。**三方独立验证一致**：worker / PM（在 worker worktree）/ reviewer（自建 worktree）各自 cargo check exit 0、`cargo test` 13/13（5 旧 + 8 新）、build_helper SHA256 `95756a0e…`、build_app ok、verify **20/20 PASS**。独立 reviewer ctx_bd79c7c0b366（review-iss059）7 条要点全 CONFIRMED **ACCEPT**、`review-acceptance-gate` ok；`worker-value-postflight` ok；`pr-audit` adopt。[PR #71](https://github.com/cat-xierluo/fathom/pull/71) squash 合并为 main `d53a7af`；合并后 main：pytest 338、浏览器 39、版本一致性 ok、cargo test 13/13。云端 CI 停用（DEC-021）。reviewer 非阻断观察转 ISS-060（`handshake_rejects_wrong_identity` 断言弱、`decode_exit_event` 扫整份 helper.log）。证据：`.git/orchestration/wave10-evidence/{iss059-spec,iss059-postflight,pr71-audit,REVIEW-ISS-059}.json`、`archived-sessions/iss-059-handshake-liveness/`。
 
+### ISS-062 · CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口
+
+- **状态**：READY（P3/M1）；来源：PM 整体排查（2026-09-16 00:45）+ ISS-061 wave18 reviewer 非阻断观察 O-2。
+- **目标**：`main.py scan` 的开场提示不再给出与现实相悖的固定时长估计；src-tauri 零 clippy 风格警告；`FATHOM_DU_TIMEOUT_S` 非法值矩阵补齐。
+- **范围**：`fathom/cli.py`（`cmd_scan` 提示行）、`tests/test_cli*.py` 或新增定向测试、`apps/desktop/src-tauri/src/helper.rs`（仅两处 lint）、`tests/test_runtime_config.py`。
+- **实施边界**：(a) `fathom/cli.py:61` 写死「1100 万文件量级可能需要 5-15 分钟」，生产实测 09-12 首扫约 47 分钟、09-14/15 超过 60 分钟被中断——改为：若同根有上次成功快照则打印「上次实测 du 耗时约 N 分钟」（只读取 `snapshots.du_seconds`；`du_seconds` 为 0/缺失时不编造数字），并始终打印「本次安全时限 `config.DU_TIMEOUT_S` 秒（可用 FATHOM_DU_TIMEOUT_S 调整）」；不新增 DB 写入、不改扫描逻辑。(b) `cargo clippy` 两条：`helper.rs:537` redundant closure、`helper.rs:677` needless borrow（既有 2 条 dead_code 是设计内的枚举/字段，保留或按注释说明，不为消警告删语义）。(c) `tests/test_runtime_config.py` 子进程矩阵补 `-1`、`""`、`"  "` 三个用例（分别应走 `<=0` 与 unset/strip 分支，与现有用例同形）。
+- **验收**：
+  - [ ] 无快照时提示不含任何具体分钟数；有快照时分钟数来自 `du_seconds`（定向测试用合成库钉住两种输出）；提示含配置上限秒数
+  - [ ] `cargo clippy --locked --offline --manifest-path apps/desktop/src-tauri/Cargo.toml` 除既有 2 条 dead_code 外零 warning；`cargo test` 13/13 不变
+  - [ ] 配置矩阵三用例通过；全量 pytest 计数同步（344 + 新增）
+  - [ ] 不触碰 scanner/scan_coordinator/config 逻辑与生产数据
+- **证据/接续**：不得勾选验收项。PM 排查证据：`logs/launchd-scan.out.log` 三行「5-15 分钟」提示 vs `scan_runs` 实测 ≥60 分钟；`/tmp/clippy.log`（2026-09-16）。
+
 ### ISS-061 · 定时扫描在生产规模下被 3600s du 时限中断
 
-- **状态**：READY（P0/M1）；来源：PM 只读生产观察（2026-09-15 17:33，ISS-001 观察窗口）。
+- **状态**：DONE（P0/M1，2026-09-16 00:55；真实生产规模 4h 充分性待当日 12:00 定时扫描只读观察，见 ISS-001）；来源：PM 只读生产观察（2026-09-15 17:33，ISS-001 观察窗口）。
 - **目标**：让真实生产规模的每日扫描能跑完并产出快照，或明确以可恢复方式表达「未能完成」而不是静默丢失当天快照。
 - **范围**：fathom/scan_coordinator.py、fathom/scanner.py（超时相关）、fathom/config.py（如引入可配置上限）、相关测试。
 - **实施边界（PM 只读证据）**：生产库 `data/fathom.db`（只读打开）`scan_runs` 表实测：
@@ -148,11 +162,11 @@
   即**连续两天定时扫描都在整 1 小时被中断**，`snapshots` 表仍只有 2026-09-12 一条。硬编码 `du_timeout_seconds = 3600.0`（`fathom/scan_coordinator.py:98`；`scanner.py:103` 形参默认亦为 3600）。生产根 `/Users/maoking` 规模：上次成功快照 `dir_count=937393`、约 1100 万文件量级（日志自述 5–15 分钟，但实测远超）。
   要求：不得为通过验证而伪造/回填快照日期；不得直接放宽到无限超时而不留可恢复语义；应给出可解释的方案（例如按规模自适应或可配置上限 + 超时后明确记录并保留上次有效数据，并在超时时以可诊断方式留痕）。**必须与 ISS-047（EINTR 瞬时错误）区分**：那是"被拒即失败"，本卡是"跑不完被中断"。
 - **验收**：
-  - [ ] 反例先红后绿：构造「扫描耗时超过配置上限」的用例，断言超时路径产出可解释结果且不丢上次有效快照
-  - [ ] 真实生产规模下（或可复现的等价夹具）扫描能完成并写入快照，或按合同明确记录为未完成且可恢复
-  - [ ] 超时上限可配置且有文档；未引入无限阻塞
-  - [ ] 与 ISS-047 的 EINTR 语义不冲突（两者各有测试钉住）
-- **证据/接续**：不得勾选验收项。ISS-001 的最新观察记录将同步更新为「已定位为 ISS-061」。
+  - [x] 反例先红后绿：`tests/test_scan_coordination.py::TestScanTimeoutConfigurable::test_timeout_marks_interrupted_preserves_last_snapshot_and_releases_lock` 构造极小上限下超时的 du，断言 `interrupted`+可读 message、上次快照保留、锁释放；worker RESULT 记录端到端 `FATHOM_DU_TIMEOUT_S=0.001` → 中断且 snapshots 无半写
+  - [ ] 真实生产规模下扫描能完成并写入快照 —— **`NOT_VERIFIED`**：合并后首次定时扫描为 2026-09-16 12:00（launchd `com.maoscripts.fathom-scan` 以仓库 `.venv/bin/python main.py scan` 运行，生产目录 main 已含本修复），届时只读观察 `scan_runs`/`snapshots`；"或按合同明确记录为未完成且可恢复"一半已由测试与代码路径满足（超时→`interrupted`+message+保留旧快照）。注意常驻 `fathom-web`（PID 6026）仍是合并前进程，经 API 触发的扫描在其重启前仍用 3600s；重启属生产操作，须用户授权
+  - [x] 超时上限可配置且有文档；未引入无限阻塞：`FATHOM_DU_TIMEOUT_S` 默认 14400，非数/≤0/nan/inf/1e400 均 `ConfigurationError`（`config.py:315` `math.isfinite`）；文档随本次 docs PR 落 README/TESTING/ARCHITECTURE
+  - [x] 与 ISS-047 的 EINTR 语义不冲突：`test_eintr_path_remains_independent_from_timeout` 单独钉住
+- **证据/接续**（2026-09-16 DONE）：worker ctx_f742a0e31731（iss-061-scan-timeout）交付 `ff4a540`（可配置超时）；wave16 reviewer ctx_11ac86f1ac4d 对 `b6caa08` **ACCEPT**（0 blocking，非阻断 O-1：nan/inf 可绕过 `<=0`）；PM（cron 会话）据此补 `b6caa08`（配置测试改子进程隔离，消除 reload 半初始化污染）与 `c5d62fb`（`math.isfinite` 拒绝 nan/inf + `test_non_finite_values_fail_closed`）——此两 commit 为 PM 直接改代码，属策略"PM 不代写业务代码"的例外，已由独立复审覆盖；wave17 复审因 GLM 额度耗尽未启动（已 settle）；**wave18 reviewer ctx_a236f88fca79 对最终 head `c5d62fb` ACCEPT**（0 blocking、5 条非阻断：文档缺口→本 PR 补、负数/空白串用例缺口→ISS-062、沿革说明、实现 RESULT 描述滞后、PR 正文因网络未核读→PM 已核读无过度宣称）。三方独立验证一致：定向 49 passed、**全量 344 passed**（338→344，门禁计数已同步 ci_pytest.sh/ci.yml/TESTING/ARCHITECTURE）。`worker-value-postflight` ok、`pr-audit` adopt。[PR #77](https://github.com/cat-xierluo/fathom/pull/77) squash 合并为 main `6789245`；合并后 main：pytest 344、浏览器 39、前端 61、版本一致性 ok。云端 CI 停用（DEC-021）。证据：`.git/orchestration/wave18-evidence/{iss061-spec,iss061-postflight,pr77-audit,REVIEW-ISS-061}.json`、`wave16-evidence/review-wave16-061-RESULT.md`。
 
 ### ISS-060 · 切片 1 打包/校验脚本卫生（review 非阻断观察收口）
 
@@ -603,6 +617,7 @@
   - [ ] 耗时/覆盖/库及 WAL 增长的匿名摘要有记录；不得贴私人目录清单
 - **证据/接续**：NOT_VERIFIED。2026-09-14 PM 只读观察：`launchctl list` 显示 `com.maoscripts.fathom-scan` 上次退出码 1；`logs/launchd-scan.err.log` 记录 2026-09-13 12:00 定时任务确实触发（out 日志“开始扫描”），但被 `InvalidScanError`（stderr 两行 `Interrupted system call` 判为非权限致命）拒绝，生产库 `data/fathom.db`（v0 schema）仍仅有 2026-09-12 一个快照，第二个有效日期未产生。根因已由 ISS-047 修复并合并，主仓代码已同步；最早 2026-09-15 12:00 后重新观察。原任务“增长非全零”门槛已纠正。
   **2026-09-15 17:33 PM 只读复查（窗口已到）**：定时任务确实按时触发（`logs/launchd-scan.out.log` 09-15 有新“开始扫描”行；launchd 上次退出码仍 1），但**第二个快照依然未产生**。生产库只读读取 `scan_runs`：run 2（09-15 12:00:07→13:00:07）与 run 1（09-14 12:00:06→13:00:06）**均为 `interrupted`，message 为 `du 超过 3600 秒安全时限`**——即连续两天在整 1 小时被中断，与 ISS-047 的 EINTR 问题**不同**。err 日志内 19 行均为 ISS-047 合并前的历史内容（无“瞬时/partial”新措辞），`.venv` 导入的主仓代码已含 ISS-047 修复（`_TRANSIENT_MESSAGES`/`transient_error_count` 在）。本卡阻塞已定位并转 **ISS-061**；观察窗口续等 ISS-061 修复后。
+  **2026-09-16 00:55 PM**：ISS-061 已合并为 main `6789245`（du 时限 `FATHOM_DU_TIMEOUT_S` 默认 14400s），生产目录 main 已同步，launchd 定时任务以仓库 `.venv/bin/python main.py scan` 运行，故 **2026-09-16 12:00 的定时扫描将首次以 4h 上限执行**。观察方法（只读）：12:00 起最迟 16:01 前后读取 `scan_runs` 最新行（期望 `status=completed` 且 `finished_at-started_at` 记录真实耗时）与 `snapshots` 是否新增 09-16 一行；完成则本卡"两个不同有效日期"取得证据，并可据 `du_seconds` 校准 ISS-062 的时长提示；若再次 `interrupted`（14400 秒），须开自适应/分段扫描新卡而不是继续加大上限。附：常驻 `fathom-web`（PID 6026）为合并前进程，重启前 API 触发扫描仍用旧 3600s，属生产操作待用户授权。
 
 ### ISS-002 · 权限覆盖与授权说明
 

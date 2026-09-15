@@ -64,6 +64,7 @@ cargo run
 ## 数据、权限与已知限制
 
 - development 默认数据位于项目下 `data/fathom.db`，报告在 `reports/`、日志在 `logs/`，均不入 Git；release 模式默认使用 `~/Library/Application Support/Fathom`。可用 `FATHOM_RUNTIME_DIR`、`FATHOM_SCAN_ROOT`、`FATHOM_RESOURCE_DIR`、`FATHOM_PORT` 或等价 CLI 参数完整隔离，详见 [TESTING](docs/TESTING.md)。
+- 单次 `du` 采集的安全时限由 `FATHOM_DU_TIMEOUT_S` 控制（默认 14400 秒即 4 小时）；超过时限的扫描记为「已中断」并保留上一次有效快照，不会留下半写的数据。该值必须是正的有限数，非法值会让程序在启动时报错而不是静默关闭时限。大目录（如百万级目录的用户主目录）实测可能超过 1 小时，若日报连续显示中断可适当调大。
 - `FATHOM_DB` 保留兼容：未指定运行根时，其父目录成为完整运行根，避免只隔离数据库。迁移备份使用 SQLite backup API 包含已提交 WAL；仍不能在普通备份中只拷贝活跃主 DB。
 - 未授权的目录可能无法读取；权限错误行数不等于覆盖比例，也不能说明被跳过的数据不重要。发行 helper 的授权主体待实机验证。
 - 失败扫描保护、特殊路径解析、首扫成功语义和选择器刷新已修复并有真实入口回归；生产 launchd 跨日、系统通知与桌面 WebView 仍按 [任务](docs/TASKS.md) 单独验收。

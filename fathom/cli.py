@@ -21,6 +21,7 @@ import os
 import platform
 import signal
 import socket
+import sqlite3
 import sys
 import threading
 import time
@@ -48,6 +49,45 @@ from . import (
 
 
 
+def _last_measured_du_seconds(root: Path) -> float | None:
+    """只读查询同一 root 上次成功快照的 du_seconds；无有效记录返回 None。
+
+    只服务扫描开场提示（ISS-062），绝不影响扫描本身：库不存在、表缺失、
+    读失败、du_seconds 缺失或非正数一律按「无实测记录」处理，不编造时长。
+    以 mode=ro 只读打开，不建库、不触发迁移、不写任何数据。
+    """
+    try:
+        uri = f"{Path(config.DB_PATH).as_uri()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            row = conn.execute(
+                "SELECT du_seconds FROM snapshots WHERE root = ? ORDER BY id DESC LIMIT 1",
+                (str(root),),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None or row[0] is None:
+            return None
+        seconds = float(row[0])
+        return seconds if seconds > 0 else None
+    except Exception:  # noqa: BLE001 - 提示逻辑绝不让扫描失败
+        return None
+
+
+def _scan_duration_hint(root: Path) -> str:
+    """拼开场提示的时间段文案；分钟数取整，不足 1 分钟如实标注。"""
+    limit_note = (
+        f"本次安全时限 {config.DU_TIMEOUT_S:g} 秒，可用 FATHOM_DU_TIMEOUT_S 调整"
+    )
+    seconds = _last_measured_du_seconds(root)
+    if seconds is None:
+        return f"首次或无实测记录；{limit_note}"
+    minutes = seconds / 60
+    if minutes < 1:
+        return f"上次实测 du 不到 1 分钟；{limit_note}"
+    return f"上次实测 du 约 {int(minutes + 0.5)} 分钟；{limit_note}"
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     config.ensure_runtime_dirs()
     root = Path(args.root).expanduser() if args.root else config.DEFAULT_ROOT
@@ -58,7 +98,9 @@ def cmd_scan(args: argparse.Namespace) -> int:
             if os.environ.get("XPC_SERVICE_NAME") == config.SCAN_LABEL
             else "cli"
         )
-    print(f"开始扫描 {root} ……（1100 万文件量级可能需要 5-15 分钟）")
+    # 固定「5-15 分钟」与生产实测相悖（09-12 首扫约 47 分钟，09-14/15 超
+    # 60 分钟被时限中断）：改为基于上次成功快照的实测 du_seconds 与配置上限。
+    print(f"开始扫描 {root} ……（{_scan_duration_hint(root)}）")
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     def _cancel_on_sigterm(_signum, _frame):
         raise scan_coordinator.ScanCancelledError("收到 SIGTERM，扫描已取消")

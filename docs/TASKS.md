@@ -105,7 +105,7 @@
 | ISS-057 | 壳在非 tray 退出路径也须回收自己拉起的 helper | P0 | M2 | DONE | ISS-055 |
 | ISS-058 | 版本一致性测试夹具按切片 1 新 bundle 形态定位（main 门禁 337/338 转绿） | P0 | M2 | DONE | ISS-009 |
 | ISS-059 | 壳握手健壮性：陈旧 helper-instance.json 存活校验与 ports-exhausted 状态接线 | P1 | M2 | DONE | ISS-009 |
-| ISS-060 | 切片 1 打包/校验脚本卫生（review 非阻断观察收口） | P3 | M2 | READY | ISS-009 |
+| ISS-060 | 切片 1 打包/校验脚本卫生（review 非阻断观察收口） | P3 | M2 | DONE | ISS-009 |
 
 ## 任务卡
 
@@ -143,9 +143,11 @@
 - **范围**：`scripts/repro_iss053_resource_glob.sh`、`scripts/build_helper.sh`、`scripts/verify_app_bundle.sh`、`apps/desktop/src-tauri/src/lib.rs`（仅日志）。
 - **实施边界**：(a) `repro_iss053_resource_glob.sh` 假定 `bundle.resources` 为字符串数组，在 map 形态下会把 conf 临时降级回数组 glob，`EXPECTED_HEAD` 钉在 `f6dc9bb`——按 map 形态更新或明确归档为历史复现脚本；(b) `build_helper.sh:41` 创建从未写入的 `resources/helper/log/`，`:101-106` 的 `--version` 退出码检查在 `set -e` 下为死分支——删或改为可读报错；(c) `verify_app_bundle.sh:254-256` (d) 段收尾对让位 helper TERM 0.5s 后 KILL 可能来不及清理 instance 文件导致 f-instance-cleaned 假败（只会多败不假过）——加长 TERM 等待或分离运行根；(d) `reap_spawned_helper`/`quit_with_helper` 中 `let _ = handle.stop()` 丢弃错误无日志——至少 `eprintln`，并在注释明确"零击杀指外部进程；对本壳子进程 bounded 10s 后 SIGKILL 属设计内"；(e)（ISS-059 reviewer 补充）既有单测 `handshake_rejects_wrong_identity` 只断言 `read_helper_instance` 原始字段、未真正断言 handshake 拒绝行为——补强为经 `instance_disposition` 的拒绝路径断言；(f)（同上）`decode_exit_event` 扫描整份追加式 `helper.log` 取最后事件行，跨运行长驻日志理论上可复活旧事件——按运行根/启动时间截断或只读本次 spawn 之后的追加段。
 - **验收**：
-  - [ ] 修改后 `verify_app_bundle.sh` 20/20 仍 pass（ISS-059 起 12→20 段）、cargo check exit 0、cargo test 全绿、`repro_iss053` 在当前 main 形态下不误报
-  - [ ] 无行为变化：让位/零击杀/复用/退出语义与验证断言保持
-- **证据/接续**：不得勾选验收项。
+  - [x] 修改后 `verify_app_bundle.sh` 20/20 实测 20 passed / 0 failed（ISS-059 起 12→20 段）、cargo check exit 0、cargo test 全绿、`repro_iss053` 在当前 main 形态下不误报
+  - [x] 无行为变化：让位/零击杀/复用/退出语义与验证断言保持
+- **证据/接续**（2026-09-15 完成，PR #73 → main `2e0c0de`）：分支 `iss-060-script-hygiene` head `34233c5`（base `f4bc9e1`），5 文件 319 行。六项收口：(a) repro 脚本明确归档为 ISS-053 历史复现脚本（注释说明仅适用 `EXPECTED_HEAD=f6dc9bb`、HEAD 不符只 WARN 不 fail）；(b) `build_helper.sh` 删除从未写入的 log 目录、`:101-106` 死分支改 `|| { echo FAIL; exit 1; }`，四项既有校验（架构/`--version`/冻结树/SHA256）保留；(c) verify (d) 段让位 helper 独立运行根 + bounded 等待（SIGKILL 兜底保留），消除 `f-instance-cleaned` 假败风险，20 个 record id 未变；(d) `reap_spawned_helper`/`helper_retry` 的 `stop()` 错误加 eprintln，零击杀注释精确化（仅外部进程零信号）；(e) `handshake_rejects_wrong_identity` 升为真断言拒绝路径；(f) `decode_exit_event` 用例三条断言钉住 offset 语义。
+- **PM 代跑验证**：cargo check exit 0；cargo test **14 passed / 0 failed**；`build_helper.sh`/`build_app.sh` exit 0（产物真实性已校验：Mach-O arm64 可执行文件、mtime 新建、`--version` 输出正确）；`verify_app_bundle.sh` **20 passed / 0 failed，verdict=PASS**。最新 main 门禁：338 pytest + 14 cargo test + 版本一致性 + cargo check 全绿。
+- **独立审查**：`review-wave14-060` → **ACCEPT**（0 blocking，7 条 info 观察）。如实记录两点：(1) reviewer 侧未自行跑 verify（标 NOT_VERIFIED，采用 PM 证据）；(2) 其 review JSON 含格式缺陷（字符串内裸换行 + 缺结束引号），PM 按 RESULT.md 重建为合法契约并过 `review-acceptance-gate.py`，verdict 与发现未改写。
 
 ### ISS-054 · ISS-009 切片 1 代码编译打通（类型/可变性/图标）
 

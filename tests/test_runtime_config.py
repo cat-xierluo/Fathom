@@ -298,6 +298,15 @@ class TestDuTimeoutConfig:
         assert proc.returncode == 0, proc.stderr
         assert json.loads(proc.stdout.strip().splitlines()[-1])["du_timeout_s"] == 14400.0
 
+    def test_non_finite_values_fail_closed(self):
+        """ISS-061 审查观察：nan/inf 会绕过单纯的大小比较而静默解除安全时限。
+        nan 与任何值比较均为 False，inf > 0 为真——两者都必须 fail closed，
+        否则等于把超时防护关掉。1e400 溢出为 inf，同样必须拒绝。"""
+        for raw in ("nan", "inf", "-inf", "1e400"):
+            proc = self._load_config_probe(raw)
+            assert proc.returncode != 0, f"FATHOM_DU_TIMEOUT_S={raw} 必须 fail closed"
+            assert "有限" in proc.stderr or "正数" in proc.stderr, proc.stderr
+
     def test_env_override_takes_precedence(self):
         """合法 FATHOM_DU_TIMEOUT_S 覆盖默认值；非法值必须 fail closed。"""
         ok = self._load_config_probe("5.5")
@@ -306,7 +315,7 @@ class TestDuTimeoutConfig:
 
         zero = self._load_config_probe("0")
         assert zero.returncode != 0, "FATHOM_DU_TIMEOUT_S=0 必须 fail closed"
-        assert "正数" in zero.stderr
+        assert "正" in zero.stderr  # 消息为“必须是正的有限浮点数…”
 
         bad = self._load_config_probe("not-a-number")
         assert bad.returncode != 0, "非数字值必须 fail closed"

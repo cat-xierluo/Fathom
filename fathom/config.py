@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import math
 import os
 from pathlib import Path
 import sys
@@ -308,9 +309,12 @@ else:
         raise ConfigurationError(
             f"FATHOM_DU_TIMEOUT_S 必须是正浮点数：{_raw_du_timeout!r}"
         ) from exc
-    if DU_TIMEOUT_S <= 0:
+    # 注意：nan 与任何值比较均为 False，inf > 0 为真——两者都会绕过单纯
+    # 的 `<= 0` 检查，从而静默解除安全时限（等于把超时防护关掉）。
+    # 因此必须同时要求有限且为正数。
+    if not math.isfinite(DU_TIMEOUT_S) or DU_TIMEOUT_S <= 0:
         raise ConfigurationError(
-            f"FATHOM_DU_TIMEOUT_S 必须是正数：{DU_TIMEOUT_S}"
+            f"FATHOM_DU_TIMEOUT_S 必须是正的有限浮点数：{DU_TIMEOUT_S}"
         )
 del _raw_du_timeout
 

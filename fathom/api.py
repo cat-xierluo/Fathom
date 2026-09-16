@@ -12,6 +12,8 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - POST /api/scan             触发手动扫描（后台执行，状态入 scan_runs 表）
 - GET  /api/scan/status      查询扫描任务状态（?history=N 附最近 N 条记录）
 - POST /api/reveal           在 Finder 中显示根内路径（受 reveal 边界约束）
+- GET  /api/config           当前生效用户设置（值/来源/默认值，ISS-016A）
+- PUT  /api/config           保存用户设置（需写令牌；不注册/不重载 launchd）
 
 本地边界合同（ISS-022，仅覆盖当前单实例 loopback 服务；发行端口/服务发现归 ISS-029）：
 
@@ -79,7 +81,8 @@ _WRITE_TOKEN = secrets.token_urlsafe(32)
 # 与浏览器同源，不在此列。
 _TAURI_LOADER_ORIGINS = frozenset({"tauri://localhost", "http://tauri.localhost"})
 
-# 无副作用方法之外的请求都需要写令牌（当前路由只有 POST /api/scan、/api/reveal）
+# 无副作用方法之外的请求都需要写令牌（当前路由只有 POST /api/scan、
+# /api/reveal 和 PUT /api/config）
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 # 静态前端与 API 响应统一安全头：前端无内联脚本，ECharts 只需内联样式
@@ -532,6 +535,48 @@ def api_bootstrap():
     不写入 localStorage/URL。进程重启后令牌轮换，前端 403 时自动重新获取。
     """
     return {"token": _WRITE_TOKEN}
+
+
+@app.get("/api/config")
+def api_config_get():
+    """当前生效的用户设置（ISS-016A）。
+
+    返回四个可设置项的生效值、逐项来源（env/settings/default/cli，环境
+    变量优先的依据见 fathom/config.py 模块 docstring）、恢复默认用的默认
+    值，以及不入设置文件的只读策略（保留/超时/大文件默认）。只读无副作用。
+    """
+    return config.effective_settings_view()
+
+
+@app.put("/api/config")
+async def api_config_put(request: Request):
+    """保存用户设置到运行根 settings.json 并在当前进程生效（ISS-016A）。
+
+    - 守卫与既有写方法一致（Host/Origin/写令牌，见 local_boundary_guard）；
+    - 校验失败 400 + 中文 detail，旧值不动（文件与进程内生效值都不变）；
+    - 本切片不注册/不重载任何 launchd 服务：``service_reload`` 恒为
+      ``requires_user_action``，前端如实展示“需重新安装计划才生效”。
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "请求体必须是合法 JSON 对象")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "请求体必须是 JSON 对象")
+    try:
+        config.update_user_settings(body)
+    except config.ConfigurationError as exc:
+        raise HTTPException(400, str(exc))
+    except OSError as exc:
+        raise HTTPException(500, f"settings.json 写入失败（旧文件未改动）：{exc}")
+    return {
+        "applied": True,
+        "service_reload": "requires_user_action",
+        "hint": ("已保存到 settings.json 并在当前服务进程生效；已安装的 "
+                 "launchd 后台计划不受影响，需重新安装（main.py install）后"
+                 "才按新计划时间运行。"),
+        "config": config.effective_settings_view(),
+    }
 
 
 @app.post("/api/scan")

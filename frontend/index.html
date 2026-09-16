@@ -170,7 +170,38 @@
       <!-- ===== 设置 ===== -->
       <section class="page hidden" id="page-settings">
         <div class="panel">
-          <div class="panel-head"><h2>运行配置</h2><p class="hint">当前为只读展示，可写配置见路线图</p></div>
+          <div class="panel-head"><h2>可修改设置</h2><p class="hint">保存到运行根 settings.json；留空的字段保持不变</p></div>
+          <form id="config-form" class="config-form" novalidate>
+            <div class="cfg-row">
+              <label for="cfg-scan-root">监控根目录</label>
+              <input class="ctl-input cfg-wide" id="cfg-scan-root" type="text"
+                     autocomplete="off" spellcheck="false" placeholder="留空表示不修改">
+            </div>
+            <div class="cfg-row">
+              <label for="cfg-scan-time">计划时间</label>
+              <input class="ctl-input" id="cfg-scan-time" type="text" inputmode="numeric"
+                     autocomplete="off" placeholder="HH:MM">
+            </div>
+            <div class="cfg-row">
+              <label for="cfg-min-kb">入库阈值（KB）</label>
+              <input class="ctl-input" id="cfg-min-kb" type="number" min="0" step="any"
+                     autocomplete="off" placeholder="正数">
+            </div>
+            <div class="cfg-row">
+              <label for="cfg-free-alert-gb">低空间提醒阈值（GB）</label>
+              <input class="ctl-input" id="cfg-free-alert-gb" type="number" min="0" step="any"
+                     autocomplete="off" placeholder="正数">
+            </div>
+            <div class="cfg-actions">
+              <button type="submit" id="btn-config-save" class="btn">保存设置</button>
+              <button type="button" id="btn-config-reset" class="btn">恢复默认值</button>
+            </div>
+          </form>
+          <p id="config-effective" class="hint">配置加载中…</p>
+          <p id="config-feedback" class="hint" hidden></p>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>运行信息</h2><p class="hint">来自本地服务的实际值，不含硬编码</p></div>
           <table class="tbl" id="settings-table"><tbody></tbody></table>
         </div>
         <div class="panel">
@@ -182,7 +213,7 @@
           <div class="settings-actions">
             <p class="hint">定时扫描与常驻服务由 launchd 管理（com.maoscripts.fathom-*）。</p>
             <p class="hint">卸载：<code>.venv/bin/python main.py uninstall</code>；重装：<code>install</code>。</p>
-            <p class="hint">数据与日报位于项目目录 data/、reports/（已 gitignore，含全盘路径，勿外传）。</p>
+            <p class="hint">修改计划时间后需重装计划才生效；数据与日报的实际位置见上方“运行信息”。</p>
           </div>
         </div>
       </section>

@@ -10,7 +10,7 @@ from pathlib import Path
 import threading
 import uuid
 
-from . import config, db, reports, scanner
+from . import config, db, notify, reports, scanner
 
 
 class ScanBusyError(RuntimeError):
@@ -212,6 +212,24 @@ class ScanSession:
                     if conn is not None:
                         conn.close()
                     conn = None
+            elif report_status == "not_available" and sid is not None:
+                # ISS-003A：首扫没有同数据集基线，不发对比/完成文案，
+                # 改发"首次快照已建立"；失败同样不影响快照。
+                try:
+                    conn = db.connect()
+                    notification_status = (
+                        "submitted"
+                        if reports.notify_first_snapshot_for(conn, sid) else "failed"
+                    )
+                    if notification_status == "failed":
+                        warnings.append("首次快照通知未提交；快照不受影响")
+                except Exception as exc:
+                    notification_status = "failed"
+                    warnings.append(f"首次快照通知失败：{exc}")
+                finally:
+                    if conn is not None:
+                        conn.close()
+                    conn = None
             self._update(phase="retention", notification_status=notification_status)
 
             pruned = 0
@@ -259,6 +277,12 @@ class ScanSession:
         except (KeyboardInterrupt, ScanCancelledError, scanner.ScanInterruptedError) as exc:
             if conn is not None:
                 conn.rollback()
+            # ISS-003A：中断/超时绝不发"完成"通知，只发标题明确"已中断"
+            # 的通知（notify 自吞全部异常；不改锁与扫描语义）。
+            try:
+                notify.notify_scan_interrupted(str(exc) or "扫描被取消")
+            except Exception:
+                pass  # 双保险：通知路径任何失败都不改变中断收尾
             self._finish("interrupted", str(exc) or "扫描被取消")
             raise
         except Exception as exc:

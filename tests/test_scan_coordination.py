@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 from fastapi.testclient import TestClient
 import pytest
 
-from fathom import api, config, db, launchd, reports, scan_coordinator, scanner
+from fathom import api, config, db, launchd, notify, reports, scan_coordinator, scanner
 
 
 PYTHON = Path(sys.executable)
@@ -28,6 +28,19 @@ def _env() -> dict[str, str]:
     value = os.environ.copy()
     value["PYTHONPATH"] = str(Path(__file__).parents[1])
     return value
+
+
+@pytest.fixture(autouse=True)
+def _notification_recorder(monkeypatch):
+    """ISS-003A：本文件多条路径会触达通知，统一记录调用、绝不真弹横幅。"""
+    sent: list[tuple[str, str, str | None]] = []
+
+    def _record(title: str, body: str, sound: str | None = None) -> bool:
+        sent.append((title, body, sound))
+        return True
+
+    monkeypatch.setattr(notify, "send_notification", _record)
+    yield sent
 
 
 def _wait_status(client: TestClient, expected: str, timeout: float = 8) -> dict:
@@ -48,9 +61,11 @@ def test_two_real_processes_only_one_enters_protected_scan(tmp_path):
     code = textwrap.dedent("""
         import sys, time
         from pathlib import Path
-        from fathom import config, scan_coordinator, scanner
+        from fathom import config, notify, scan_coordinator, scanner
         runtime, root, marker = map(Path, sys.argv[1:])
         config.configure(runtime_dir=runtime, scan_root=root)
+        # 子进程收不到本文件的 autouse 记录器，显式拦掉真实横幅。
+        notify.send_notification = lambda *a, **kw: True
         try:
             session = scan_coordinator.start_scan(source='cli')
         except scan_coordinator.ScanBusyError:
@@ -141,6 +156,7 @@ def test_real_api_first_scan_succeeds_without_report_then_second_day_reports(tmp
     serve_code = (
         "import sys; from fathom import cli,reports; "
         "reports.notify_for_snapshot=lambda conn,sid: True; "
+        "reports.notify_first_snapshot_for=lambda conn,sid: True; "
         "raise SystemExit(cli.main(sys.argv[1:]))"
     )
     proc = subprocess.Popen(
@@ -393,8 +409,10 @@ def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
     code = textwrap.dedent("""
         import subprocess, sys
         from pathlib import Path
-        from fathom import cli, scanner
+        from fathom import cli, notify, scanner
         runtime, root, child_file = map(Path, sys.argv[1:])
+        # SIGTERM 走中断通知路径；子进程内拦掉真实横幅。
+        notify.send_notification = lambda *a, **kw: True
         real_popen = subprocess.Popen
         def sleeping_popen(*args, **kwargs):
             proc = real_popen(['/bin/sleep', '30'], stdout=subprocess.PIPE,
@@ -681,3 +699,110 @@ class TestScanTimeoutConfigurable:
         lock_path = runtime / "data" / "fathom.db.scan.lock"
         new_lease = scan_coordinator.ScanLease.acquire(lock_path, source="cli")
         new_lease.release()
+
+
+class TestISS003ANotificationSemantics:
+    """ISS-003A：首扫/partial/中断三态通知语义经协调器真实接线钉住。
+
+    改动前基线（复现已记录进 RESULT）：首扫与中断完全不发通知；partial
+    通知标题恒为"扫描完成"且正文无覆盖缺口信息。
+    """
+
+    @staticmethod
+    def _runtime(tmp_path, monkeypatch, root_name="root"):
+        runtime = tmp_path / "runtime"
+        root = tmp_path / root_name
+        root.mkdir()
+        (root / "x.txt").write_text("x", encoding="utf-8")
+        monkeypatch.setattr(config, "DB_PATH", runtime / "data" / "fathom.db")
+        monkeypatch.setattr(config, "REPORTS_DIR", runtime / "reports")
+        monkeypatch.setattr(config, "LOGS_DIR", runtime / "logs")
+        monkeypatch.setattr(config, "DEFAULT_ROOT", root)
+        return runtime, root
+
+    def test_first_scan_notifies_first_snapshot_not_done(
+        self, tmp_path, monkeypatch, _notification_recorder
+    ):
+        """首扫：发"首次快照已建立"，不出现对比类/完成类误导文案。"""
+        _runtime_obj, root = self._runtime(tmp_path, monkeypatch)
+        _rid, result = scan_coordinator.run_scan(source="cli", root=root)
+        assert result["report_status"] == "not_available"
+        assert result["notification_status"] == "submitted"
+        assert len(_notification_recorder) == 1
+        title, body, sound = _notification_recorder[0]
+        assert title == notify.TITLE_FIRST
+        assert "首次快照已建立" in body and "下次扫描起可比较" in body
+        # 首扫没有可比基线，不得出现 0 变化/无增长式对比文案，也不是"完成"。
+        assert "无变化" not in body and "无 1MB 以上增长" not in body
+        assert title != notify.TITLE_DONE
+        assert sound is None
+
+    def test_partial_scan_notification_notes_coverage_gap(
+        self, tmp_path, monkeypatch, _notification_recorder
+    ):
+        """partial：首扫与对比两态正文都注明"部分覆盖（N 处权限受限）"。"""
+        _runtime_obj, root = self._runtime(tmp_path, monkeypatch)
+
+        def fake_du(target):
+            return scanner.DuResult(
+                sizes={str(target): 4096}, exit_code=1, denied_count=2,
+                transient_error_count=0, transient_error_sample=None,
+                elapsed_seconds=0.05, stderr_tail=("du: /x: Permission denied",),
+            )
+
+        monkeypatch.setattr(scan_coordinator.scanner, "run_du", fake_du)
+        _rid1, r1 = scan_coordinator.run_scan(source="cli", root=root)
+        assert r1["report_status"] == "not_available"
+        # 同日第二张快照会被保留策略清掉，把首张改到昨日形成真实前驱。
+        conn = db.connect()
+        try:
+            conn.execute("UPDATE snapshots SET created_at='2026-09-12T08:00:00'")
+            conn.commit()
+        finally:
+            conn.close()
+        _rid2, r2 = scan_coordinator.run_scan(source="cli", root=root)
+        assert r2["report_status"] == "written"
+        assert len(_notification_recorder) == 2
+        first_title, first_body, _ = _notification_recorder[0]
+        done_title, done_body, _ = _notification_recorder[1]
+        assert first_title == notify.TITLE_FIRST
+        assert "部分覆盖（2 处权限受限）" in first_body
+        assert done_title == notify.TITLE_DONE
+        assert "部分覆盖（2 处权限受限）" in done_body
+        # 不夸大：不得声称完整覆盖。
+        assert "完整" not in done_body
+
+    def test_timeout_sends_interrupted_notification_never_done(
+        self, tmp_path, monkeypatch, _notification_recorder
+    ):
+        """中断/超时：不发"完成"通知，只发标题明确"已中断"的通知。"""
+        _runtime_obj, root = self._runtime(tmp_path, monkeypatch)
+        monkeypatch.setattr(config, "DU_TIMEOUT_S", 0.1)
+        real_popen = subprocess.Popen
+
+        def sleeping_popen(*args, **kwargs):
+            return real_popen(
+                ["/bin/sleep", "30"], stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, start_new_session=True,
+                pass_fds=kwargs.get("pass_fds", ()),
+            )
+
+        monkeypatch.setattr(scanner.subprocess, "Popen", sleeping_popen)
+        with pytest.raises(scanner.ScanInterruptedError):
+            scan_coordinator.run_scan(source="cli", root=root)
+        assert len(_notification_recorder) == 1
+        title, body, sound = _notification_recorder[0]
+        assert title == notify.TITLE_INTERRUPTED
+        assert "扫描已中断，保留上次快照" in body
+        assert "du 超过" in body  # 中断原因可解释
+        # 关键反例：任何路径都不得出现"完成"标题。
+        assert all(t != notify.TITLE_DONE for t, _, _ in _notification_recorder)
+        assert sound is None
+        conn = db.connect()
+        try:
+            row = conn.execute(
+                "SELECT status FROM scan_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            assert row["status"] == "interrupted"
+        finally:
+            conn.close()

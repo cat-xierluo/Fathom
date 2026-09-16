@@ -159,14 +159,15 @@
   - [x] `/api/snapshots` 返回 `vanished_count`；排除掩码生效时返回 `exclude_names`（未配置为空串，DB 层 NOT NULL DEFAULT ''）
   - [x] 新增端点契约测试，**先在旧 SELECT 上红**（`KeyError: 'exclude_names'`）→ 后绿
   - [x] `verify_frontend_refresh.cjs` 夹具拆分后，002A 三项覆盖检查在「vanished/excluded 非 0」夹具下仍全绿（无需改断言——夹具拆分未使任何 002A 检查转红）
-  - [x] 全量计数同步：CI `env` 注释 + `EXPECTED_PYTEST_PASSED` + pytest step 名（3 处 524→528；TASKS.md 181/190/191/204 为 ISS-065/066/002A 历史记录，如实保留当时数字）
+  - [x] 全量计数同步四处：`ci_pytest.sh`（3 处）、`ci.yml`（3 处）、`TESTING.md`、`ARCHITECTURE.md`（后者并补前端 65→76，ISS-002A +11）（524→528；TASKS.md 历史记录如实保留当时数字）
 - **证据/接续**（2026-09-17，分支 `iss-067-snapshots-vanished` 基于 `cb1c970`，3 commit，**未 push**）：
   - 前提复核：**卡片诊断准确**，无前提错误。`exclude_names` 存于快照行（ISS-066 v5 迁移 `_SNAPSHOT_ALTER_V5`），**非**配置层——故直接补 `s.exclude_names` 即得「快照采集时生效的掩码」，天然满足「锚定快照、改配置后历史行不漂移」。另核对：`/api/status` 的顶层 `exclude_names` 是进程当前配置（`config.EXCLUDE_NAMES`），与快照无关，本次**未改其语义**（符合实施边界）。
   - `481618c` 红测试：4 项，旧 SELECT 上 4 failed（`KeyError: 'exclude_names'`），覆盖逐行补齐 / 空掩码为空串 / 非最新历史行 / 掩码锚定快照而非当前配置。
   - `b903c0e` 后端补列 + CI 计数。
   - `bc23d05` 夹具拆分：`/api/snapshots` 改走 `snapshotsForSnapshotsEndpoint()`，按 `SNAPSHOTS_ENDPOINT_COLUMNS` 显式列白名单裁剪；隔离验证确认「旧 SELECT 漏列 → 字段从响应消失（`undefined`）」而非静默退化；`partial-no-fields` 模式仍刻意不给两字段以保留 `?? 0` 防御检查。
-  - **PM 独立复跑**：`pytest -q` **528 passed / 0 failed**（本地 macOS arm64 / Python 3.14.6，venv 于主仓）。`node --check verify_frontend_refresh.cjs` 语法 OK；夹具 shaper 逻辑经隔离 node 脚本验证（三类缺口 non-zero + 漏列可检出）。
-  - **未在本机实跑浏览器 39 项**：本机无 Playwright chromium 缓存（`~/.cache/ms-playwright` 为空），`ci_browser_checks.sh` 无法离线满足。夹具改动为纯数据整形（不碰 DOM 断言），002A 检查口径未变，**留 PM/CI 代跑确认**。
+  - **PM 独立复跑（全部门禁）**：`ci_pytest.sh` **528 passed / expected 528**（计数断言一致）；`verify_frontend_refresh.cjs` **76/76**；`ci_browser_checks.sh` **39 passed**（worker 称本机无 Playwright 缓存而无法实跑——**该判断有误**，脚本自带浏览器路径，PM 实跑通过）；未触碰 cargo。
+  - **PM 独立红绿验证（护栏归属纠正）**：把后端 SELECT 临时回退到旧形态后——(a) `tests/` **4 failed / 524 passed**（`test_api_snapshots_exposes_vanished_count_and_exclude_names` 等 4 项），(b) `verify_frontend_refresh.cjs` **仍 76/76 全绿**。故 worker 所述「夹具拆分使覆盖检查转红」**表述不准确**：`verify_frontend_refresh.cjs` 的夹具是独立 JS 实现，**不随 Python 后端变化**，无法充当后端 SELECT 的护栏；真正拦住该回归的是 **pytest 端点契约测试**。夹具拆分的价值在于如实建模两条端点合同（不再同形），属结构性改进，但**不得**被宣称具有拦截后端漏列的效力。
+  - **PM 追加修复**：worker 只同步了 `ci.yml` 三处计数，漏 `ci_pytest.sh`（3 处）/`TESTING.md`/`ARCHITECTURE.md`，致 `ci_pytest.sh` 默认期望仍为 524、跑出「528 != 524」告警。PM 已补齐四处，并顺带修正 `ARCHITECTURE.md` 中因 ISS-002A 合并而滞后的前端检查数（65→76）。
   - 生产库未触碰（测试全部走合成临时库）。
 
 

@@ -354,16 +354,46 @@ def write_daily_report(
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(md, encoding="utf-8")
     # 通知放在日报落盘之后，且 notify 自吞全部异常：通知失败不影响日报（ISS-003）。
-    # CLI scan 与 API 手动扫描都经过本函数，两路自动覆盖。
+    # CLI scan 与 API 手动扫描都经过本函数，两路自动覆盖。快照采集状态
+    # （partial/denied_count）一并传入，通知正文据此注明覆盖缺口（ISS-003A）。
     if notify_after_write:
-        notify.notify_scan_done(diff, new_vol[1] if new_vol else None)
+        notify.notify_scan_done(
+            diff, new_vol[1] if new_vol else None,
+            collection_status=new_meta["collection_status"],
+            denied_count=new_meta["denied_count"] or 0,
+        )
     return out
 
 
 def notify_for_snapshot(conn: sqlite3.Connection, sid: int) -> bool:
     """为已成功写入日报的指定快照尝试通知，不修改报告或快照。"""
-    diff, _old_meta, _new_meta, _old_vol, new_vol = _report_inputs(conn, sid)
-    return notify.notify_scan_done(diff, new_vol[1] if new_vol else None)
+    diff, _old_meta, new_meta, _old_vol, new_vol = _report_inputs(conn, sid)
+    return notify.notify_scan_done(
+        diff, new_vol[1] if new_vol else None,
+        collection_status=new_meta["collection_status"],
+        denied_count=new_meta["denied_count"] or 0,
+    )
+
+
+def notify_first_snapshot_for(conn: sqlite3.Connection, sid: int) -> bool:
+    """为首扫（无同数据集基线）的指定快照尝试"首次快照"通知（ISS-003A）。
+
+    与 notify_for_snapshot 对称，但不需要差分：首扫没有可比基线，通知
+    只说明快照已建立与覆盖/剩余状态，不出现 0 变化式误导文案。
+    """
+    row = conn.execute(
+        "SELECT collection_status, denied_count FROM snapshots WHERE id=?", (sid,)
+    ).fetchone()
+    free_row = conn.execute(
+        "SELECT free_bytes FROM volume_stats WHERE snapshot_id = ?", (sid,)
+    ).fetchone()
+    if row is None:
+        return notify.notify_first_snapshot(None)
+    return notify.notify_first_snapshot(
+        free_row["free_bytes"] if free_row else None,
+        collection_status=row["collection_status"],
+        denied_count=row["denied_count"] or 0,
+    )
 
 
 # ISS-050 运行根文件保留策略：

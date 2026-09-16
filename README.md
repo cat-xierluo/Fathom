@@ -85,6 +85,23 @@ cargo run
 
 新模型从 [AGENTS](AGENTS.md) 和 [TASKS](docs/TASKS.md) 接手；产品目标见 [ROADMAP](docs/ROADMAP.md)，体验合同见 [DESIGN](docs/DESIGN.md)，当前实现见 [ARCHITECTURE](docs/ARCHITECTURE.md)。本地历史数据与客户路径不得进入测试 fixture、截图或 PR。
 
+### 构建未签名的桌面包（开发者，ISS-009 切片 1）
+
+当前可在 Apple Silicon 开发机上产出**未签名、未公证**的 `.app` 与 `.dmg`，仅供本机/内部试用，不是可分发的公开包：
+
+```bash
+# 1. 冻结 helper（需 apps/desktop/experiments/iss029/.venv-build：PyInstaller 6.22.3 + fastapi/uvicorn 钉定版本）
+bash scripts/build_helper.sh
+# 2. 打包 Tauri 壳 + helper（产物：apps/desktop/src-tauri/target/release/bundle/{macos/Fathom.app,dmg/Fathom_0.3.0_aarch64.dmg}）
+bash scripts/build_app.sh
+# 3. 校验：结构 / 只读布局 / 含空格与中文路径启动 / 端口冲突让位与零击杀 / 二次启动 / 退出回收 / 陈旧 instance / 端口耗尽（20 项）
+bash scripts/verify_app_bundle.sh
+```
+
+- 产物校验值写在 `apps/desktop/src-tauri/target/release/bundle/checksums.txt`（SHA256）；冻结 helper 的 SHA256 由 `build_helper.sh` 打印，同一 pin 集合下可复现。
+- 支持矩阵：仅 `darwin-aarch64`；`x86_64`、Developer ID 签名、Apple 公证与 stapling、应用内更新均未实现（ISS-040/041），发行验收矩阵见 [TESTING §4](docs/TESTING.md#4-桌面与分发矩阵)。
+- 图标为占位（ISS-045）；新账户首启、tray 菜单实机退出、握手页实机渲染仍未验证（ISS-009 切片 2）。
+
 ## 许可证状态
 
 本项目采用 **Apache License 2.0**（仓库根 `LICENSE`，Copyright 2026 maoking，与 Folia 一致），第三方组件声明见 `THIRD_PARTY_NOTICES.md`，依赖来源清单见 `docs/plans/2026-09-14-dependency-inventory.md`。许可证已授予不等于已公开发布：仓库保持 private 时只准备内部 RC/draft Release，普通客户端不能把 private GitHub Release 当作匿名自动更新源；公开时机由用户决定。

@@ -561,3 +561,42 @@ class TestISS064WallClockDeadline:
         assert str(excinfo.value) == "du 超过 0.3 秒安全时限"
         with pytest.raises(ProcessLookupError):
             os.kill(child_pids[0], 0)
+
+    def test_timeout_reaps_sigterm_ignoring_du_via_sigkill(
+        self, tmp_path, monkeypatch
+    ):
+        """du 阻塞在不可中断 syscall（忽略 SIGTERM）时仍须被回收：
+        SIGTERM 3 秒宽限后 SIGKILL 生效，全程有界、无孤儿。
+
+        生产反例形态：du 卡在 open$NOCANCEL 上不退出也不响应 TERM——
+        回收链必须是 TERM → wait(3s) → KILL → wait，不得挂起等待。
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+        fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        cancel = threading.Event()
+        child_pids: list[int] = []
+        self._fake_du_popen(
+            monkeypatch, child_pids,
+            "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "signal.pause()",
+        )
+        # 本用例只钉回收链，线索路径返回空避免真实 lsof 干扰计时。
+        monkeypatch.setattr(scanner, "_lsof_du_cwd", lambda pid: "")
+        started = _REAL_TIME.monotonic()
+        try:
+            with scanner.du_process_context(
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.3
+            ):
+                with pytest.raises(
+                    scanner.ScanInterruptedError, match="du 超过 0.3 秒安全时限"
+                ):
+                    scanner.run_du(root)
+        finally:
+            os.close(fd)
+        elapsed = _REAL_TIME.monotonic() - started
+        # TERM 被忽略 → 3 秒宽限 → KILL；下界证明确实走了宽限路径，
+        # 上界证明回收有界完成（没有无限等待 du 退出）。
+        assert 3.0 <= elapsed < 6.0
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pids[0], 0)  # 无孤儿：进程组已彻底回收

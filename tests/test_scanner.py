@@ -140,6 +140,135 @@ class TestBSDDuPaths:
             scanner.classify_collection(result, str(tmp_path))
 
 
+class TestISS065VanishedPath:
+    """ISS-065：扫描期间消失的目录不使整次采集无效（vanishing path）。
+
+    生产反例（PM 只读证据 2026-09-16 scan_run 3，8 小时 du 跑完）：
+    30 个云同步缓存目录在校验时已被系统清理，旧代码把 vanished 与
+    解析歧义混为一类（path_error_count），导致整次采集被判 failed
+    当日快照丢弃，约 93.7 万行有效事实被 30 行干掉。
+
+    设计要求：根内 + du 输出时存在 + 校验时不在 → vanished 单独
+    计数（不进 path_error_count），classification 归 partial，snapshot
+    写入并记 vanished_count；根外/无法解析/非目录路径仍 fail-closed。
+    """
+
+    def test_vanished_path_is_counted_separately_not_as_path_error(
+        self, tmp_path, monkeypatch
+    ):
+        """红→绿 pin：vanished 不进 path_error_count，分类为 partial。
+
+        真实创建再删除：模拟 du 扫到它时存在、校验时不在。旧代码把
+        vanished 与解析歧义混同（path_error_count > 0），整次采集被
+        拒；修复后 vanished 单独计数，path_error_count=0 且
+        classification=partial，du 给出的 KB 数（测量期事实）保留。
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+        still_here = root / "still-here"
+        still_here.mkdir()
+        vanished = root / "vanished"
+        vanished.mkdir()
+        vanished_path = str(vanished)
+        vanished.rmdir()  # 校验时已被系统清理
+        fake = scanner.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(
+                f"4\t{still_here}\n"
+                f"4\t{vanished_path}\n"
+                f"8\t{root}\n"
+            ).encode("utf-8"),
+            stderr=b"",
+        )
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake)
+
+        result = scanner.run_du(root)
+
+        assert result.path_error_count == 0, (
+            "vanished 与解析歧义必须分离；path_error 只收含换行/根外/非目录"
+        )
+        assert result.vanished_count == 1
+        assert result.vanished_sample == vanished_path
+        assert vanished_path in result.sizes  # du 数据是测量期事实，保留
+        assert scanner.classify_collection(result, str(root)) == "partial"
+
+    def test_vanished_path_persists_in_snapshot(self, tmp_path, monkeypatch):
+        """vanished 的快照仍写入库并如实标注：vanished_count=1、status=partial。"""
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "ok").mkdir()
+        vanished = root / "vanished"
+        vanished.mkdir()
+        vanished_path = str(vanished)
+        vanished.rmdir()
+        fake = scanner.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(f"4\t{root}/ok\n4\t{vanished_path}\n8\t{root}\n").encode("utf-8"),
+            stderr=b"",
+        )
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake)
+
+        conn = db.connect()
+        try:
+            sid = scanner.create_snapshot(conn, root, min_kb=0)
+            row = conn.execute(
+                "SELECT vanished_count, collection_status, dir_count FROM snapshots "
+                "WHERE id=?", (sid,)
+            ).fetchone()
+            assert row["vanished_count"] == 1
+            assert row["collection_status"] == "partial"
+            assert row["dir_count"] == 3  # 根 + ok + vanished（事实保留）
+            # vanished 的条目按 KB 进入 entries（vanished 不删事实）
+            assert conn.execute(
+                "SELECT size_kb FROM entries WHERE snapshot_id=? AND path=?",
+                (sid, vanished_path),
+            ).fetchone()["size_kb"] == 4
+        finally:
+            conn.close()
+
+    def test_path_outside_root_still_fail_closed(self, tmp_path, monkeypatch):
+        """ISS-065 不放松根外路径：vanished 仅适用于"根内且曾存在"。"""
+        root = tmp_path / "root"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        fake = scanner.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=f"4\t{outside}\n8\t{root}\n".encode(),
+            stderr=b"",
+        )
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake)
+
+        result = scanner.run_du(root)
+        assert result.path_error_count == 1
+        assert result.vanished_count == 0
+        with pytest.raises(scanner.InvalidScanError, match="不可无歧义解析"):
+            scanner.classify_collection(result, str(root))
+
+    def test_existing_file_path_still_fail_closed(self, tmp_path, monkeypatch):
+        """ISS-065 不放松"存在但非目录"：仍是 path_error（注入/解析失败）。"""
+        root = tmp_path / "root"
+        root.mkdir()
+        decoy = root / "not-a-directory"
+        decoy.write_bytes(b"x")
+        fake = scanner.subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=f"4\t{decoy}\n8\t{root}\n".encode(),
+            stderr=b"",
+        )
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake)
+
+        result = scanner.run_du(root)
+        assert result.path_error_count == 1
+        assert result.vanished_count == 0
+        with pytest.raises(scanner.InvalidScanError, match="不可无歧义解析"):
+            scanner.classify_collection(result, str(root))
+
+
 class TestSnapshot:
     def test_entries_filtered_by_min_kb(self, sample_tree):
         conn = db.connect()

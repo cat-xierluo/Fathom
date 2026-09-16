@@ -82,15 +82,16 @@ def _insert_snapshot(
     entries: dict[str, int] | None = None,
     denied: int = 0,
     collection_status: str | None = None,
+    vanished_count: int = 0,
     hour: str = "12:00:00",
 ) -> int:
     """直接造表行（不经 du）。min_kb=None 表示 v3 之前的旧记录（NULL 不补造）。"""
     sizes = entries or {}
     cur = conn.execute(
         "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, "
-        "total_kb, min_kb, collection_status) VALUES (?,?,?,?,?,?,?,?)",
+        "total_kb, min_kb, collection_status, vanished_count) VALUES (?,?,?,?,?,?,?,?,?)",
         (f"{day}T{hour}", root, len(sizes) + 1, denied, 0.0,
-         max(sizes.values(), default=0), min_kb, collection_status),
+         max(sizes.values(), default=0), min_kb, collection_status, vanished_count),
     )
     sid = cur.lastrowid
     conn.executemany(
@@ -529,6 +530,96 @@ class TestFourMissingCases:
             # 不冒充文件系统事实。
             assert "不构成删除证明" in md
             assert "已删除" not in md and "消失的目录" not in md
+        finally:
+            conn.close()
+
+
+class TestISS065VanishedInReport:
+    """ISS-065：日报对 vanished 如实呈现（不进 denied、不冒充完整覆盖）。
+
+    vanished 与 denied/transient 并列为部分覆盖的一种，日报顶部说明行
+    须独立显示消失目录数；零时不再显示（避免空话）。日报 ID 与基线
+    关系不动，ISS-021 数据集身份约定保持（不变 root/min_kb 口径）。
+    """
+
+    def test_vanished_count_in_markdown_explains_scan_coverage(self):
+        """vanished_count > 0：日报注明消失目录数与原因，不冒充完整覆盖。"""
+        conn = db.connect()
+        try:
+            a1 = _insert_snapshot(
+                conn, "2026-09-10", "/synthetic/root-a", min_kb=1024,
+                entries={"/synthetic/root-a": 10_000},
+            )
+            a2 = _insert_snapshot(
+                conn, "2026-09-12", "/synthetic/root-a", min_kb=1024,
+                entries={"/synthetic/root-a": 12_000},
+                collection_status="partial", vanished_count=7,
+            )
+            out = reports.write_daily_report(conn, a2, notify_after_write=False)
+            md = out.read_text(encoding="utf-8")
+            assert "另有 7 个目录在扫描期间已消失" in md
+            assert "记录时存在、校验时不在" in md
+            assert "本次采集为完整覆盖" not in md
+        finally:
+            conn.close()
+
+    def test_zero_vanished_count_omits_note(self):
+        """vanished_count=0：日报不显示消失目录说明（避免空话）。"""
+        conn = db.connect()
+        try:
+            a1 = _insert_snapshot(
+                conn, "2026-09-10", "/synthetic/root-a", min_kb=1024,
+                entries={"/synthetic/root-a": 10_000},
+            )
+            a2 = _insert_snapshot(
+                conn, "2026-09-12", "/synthetic/root-a", min_kb=1024,
+                entries={"/synthetic/root-a": 10_000},
+                collection_status="full",
+            )
+            out = reports.write_daily_report(conn, a2, notify_after_write=False)
+            md = out.read_text(encoding="utf-8")
+            assert "扫描期间已消失" not in md
+            assert "扫描期间消失" not in md
+        finally:
+            conn.close()
+
+    def test_vanished_count_zero_still_partial_due_to_denied(self):
+        """vanished_count=0 但 denied>0：只显示权限受限说明，不混入 vanished。"""
+        conn = db.connect()
+        try:
+            a1 = _insert_snapshot(
+                conn, "2026-09-10", "/synthetic/root-a", min_kb=1024,
+                entries={"/synthetic/root-a": 10_000},
+            )
+            a2 = _insert_snapshot(
+                conn, "2026-09-12", "/synthetic/root-a", min_kb=1024,
+                entries={"/synthetic/root-a": 10_000},
+                collection_status="partial", denied=3,
+            )
+            out = reports.write_daily_report(conn, a2, notify_after_write=False)
+            md = out.read_text(encoding="utf-8")
+            assert "3 个目录因权限无法统计" in md
+            assert "扫描期间已消失" not in md
+        finally:
+            conn.close()
+
+    def test_vanished_and_denied_coexist_in_markdown(self):
+        """vanished 与 denied 同时非零：日报两条说明独立呈现。"""
+        conn = db.connect()
+        try:
+            a1 = _insert_snapshot(
+                conn, "2026-09-10", "/synthetic/root-a", min_kb=1024,
+                entries={"/synthetic/root-a": 10_000},
+            )
+            a2 = _insert_snapshot(
+                conn, "2026-09-12", "/synthetic/root-a", min_kb=1024,
+                entries={"/synthetic/root-a": 10_000},
+                collection_status="partial", denied=2, vanished_count=5,
+            )
+            out = reports.write_daily_report(conn, a2, notify_after_write=False)
+            md = out.read_text(encoding="utf-8")
+            assert "2 个目录因权限无法统计" in md
+            assert "另有 5 个目录在扫描期间已消失" in md
         finally:
             conn.close()
 

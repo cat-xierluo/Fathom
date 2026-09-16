@@ -259,6 +259,60 @@ class TestISS003AFourStateCopy:
             assert title == notify.TITLE_INTERRUPTED != notify.TITLE_DONE
 
 
+class TestISS065VanishedInNotify:
+    """ISS-065：通知正文对 vanished 如实呈现（与 denied/transient 并列）。
+
+    vanished 与 denied/transient 并列为部分覆盖的一种，partial_note
+    须能容纳三者同时存在的形态，且不冒充完整覆盖也不夸大。零时
+    不显示（避免空话）。
+    """
+
+    def test_vanished_count_alone_emits_partial_note(self):
+        """仅 vanished（无 denied、无 transient）：归 partial 并注明。"""
+        _, body, _ = notify.build_notification(
+            _diff(), None, collection_status="partial",
+            denied_count=0, vanished_count=4,
+        )
+        assert "部分覆盖（另有 4 个目录在扫描期间已消失）" in body
+        assert "权限受限" not in body
+        assert "瞬时读取错误" not in body
+
+    def test_vanished_count_zero_omits_vanished_clause(self):
+        """vanished=0、denied>0：partial 注只显示权限受限（不混入 vanished）。"""
+        _, body, _ = notify.build_notification(
+            _diff(), None, collection_status="partial",
+            denied_count=3, vanished_count=0,
+        )
+        assert "部分覆盖（3 处权限受限）" in body
+        assert "扫描期间" not in body
+
+    def test_vanished_and_denied_together_listed_separately(self):
+        """denied 与 vanished 同时非零：partial 注两句并列展示。"""
+        _, body, _ = notify.build_notification(
+            _diff(), None, collection_status="partial",
+            denied_count=2, vanished_count=5,
+        )
+        assert "部分覆盖（2 处权限受限；另有 5 个目录在扫描期间已消失）" in body
+
+    def test_first_snapshot_with_vanished_carries_note(self):
+        """首扫通知含 vanished_count：与 ISS-003A partial 机制联动。"""
+        _, body, _ = notify.build_first_notification(
+            50 * 1024**3, collection_status="partial",
+            denied_count=0, vanished_count=3,
+        )
+        assert "首次快照已建立" in body
+        assert "部分覆盖（另有 3 个目录在扫描期间已消失）" in body
+
+    def test_full_status_never_includes_vanished_clause(self):
+        """full 不加 partial 说明；vanished_count 即使非零也不冒充缺口。"""
+        _, body, _ = notify.build_notification(
+            _diff(), None, collection_status="full",
+            denied_count=0, vanished_count=10,
+        )
+        assert "部分覆盖" not in body
+        assert "扫描期间" not in body
+
+
 class TestISS003ABodyCap:
     """ISS-003A：最终正文（含剩余空间后缀）≤ 200 字符的可解释截断。"""
 

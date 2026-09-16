@@ -130,16 +130,21 @@ async function loadQualityLine() {
   }
   const latest = snaps[0];
   const cov = _coverage(latest);
-  const covMarkup = cov.state === "missing"
-    ? `<span class="quality-chip miss">${icon("alert", 12)} 覆盖未知</span>`
-    : _renderCoverageClasses(cov);
+  // 既有口径（ISS-028 m1 验收字符串）：保留「部分目录未读取 / N 个」字样，
+  // 避免后续回归（state-matrix-partial-quality-shown 等既有检查依赖此句）。
+  // ISS-002A 三类缺口的详细可解释文案移到独立 #overview-coverage-note 区块。
+  const covChip = cov.state === "full"
+    ? `<span class="quality-chip ok">${icon("alert", 12)} 覆盖完整</span>`
+    : cov.state === "partial"
+      ? `<span class="quality-chip warn">${icon("alert", 12)} 部分目录未读取（${latest.denied_count || 0} 个）</span>`
+      : `<span class="quality-chip miss">${icon("alert", 12)} 覆盖未知</span>`;
   const rangeChip = snaps.length >= 2
     ? `<span>${escapeHtml(_shortTs(snaps[1].created_at))} → ${escapeHtml(_shortTs(latest.created_at))}</span>`
     : `<span>基线：${escapeHtml(_shortTs(latest.created_at))}（单快照）</span>`;
   el.innerHTML =
     `<span class="path-mono" title="${escapeHtml(latest.root || "")}">${escapeHtml(latest.root || "—")}</span>` +
     rangeChip +
-    covMarkup;
+    covChip;
 }
 
 async function loadScanNote() {
@@ -171,23 +176,56 @@ async function loadScanNote() {
     `最近扫描 ${escapeHtml(_shortTs(latest.created_at))}`,
     `目录 ${latest.dir_count || 0} 个`,
   ];
-  // 三类缺口的紧凑计数（ISS-002A）：不渲染合计/比例
+  // 既有口径（ISS-028 m3 验收字符串）：保留「读取受限 / N 个目录读取受限」
+  // 字样，避免后续回归（state-matrix-partial-scan-note-shown 等既有检查
+  // 依赖此句）。三类缺口详细解释放到独立区块 #overview-coverage-note，
+  // 本节只在存在 denied 时追加一句紧凑提示（不替换既有文案）。
   if (cov.denied > 0) {
-    parts.push(`<span class="st st-restricted">${icon("alert", 12)} ${cov.denied} 处权限受限</span>`);
-  }
-  if (cov.vanished > 0) {
-    parts.push(`<span class="st st-restricted">${icon("alert", 12)} ${cov.vanished} 处扫描期间消失</span>`);
-  }
-  if (cov.excluded > 0) {
-    parts.push(`<span class="st st-unrecorded">${icon("filter", 12)} ${cov.excluded} 项排除掩码</span>`);
+    parts.push(`<span class="st st-restricted">${icon("alert", 12)} ${cov.denied} 个目录读取受限</span>`);
   }
   if (cov.state === "full") {
     parts.push(`<span class="st st-ok">覆盖完整</span>`);
-  } else if (cov.state === "partial" && !cov.denied && !cov.vanished && !cov.excluded) {
-    // partial 但三类缺口全 0：保守提示，避免冒充完整覆盖
+  } else if (cov.state === "partial" && !cov.denied) {
+    // partial 但三类缺口计数为 0（罕见：旧快照仅有 collection_status 标记）
     parts.push(`<span class="st st-restricted">部分覆盖</span>`);
   }
   el.innerHTML = parts.join(" · ");
+  // 追加式三类覆盖说明（ISS-002A）：独立区块，不动既有 scan-note 文案。
+  _renderCoverageNoteBlock(latest, cov);
+}
+
+/* ISS-002A 三类覆盖说明——追加式（不替换既有 scan-note）。
+ * 数据来自 _coverage() 的 denied / vanished / excluded；
+ * full 时只渲染「完整覆盖」；三类缺口按需渲染，每个缺口都带
+ * 「意味着什么 / 不意味着什么」文案（详见 COV_NOTES）。
+ * 容器 id 由调用方决定：默认 `#overview-coverage-note`（与既有
+ * [data-test='coverage-classes'] 复用同一 DOM 节点）。 */
+function _ensureCoverageNote() {
+  let container = document.getElementById("overview-coverage-note");
+  if (container) return container;
+  const scanNote = document.getElementById("overview-scan-note");
+  if (!scanNote || !scanNote.parentNode) return null;
+  container = document.createElement("div");
+  container.id = "overview-coverage-note";
+  container.className = "coverage-note-block";
+  container.setAttribute("aria-live", "polite");
+  // 追加在 #overview-scan-note 之后；同一 panel 内，仍属「最近扫描」区块。
+  scanNote.parentNode.insertBefore(container, scanNote.nextSibling);
+  return container;
+}
+
+function _renderCoverageNoteBlock(latest, cov) {
+  const container = _ensureCoverageNote();
+  if (!container) return;
+  // 不可知：保留旧"加载中…"或留空，避免误以为完整覆盖
+  if (!latest || cov.state === "missing") {
+    container.innerHTML = "";
+    return;
+  }
+  const markup = _renderCoverageClasses(cov);
+  // _renderCoverageClasses 已返回 <ul data-test="coverage-classes">…</ul> 或
+  // 完整覆盖 chip；full 时整块置空以便既有 state-matrix-partial-* 检查不受影响。
+  container.innerHTML = cov.state === "full" ? "" : markup;
 }
 
 async function loadVolumeTrend() {

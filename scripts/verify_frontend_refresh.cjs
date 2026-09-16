@@ -1322,6 +1322,8 @@ async function main() {
     const covAll = await page.evaluate(() => ({
       classes: document.querySelector("[data-test='coverage-classes']")?.textContent || "",
       scanNote: document.getElementById("overview-scan-note")?.textContent || "",
+      // ISS-002A 追加式三类覆盖说明（独立区块 #overview-coverage-note）
+      coverageNote: document.getElementById("overview-coverage-note")?.textContent || "",
     }));
     record("coverage-three-classes-rendered",
       covAll.classes.includes("权限受限") && covAll.classes.includes("6") &&
@@ -1331,9 +1333,14 @@ async function main() {
         !covAll.classes.includes("数量=影响") && !covAll.classes.includes("未记录=删除") &&
         !covAll.classes.includes("数量等于影响"),
       covAll.classes.slice(0, 160));
+    // 追加后的并存形态：旧串「6 个目录读取受限」仍在 #overview-scan-note（既有契约），
+    // 新三类计数提示在独立区块 #overview-coverage-note 内出现。
     record("coverage-scan-note-shows-all-three-counts",
-      covAll.scanNote.includes("6 处权限受限") && covAll.scanNote.includes("4 处扫描期间消失") &&
-        covAll.scanNote.includes("3 项排除掩码"), covAll.scanNote.slice(0, 160));
+      covAll.scanNote.includes("6 个目录读取受限") &&
+        covAll.coverageNote.includes("6 处权限受限") &&
+        covAll.coverageNote.includes("4 处扫描期间消失") &&
+        covAll.coverageNote.includes("3 项排除掩码"),
+      `scan=${covAll.scanNote.slice(0, 80)} | cov=${covAll.coverageNote.slice(0, 80)}`);
 
     // 2) 仅 vanished（ISS-066 字段已暴露，denied=0）：只见消失 chip
     await setMode("partial-vanished");
@@ -1358,23 +1365,29 @@ async function main() {
       covExcluded.slice(0, 120));
 
     // 4) 字段缺失防御（vanished_count / exclude_names 不在快照里）：
-    //    ?? 0 后 vanished/excluded chip 不出现，scan-note 不冒充这些计数
+    //    ?? 0 后 vanished/excluded chip 不出现，scan-note 与 coverage-note
+    //    都不冒充这些计数。
     await setMode("partial-no-fields");
     await openPage("#/overview");
     await page.waitForSelector("[data-test='coverage-classes']");
     const covDefended = await page.evaluate(() => ({
       classes: document.querySelector("[data-test='coverage-classes']")?.textContent || "",
       scanNote: document.getElementById("overview-scan-note")?.textContent || "",
+      coverageNote: document.getElementById("overview-coverage-note")?.textContent || "",
     }));
     record("coverage-vanished-and-excluded-defended-to-zero",
       covDefended.classes.includes("权限受限") && covDefended.classes.includes("6") &&
         !covDefended.classes.includes("扫描期间消失") &&
         !covDefended.classes.includes("排除掩码"),
       covDefended.classes.slice(0, 120));
+    // 追加后的并存形态：旧串「6 个目录读取受限」仍在 scan-note（既有契约），
+    // 新 coverage-note 只渲染权限受限 chip，不冒充消失/排除掩码计数。
     record("coverage-scan-note-defends-missing-fields",
-      covDefended.scanNote.includes("6 处权限受限") &&
-        !covDefended.scanNote.includes("消失") && !covDefended.scanNote.includes("排除掩码"),
-      covDefended.scanNote.slice(0, 120));
+      covDefended.scanNote.includes("6 个目录读取受限") &&
+        covDefended.coverageNote.includes("权限受限") &&
+        !covDefended.coverageNote.includes("消失") &&
+        !covDefended.coverageNote.includes("排除掩码"),
+      `scan=${covDefended.scanNote.slice(0, 80)} | cov=${covDefended.coverageNote.slice(0, 80)}`);
 
     // 5) full 状态只显示完整覆盖，不显示三类缺口
     await setMode("dual");

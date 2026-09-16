@@ -285,11 +285,79 @@ class TestISS003ABodyCap:
         assert "扫描已中断，保留上次快照" in body
 
     def test_first_snapshot_long_partial_note_capped(self):
+        # ISS-063：把 denied_count 拉大到主文案真正长于上限（main 190 > 预算 189），
+        # 才能行使截断路径。仅断言 ≤200 是不够的，必须落到 "…" 这一可观测标记。
         _, body, _ = notify.build_first_notification(
-            50 * 1024**3, collection_status="partial", denied_count=10**9
+            50 * 1024**3, collection_status="partial", denied_count=10**160
         )
         assert len(body) <= notify.BODY_MAX_CHARS
         assert body.endswith("剩余 50.0 GB")
+        assert "…" in body  # 截断标记必须在
+
+
+class TestISS063BodyCapBoundary:
+    """ISS-063：通知正文长度恰 200/201 字符的精确边界用例。
+
+    BODY_MAX_CHARS=200：200 应原样保留，201 应被截为 ≤200 且含 `…`、后缀完整。
+    构造方式：让 ``增长最多：{path}（+2.0 MB）`` 主体长度刚好命中目标
+    （``5 + len(path) + 9``）。
+    """
+
+    @staticmethod
+    def _path_for_body_len(target: int) -> str:
+        """构造一个 path，让 body="增长最多：{path}（+2.0 MB）" 长度恰为 target。"""
+        # 主体格式：5("增长最多：") + len(path) + 9("（+2.0 MB）")
+        # path 由 "/tmp/" + "长"*N 拼出，长度固定可计算。
+        prefix = "/tmp/"
+        tail = "长"
+        body_fixed = 5 + len(prefix) + 9  # 19
+        n = target - body_fixed
+        assert n > 0, f"无法为 target={target} 构造正长度 path"
+        return prefix + tail * n
+
+    def test_body_exactly_200_without_suffix_preserved(self):
+        # 无 free_bytes：body 恰 200 → 原样保留，无 "…" 标记。
+        path = self._path_for_body_len(200)
+        diff = _diff([reports.DirChange(path, 0, 2048, 2048)])
+        _, body, _ = notify.build_notification(diff, None)
+        assert len(body) == 200 == notify.BODY_MAX_CHARS
+        assert "…" not in body
+        assert body.endswith("（+2.0 MB）")
+
+    def test_body_exactly_201_without_suffix_truncated(self):
+        # 无 free_bytes：body 恰 201 → 截断为 200，末尾 "…"，原尾部丢失。
+        path = self._path_for_body_len(201)
+        diff = _diff([reports.DirChange(path, 0, 2048, 2048)])
+        _, body, _ = notify.build_notification(diff, None)
+        assert len(body) == 200 == notify.BODY_MAX_CHARS
+        assert body.endswith("…")
+        # 原来恰好结尾的 "+2.0 MB）" 部分已被截断覆盖。
+        assert "（+2.0 MB）" not in body
+
+    def test_body_exactly_200_with_suffix_preserved(self):
+        # 有 free_bytes：suffix "，剩余 50.0 GB"=11 → main 预算 189；
+        # 选 main 恰 189 → 总长 200 原样保留，suffix 完整。
+        suffix = "，剩余 50.0 GB"
+        main_budget = notify.BODY_MAX_CHARS - len(suffix)  # 189
+        # path 长度 = main_budget - 5 - 9 = 175
+        path = "/tmp/" + "长" * (main_budget - 5 - 9 - 5)
+        diff = _diff([reports.DirChange(path, 0, 2048, 2048)])
+        _, body, _ = notify.build_notification(diff, 50 * 1024**3)
+        assert len(body) == 200 == notify.BODY_MAX_CHARS
+        assert body.endswith(suffix)
+        assert "…" not in body
+
+    def test_body_201_with_suffix_truncated_and_suffix_kept(self):
+        # 有 free_bytes：让 main 恰 = main_budget+1 = 190 → 截断为 189 + "…"
+        # + suffix 11 = 200；suffix 必须完整保留。
+        suffix = "，剩余 50.0 GB"
+        main_budget = notify.BODY_MAX_CHARS - len(suffix)  # 189
+        path = "/tmp/" + "长" * (main_budget - 5 - 9 - 5 + 1)  # main=190
+        diff = _diff([reports.DirChange(path, 0, 2048, 2048)])
+        _, body, _ = notify.build_notification(diff, 50 * 1024**3)
+        assert len(body) <= notify.BODY_MAX_CHARS
+        assert body.endswith(suffix)  # 低空间事实不截断
+        assert "…" in body  # 截断有省略号标记
 
 
 class TestISS003AWiringStates:

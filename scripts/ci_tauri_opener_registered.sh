@@ -5,7 +5,7 @@
 # verify_frontend_refresh.cjs 走 mock Tauri 桥，只断言前端发出的 cmd/args，
 # 结构上无法覆盖「运行时插件是否真的注册」——76/76 全绿掩盖了 ISS-068。
 # scripts/verify_app_bundle.sh 依赖完整 .app 产物，本环境无 bundle，故本脚本
-# 用 tauri-build 的 ACL 落盘产物做等价断言。
+# 用「源码检查 + tauri-build 的 ACL 落盘产物」组合断言。
 #
 # 前置条件：必须先构建一次，使 tauri-build 依据 capabilities 生成 ACL：
 #   cargo build --locked --offline --manifest-path apps/desktop/src-tauri/Cargo.toml
@@ -13,7 +13,7 @@
 # 离线要求：--locked --offline（依赖本机/Cargo.lock 精确版本缓存）。
 #
 # 断言口径（三条互补，任一失败即红）：
-#   (a) 【源码层·唯一能抓 .plugin() 缺失】src/lib.rs 的 run() 中必须出现
+#   (a) 【源码层·**唯一的注册护栏**】src/lib.rs 的 run() 中必须出现
 #       `.plugin(tauri_plugin_opener::init())`。这是本 issue 的根因面。
 #   (b) 运行时 ACL：target/debug/build/*/out/acl-manifests.json 存在 opener 键
 #       且其 permissions 含 allow-open-url（tauri-build 依据 capabilities 生成）。
@@ -24,11 +24,13 @@
 #   tauri-build 生成的 ACL 只由 Cargo.toml + capabilities/*.json 决定，
 #   **无法**观察到 run() 是否真的调用 `.plugin()`。实测证据（ISS-068 证据段）：
 #   删掉 `.plugin(tauri_plugin_opener::init())` 后重新 build，
-#   acl-manifests.json 与 (c) 的 md5 逐字节不变，仅 (a)(b)(c) 全绿。
+#   acl-manifests.json 与 (c) 的 md5 逐字节不变，(b)(c) 仍然全绿。
 #   故 (b)(c) 只能证明「权限已声明 + 插件依赖在锁文件中」，**不能**证明
-#   「插件已注册」；(a) 才是注册断言。Rust 侧另有等价强断言：
-#   lib.rs tests::opener_plugin_name_matches_frontend_command_prefix
-#   （绑定真实插件实例的 Plugin::name()，随 cargo test 门禁运行）。
+#   「插件已注册」。
+#
+#   (a) 因此是**本仓库唯一的注册护栏**。Rust 侧没有任何等价物：
+#   lib.rs tests::opener_plugin_name_matches_frontend_command_prefix 只断言
+#   上游插件名合同，删掉 `.plugin()` 后该测试仍 1 passed（2026-09-17 实测）。
 #
 # 为什么 ACL 仍值得断言：capability 引用未知权限标识符（拼错或插件未加入
 # Cargo.toml）时 tauri-build 解析直接失败、cargo build 非零退出，(b) 因此

@@ -173,7 +173,7 @@
 
 ### ISS-068 · Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝修复）
 
-- **状态**：DONE-PENDING-PM（P1/M1，2026-09-17；实现与门禁完成，待 PM 复核/代推）；来源：ISS-002A 独立 reviewer 阻断观察（PR #97，2026-09-17），经 PM 独立复核确认为真实接缝。
+- **状态**：READY-FOR-PM（P1/M1，2026-09-17；实现与门禁完成，供 PM 验收/代推，未 push）；来源：ISS-002A 独立 reviewer 阻断观察（PR #97，2026-09-17），经 PM 独立复核确认为真实接缝。
 - **问题**：前端深链调用 `plugin:opener|open_url`，但 `apps/desktop/src-tauri/src/lib.rs` 的 `tauri::Builder` **从未 `.plugin(tauri_plugin_opener::init())`**（全文件零 `.plugin(` 调用），且 `capabilities/default.json` 只有 `core:default`、未声明 opener 权限。`Cargo.toml` 第 15 行虽已依赖 `tauri-plugin-opener = "2"`，但依赖存在 ≠ 已注册。
 - **影响**：真机（非 mock）点击「打开系统设置」将因插件未注册 / 权限未声明而 **invoke 失败**，ISS-002A 的深链功能在实际打包应用中不可用。`verify_frontend_refresh.cjs` 走 mock Tauri 桥（断言的是前端发出的 cmd 与 args），**结构上无法覆盖运行时插件注册**，故 76/76 全绿掩盖了该缺陷。
 - **范围**：`apps/desktop/src-tauri/src/lib.rs`（注册 `tauri_plugin_opener::init()`）、`apps/desktop/src-tauri/capabilities/default.json`（声明最小必要 opener 权限，仅 `open_url` 且限定 `x-apple.systempreferences:` 前缀）、`scripts/verify_app_bundle.sh` 或等价壳层检查（新增可机器验证的注册断言）。
@@ -181,27 +181,37 @@
 - **验收**：
   - [x] `lib.rs` 注册 opener 插件，`capabilities/default.json` 含最小 opener 权限（`opener:allow-open-url`；深链为非 http/https 的自定义 scheme，`opener:default` 的 `allow-default-urls` 白名单不覆盖它，故必须显式授权；未启用 `reveal_item_in_dir`）
   - [x] 新增壳层检查断言「插件已注册 + 权限已声明」；**先在未注册状态红**→后绿（见证据段两次实测）
-  - [x] `cargo test` 23→**24**（+1 不回退）、`cargo locked offline build` ok、`verify_app_bundle.sh` 既有段不回退
+  - [x] `cargo test` 23→**24**（+1 不回退；该新增测试只断言名字合同，**非**注册护栏，见下）；`cargo locked offline build` ok；`verify_app_bundle.sh` 既有段不回退
   - [ ] 真机或最小集成证据证明 invoke 成功 —— **NOT_VERIFIED**：本环境无 `.app` 产物（`verify_app_bundle.sh` 报 `BLOCKED：未找到 .app`），且 macOS TCC 完全磁盘访问面板跳转需实机确认；不以 mock 结果冒充
 - **证据/接续**（2026-09-17，branch `iss-068-tauri-opener`）：
 
   **实现**：`lib.rs` 的 `run()` 加 `.plugin(tauri_plugin_opener::init())`（注释说明前缀 `opener` 由前端命令名决定，不可改名）+ 常量 `REGISTERED_PLUGIN_NAMES`；`capabilities/default.json` 加 `"opener:allow-open-url"`；`gen/schemas/capabilities.json`（已入库）由 tauri-build 自动重生成并同步。
 
-  **关键发现（推翻卡片原设想的断言口径）**：`scripts/verify_app_bundle.sh` 依赖 `.app` 产物，本环境不可用。改用 tauri-build 的 ACL 落盘产物断言时**实测发现 ACL 无法观察 `.plugin()`**——删掉 `.plugin(tauri_plugin_opener::init())` 后重新 `cargo build`：
+  **关键发现一（推翻卡片原设想的 ACL 断言口径）**：`scripts/verify_app_bundle.sh` 依赖 `.app` 产物，本环境不可用。改用 tauri-build 的 ACL 落盘产物断言时**实测发现 ACL 无法观察 `.plugin()`**——删掉 `.plugin(tauri_plugin_opener::init())` 后重新 `cargo build`：
   - `target/debug/build/*/out/acl-manifests.json` md5 红绿两态**均为** `017eab4eb5804c0193cef8542d309c28`（逐字节相同）；
   - `gen/schemas/capabilities.json` md5 红绿两态**均为** `f111f29d776cde0936a1ae7b26a7a6e5`。
 
-  原因是 tauri-build 的 ACL 只由 `Cargo.toml` + `capabilities/*.json` 推导，与运行期 `.plugin()` 无关。故「ACL 存在 opener 键」**不能**证明注册；本实现改为三条互补 + 一条 Rust 单测，其中只有源码层能抓根因。
+  原因是 tauri-build 的 ACL 只由 `Cargo.toml` + `capabilities/*.json` 推导，与运行期 `.plugin()` 无关。故「ACL 存在 opener 键」**不能**证明注册。PM 已独立复现同一 md5 结论。
+
+  **关键发现二（自查修正过度宣称）**：初版曾把 Rust 测试
+  `tests::opener_plugin_name_matches_frontend_command_prefix` 描述为注册的「等价强断言」，**该说法错误且已修正**。实测：删掉 `.plugin(...)` 后
+  `cargo test --quiet opener_plugin_name_matches` 仍 `1 passed; 0 failed`。根因是 `REGISTERED_PLUGIN_NAMES`（lib.rs）为**手写常量**，与 `run()` 中真实的 `.plugin(...)` 调用无强制关联；该测试实际只断言「上游 tauri-plugin-opener 的 `Plugin::name()` == 字面量 `"opener"`」这一**跨仓库名字合同**（capability 键错位防护），**不是**本项目注册状态。已采纳方案 B：如实降级其命名与描述（测试体保留，因名字合同本身有价值），源码/脚本注释同步改写。
+
+  **护栏职责边界（如实标注）**：
+  - **能证明注册**：`scripts/ci_tauri_opener_registered.sh` 的源码正则 (a)——本仓库**唯一**能抓「删 `.plugin()`」的检查。
+  - **只能证明权限已声明**：ACL 断言 (b) 与 schema 断言 (c)。(b) 另可拦「权限标识符拼错/插件未加入 Cargo.toml」——此时 tauri-build 解析失败、`cargo build` 非零退出。
+  - **不能证明**：ACL (b)/schema (c) 均**不能**证明插件已注册；Rust 名字合同测试同样不能。
+  - **不能证明（更高层）**：以上全部为**静态**检查，均不证明真机 invoke 成功、也不证明系统设置面板真的被拉起（TCC 交互不在自动化范围）。
 
   **两次实测（红→绿）**，脚本 `scripts/ci_tauri_opener_registered.sh`：
-  - 红（删 `.plugin(...)` 行后）：`FAIL: apps/desktop/src-tauri/src/lib.rs 未见 .plugin(tauri_plugin_opener::init())` / `EXIT=1`；
+  - 红（删 `.plugin(...)` 行后）：`FAIL: apps/desktop/src-tauri/src/lib.rs 未见 .plugin(tauri_plugin_opener::init())` / `EXIT=1`；**同状态下** Rust 名字合同测试仍 `1 passed`（正是发现二）。
   - 绿（恢复后）：`source check: run() 已注册 tauri_plugin_opener::init()` + `tauri opener registered: ok（源码注册 + ACL opener/allow-open-url + schema opener:allow-open-url）` / `EXIT=0`。
 
-  断言构成：(a) **源码层正则查 `.plugin(tauri_plugin_opener::init())`（唯一能抓根因）**；(b) ACL manifest 含 `opener.allow-open-url`（拦权限标识符拼写漂移——写错时 tauri-build 直接失败）；(c) `gen/schemas/capabilities.json` 的 `default.permissions` 含 `opener:allow-open-url`（拦入库产物与源 capabilities 漂移）。Rust 侧强断言 `tests::opener_plugin_name_matches_frontend_command_prefix` 绑定**真实插件实例**的 `Plugin::name()`，断言其等于前端命令前缀 `opener`（非硬编码字符串自证），随 `cargo test` 门禁运行。
+  **门禁（本地全绿）**：cargo locked offline build ok；新脚本 ok（clean build 下可复现）；`cargo test` 24 passed；pytest 528；browser 39；frontend `verify_frontend_refresh.cjs` 76 passed / 0 failed；版本一致性 ok。
+
+  **接续（留给 ISS-002 父卡）**：真机验证深链实际拉起 macOS「隐私与安全性 › 完全磁盘访问」面板；本环境无 `.app` 且无法执行系统级跳转，故标注 `NOT_VERIFIED`。
 
   **接线**：`scripts/ci_tauri_opener_registered.sh`（新建，bundle 无关）加入 `.github/workflows/ci.yml` 的 `cargo-locked` job，紧随 `ci_cargo_locked.sh`（依赖其刚生成的 ACL 产物）。
-
-  **门禁（本地实测全绿）**：`ci_cargo_locked.sh` ok；`ci_tauri_opener_registered.sh` ok（含红→绿）；`cargo test` **24 passed**；`ci_pytest.sh` **528 passed**；`ci_browser_checks.sh` **39 passed**；`verify_frontend_refresh.cjs` **76 passed / 0 failed**；`check_version_consistency.sh` ok。
 
   **76/76 为何仍未覆盖本缺陷**：其中 `permissions-tauri-mock-deeplink-invokes-opener` 断言的是 mock 桥收到的 `cmd=plugin:opener|open_url` 与 `args`，只证明**前端发对了**，不证明壳层**注册了**——这正是新增源码层断言的存在理由。
 

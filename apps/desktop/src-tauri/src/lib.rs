@@ -342,12 +342,17 @@ fn quit_with_helper(app: &AppHandle) {
     app.exit(0);
 }
 
-/// ISS-068：本壳依赖的 Tauri 插件注册清单（插件名 -> 注册动作已在 run() 完成）。
+/// ISS-068：本壳依赖的 Tauri 插件名清单，供测试断言**名字合同**。
 ///
-/// 抽成常量是为了让「插件已注册」可被单元测试断言：tauri-build 生成的 ACL
-/// （acl-manifests.json / gen/schemas）只由 Cargo.toml + capabilities 决定，
-/// **无法**观察到 `.plugin()` 是否真的调用——删掉 `.plugin()` 后 ACL 逐字节不变。
-/// 因此注册与否只能在源码/类型层面断言，见 tests::opener_plugin_is_registered。
+/// 重要边界（勿高估本常量）：它是**手写**的，与 `run()` 中真实的
+/// `.plugin(tauri_plugin_opener::init())` 调用**没有强制关联**。删掉
+/// `.plugin()` 只改变运行时行为，本常量仍在、测试照过（2026-09-17 实测：
+/// 删注册后 `cargo test opener_plugin_name_matches` 仍 1 passed）。
+/// 因此它**不是**注册护栏，只断言「上游 tauri-plugin-opener 的
+/// `Plugin::name()` == 前端命令前缀 "opener"」这一跨仓库名字合同。
+///
+/// 真正的注册护栏是 `scripts/ci_tauri_opener_registered.sh` 的源码正则检查
+/// （见该脚本头）；tauri-build 的 ACL 产物**无法**观察 `.plugin()`。
 const REGISTERED_PLUGIN_NAMES: &[&str] = &["opener"];
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -447,18 +452,24 @@ mod tests {
     use helper::ExhaustedInfo;
     use tauri::plugin::Plugin;
 
-    /// ISS-068：`tauri_plugin_opener::init()` 返回的插件名必须等于前端命令前缀
-    /// `plugin:opener|open_url` 中的 `opener`；名称漂移会让 capability 的
-    /// `opener:allow-open-url` 与实际注册键错位，深链静默失败。
-    /// 该断言绑定真实插件实例，不是硬编码字符串自证。
+    /// ISS-068：断言**名字合同**（非注册护栏）——上游 tauri-plugin-opener 的
+    /// `Plugin::name()` 必须等于前端命令前缀 `plugin:opener|open_url` 中的
+    /// `opener`。名字若漂移，capability 的 `opener:allow-open-url` 会与实际
+    /// 注册键错位、深链静默失败。绑定真实插件实例，不是字面量自证。
+    ///
+    /// **本测试抓不到「`.plugin()` 被删除」**：REGISTERED_PLUGIN_NAMES 是手写
+    /// 常量，删注册调用后本测试仍通过（2026-09-17 实测 1 passed）。注册护栏
+    /// 见 scripts/ci_tauri_opener_registered.sh。
     #[test]
     fn opener_plugin_name_matches_frontend_command_prefix() {
         let plugin = tauri_plugin_opener::init::<tauri::Wry>();
         assert_eq!(plugin.name(), "opener");
         assert!(
             REGISTERED_PLUGIN_NAMES.contains(&plugin.name()),
-            "run() 的注册清单缺少 {:?}，前端 plugin:{:?}|open_url 将 invok 失败",
+            "名字合同漂移：上游插件名 {:?} 不在本壳清单 {:?}，capability 的 \
+             opener:allow-open-url 会与注册键错位，前端 plugin:{:?}|open_url 静默失败",
             plugin.name(),
+            REGISTERED_PLUGIN_NAMES,
             plugin.name()
         );
     }

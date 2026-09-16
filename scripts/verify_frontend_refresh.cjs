@@ -83,6 +83,31 @@ function createFixture() {
       return [{ ...latest, denied_count: 6, collection_status: "partial",
                 dir_count: 12 }, snapshot(1, "2026-09-12T10:00:00")];
     }
+    if (state.mode === "partial-vanished") {
+      // ISS-002A：扫描期间消失 N 处；字段 ISS-066 落地后由 API 暴露
+      return [{ ...latest, vanished_count: 4, collection_status: "partial",
+                dir_count: 20 }, snapshot(1, "2026-09-12T10:00:00")];
+    }
+    if (state.mode === "partial-excluded") {
+      // ISS-002A：排除掩码 N 项；exclude_names 数组
+      return [{ ...latest, exclude_names: ["*.noindex", "*.tmp"],
+                collection_status: "partial", dir_count: 30 },
+              snapshot(1, "2026-09-12T10:00:00")];
+    }
+    if (state.mode === "partial-all") {
+      // ISS-002A：三类缺口并存
+      return [{ ...latest, denied_count: 6, vanished_count: 4,
+                exclude_names: ["*.noindex", "*.tmp", ".git"],
+                collection_status: "partial", dir_count: 40 },
+              snapshot(1, "2026-09-12T10:00:00")];
+    }
+    if (state.mode === "partial-no-fields") {
+      // ISS-002A：vanished_count 与 exclude_names 字段缺失，验证 ?? 0 / 防御
+      // 注意：denied_count=6 触发 partial，但 vanished/excluded 必须被防御为 0
+      // （不显示对应 chip，且 scan-note 也不出现 "消失" / "排除" 计数）。
+      return [{ ...latest, denied_count: 6, collection_status: "partial",
+                dir_count: 12 }, snapshot(1, "2026-09-12T10:00:00")];
+    }
     return [latest, snapshot(1, "2026-09-12T10:00:00")];
   };
   const scanning = () => state.scanning || state.mode === "scanning-stuck";
@@ -1283,6 +1308,171 @@ async function main() {
         overflow.scrollW <= overflow.docW + 1,
         JSON.stringify(overflow));
     }
+
+    /* ---------- ISS-002A 三类覆盖说明与系统设置深链 ----------
+     * 覆盖三类缺口（denied/vanished/exclude_names）的可解释渲染；验证字段缺失
+     * 时 `?? 0` 防御；mock Tauri 桥下验证深链按钮触发既有 opener 入口，浏览器
+     * 环境下渲染路径文字且不伪造可点链接；重扫按钮复用既有 /api/scan 入口。 */
+    await setMode("dual");  // 复位 mode，避免与既有断言交互
+
+    // 1) 三类缺口并存：denied=6 / vanished=4 / excluded=3 各自可解释文案
+    await setMode("partial-all");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-classes']");
+    const covAll = await page.evaluate(() => ({
+      classes: document.querySelector("[data-test='coverage-classes']")?.textContent || "",
+      scanNote: document.getElementById("overview-scan-note")?.textContent || "",
+    }));
+    record("coverage-three-classes-rendered",
+      covAll.classes.includes("权限受限") && covAll.classes.includes("6") &&
+        covAll.classes.includes("扫描期间消失") && covAll.classes.includes("4") &&
+        covAll.classes.includes("排除掩码") && covAll.classes.includes("3") &&
+        // 文案不冒充影响/删除（合同禁止「数量=影响」「未记录=删除」表述）
+        !covAll.classes.includes("数量=影响") && !covAll.classes.includes("未记录=删除") &&
+        !covAll.classes.includes("数量等于影响"),
+      covAll.classes.slice(0, 160));
+    record("coverage-scan-note-shows-all-three-counts",
+      covAll.scanNote.includes("6 处权限受限") && covAll.scanNote.includes("4 处扫描期间消失") &&
+        covAll.scanNote.includes("3 项排除掩码"), covAll.scanNote.slice(0, 160));
+
+    // 2) 仅 vanished（ISS-066 字段已暴露，denied=0）：只见消失 chip
+    await setMode("partial-vanished");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-classes']");
+    const covVanished = await page.evaluate(() =>
+      document.querySelector("[data-test='coverage-classes']")?.textContent || "");
+    record("coverage-vanished-only-class-shown",
+      covVanished.includes("扫描期间消失") && covVanished.includes("4") &&
+        !covVanished.includes("权限受限") && !covVanished.includes("排除掩码"),
+      covVanished.slice(0, 120));
+
+    // 3) 仅 excluded（exclude_names 数组）：只见排除掩码 chip
+    await setMode("partial-excluded");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-classes']");
+    const covExcluded = await page.evaluate(() =>
+      document.querySelector("[data-test='coverage-classes']")?.textContent || "");
+    record("coverage-excluded-only-class-shown",
+      covExcluded.includes("排除掩码") && covExcluded.includes("2") &&
+        !covExcluded.includes("权限受限") && !covExcluded.includes("扫描期间消失"),
+      covExcluded.slice(0, 120));
+
+    // 4) 字段缺失防御（vanished_count / exclude_names 不在快照里）：
+    //    ?? 0 后 vanished/excluded chip 不出现，scan-note 不冒充这些计数
+    await setMode("partial-no-fields");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-classes']");
+    const covDefended = await page.evaluate(() => ({
+      classes: document.querySelector("[data-test='coverage-classes']")?.textContent || "",
+      scanNote: document.getElementById("overview-scan-note")?.textContent || "",
+    }));
+    record("coverage-vanished-and-excluded-defended-to-zero",
+      covDefended.classes.includes("权限受限") && covDefended.classes.includes("6") &&
+        !covDefended.classes.includes("扫描期间消失") &&
+        !covDefended.classes.includes("排除掩码"),
+      covDefended.classes.slice(0, 120));
+    record("coverage-scan-note-defends-missing-fields",
+      covDefended.scanNote.includes("6 处权限受限") &&
+        !covDefended.scanNote.includes("消失") && !covDefended.scanNote.includes("排除掩码"),
+      covDefended.scanNote.slice(0, 120));
+
+    // 5) full 状态只显示完整覆盖，不显示三类缺口
+    await setMode("dual");
+    await openPage("#/overview");
+    await page.waitForFunction(() =>
+      document.getElementById("overview-quality")?.textContent.includes("完整覆盖"));
+    const covFull = await page.evaluate(() => ({
+      classes: document.querySelector("[data-test='coverage-classes']")?.textContent || "",
+      quality: document.getElementById("overview-quality")?.textContent || "",
+    }));
+    record("coverage-full-shows-only-complete",
+      covFull.quality.includes("完整覆盖") && covFull.classes === "" &&
+        !covFull.quality.includes("权限受限") && !covFull.quality.includes("扫描期间消失"),
+      covFull.quality.slice(0, 120));
+
+    /* ---------- ISS-002A 设置页：浏览器降级渲染路径文字 ----------
+     * 默认 page（无 Tauri 桥）下，深链按钮隐藏，回退为显示固定路径文字；
+     * 验证不渲染假链接（不是 <a href="x-apple...">）且路径与 macOS 真实菜单一致。 */
+    await setMode("dual");
+    await openPage("#/settings");
+    await page.waitForSelector("#permissions-panel");
+    const permBrowser = await page.evaluate(() => ({
+      openBtnVisible: !document.getElementById("btn-open-system-prefs")?.hidden,
+      fallbackVisible: !document.querySelector("[data-test='perm-path-fallback']")?.hidden,
+      fallbackText: document.querySelector("[data-test='perm-path-fallback']")?.textContent || "",
+      authChip: document.querySelector("[data-test='perm-auth-chip']")?.textContent || "",
+      rescanVisible: !document.getElementById("btn-rescan")?.hidden,
+      // 不得存在伪造的 <a> 指向 x-apple.systempreferences
+      fakeAnchorCount: [...document.querySelectorAll("#permissions-panel a")].filter((a) =>
+        a.getAttribute("href")?.startsWith("x-apple.systempreferences")).length,
+    }));
+    record("permissions-browser-fallback-shows-path-text",
+      !permBrowser.openBtnVisible && permBrowser.fallbackVisible &&
+        permBrowser.fallbackText.includes("系统设置") &&
+        permBrowser.fallbackText.includes("隐私与安全性") &&
+        permBrowser.fallbackText.includes("完全磁盘访问") &&
+        permBrowser.fakeAnchorCount === 0,
+      JSON.stringify(permBrowser).slice(0, 160));
+
+    /* ---------- ISS-002A 设置页：重扫按钮复用既有 /api/scan 入口 ----------
+     * 点击后必须真实 POST /api/scan（fixture 计数 +1），并显示反馈；
+     * 验证未新造轮询：扫描进度的刷新仍由既有 status.js 的轮询链负责。 */
+    const scanCallsBefore = fixture.state.counts.scan || 0;
+    await page.click("#btn-rescan");
+    await waitForCount("scan", scanCallsBefore + 1);
+    const rescanFeedback = await page.evaluate(() => ({
+      statusText: document.getElementById("perm-rescan-status")?.textContent || "",
+      statusVisible: !document.getElementById("perm-rescan-status")?.hidden,
+    }));
+    record("permissions-rescan-triggers-existing-entry",
+      (fixture.state.counts.scan || 0) === scanCallsBefore + 1 &&
+        rescanFeedback.statusVisible &&
+        rescanFeedback.statusText.length > 0 &&
+        // 立即反馈含进度提示，不冒充"完成"
+        rescanFeedback.statusText.includes("扫描"),
+      JSON.stringify(rescanFeedback).slice(0, 160));
+
+    /* ---------- ISS-002A 设置页：mock Tauri 桥下深链按钮被驱动 ----------
+     * 用独立的 mock-tpage 注入 __TAURI__.core.invoke，验证：
+     *   - 按钮可见、fallback 隐藏；
+     *   - 点击按钮后 invoke 收到 cmd="plugin:opener|open_url" 且 url 为
+     *     x-apple.systempreferences:...Privacy_AllFiles。 */
+    const tpage2 = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const tpage2Errors = [];
+    tpage2.on("pageerror", (e) => tpage2Errors.push(e.message));
+    await tpage2.addInitScript(`
+      window.__tauriMock2 = { invokes: [] };
+      Object.defineProperty(window, "__TAURI__", { value: {
+        core: { invoke: (cmd, args) => {
+          window.__tauriMock2.invokes.push({ cmd, args });
+          return Promise.resolve();
+        } },
+        event: { listen: () => Promise.resolve(0) },
+      }, configurable: true });
+    `);
+    await setMode("partial-all");  // 三类缺口并存，便于查看授权状态 chip
+    await tpage2.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    await tpage2.waitForSelector("#permissions-panel [data-test='perm-open-prefs-btn']");
+    const permTauri = await tpage2.evaluate(() => ({
+      openBtnVisible: !document.getElementById("btn-open-system-prefs")?.hidden,
+      fallbackHidden: document.querySelector("[data-test='perm-path-fallback']")?.hidden,
+      authChip: document.querySelector("[data-test='perm-auth-chip']")?.textContent || "",
+      note: [...document.querySelectorAll("#permissions-panel p")]
+        .map((p) => p.textContent).join(" | "),
+    }));
+    record("permissions-tauri-mock-shows-button-and-warning",
+      permTauri.openBtnVisible && permTauri.fallbackHidden &&
+        permTauri.authChip.includes("可能未授权") &&
+        permTauri.note.includes("不代改系统权限"),
+      JSON.stringify(permTauri).slice(0, 200));
+    await tpage2.click("#btn-open-system-prefs");
+    await tpage2.waitForFunction(() => (window.__tauriMock2.invokes || []).length >= 1);
+    const deeplinkInvoke = await tpage2.evaluate(() => window.__tauriMock2.invokes[0]);
+    record("permissions-tauri-mock-deeplink-invokes-opener",
+      deeplinkInvoke?.cmd === "plugin:opener|open_url" &&
+        deeplinkInvoke?.args?.url === "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+      JSON.stringify(deeplinkInvoke));
+    await tpage2.close();
 
     /* ---------- 汇总 ---------- */
     record("no-unhandled-page-errors",

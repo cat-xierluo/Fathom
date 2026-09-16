@@ -112,7 +112,7 @@
 | ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | READY | ISS-025、ISS-028 |
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | READY | ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | READY | ISS-062 |
-| ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | READY | ISS-061 |
+| ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
 | ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | READY | ISS-064 |
 
 ## 任务卡
@@ -159,16 +159,16 @@
 
 ### ISS-064 · du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径
 
-- **状态**：READY（P0/M1）；来源：PM 只读生产观察（2026-09-16 19:42，ISS-001 观察窗口，ISS-061 合并后首次定时扫描）。
+- **状态**：DONE（P0/M1，2026-09-16 21:40；PR #85 → main `72c29c7`，pytest 375→381）；来源：PM 只读生产观察（2026-09-16 19:42，ISS-001 观察窗口，ISS-061 合并后首次定时扫描）。
 - **目标**：无论 du 是否产出输出、机器是否在扫描中途睡眠，扫描都在配置上限（墙钟）到达后被回收：du 进程组被终止、扫描锁释放、`scan_runs` 记 `interrupted` 且 message 可诊断（含上限与 du 阻塞处的路径线索）；上次有效快照保留。
 - **范围**：`fathom/scanner.py`（deadline 时钟与超时报文）、`fathom/scan_coordinator.py`（如需传递/记录）、`tests/test_scanner.py`、`tests/test_scan_coordination.py`。**不改** du 命令、扫描根与排除策略（路径排除属用户决策，另卡）。
 - **实施边界（PM 只读证据）**：生产 `scan_runs` 第 3 行 started `2026-09-16T12:01:01`，19:42 仍 `running`（7h41m）；du（PID 56050，`/usr/bin/du -xk /Users/maoking`）状态 S、累计 CPU 仅 2:21，`sample` 显示阻塞于 `fts_read → fts_build → open$NOCANCEL`，`lsof` 显示其打开目录为 `~/Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/addons/pool/mac-universal/__obsolete/kdocset_3.0.0.88/weboffice-static/js/images`（WPS 容器内挂起的文件系统对象）；`launchctl getenv FATHOM_DU_TIMEOUT_S` 为空（默认 14400 生效）；`pmset -g log` 显示下午机器在电池上反复 maintenance sleep。代码：`scanner.py:249 started = time.monotonic()`、`:271 deadline = started + timeout_seconds`、`:274 remaining = deadline - time.monotonic()`——**macOS 的 `time.monotonic()` 基于 `mach_absolute_time`，系统睡眠期间不前进**，因此「14400 秒」实为「14400 清醒秒」，合盖即暂停计时；叠加 du 在单个 `open()` 上无限阻塞，扫描可无限期挂起并持锁，次日 12:00 将被 `ScanBusyError` 拒绝。修法：deadline 以墙钟为准（`time.time()`；或 wall 与 monotonic 双轨取先到，避免墙钟被人为回拨时永不超时）；超时报文在既有「du 超过 N 秒安全时限」后追加 du 最后一行输出的路径或 `lsof -p <du_pid>` 只读取到的当前目录（取不到则省略，不得为此延长阻塞）；对阻塞在 `open$NOCANCEL` 的 du，`SIGTERM` 3s 后 `SIGKILL` 的既有回收逻辑须有测试钉住。先复现：fake du 阻塞不输出 + monkeypatch 让 `time.time()` 前进而 `time.monotonic()` 不动 → 旧代码不超时（红）→ 修后超时（绿）。
 - **验收**：
-  - [ ] 反例先红后绿：睡眠模拟（wall 前进、monotonic 停）下超时触发；du 无输出阻塞下超时触发
-  - [ ] 超时后 du 进程组已回收、锁释放、`scan_runs=interrupted`、message 含上限与（可得时）阻塞路径线索；上次快照保留
-  - [ ] ISS-061（配置校验）与 ISS-047（EINTR）既有测试不变；pytest 计数同步
-  - [ ] 不改扫描根/排除策略；不读写生产库
-- **证据/接续**：不得勾选验收项。**生产处置（用户决定）**：PID 56028 仍持 `data/fathom.db.scan.lock`；建议用户执行 `kill -TERM 56028`——CLI 已有 SIGTERM 处理（取消扫描、`killpg` 回收 du、释放锁、记 interrupted），否则 09-17 12:00 定时扫描会被拒绝。**关联观察**：09-13 的 EINTR 与本次挂起都发生在第三方容器目录（微信/WPS），建议后续在 ISS-016A 设置持久化中一并提供「扫描根排除列表」（用户可配置，默认不排除），另开卡不并入本卡。
+  - [x] 反例先红后绿：`test_wall_clock_deadline_fires_when_monotonic_frozen`（monotonic 冻结 + 墙钟前进 + fake du `signal.pause()` 无输出）旧代码不超时 → 新代码超时；报文线索两例（最后输出路径 / lsof cwd）同样先红后绿
+  - [x] 超时后 du 进程组回收（含忽略 SIGTERM 的 du 在 3s 内 SIGKILL）、锁释放、`scan_runs=interrupted`、message 含上限与阻塞线索；上次快照保留——协调器级测试 `test_timeout_kills_sigterm_ignoring_du_and_marks_interrupted`
+  - [x] ISS-061/ISS-047 既有测试不变；全量 375→**381**（+6），门禁计数已同步四处
+  - [x] 不改扫描根/排除策略；测试用合成运行根，不读写生产库
+- **证据/接续**（2026-09-16 DONE）：worker ctx_ad4cf271e8aa（GLM，iss-064-du-deadline-wallclock）交付 `9b93119`（红）/`8a93501`（墙钟主轨 + monotonic 副轨任一到期即超时；`_lsof_du_cwd` 只读 ≤2s；报文附最后输出路径或 cwd）/`5c58fbf`（回收路径测试）。cron（v3）在 GLM lane 降至 4% 时改用 **minimax-M3** 派 reviewer ctx_aa545997304b（review-wave21-064）**ACCEPT**（0 blocking；非阻断：墙钟回拨场景未显式单测、一处测试放置风格）。PM 独立复跑定向 46 / 全量 381；`worker-value-postflight` ok；`pr-audit` adopt。[PR #85](https://github.com/cat-xierluo/fathom/pull/85) squash 合并为 main `72c29c7`，生产目录已 pull，**09-17 12:00 定时扫描起生效**。**生产处置（已无需）**：scan_run 3 于 20:02:58 自行结束（见 ISS-065），锁已释放。原**生产处置（用户决定）**：PID 56028 仍持 `data/fathom.db.scan.lock`；建议用户执行 `kill -TERM 56028`——CLI 已有 SIGTERM 处理（取消扫描、`killpg` 回收 du、释放锁、记 interrupted），否则 09-17 12:00 定时扫描会被拒绝。**关联观察**：09-13 的 EINTR 与本次挂起都发生在第三方容器目录（微信/WPS），建议后续在 ISS-016A 设置持久化中一并提供「扫描根排除列表」（用户可配置，默认不排除），另开卡不并入本卡。
 
 ### ISS-003A · 通知语义统一与测试补强（ISS-003 代码切片）
 

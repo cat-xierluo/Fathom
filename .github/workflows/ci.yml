@@ -161,3 +161,9 @@ jobs:
         env:
           CARGO_PREFETCH: '1'
         run: bash scripts/ci_cargo_locked.sh
+
+      # ISS-068：壳层插件注册断言（源码 .plugin() + ACL opener/allow-open-url）。
+      # 紧跟 cargo build——本步骤读取其上一步刚生成的
+      # target/debug/build/*/out/acl-manifests.json；不依赖 .app bundle。
+      - name: Tauri opener 插件注册与授权断言
+        run: bash scripts/ci_tauri_opener_registered.sh

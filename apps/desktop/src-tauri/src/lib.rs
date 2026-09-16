@@ -342,9 +342,28 @@ fn quit_with_helper(app: &AppHandle) {
     app.exit(0);
 }
 
+/// ISS-068：本壳依赖的 Tauri 插件名清单，供测试断言**名字合同**。
+///
+/// 重要边界（勿高估本常量）：它是**手写**的，与 `run()` 中真实的
+/// `.plugin(tauri_plugin_opener::init())` 调用**没有强制关联**。删掉
+/// `.plugin()` 只改变运行时行为，本常量仍在、测试照过（2026-09-17 实测：
+/// 删注册后 `cargo test opener_plugin_name_matches` 仍 1 passed）。
+/// 因此它**不是**注册护栏，只断言「上游 tauri-plugin-opener 的
+/// `Plugin::name()` == 前端命令前缀 "opener"」这一跨仓库名字合同。
+///
+/// 真正的注册护栏是 `scripts/ci_tauri_opener_registered.sh` 的源码正则检查
+/// （见该脚本头）；tauri-build 的 ACL 产物**无法**观察 `.plugin()`。
+const REGISTERED_PLUGIN_NAMES: &[&str] = &["opener"];
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // ISS-068：设置页「打开系统设置」走 plugin:opener|open_url 打开
+        // x-apple.systempreferences: 隐私深链。此前 Cargo.toml 已依赖
+        // tauri-plugin-opener，但 Builder 未注册插件、capability 未授权，
+        // 前端调用必被 ACL 拒绝。插件前缀 opener 由前端命令名
+        // plugin:opener|open_url 决定，不能改成 fathom。
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             update_tray_status,
             helper_status,
@@ -431,6 +450,59 @@ pub fn run() {
 mod tests {
     use super::*;
     use helper::ExhaustedInfo;
+    use tauri::plugin::Plugin;
+
+    /// ISS-068：断言**名字合同**（非注册护栏）——上游 tauri-plugin-opener 的
+    /// `Plugin::name()` 必须等于前端命令前缀 `plugin:opener|open_url` 中的
+    /// `opener`。名字若漂移，capability 的 `opener:allow-open-url` 会与实际
+    /// 注册键错位、深链静默失败。绑定真实插件实例，不是字面量自证。
+    ///
+    /// **本测试抓不到「`.plugin()` 被删除」**：REGISTERED_PLUGIN_NAMES 是手写
+    /// 常量，删注册调用后本测试仍通过（2026-09-17 实测 1 passed）。注册护栏
+    /// 见 scripts/ci_tauri_opener_registered.sh。
+    #[test]
+    fn opener_plugin_name_matches_frontend_command_prefix() {
+        let plugin = tauri_plugin_opener::init::<tauri::Wry>();
+        assert_eq!(plugin.name(), "opener");
+        assert!(
+            REGISTERED_PLUGIN_NAMES.contains(&plugin.name()),
+            "名字合同漂移：上游插件名 {:?} 不在本壳清单 {:?}，capability 的 \
+             opener:allow-open-url 会与注册键错位，前端 plugin:{:?}|open_url 静默失败",
+            plugin.name(),
+            REGISTERED_PLUGIN_NAMES,
+            plugin.name()
+        );
+    }
+
+    /// ISS-068 二轮：证明 capabilities 里声明的 URL scope 模式**真的能匹配**
+    /// 前端实际打开的深链（settings.js 的 PREFS_DEEP_LINK）。
+    ///
+    /// 背景：`opener:allow-open-url` 只是**命令级**授权；上游
+    /// `Scope::is_url_allowed`（tauri-plugin-opener scope.rs）在 URL 维度用
+    /// `glob::Pattern::matches` 判定，空 allow 列表恒 false -> `ForbiddenUrl`。
+    /// 故仅声明权限标识符不够，必须带 scope 且模式要覆盖具体 URL。
+    ///
+    /// 本测试用**与上游同一 crate**（glob 0.3，见 Cargo.toml dev-dependencies）
+    /// 复算匹配，避免自造语义。注意 `*` 在默认 MatchOptions 下可跨 `/` 与 `?`。
+    #[test]
+    fn opener_url_scope_pattern_matches_frontend_deep_link() {
+        // 与 capabilities/default.json 的 scope 及 settings.js 的 URL 保持一致。
+        const SCOPE_PATTERN: &str = "x-apple.systempreferences:*";
+        const FRONTEND_URL: &str =
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+
+        let pat = glob::Pattern::new(SCOPE_PATTERN).expect("scope 模式本身必须合法");
+        assert!(
+            pat.matches(FRONTEND_URL),
+            "scope 模式 {SCOPE_PATTERN:?} 不匹配前端深链 {FRONTEND_URL:?}；\
+             运行期 is_url_allowed 会返回 false，open_url 被 ForbiddenUrl 拒绝"
+        );
+        // 负向：不能因为放宽而覆盖任意 scheme。
+        assert!(
+            !pat.matches("https://example.com"),
+            "scope 模式过宽：不应匹配 https URL"
+        );
+    }
 
     /// ISS-059：给定 PortsExhausted 事件还原的信息 → 状态 JSON 的
     /// state==exhausted 且 recovery 结构完整（候选端口 + 占用 pid + 提示文案）。

@@ -250,10 +250,11 @@ def test_current_schema_rejects_broken_entries_invariants(tmp_path, fault):
 
 
 def test_v3_database_migrates_vanished_count_with_default_zero(tmp_path):
-    """ISS-065：v3→v4 迁移给旧快照补 vanished_count 列（NOT NULL DEFAULT 0）。
+    """ISS-065 + ISS-066：v3→v5 链式迁移给旧快照补 vanished_count + exclude_names。
 
-    反例：旧库没 vanished_count 列时，create_snapshot 写入会报缺列；
-    修后：迁移给所有既有行填 0，新写入由代码显式提供。
+    ISS-066 落地后 SCHEMA_VERSION=5，v3 库需经 v3→v4→v5 两次迁移。
+    vanished_count 与 exclude_names 均 NOT NULL DEFAULT，旧行通过默认值
+    获得 0 / ''，不补造未知元数据。
     """
     path = tmp_path / "v3.db"
     legacy = sqlite3.connect(path)
@@ -280,12 +281,14 @@ def test_v3_database_migrates_vanished_count_with_default_zero(tmp_path):
 
     conn = db.connect(path)
     try:
-        assert db.schema_version(conn) == db.SCHEMA_VERSION == 4
+        assert db.schema_version(conn) == db.SCHEMA_VERSION == 5
         rows = conn.execute(
-            "SELECT id, vanished_count FROM snapshots ORDER BY id"
+            "SELECT id, vanished_count, exclude_names FROM snapshots ORDER BY id"
         ).fetchall()
-        # 旧行通过 NOT NULL DEFAULT 0 自动获得 0，不补造未知元数据。
-        assert [r["vanished_count"] for r in rows] == [0, 0]
+        # 旧行通过 NOT NULL DEFAULT 0/'' 自动获得默认，不补造未知元数据。
+        assert [(r["vanished_count"], r["exclude_names"]) for r in rows] == [
+            (0, ""), (0, "")
+        ]
         # 既有列未被改写：min_kb/collection_status 保持原值。
         originals = conn.execute(
             "SELECT min_kb, collection_status FROM snapshots ORDER BY id"
@@ -293,28 +296,32 @@ def test_v3_database_migrates_vanished_count_with_default_zero(tmp_path):
         assert [(r["min_kb"], r["collection_status"]) for r in originals] == [
             (1024, "full"), (None, None),
         ]
-        # 新写入可显式提供 vanished_count（采集时点固化）。
+        # 新写入可显式提供 vanished_count + exclude_names（采集时点固化）。
         conn.execute(
             "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
-            "du_seconds, total_kb, min_kb, collection_status, vanished_count) "
+            "du_seconds, total_kb, min_kb, collection_status, "
+            "vanished_count, exclude_names) "
             "VALUES ('2026-09-14T12:00:00', '/synthetic/root-c', 1, 0, 0.1, 7, "
-            "1024, 'partial', 5)"
+            "1024, 'partial', 5, 'skip.noindex')"
         )
         conn.commit()
-        assert conn.execute(
-            "SELECT vanished_count FROM snapshots ORDER BY id DESC LIMIT 1"
-        ).fetchone()["vanished_count"] == 5
+        last = conn.execute(
+            "SELECT vanished_count, exclude_names FROM snapshots "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert (last["vanished_count"], last["exclude_names"]) == (5, "skip.noindex")
     finally:
         conn.close()
-    # v3→v4 失败回退时 v2/v3 迁移备份仍可恢复
+    # v3→v4→v5 失败回退时 v3 备份仍可恢复（迁移前快照）。
     backups_v3 = sorted(path.parent.glob(path.name + ".backup-v3-*.sqlite3"))
     assert len(backups_v3) == 1
     backup = sqlite3.connect(backups_v3[0])
     try:
         assert backup.execute("PRAGMA user_version").fetchone()[0] == 3
-        # v3 备份里没有 vanished_count 列（迁移前快照）
+        # v3 备份里没有 vanished_count / exclude_names 列（迁移前快照）
         cols = {row[1] for row in backup.execute("PRAGMA table_info(snapshots)")}
         assert "vanished_count" not in cols
+        assert "exclude_names" not in cols
         assert backup.execute(
             "SELECT total_kb FROM snapshots ORDER BY id"
         ).fetchall()[0][0] == 42
@@ -357,3 +364,120 @@ def test_v3_migration_failure_rolls_back_keeps_vanished_count_uncommitted(tmp_pa
         assert raw.execute("SELECT total_kb FROM snapshots").fetchone()[0] == 42
     finally:
         raw.close()
+
+
+class TestISS066ExcludeNamesMigration:
+    """ISS-066：v4→v5 迁移给 snapshots 补 exclude_names 列（NOT NULL DEFAULT ''）。
+
+    反例：旧库没 exclude_names 列时，create_snapshot 写入会报缺列；
+    修后：迁移给所有既有行填 ''（规范空串），新写入由代码显式提供。
+    旧行默认空串保证默认路径零行为变化：v4 旧行（exclude_names=''）与
+    v5 新写入的无配置快照同身份可比（same_dataset 验收）。
+    """
+
+    def _legacy_v4(self, path: Path) -> None:
+        legacy = sqlite3.connect(path)
+        try:
+            for statement in db._SCHEMA_STATEMENTS:
+                legacy.execute(statement)
+            legacy.execute(
+                "ALTER TABLE snapshots ADD COLUMN min_kb INTEGER"
+            )
+            legacy.execute(
+                "ALTER TABLE snapshots ADD COLUMN collection_status TEXT"
+            )
+            legacy.execute(
+                "ALTER TABLE snapshots ADD COLUMN vanished_count INTEGER NOT NULL DEFAULT 0"
+            )
+            legacy.execute("PRAGMA user_version=4")
+            legacy.execute(
+                "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+                "du_seconds, total_kb, min_kb, collection_status, vanished_count) "
+                "VALUES ('2026-09-12T12:00:00', '/synthetic/root-a', 1, 0, 0.1, "
+                "42, 1024, 'full', 0)"
+            )
+            legacy.commit()
+        finally:
+            legacy.close()
+
+    def test_v4_database_migrates_exclude_names_with_default_empty(self, tmp_path):
+        path = tmp_path / "v4.db"
+        self._legacy_v4(path)
+
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == db.SCHEMA_VERSION == 5
+            cols = {row[1] for row in conn.execute(
+                "PRAGMA table_info(snapshots)")}
+            assert "exclude_names" in cols
+            # 旧行通过 NOT NULL DEFAULT '' 自动获得空串。
+            rows = conn.execute(
+                "SELECT exclude_names FROM snapshots ORDER BY id"
+            ).fetchall()
+            assert [r["exclude_names"] for r in rows] == [""]
+            # 既有列未被改写。
+            originals = conn.execute(
+                "SELECT min_kb, collection_status, vanished_count FROM snapshots "
+                "ORDER BY id"
+            ).fetchall()
+            assert [(r["min_kb"], r["collection_status"], r["vanished_count"])
+                    for r in originals] == [(1024, "full", 0)]
+            # 新写入可显式提供 exclude_names（采集时点固化）。
+            conn.execute(
+                "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+                "du_seconds, total_kb, min_kb, collection_status, vanished_count, "
+                "exclude_names) VALUES ('2026-09-14T12:00:00', '/synthetic/root-c', "
+                "1, 0, 0.1, 7, 1024, 'partial', 0, 'skip.noindex')"
+            )
+            conn.commit()
+            assert conn.execute(
+                "SELECT exclude_names FROM snapshots ORDER BY id DESC LIMIT 1"
+            ).fetchone()["exclude_names"] == "skip.noindex"
+        finally:
+            conn.close()
+        # v4→v5 失败回退时 v4 备份仍可恢复（迁移前快照）。
+        backups_v4 = sorted(path.parent.glob(path.name + ".backup-v4-*.sqlite3"))
+        assert len(backups_v4) == 1
+        backup = sqlite3.connect(backups_v4[0])
+        try:
+            assert backup.execute("PRAGMA user_version").fetchone()[0] == 4
+            cols = {row[1] for row in backup.execute("PRAGMA table_info(snapshots)")}
+            assert "exclude_names" not in cols
+        finally:
+            backup.close()
+
+    def test_v4_migration_failure_rolls_back_keeps_exclude_names_uncommitted(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "v4-fail.db"
+        self._legacy_v4(path)
+
+        def fail_v5(conn):
+            raise sqlite3.OperationalError("injected v5 failure")
+
+        monkeypatch.setitem(db._MIGRATIONS, 4, fail_v5)
+        with pytest.raises(db.MigrationError, match="原库已回滚"):
+            db.connect(path)
+
+        raw = sqlite3.connect(path)
+        try:
+            assert raw.execute("PRAGMA user_version").fetchone()[0] == 4
+            cols = {row[1] for row in raw.execute("PRAGMA table_info(snapshots)")}
+            assert "exclude_names" not in cols
+        finally:
+            raw.close()
+
+    def test_v4_to_v5_migration_is_idempotent(self, tmp_path, monkeypatch):
+        """迁移幂等：v4 库重跑两次都是同一结果；列只追加一次。"""
+        path = tmp_path / "v4-idempotent.db"
+        self._legacy_v4(path)
+        first = db.connect(path)
+        first.close()
+        second = db.connect(path)
+        try:
+            cols = [row[1] for row in second.execute(
+                "PRAGMA table_info(snapshots)")]
+            assert cols.count("exclude_names") == 1
+            assert db.schema_version(second) == db.SCHEMA_VERSION == 5
+        finally:
+            second.close()

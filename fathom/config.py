@@ -27,6 +27,7 @@ helper 都靠它钉住扫描根），若落盘设置能反超环境变量，一�
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import fnmatch
 import json
 import math
 import os
@@ -362,7 +363,14 @@ HELPER_INSTANCE_FILENAME = "helper-instance.json"
 SETTINGS_FILENAME = "settings.json"
 DEFAULT_SCAN_TIME = "12:00"
 _SCAN_TIME_PATTERN = re.compile(r"\A([01]\d|2[0-3]):([0-5]\d)\Z")
-_SETTING_KEYS = ("scan_root", "scan_time", "min_kb", "free_alert_gb")
+_SETTING_KEYS = ("scan_root", "scan_time", "min_kb", "free_alert_gb",
+                 "exclude_names")
+# ISS-066：du ``-I mask`` 按名字（fnmatch）跳过整棵子树；超过该数就退回
+# 逐项路径排除或考虑拆分运行根（防御性上限，避免配置层把 du argv 撑爆）。
+MAX_EXCLUDE_NAMES = 50
+
+# 生效排除集：扫描器按此向 du 注入 -I <每项>（按规范顺序：排序去重）。
+EXCLUDE_NAMES: list[str] = []
 
 # PUT /api/config 与 configure() 可能并发触发合并写；设置写入低频，互斥足够。
 _SETTINGS_LOCK = threading.Lock()
@@ -376,6 +384,7 @@ class UserSettings:
     scan_time: str | None = None
     min_kb: float | None = None
     free_alert_gb: float | None = None
+    exclude_names: str | None = None  # 规范串（排序去重后 ``;`` 拼接），无配置 = ""
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -383,6 +392,7 @@ class UserSettings:
             "scan_time": self.scan_time,
             "min_kb": self.min_kb,
             "free_alert_gb": self.free_alert_gb,
+            "exclude_names": self.exclude_names,
         }
 
 
@@ -425,6 +435,70 @@ def _validated_scan_root(raw: object) -> str:
     return str(resolved)
 
 
+def _canonicalize_exclude_names(items: list[str]) -> str:
+    """校验每项并产出排序去重的规范串（``;`` 拼接）。
+
+    设计要求（ISS-066 实施边界）：
+    - 每项非空、无 ``/``（BSD du -I 按名字匹配，路径分隔会改变语义）；
+    - 无 NUL；不得为 ``.`` 或 ``..``（无意义且会被 du 拒绝）；
+    - fnmatch.translate 必须能解析（捕获真正的语法错误）；
+    - 排序去重后 ≤50 项（防御性上限）。排序顺序使持久化与扫描器
+      argv 注入顺序确定；与扫描器 argv 注入一致——同名掩码反复出现的
+      语义不依赖插入顺序。
+    """
+    seen: set[str] = set()
+    canonical: list[str] = []
+    for item in items:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigurationError(
+                f"exclude_names 每项必须是非空字符串：{item!r}"
+            )
+        if "/" in item:
+            raise ConfigurationError(
+                f"exclude_names 不得包含路径分隔符 /：{item!r}"
+            )
+        if "\x00" in item:
+            raise ConfigurationError(
+                f"exclude_names 不得包含 NUL 字节：{item!r}"
+            )
+        if item in (".", ".."):
+            raise ConfigurationError(
+                f"exclude_names 不得为 {item!r}"
+            )
+        try:
+            fnmatch.translate(item)
+        except re.error as exc:
+            raise ConfigurationError(
+                f"exclude_names 不是合法 fnmatch 模式：{item!r}（{exc}）"
+            ) from exc
+        seen.add(item)
+    canonical = sorted(seen)
+    if len(canonical) > MAX_EXCLUDE_NAMES:
+        raise ConfigurationError(
+            f"exclude_names 项数不得超过 {MAX_EXCLUDE_NAMES}："
+            f"当前 {len(canonical)} 项"
+        )
+    return ";".join(canonical)
+
+
+def _validated_exclude_names(raw: object) -> str:
+    """校验 + 规范化为规范串（空列表视为显式清空 → 规范空串）。
+
+    接受两种形态：
+    - 列表（PUT/合并入口）：``["a", "b"]`` → 校验 + 排序去重 + ``;`` 拼接；
+    - 字符串（settings.json 已落盘的规范串）：``"a;b"`` → 仅校验每项符合
+      规则后原样保留，避免回写后再次 ``;`` 分割再合并的双重转换开销。
+    """
+    if isinstance(raw, str):
+        items = [m for m in raw.split(";") if m]
+        return _canonicalize_exclude_names(items)
+    if isinstance(raw, list):
+        return _canonicalize_exclude_names(raw)
+    raise ConfigurationError(
+        f"exclude_names 必须是字符串列表或规范串：{raw!r}"
+    )
+
+
 def parse_user_settings(data: Mapping[str, object]) -> UserSettings:
     """把（部分）设置字典校验为 UserSettings；未知键或坏值 fail-closed。"""
     unknown = sorted(set(data) - set(_SETTING_KEYS))
@@ -436,6 +510,7 @@ def parse_user_settings(data: Mapping[str, object]) -> UserSettings:
         "scan_time": _validated_scan_time,
         "min_kb": lambda raw: _validated_positive_number(raw, "min_kb"),
         "free_alert_gb": lambda raw: _validated_positive_number(raw, "free_alert_gb"),
+        "exclude_names": _validated_exclude_names,
     }
     for key, validate in validators.items():
         raw = data.get(key)
@@ -518,7 +593,7 @@ def settings_path() -> Path:
 
 def _publish_policy_values(settings: UserSettings) -> None:
     """把（合并后的）设置发布为模块常量；未持久化项回落内置默认。"""
-    global MIN_DIR_KB, FREE_ALERT_GB, SCAN_HOUR, SCAN_MINUTE
+    global MIN_DIR_KB, FREE_ALERT_GB, SCAN_HOUR, SCAN_MINUTE, EXCLUDE_NAMES
     MIN_DIR_KB = settings.min_kb if settings.min_kb is not None else _DEFAULT_MIN_KB
     FREE_ALERT_GB = (
         settings.free_alert_gb
@@ -526,6 +601,20 @@ def _publish_policy_values(settings: UserSettings) -> None:
         else _DEFAULT_FREE_ALERT_GB
     )
     SCAN_HOUR, SCAN_MINUTE = _parse_hhmm(settings.scan_time or DEFAULT_SCAN_TIME)
+    # exclude_names：规范串已排序去重；解析回列表供扫描器按序注入 -I。
+    if settings.exclude_names:
+        EXCLUDE_NAMES = [m for m in settings.exclude_names.split(";") if m]
+    else:
+        EXCLUDE_NAMES = []
+
+
+def _exclude_names_from_env(env: Mapping[str, str]) -> list[str] | None:
+    """从 FATHOM_EXCLUDE_NAMES 环境变量解析（分号分隔）。空/未设返回 None。"""
+    raw = env.get("FATHOM_EXCLUDE_NAMES")
+    if raw is None:
+        return None
+    items = [m.strip() for m in raw.split(";") if m.strip()]
+    return items or None
 
 
 def refresh_user_settings(
@@ -536,12 +625,25 @@ def refresh_user_settings(
     """把持久化设置合并进进程内生效值（优先级见模块 docstring）。
 
     - 扫描根：CLI 显式覆盖 > ``FATHOM_SCAN_ROOT`` > settings.json > 默认；
+    - 排除集：``FATHOM_EXCLUDE_NAMES`` > settings.json > 默认（与既有链一致）；
     - 计划时间/入库阈值/低空间阈值：settings.json > 默认（无环境变量入口）。
     """
     global _ACTIVE, _USER_SETTINGS
     env = os.environ if environ is None else environ
     if settings is None:
         settings = load_user_settings(_ACTIVE.runtime_dir / SETTINGS_FILENAME)
+    # 排除集的环境变量优先级在 settings.json 之上：复用同一 fail-closed
+    # 校验链（_canonicalize_exclude_names）拒绝任何非合法项，与持久化层
+    # 行为一致——CLI/运维/服务都共用同一规则。
+    env_items = _exclude_names_from_env(env)
+    if env_items is not None:
+        settings = UserSettings(
+            scan_root=settings.scan_root,
+            scan_time=settings.scan_time,
+            min_kb=settings.min_kb,
+            free_alert_gb=settings.free_alert_gb,
+            exclude_names=_canonicalize_exclude_names(env_items),
+        )
     _USER_SETTINGS = settings
     env_scan_root = env.get("FATHOM_SCAN_ROOT", "").strip()
     if (not _CLI_SCAN_ROOT_PINNED and not env_scan_root
@@ -567,6 +669,7 @@ def update_user_settings(changes: Mapping[str, object]) -> UserSettings:
 def effective_settings_view() -> dict[str, object]:
     """GET /api/config 数据源：生效值 + 每项来源 + 默认值与只读策略。"""
     env_scan_root = os.environ.get("FATHOM_SCAN_ROOT", "").strip()
+    env_exclude_names = os.environ.get("FATHOM_EXCLUDE_NAMES", "").strip()
     settings = _USER_SETTINGS
     if env_scan_root or _CLI_SCAN_ROOT_PINNED:
         scan_root_source = "env" if env_scan_root else "cli"
@@ -574,17 +677,25 @@ def effective_settings_view() -> dict[str, object]:
         scan_root_source = "settings"
     else:
         scan_root_source = "default"
+    if env_exclude_names:
+        exclude_names_source = "env"
+    elif settings.exclude_names:
+        exclude_names_source = "settings"
+    else:
+        exclude_names_source = "default"
     sources = {
         "scan_root": scan_root_source,
         "scan_time": "settings" if settings.scan_time is not None else "default",
         "min_kb": "settings" if settings.min_kb is not None else "default",
         "free_alert_gb": "settings" if settings.free_alert_gb is not None else "default",
+        "exclude_names": exclude_names_source,
     }
     return {
         "scan_root": str(_ACTIVE.scan_root),
         "scan_time": settings.scan_time or DEFAULT_SCAN_TIME,
         "min_kb": MIN_DIR_KB,
         "free_alert_gb": FREE_ALERT_GB,
+        "exclude_names": EXCLUDE_NAMES,
         "sources": sources,
         "defaults": {
             "scan_root": str(_ACTIVE.home_dir),

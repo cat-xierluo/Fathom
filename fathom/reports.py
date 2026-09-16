@@ -36,14 +36,29 @@ def load_snapshot(conn: sqlite3.Connection, sid: int) -> dict[str, int]:
     }
 
 
-def same_dataset(row_a, row_b) -> bool:
-    """两快照是否属于同一数据集（同根同入库阈值口径）。
+def _row_exclude_names(row) -> str:
+    """读取快照行的 exclude_names；旧行（v4 之前不存在该列）以 '' 兜底。"""
+    try:
+        value = row["exclude_names"]
+    except (IndexError, KeyError):
+        return ""
+    return "" if value is None else str(value)
 
-    数据集身份 = (root, min_kb)。v3 之前的旧记录未持久化阈值，min_kb 为
-    NULL：同为 NULL 视为该根的"口径未知"数据集，彼此可比较（保持既有
-    行为）；NULL 与已知阈值不可比——不能证明同口径，拒绝混用。
+
+def same_dataset(row_a, row_b) -> bool:
+    """两快照是否属于同一数据集（同根同入库阈值同排除掩码口径）。
+
+    数据集身份 = (root, min_kb, exclude_names)；ISS-066 升级自
+    (root, min_kb)，排除集变化如实形成新数据集（diff 报「无基线」）。
+    v3 之前的旧记录未持久化阈值，min_kb 为 NULL：同为 NULL 视为该根的
+    "口径未知"数据集，彼此可比较（保持既有行为）；NULL 与已知阈值不可比
+    ——不能证明同口径，拒绝混用。exclude_names 同理：v5 之前的旧记录
+    没有该列，_row_exclude_names 兜底返回 '' 与新写入的"无配置"快照
+    同身份——默认路径零行为变化。
     """
-    return row_a["root"] == row_b["root"] and row_a["min_kb"] == row_b["min_kb"]
+    return (row_a["root"] == row_b["root"]
+            and row_a["min_kb"] == row_b["min_kb"]
+            and _row_exclude_names(row_a) == _row_exclude_names(row_b))
 
 
 def find_same_dataset_predecessor(
@@ -52,18 +67,20 @@ def find_same_dataset_predecessor(
     """用传入 sid 的数据集身份找同数据集前一快照；无则返回 None。
 
     PR #25 已把日报基线从"全局最近两条"改为按传入 sid 查同根前驱；本函数
-    在其上收紧为同数据集（ISS-021）：根或阈值口径不同的历史不进入对比，
-    升级后首个新口径快照、新监控根的首扫都没有可比基线。
+    在其上收紧为同数据集（ISS-021/ISS-066）：根、阈值口径或排除掩码不同
+    的历史不进入对比，升级后首个新口径快照、新监控根的首扫、首次启用
+    排除集的快照都没有可比基线。
     """
     target = conn.execute("SELECT * FROM snapshots WHERE id=?", (sid,)).fetchone()
     if target is None:
         return None
+    target_excludes = _row_exclude_names(target)
     return conn.execute(
         "SELECT * FROM snapshots "
-        "WHERE root = ? AND min_kb IS ? "
+        "WHERE root = ? AND min_kb IS ? AND exclude_names IS ? "
         "AND (created_at < ? OR (created_at = ? AND id < ?)) "
         "ORDER BY created_at DESC, id DESC LIMIT 1",
-        (target["root"], target["min_kb"],
+        (target["root"], target["min_kb"], target_excludes,
          target["created_at"], target["created_at"], sid),
     ).fetchone()
 
@@ -277,6 +294,14 @@ def render_markdown(
             f"- 注意：另有 {vanished_count} 个目录在扫描期间已消失"
             "（记录时存在、校验时不在，如云同步缓存/临时被系统清理），"
             "它们的累计大小作为测量期事实保留，但本次未对其重新扫描"
+        )
+    # ISS-066：本次采集生效的 du -I 排除掩码（非空时如实列出）。
+    exclude_names = _row_exclude_names(new_meta)
+    if exclude_names:
+        masks = "、".join(exclude_names.split(";"))
+        lines.append(
+            f"- 排除掩码：{masks}（本次扫描按这些名字跳过整棵子树；"
+            "数据集身份 (root, min_kb, exclude_names) 不同则不与历史可比）"
         )
     lines.append("")
 

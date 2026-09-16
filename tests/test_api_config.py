@@ -62,6 +62,7 @@ def _isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PORT", cfg.port)
     for name in ("MIN_DIR_KB", "FREE_ALERT_GB", "SCAN_HOUR", "SCAN_MINUTE"):
         monkeypatch.setattr(config, name, getattr(config, name))
+    monkeypatch.setattr(config, "EXCLUDE_NAMES", [])
     monkeypatch.setattr(api, "_scan_lock", threading.Lock())
 
 
@@ -99,10 +100,12 @@ def test_get_config_defaults_without_settings_file(client):
     assert body["scan_time"] == "12:00"
     assert body["min_kb"] == 10 * 1024
     assert body["free_alert_gb"] == 10
+    assert body["exclude_names"] == []
     # 进程环境未设 FATHOM_SCAN_ROOT、无 settings.json：全部默认来源
     assert body["sources"] == {
         "scan_root": "default", "scan_time": "default",
         "min_kb": "default", "free_alert_gb": "default",
+        "exclude_names": "default",
     }
     assert body["defaults"]["scan_time"] == "12:00"
     assert body["policies"]["du_timeout_s"] == config.DU_TIMEOUT_S
@@ -344,3 +347,98 @@ def test_put_config_survives_process_restart(client):
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout.strip().splitlines()[-1]) == {
         "scan_time": "06:45", "min_kb": 128, "free_alert_gb": 4.5}
+
+
+# ---------- ISS-066：exclude_names 端点合同 ----------
+
+def test_get_config_includes_exclude_names_default(client):
+    """GET 默认包含 exclude_names 空列表 + 来源 default。"""
+    body = client.get("/api/config").json()
+    assert body["exclude_names"] == []
+    assert body["sources"]["exclude_names"] == "default"
+
+
+def test_put_config_exclude_names_valid_canonical_and_survives(client):
+    """PUT 接受 exclude_names 列表 → 排序去重后落盘；进程内立即生效。"""
+    response = client.put("/api/config", json={
+        "exclude_names": ["b", "a", "a", "c"],
+    })
+    assert response.status_code == 200
+    assert response.json()["applied"] is True
+    data = json.loads(_settings_file().read_text(encoding="utf-8"))
+    # 落盘是规范串（排序去重后 ``;`` 拼接）。
+    assert data == {"exclude_names": "a;b;c"}
+    view = client.get("/api/config").json()
+    assert view["exclude_names"] == ["a", "b", "c"]
+    assert view["sources"]["exclude_names"] == "settings"
+
+
+@pytest.mark.parametrize("payload, match", [
+    ([""], "exclude_names"),
+    (["dir/child"], "exclude_names"),
+    ([".."], "exclude_names"),
+    (["."], "exclude_names"),
+    (["bad\x00name"], "exclude_names"),
+    ([f"mask{i}" for i in range(51)], "exclude_names"),
+    ({"k": "v"}, "exclude_names"),
+    (42, "exclude_names"),
+])
+def test_put_config_exclude_names_invalid_rejected(client, payload, match):
+    """非法 exclude_names：400 + 中文 detail；旧值仍被 GET 返回。"""
+    # 先设置一个合法值作为基准。
+    assert client.put("/api/config", json={
+        "exclude_names": ["keep"]
+    }).status_code == 200
+    before = client.get("/api/config").json()
+
+    response = client.put("/api/config", json={"exclude_names": payload})
+    assert response.status_code == 400
+    assert match in response.json()["detail"]
+    # 拒绝后 GET 仍返回旧值，落盘未被改写。
+    assert client.get("/api/config").json() == before
+
+
+def test_put_config_empty_exclude_names_clears(client):
+    """空列表是合法的清空操作（不是 400）。"""
+    assert client.put("/api/config", json={
+        "exclude_names": ["keep"]
+    }).status_code == 200
+    response = client.put("/api/config", json={"exclude_names": []})
+    assert response.status_code == 200
+    view = client.get("/api/config").json()
+    assert view["exclude_names"] == []
+
+
+def test_api_status_includes_vanished_count_and_exclude_names(client):
+    """ISS-066：/api/status 暴露 vanished_count 与生效 exclude_names 供前端消费。"""
+    conn = db.connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb, min_kb, collection_status, "
+            "vanished_count, exclude_names) "
+            "VALUES (?, ?, 1, 0, 1.0, 100, 1024, 'partial', 3, 'skip.noindex')",
+            ("2026-09-15T12:00:00", "/synthetic/root",),
+        )
+        conn.commit()
+        sid = cur.lastrowid
+    finally:
+        conn.close()
+
+    status = client.get("/api/status").json()
+    assert "vanished_count" in status, "ISS-002A 前端消费 vanished 必须有显式字段"
+    assert status["vanished_count"] == 3
+    assert "exclude_names" in status
+    assert status["exclude_names"] == []  # 当前配置无排除集
+    # 最新快照里的 exclude_names 也如实暴露。
+    latest = status["latest_snapshot"]
+    assert latest["id"] == sid
+    assert latest["exclude_names"] == "skip.noindex"
+    assert latest["vanished_count"] == 3
+
+
+def test_api_status_no_snapshot_zero_fields(client):
+    """无快照时 /api/status 不假装有 vanished/exclude 含义。"""
+    status = client.get("/api/status").json()
+    assert status["vanished_count"] == 0
+    assert status["exclude_names"] == []

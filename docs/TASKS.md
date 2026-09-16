@@ -109,7 +109,7 @@
 | ISS-061 | 定时扫描在生产规模下被 3600s du 时限中断 | P0 | M1 | DONE | ISS-001 |
 | ISS-062 | CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口 | P3 | M1 | DONE | ISS-061 |
 | ISS-003A | 通知语义统一与测试补强（ISS-003 代码切片） | P1 | M1 | DONE | ISS-020 |
-| ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | READY | ISS-025、ISS-028 |
+| ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | DONE | ISS-025、ISS-028 |
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | DONE | ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | DONE | ISS-062 |
 | ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
@@ -185,16 +185,17 @@
 
 ### ISS-016A · 设置持久化代码切片：配置读写 API 与设置页真实值（ISS-016 代码切片）
 
-- **状态**：READY（P1/M2）；来源：用户 2026-09-16 指令拆分 ISS-016（BLOCKED，父卡依赖 ISS-010 的真实服务重载）——本切片不含任何系统注册/重载动作。
+- **状态**：DONE（P1/M2，2026-09-16 23:40；PR #92 → main `51f0ce0`，pytest 424→488、前端检查 61→65）；来源：用户 2026-09-16 指令拆分 ISS-016（BLOCKED，父卡依赖 ISS-010 的真实服务重载）——本切片不含任何系统注册/重载动作。
 - **目标**：扫描根、计划时间、入库阈值 `min_kb`、低空间阈值可读可改可校验，保存后重启进程仍生效；设置页显示真实配置而非硬编码；无效值被拒且旧值可用。
 - **范围**：`fathom/config.py`（运行根下 `settings.json` 持久化层，环境变量 `FATHOM_*` 优先级明确）、`fathom/api.py`（`GET/PUT /api/config`，Host/Origin/写令牌守卫同既有非安全方法）、`frontend/modules/pages/` 设置页、`tests/`、`scripts/verify_frontend_refresh.cjs`/`verify_api_security.cjs` 如需新增检查项。
 - **实施边界**：(1) 兼容：无 `settings.json` 时全部默认值，旧运行根不迁移不报错；写入原子（临时文件 + rename），失败保留旧文件；(2) 校验：计划时间 HH:MM、路径存在且为目录、`min_kb`/阈值为有限正数（复用 ISS-061 的 fail-closed 风格）；400 + 中文 detail；(3) 换根：新根形成新数据集（ISS-021 身份约定），不删旧数据；(4) **服务重载/launchd 变更不在本切片**：PUT 返回 `{"applied": true, "service_reload": "requires_user_action", "hint": ...}` 之类明确结构，设置页如实显示"需重新安装计划才生效"；(5) 前端只读取 `/api/config`，删除硬编码路径/端口/阈值；无 emoji，图标只在 icons.js。
 - **验收**：
-  - [ ] API：默认值/校验拒绝/原子写失败回退/重启后保留 各有 pytest；全量计数同步
-  - [ ] 设置页显示真实配置；无效输入有反馈且旧值仍显示；`verify_frontend_refresh.cjs`/浏览器检查计数同步（PM 同步门禁）
-  - [ ] 换根后旧数据集仍在库中且可按 ISS-021 口径区分
-  - [ ] 不注册/不重载任何 launchd 服务；`FATHOM_*` 环境变量优先级有测试
-- **证据/接续**：不得勾选验收项。父卡 ISS-016 的"后台计划与显示值一致（真实重载）"留人工/ISS-010 实机。
+  - [x] API：默认值/校验拒绝/原子写失败回退/重启后保留 各有 pytest；全量计数同步（pytest 424→488，+64）
+  - [x] 设置页显示真实配置；无效输入有反馈且旧值仍显示；`verify_frontend_refresh.cjs` 61→65（+4）、`ci_browser_checks.sh` 39/39 未回退
+  - [x] 换根后旧数据集仍在库中且可按 ISS-021 口径区分（有测试）
+  - [x] 不注册/不重载任何 launchd 服务（PUT 恒返回 `service_reload=requires_user_action`，grep 负向探针零命中）；`FATHOM_*` 环境变量优先级有测试
+- **证据/接续**（2026-09-16 DONE）：worker ctx_5126daad04b3（**glm-5.3**，iss-016a-settings-persistence）交付 `2870d7b`（12 文件 +1238/−29）：`fathom/config.py` 运行根 `settings.json` 持久化层（`_atomic_write_text` temp+rename、失败保留旧文件、fail-closed 校验拒绝 nan/inf/0/负）、`fathom/api.py` `GET/PUT /api/config`（走既有 Host/Origin/写令牌守卫，恒返回 `service_reload: requires_user_action` 且**零 launchd 调用**）、设置页真实值可编辑并删除硬编码、优先级 **CLI > `FATHOM_*` 环境变量 > `settings.json` > 默认**（有测试钉住）。PM 独立复跑：`pytest tests -q` = **488 passed**、`node scripts/verify_frontend_refresh.cjs` = **65 passed/0 failed**、`ci_browser_checks.sh` = **39 passed/0 failed**；PM 另核验 launchd 边界（`launchd.py` 未被本切片改动、`git diff` 无 launchctl 调用）。reviewer ctx_a4d3ae278857（**minimax-M3**，review-wave24-016a）原文 `accept-with-non-blocking-suggestion`、**0 blocking**、RESULT 明确 "Accept the delivery"；2 条非阻塞：三层优先级测试覆盖可更充分、runtime 探针受沙箱限制。`postflight` ok、`pr-audit` decision=create。[PR #92](https://github.com/cat-xierluo/fathom/pull/92) squash 合并为 main `51f0ce0`。父卡 ISS-016 的"后台计划与显示值一致（真实重载）"留人工/ISS-010 实机。
+  **例外登记（共享文档回写）**：本切片的 worker 越权修改了 `CHANGELOG.md` 与 `docs/ARCHITECTURE.md`（按规则共享文档应由 PM 在独立分支统一回写，worker 不修改）。PM 复核后**采纳**该内容——它准确记录了本切片的用户可见行为（设置项可改可校验、原子写、`service_reload=requires_user_action` 边界、环境变量优先级与来源标注），且 AST/ARCH 的表述与实现一致；PM 在合并后另行同步了门禁计数（pytest 488、前端 65）与卡片状态，二份共享文档的最终形态由 PM 定稿。此为策略"共享文档由 PM 统一回写"的已登记例外。
 
 ### ISS-010A · 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片）
 

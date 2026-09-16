@@ -1,43 +1,168 @@
-/* 设置页：只读运行配置展示 + 扫描运行历史。
+/* 设置页：真实配置读取/编辑（ISS-016A）+ 扫描运行历史。
  *
  * 前端责任（ISS-027 模块合同）：
  * - beginRequest 世代号 + pageScoped：迟到的旧响应不能覆盖较新查询；
+ * - 所有展示值来自 /api/config 与 /api/status，不硬编码路径/端口/阈值；
  * - 仅 frontend/icons.js 的 SVG 图标；零 emoji。
  *
- * 展示（ISS-028）：
- * - 运行配置：监控范围、计划、阈值、库大小等（沿用 ISS-027）；
- * - 扫描运行历史（DESIGN：诊断与卸载区）：最近 N 条扫描结果/状态/失败原因，
- *   不与设置保存按钮（ISS-016 待办）冲突；保留可追踪证据，不假装原子成功。
+ * 编辑合同（ISS-016A）：
+ * - 保存走 PUT /api/config（写令牌）；校验以服务端为准，无效输入 400 时
+ *   页面显示原因，当前生效值保持旧值可辨（DESIGN：保存失败必须保持旧值可辨）；
+ * - 服务不注册/不重载 launchd：保存成功也如实显示“需重新安装计划才生效”；
+ * - 换根形成新数据集（不删旧数据），被环境变量/命令行覆盖的字段如实标注。
  */
-import { fetchJSON, beginRequest, invalidateRequest } from "../request.js";
+import { fetchJSON, beginRequest, invalidateRequest, apiPut } from "../request.js";
 import { escapeHtml } from "../format.js";
 import { icon } from "../../icons.js";
+
+let lastConfig = null;  // 最近一次生效配置（页面内存；保存/恢复默认的对照源）
+
+const SOURCE_LABELS = {
+  env: "该字段被环境变量 FATHOM_SCAN_ROOT 覆盖，保存不会改变当前生效值",
+  cli: "该字段被启动参数覆盖，保存不会改变当前生效值",
+};
+
+function renderEffective(cfg) {
+  const target = document.getElementById("config-effective");
+  if (!target) return;
+  const override = SOURCE_LABELS[cfg.sources?.scan_root];
+  target.innerHTML =
+    `当前生效：监控根 <code>${escapeHtml(cfg.scan_root)}</code>` +
+    ` · 计划 <code>${escapeHtml(cfg.scan_time)}</code>` +
+    ` · 入库阈值 <code>${escapeHtml(String(cfg.min_kb))} KB</code>` +
+    ` · 低空间提醒 <code>${escapeHtml(String(cfg.free_alert_gb))} GB</code>` +
+    (override ? `<br>${escapeHtml(override)}` : "");
+}
+
+function showFeedback(text, kind) {
+  const feedback = document.getElementById("config-feedback");
+  if (!feedback) return;
+  feedback.textContent = text;
+  feedback.className = kind ? `hint cfg-${kind}` : "hint";
+  feedback.hidden = false;
+}
+
+function clearInputs() {
+  for (const id of ["cfg-scan-root", "cfg-scan-time", "cfg-min-kb", "cfg-free-alert-gb"]) {
+    const input = document.getElementById(id);
+    if (input) input.value = "";
+  }
+}
+
+async function saveConfig(event) {
+  event.preventDefault();
+  const body = {};
+  const values = {
+    scan_root: document.getElementById("cfg-scan-root")?.value.trim(),
+    scan_time: document.getElementById("cfg-scan-time")?.value.trim(),
+    min_kb: document.getElementById("cfg-min-kb")?.value.trim(),
+    free_alert_gb: document.getElementById("cfg-free-alert-gb")?.value.trim(),
+  };
+  // 留空 = 不修改该项；数值字段可解析为有限数则转 JSON 数值，否则原样上送
+  // 由服务端拒绝（校验以服务端为单一权威：正数/有限/格式都在后端钉住）
+  for (const [key, value] of Object.entries(values)) {
+    if (!value) continue;
+    if (key === "min_kb" || key === "free_alert_gb") {
+      const numeric = Number(value);
+      body[key] = Number.isFinite(numeric) ? numeric : value;
+    } else {
+      body[key] = value;
+    }
+  }
+  if (!Object.keys(body).length) {
+    showFeedback("没有要保存的修改：所有字段都留空了。", "");
+    return;
+  }
+  try {
+    const res = await apiPut("/api/config", body);
+    const data = await res.json();
+    lastConfig = data.config;
+    renderEffective(data.config);
+    clearInputs();
+    showFeedback(`已保存。${data.hint || ""}`, "ok");
+  } catch (e) {
+    // 校验失败/服务故障：生效值不重渲染，旧值保持可辨；输入保留供修改
+    showFeedback(
+      e.status === 0
+        ? "保存失败：无法连接本地服务，当前生效值保持不变。"
+        : `保存失败：${e.message} 当前生效值保持不变。`,
+      "error",
+    );
+  }
+}
+
+function resetToDefaults() {
+  const defaults = lastConfig?.defaults;
+  if (!defaults) return;
+  const fill = (id, value) => {
+    const input = document.getElementById(id);
+    if (input) input.value = value;
+  };
+  fill("cfg-scan-root", defaults.scan_root || "");
+  fill("cfg-scan-time", defaults.scan_time || "");
+  fill("cfg-min-kb", defaults.min_kb == null ? "" : String(defaults.min_kb));
+  fill("cfg-free-alert-gb", defaults.free_alert_gb == null ? "" : String(defaults.free_alert_gb));
+  showFeedback("已填入默认值；仍需点击“保存设置”才会写入。", "");
+}
 
 async function loadSettings() {
   const request = beginRequest("settings");
   const tbody = document.querySelector("#settings-table tbody");
+  const effective = document.getElementById("config-effective");
   let s;
   try {
     s = await fetchJSON("/api/status");
   } catch (e) {
     if (!request.current()) return;
-    tbody.innerHTML = `<tr><td colspan="2" class="hint">${escapeHtml(e.status === 0
-      ? "无法连接本地服务，设置状态暂不可用。"
-      : `设置状态加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`)}</td></tr>`;
+    if (effective) {
+      effective.textContent = e.status === 0
+        ? "无法连接本地服务，设置状态暂不可用。"
+        : `设置状态加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`;
+    }
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="2" class="hint">${escapeHtml(e.status === 0
+        ? "无法连接本地服务，运行信息暂不可用。"
+        : `运行信息加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`)}</td></tr>`;
+    }
     return;
   }
   if (!request.current()) return;
+  let c = null;
+  try {
+    c = await fetchJSON("/api/config");
+  } catch (e) {
+    if (!request.current()) return;
+    if (effective) {
+      effective.textContent = e.status === 0
+        ? "无法连接本地服务，可修改设置暂不可用。"
+        : `可修改设置加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`;
+    }
+  }
+  if (!request.current()) return;
+  if (c) {
+    lastConfig = c;
+    renderEffective(c);
+  }
+  const p = c?.policies || {};
+  const dbMb = s.db_bytes ? (s.db_bytes / 1024 / 1024).toFixed(1) : "0.0";
   const rows = [
     ["监控根目录", `<code>${escapeHtml(s.root)}</code>`],
-    ["扫描计划", "每日 12:00（launchd：com.maoscripts.fathom-scan）"],
-    ["快照保留", "近 35 天每日一份 + 更早每周一份（最多 12 周）"],
-    ["入库阈值", "目录 ≥ 10MB；差分关注 ≥ 1MB 变化；新增目录 ≥ 100MB"],
-    ["服务地址", `http://127.0.0.1:${s.port}（launchd 常驻）`],
-    ["数据库", `${escapeHtml(String(s.db_bytes / 1024 / 1024))} MB · data/disk.db`],
+    ["服务地址", `<code>http://127.0.0.1:${escapeHtml(String(s.port))}</code>（本地回环）`],
+    ["运行根", `<code>${escapeHtml(s.runtime?.runtime_dir || "")}</code>`],
+    ["数据库", `<code>${escapeHtml(s.runtime?.db_path || "")}</code> · ${dbMb} MB`],
+    ["快照保留", p.keep_daily_days
+      ? `近 ${escapeHtml(String(p.keep_daily_days))} 天每日一份 + 更早每周一份（最多 ${escapeHtml(String(p.keep_weekly_weeks))} 周）`
+      : "—"],
+    ["du 安全时限", p.du_timeout_s ? `<code>${escapeHtml(String(p.du_timeout_s))} 秒</code>` : "—"],
+    ["大文件默认范围", p.bigfile_default_days
+      ? `近 ${escapeHtml(String(p.bigfile_default_days))} 天 · ≥ ${escapeHtml(String(p.bigfile_default_mb))} MB`
+      : "—"],
     ["桌面壳", "apps/desktop（Tauri 菜单栏 + 主窗口）"],
   ];
-  tbody.innerHTML = rows.map((r) =>
-    `<tr><td style="width:140px;color:var(--muted)">${r[0]}</td><td>${r[1]}</td></tr>`).join("");
+  if (tbody) {
+    tbody.innerHTML = rows.map((r) =>
+      `<tr><td style="width:140px;color:var(--muted)">${r[0]}</td><td>${r[1]}</td></tr>`).join("");
+  }
 
   // 加载扫描运行历史（可独立失败，不影响主配置）
   loadScanHistory();
@@ -86,5 +211,11 @@ async function loadScanHistory() {
 export const settingsPage = {
   id: "settings",
   load() { loadSettings(); },
+  init() {
+    document.getElementById("config-form")
+      ?.addEventListener("submit", saveConfig);
+    document.getElementById("btn-config-reset")
+      ?.addEventListener("click", resetToDefaults);
+  },
   leave() { ["settings", "scanHistory"].forEach(invalidateRequest); },
 };

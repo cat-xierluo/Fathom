@@ -47,9 +47,22 @@ function snapshot(id, createdAt, overrides = {}) {
 }
 
 function createFixture() {
+  // ISS-016A：设置页真实配置夹具。取可辨别值（13:30 / 5120 / 3.5 / 21 天），
+  // 前端若回退硬编码（12:00 / 10240 / 10 / 35 天）检查即失败。
+  const initialConfig = () => ({
+    scan_root: ROOT,
+    scan_time: "13:30",
+    min_kb: 5120,
+    free_alert_gb: 3.5,
+    sources: { scan_root: "default", scan_time: "settings", min_kb: "settings", free_alert_gb: "settings" },
+    defaults: { scan_root: "/fixture/home", scan_time: "12:00", min_kb: 10240, free_alert_gb: 10 },
+    policies: { keep_daily_days: 21, keep_weekly_weeks: 8, du_timeout_s: 14400, bigfile_default_days: 7, bigfile_default_mb: 100 },
+    settings_path: "/fixture/runtime/settings.json",
+  });
   const state = {
     mode: "dual", version: 2, scanning: false, lastDiff: null,
     staleDiffs: 0, treeSnapshotId: null, scenario: null, counts: {},
+    config: initialConfig(),
   };
   const nextCall = (name) => {
     state.counts[name] = (state.counts[name] || 0) + 1;
@@ -94,6 +107,7 @@ function createFixture() {
         state.treeSnapshotId = null;
         state.scenario = null;
         state.counts = {};
+        state.config = initialConfig();
       }
       if (url.searchParams.has("scenario")) {
         state.scenario = url.searchParams.get("scenario") || null;
@@ -371,6 +385,55 @@ function createFixture() {
       });
     }
     if (url.pathname === "/api/reveal" && req.method === "POST") return json(res, 200, { ok: true });
+    if (url.pathname === "/api/config" && req.method === "PUT") {
+      if (req.headers["x-fathom-token"] !== TOKEN) {
+        return json(res, 403, { detail: "已拒绝：写请求需要 X-Fathom-Token" });
+      }
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        let body;
+        try {
+          body = JSON.parse(Buffer.concat(chunks).toString("utf-8") || "{}");
+        } catch {
+          return json(res, 400, { detail: "请求体必须是合法 JSON 对象" });
+        }
+        if (typeof body !== "object" || body === null || Array.isArray(body)) {
+          return json(res, 400, { detail: "请求体必须是 JSON 对象" });
+        }
+        // 形状校验镜像 fathom/config.py 的合同；scan_root 的存在性/目录校验
+        // 依赖真实文件系统，夹具根是合成路径，只校验键与数值形状（后端
+        // pytest 已覆盖完整校验矩阵）。
+        const allowed = ["scan_root", "scan_time", "min_kb", "free_alert_gb"];
+        const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
+        if (unknown.length) {
+          return json(res, 400, { detail: `未知的配置项：${unknown.join(", ")}` });
+        }
+        if (body.scan_time != null && !/^([01]\d|2[0-3]):([0-5]\d)$/.test(String(body.scan_time).trim())) {
+          return json(res, 400, { detail: "scan_time 必须是 HH:MM 格式（00:00–23:59）" });
+        }
+        for (const key of ["min_kb", "free_alert_gb"]) {
+          const value = body[key];
+          if (value == null) continue;
+          if (typeof value === "boolean" || typeof value !== "number"
+              || !Number.isFinite(value) || value <= 0) {
+            return json(res, 400, { detail: `${key} 必须是正的有限数值` });
+          }
+        }
+        nextCall("configPut");
+        for (const key of allowed) {
+          if (body[key] !== undefined && body[key] !== null) state.config[key] = body[key];
+        }
+        return json(res, 200, {
+          applied: true,
+          service_reload: "requires_user_action",
+          hint: "已保存到 settings.json 并在当前服务进程生效；已安装的 launchd 后台计划不受影响，需重新安装（main.py install）后才按新计划时间运行。",
+          config: { ...state.config },
+        });
+      });
+      return;
+    }
+    if (url.pathname === "/api/config") return json(res, 200, { ...state.config });
     if (url.pathname.startsWith("/api/scan/status")) {
       // 历史记录（ISS-028 m3 设置页）
       return json(res, 200, {
@@ -645,6 +708,65 @@ async function main() {
     record("settings-page-renders-config",
       settingsText.includes("监控根目录") && settingsText.includes(ROOT) &&
         settingsText.includes("服务地址"), settingsText.slice(0, 60));
+
+    /* ---------- 设置页真实配置（ISS-016A） ---------- */
+    // 夹具取可辨别值（13:30 / 5120 / 3.5 / 21 天 / 8 周）：页面必须显示
+    // 服务端值；若回退旧硬编码（12:00 / 10240 / 10 / 35 天 / 12 周）即失败。
+    await waitForText(page, "#config-effective", "13:30");
+    const settingsLiveText = await page.locator("#page-settings").textContent();
+    record("settings-page-shows-server-config",
+      settingsLiveText.includes("13:30") && settingsLiveText.includes("5120") &&
+        settingsLiveText.includes("3.5") && settingsLiveText.includes("21 天每日一份") &&
+        settingsLiveText.includes("8 周") && !settingsLiveText.includes("35 天"),
+      settingsLiveText.slice(0, 120));
+    const settingsShot = path.join(evidenceDir, "settings-config-1220x820.png");
+    await page.screenshot({ path: settingsShot });
+
+    // 无效输入：服务端 400 → 反馈原因；当前生效值保持旧值（13:30）可辨。
+    await page.fill("#cfg-scan-time", "25:00");
+    await page.click("#btn-config-save");
+    await waitForText(page, "#config-feedback", "保存失败");
+    const invalidSave = await page.evaluate(() => ({
+      feedback: document.getElementById("config-feedback").textContent,
+      effective: document.getElementById("config-effective").textContent,
+    }));
+    record("settings-invalid-input-feedback-keeps-old-value",
+      invalidSave.feedback.includes("HH:MM") &&
+        invalidSave.effective.includes("13:30") &&
+        fixture.state.config.scan_time === "13:30",
+      JSON.stringify(invalidSave).slice(0, 120));
+
+    // 有效保存：生效值更新，且如实显示“需重新安装计划才生效”。
+    await page.fill("#cfg-scan-time", "09:15");
+    await page.fill("#cfg-min-kb", "2048");
+    await page.click("#btn-config-save");
+    await waitForText(page, "#config-feedback", "需重新安装");
+    const appliedSave = await page.evaluate(() => ({
+      feedback: document.getElementById("config-feedback").textContent,
+      effective: document.getElementById("config-effective").textContent,
+    }));
+    record("settings-save-applies-and-hints-reinstall",
+      appliedSave.effective.includes("09:15") && appliedSave.effective.includes("2048") &&
+        appliedSave.feedback.includes("需重新安装") &&
+        fixture.state.config.scan_time === "09:15" && fixture.state.config.min_kb === 2048,
+      JSON.stringify(appliedSave).slice(0, 120));
+
+    // 恢复默认：只填入输入框（夹具 defaults），不触发 PUT；生效值不变。
+    const putCountBeforeReset = fixture.state.counts.configPut || 0;
+    await page.click("#btn-config-reset");
+    const resetValues = await page.evaluate(() => ({
+      root: document.getElementById("cfg-scan-root").value,
+      time: document.getElementById("cfg-scan-time").value,
+      min: document.getElementById("cfg-min-kb").value,
+      free: document.getElementById("cfg-free-alert-gb").value,
+      effective: document.getElementById("config-effective").textContent,
+    }));
+    record("settings-restore-default-fills-without-saving",
+      resetValues.time === "12:00" && resetValues.min === "10240" &&
+        resetValues.free === "10" && resetValues.root === "/fixture/home" &&
+        resetValues.effective.includes("09:15") &&
+        (fixture.state.counts.configPut || 0) === putCountBeforeReset,
+      JSON.stringify(resetValues).slice(0, 120));
 
     /* ---------- 状态语义矩阵 ---------- */
     await setMode("onlyadded");
@@ -1171,7 +1293,7 @@ async function main() {
       ok: failed.length === 0,
       passed: checks.length - failed.length,
       failed: failed.length,
-      evidence: [overviewShot, changesShot, browseShot, bigfilesShot,
+      evidence: [overviewShot, changesShot, browseShot, bigfilesShot, settingsShot,
         bigfilesTruncatedShot, bigfilesExpiredShot, bigfilesFailedShot,
         bigfilesPermShot, bigfilesNoMatchShot, ...viewportScreens],
       checks,

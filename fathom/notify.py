@@ -76,13 +76,25 @@ def _compose_body(main: str, free_bytes: int | None) -> str:
     return _clip(body, BODY_MAX_CHARS - len(suffix)) + suffix
 
 
-def _partial_note(collection_status: str | None, denied_count: int) -> str:
-    """partial 采集的正文注明；full 与 NULL（v3 前旧口径）不注明。"""
+def _partial_note(
+    collection_status: str | None, denied_count: int, vanished_count: int = 0
+) -> str:
+    """partial 采集的正文注明；full 与 NULL（v3 前旧口径）不注明。
+
+    vanished 与 denied/transient 并列为部分覆盖的一种（ISS-065）；多个
+    缺口并存时同时如实呈现，不冒充完整覆盖也不夸大。空字符串 = 不加
+    partial 说明（full 或旧口径）。
+    """
     if not collection_status or collection_status == "full":
         return ""
+    clauses: list[str] = []
     if denied_count:
-        return f"部分覆盖（{denied_count} 处权限受限）"
-    return "部分覆盖（瞬时读取错误）"
+        clauses.append(f"{denied_count} 处权限受限")
+    if vanished_count:
+        clauses.append(f"另有 {vanished_count} 个目录在扫描期间已消失")
+    if not clauses:
+        clauses.append("瞬时读取错误")
+    return "部分覆盖（" + "；".join(clauses) + "）"
 
 
 def _finish(
@@ -101,12 +113,14 @@ def build_notification(
     *,
     collection_status: str | None = "full",
     denied_count: int = 0,
+    vanished_count: int = 0,
 ) -> tuple[str, str, str | None]:
     """由差分结果构造 (标题, 正文, 声音或 None)。
 
     - 正文：今日 Top1 增长目录（路径 + 增量）+ 卷剩余 GB；grown 与
       added 均为空时明说"与上次相比无变化"（ISS-003A）；
-    - partial 采集（collection_status 非 full）注明覆盖缺口（ISS-003A）；
+    - partial 采集（collection_status 非 full）注明覆盖缺口：denied_count、
+      vanished_count、transient 三类并列展示（ISS-003A + ISS-065）；
     - 卷剩余低于 config.FREE_ALERT_GB：标题换告警并返回声音名。
     """
     from .reports import human_kb  # 局部导入：reports 顶部 import 本模块，避免循环
@@ -124,7 +138,7 @@ def build_notification(
     if added:
         top_added = max(added, key=lambda item: item.delta_kb)
         parts.append(f"首次记录大目录：{top_added.path}（{human_kb(top_added.new_kb)}）")
-    partial = _partial_note(collection_status, denied_count)
+    partial = _partial_note(collection_status, denied_count, vanished_count)
     if partial:
         parts.append(partial)
     return _finish(TITLE_DONE, "；".join(parts), free_bytes)
@@ -135,10 +149,11 @@ def build_first_notification(
     *,
     collection_status: str | None = "full",
     denied_count: int = 0,
+    vanished_count: int = 0,
 ) -> tuple[str, str, str | None]:
     """首扫（无同数据集基线）通知：明说这是首次快照，下次起才可比较。"""
     parts = ["首次快照已建立，下次扫描起可比较"]
-    partial = _partial_note(collection_status, denied_count)
+    partial = _partial_note(collection_status, denied_count, vanished_count)
     if partial:
         parts.append(partial)
     return _finish(TITLE_FIRST, "；".join(parts), free_bytes)
@@ -181,12 +196,14 @@ def notify_scan_done(
     *,
     collection_status: str | None = "full",
     denied_count: int = 0,
+    vanished_count: int = 0,
 ) -> bool:
     """扫描完成后调用：构造内容并弹通知。永不抛出。"""
     try:
         title, body, sound = build_notification(
             diff, free_bytes,
             collection_status=collection_status, denied_count=denied_count,
+            vanished_count=vanished_count,
         )
     except Exception as exc:  # noqa: BLE001
         _log(f"通知构造异常：{exc!r}")
@@ -199,12 +216,14 @@ def notify_first_snapshot(
     *,
     collection_status: str | None = "full",
     denied_count: int = 0,
+    vanished_count: int = 0,
 ) -> bool:
     """首扫（无同数据集基线）完成后调用：发"首次快照"通知。永不抛出。"""
     try:
         title, body, sound = build_first_notification(
             free_bytes,
             collection_status=collection_status, denied_count=denied_count,
+            vanished_count=vanished_count,
         )
     except Exception as exc:  # noqa: BLE001
         _log(f"通知构造异常：{exc!r}")

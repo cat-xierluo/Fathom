@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**2026-09-16 09:10 用户指令「继续找可自动化推进的事」**：把 WAITING/BLOCKED 卡中的代码部分拆为可自动派发的切片卡（父卡保留实机/GUI 验收作为人工门）——ISS-003A（#82）、ISS-064（#85）、ISS-010A（#87）、ISS-063（#88）已 DONE；**用户 2026-09-16 21:00 指令「派几个 MiniMax worker」**：GLM lane 降至 4% 后 implementer 与 reviewer 全部改走 minimax-M3，并行上限 3（遵守 ≤3 活跃 / ≤2 待验收）。ISS-065（#90）、ISS-016A（#92，cron v4 自主完成：GLM 实现 + MiniMax reviewer + PM 复跑 488/65/39）均 DONE。2026-09-17 00:15 手动 PM 按用户「继续推进」登记两张新卡并行派发：**ISS-066**（排除列表后端，含身份 v5）与 **ISS-002A**（覆盖说明前端）；二者文件不重叠，066 含 `/api/status` 暴露 `vanished_count` 供 002A 消费。其余同前（设置持久化代码切片；其验收含 `verify_frontend_refresh.cjs`/浏览器检查等 node 命令——MiniMax lane 曾出现 node 命令被拒（runbook 24），派发时可让 worker 只自验 pytest，node/浏览器部分由 PM 代跑并同步计数；GLM lane 00:14 后重置亦可直接派 GLM）。其后为 ISS-009 切片 2（人工门）。**09-17 12:00 后须只读观察生产**：期望 scan_run 4 `completed`、`snapshots` 新增 09-16/17 行且库升 v4 并生成 backup-v3；若 `interrupted`（4h 墙钟）或 `failed`，按 message 分流新卡。新 PM 的默认下一项即上述顺序中首个 READY；之后才是 **ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**2026-09-16 09:10 用户指令「继续找可自动化推进的事」**：把 WAITING/BLOCKED 卡中的代码部分拆为可自动派发的切片卡（父卡保留实机/GUI 验收作为人工门）——ISS-003A（#82）、ISS-064（#85）、ISS-010A（#87）、ISS-063（#88）已 DONE；**用户 2026-09-16 21:00 指令「派几个 MiniMax worker」**：GLM lane 降至 4% 后 implementer 与 reviewer 全部改走 minimax-M3，并行上限 3（遵守 ≤3 活跃 / ≤2 待验收）。ISS-065（#90）、ISS-016A（#92，cron v4 自主完成：GLM 实现 + MiniMax reviewer + PM 复跑 488/65/39）均 DONE。2026-09-17 00:15 手动 PM 按用户「继续推进」登记两张新卡并行派发：**ISS-066 已 DONE**（#95，门禁 488→524，生产副本 v3→v5 实测）；**ISS-002A 已 PAUSED**（两个修复 episode 用尽，73/76，卡片内含三项失败的根因诊断与修复建议，分支 `iss-002a-coverage-deeplink-r2` 保留）。**当前 READY 为空**；下一波默认先派 ISS-002A 修复（诊断已就绪，node 由 PM 代跑），其后 ISS-009 切片 2（人工门）（设置持久化代码切片；其验收含 `verify_frontend_refresh.cjs`/浏览器检查等 node 命令——MiniMax lane 曾出现 node 命令被拒（runbook 24），派发时可让 worker 只自验 pytest，node/浏览器部分由 PM 代跑并同步计数；GLM lane 00:14 后重置亦可直接派 GLM）。其后为 ISS-009 切片 2（人工门）。**09-17 12:00 后须只读观察生产**：期望 scan_run 4 `completed`、`snapshots` 新增 09-16/17 行且库升 v4 并生成 backup-v3；若 `interrupted`（4h 墙钟）或 `failed`，按 message 分流新卡。新 PM 的默认下一项即上述顺序中首个 READY；之后才是 **ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -112,8 +112,8 @@
 | ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | DONE | ISS-025、ISS-028 |
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | DONE | ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | DONE | ISS-062 |
-| ISS-066 | 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5） | P1 | M1 | READY | ISS-016A、ISS-065 |
-| ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | READY | ISS-028、ISS-065 |
+| ISS-066 | 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5） | P1 | M1 | DONE | ISS-016A、ISS-065 |
+| ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | PAUSED | ISS-028、ISS-065 |
 | ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
 | ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | DONE | ISS-064 |
 
@@ -148,21 +148,21 @@
 
 ### ISS-066 · 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5）
 
-- **状态**：READY（P1/M1）；来源：ISS-064/065 生产事故的关联观察（微信/EINTR、WPS/挂起、照片图库/消失目录都发生在第三方容器目录）+ ISS-016A 已落地 settings.json。**设计取舍（用户可否决）**：排除集纳入数据集身份（root, min_kb, exclude_names）——与 ISS-021「同根同阈值口径才可比」一致；默认空列表 = 与现状完全相同的身份与行为（v5 迁移旧行默认空串）。
+- **状态**：DONE（P1/M1，2026-09-17 01:20；PR #95 → main `42eaf76`，pytest 488→524，snapshots v4→v5）；来源：ISS-064/065 生产事故的关联观察（微信/EINTR、WPS/挂起、照片图库/消失目录都发生在第三方容器目录）+ ISS-016A 已落地 settings.json。**设计取舍（用户可否决）**：排除集纳入数据集身份（root, min_kb, exclude_names）——与 ISS-021「同根同阈值口径才可比」一致；默认空列表 = 与现状完全相同的身份与行为（v5 迁移旧行默认空串）。
 - **目标**：用户可配置按**目录/文件名字掩码**（fnmatch，非完整路径）排除扫描，让已知会挂起/消失的容器目录不再被遍历；排除集变化时如实形成新数据集，不与旧数据互比。
 - **范围**：`fathom/config.py`（settings 字段 + 校验 + 优先级链）、`fathom/scanner.py`（du argv 注入 `-I <mask>`）、`fathom/db.py`（snapshots v4→v5 加 `exclude_names TEXT NOT NULL DEFAULT ''`，幂等迁移+备份）、`fathom/reports.py`（`same_dataset`/`find_same_dataset_predecessor` 加该字段；日报非空时注明排除掩码）、`fathom/api.py`（GET/PUT `/api/config` 含 `exclude_names`；`/api/status` 暴露 `vanished_count` 与生效的 `exclude_names`）、`tests/test_runtime_config.py`、`tests/test_scanner.py`、`tests/test_db_migrations.py`、`tests/test_reports_diff.py`、`tests/test_api_config.py`。前端编辑器不在本切片。
 - **实施边界**：BSD `du -I mask` 按名字匹配并跳过整棵子树（PM 已实测 `du -I '*.noindex'` 有效）；掩码校验：非空字符串、**不得含 `/` 或 NUL**、不得为 `.`/`..`、fnmatch 可解析、去重排序后 ≤50 项；优先级 `FATHOM_EXCLUDE_NAMES`（分号分隔）> `settings.json` > 默认空（与既有链一致，测试钉住）；两处 du 调用点（`scanner.py:369/376`）都要注入；快照持久化**规范串**（排序去重后 `;` 拼接）；v4→v5 迁移沿用 v3→v4 模式（备份 + 列结构推断兼容）；`same_dataset` 变为三元组后旧行（空串）与新无排除快照同身份——**默认路径零行为变化**必须有测试证明；PUT 校验失败 400 中文 detail；不提供按完整路径排除（记录为后续卡）。
 - **验收**：
-  - [ ] 反例：配置 `exclude_names: ["skip.noindex"]` 后 fake du 收到 `-I skip.noindex` 参数（argv 捕获测试）；无配置时 argv 与现状完全一致
-  - [ ] 身份：同 root 同 min_kb 不同 exclude_names 的两快照**不**互为前驱（diff 判「无基线」）；同排除集可比；旧行（空串）与新空配置可比
-  - [ ] v4→v5 迁移：旧行默认空串、幂等、备份生成；config 校验矩阵（非法掩码拒绝）
-  - [ ] API：GET 返回来源标注（source）；PUT 拒绝非法；`/api/status` 含 `vanished_count` 与生效 `exclude_names`
-  - [ ] 全量 pytest 计数同步；不读写生产库
-- **证据/接续**：不得勾选验收项。PM `du -I` 实测（2026-09-17 00:12）：`du -I '*.noindex' -xk /tmp/dut` 只输出 keep 子目录与根，skip.noindex 整树被跳过。
+  - [x] 反例：argv 捕获测试（`-I skip.noindex` 注入，红→绿）；无配置时 argv 与现状逐项一致有测试钉住
+  - [x] 身份：不同 exclude_names 不互为前驱（红→绿）；同排除集可比；旧行（空串）与新空配置同身份可比
+  - [x] v4→v5 迁移：默认空串、幂等、备份、列推断兼容（`tests/test_db_migrations.py` 扩展）；config 校验矩阵拒绝非法掩码（`/`、`.`、`..`、空项、超 50、fnmatch 非法）
+  - [x] API：GET 含来源标注；PUT 非法 400；`/api/status` 含 `vanished_count` 与生效 `exclude_names`
+  - [x] 全量 488→**524**（+36）同步四处；测试用合成库，不读写生产库
+- **证据/接续**（2026-09-17 DONE）：worker ctx_ea7d13122ecc（**minimax-M3**，iss-066-exclude-names）4 commit（6838ac5 红/3de5380 config+scanner/3b16928 db+reports/dfbac10 api）；push 未生效由 PM 代推。PM 独立复跑定向 159、全量 524；**PM 于生产库只读副本实测 v3→v5 迁移链**（user_version 5、`exclude_names` 列、1 快照 3 run 完整、backup-v3 生成、原库未动；注意 PYTHONPATH 需配 cwd=worktree，`-c` 的 sys.path[0] 会用主仓代码遮蔽）。reviewer ctx_ca6eac8cae5f（minimax-M3）**ACCEPT**（0 blocking；信息性 4 条：env 链路覆盖、排除掩码措辞未被通知消费、user_version 漂移场景未单列、真实生产迁移待 12:00）。`postflight` ok、`pr-audit` adopt。[PR #95](https://github.com/cat-xierluo/fathom/pull/95) squash 合并为 main `42eaf76`。**12:00 定时扫描观察新增要点**：库应升至 v5；若用户已通过 settings.json 配置排除掩码则 du 带 `-I`（当前生产尚未配置，默认空）。
 
 ### ISS-002A · 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端）
 
-- **状态**：READY（P2/M1）；来源：ISS-002（WAITING）拆分——实机三种授权状态留父卡，代码部分在此。
+- **状态**：PAUSED（P2/M1，2026-09-17 01:25：两个修复 episode 用尽，前端检查 73/76，分支保留待下个修复波）；来源：ISS-002（WAITING）拆分——实机三种授权状态留父卡，代码部分在此。
 - **目标**：用户在界面能看懂「权限受限 N 处 / 扫描期间消失 N 处 / 完整覆盖」各自意味着什么、不意味着什么（数量≠影响大小；未记录不构成删除证据），并能一键打开系统设置的「完全磁盘访问」页；重扫按钮给出可见反馈。
 - **范围**：`frontend/modules/pages/overview.js`、`frontend/modules/pages/settings.js`、`frontend/icons.js`（新图标只加在此）、`frontend/style.css`、`scripts/verify_frontend_refresh.cjs`（新增检查项）。
 - **实施边界**：文案依据 AGENTS 不变量与 ISS-028/065 已有语义：`collection_status` full/partial + `denied_count` + `vanished_count`（**字段可能尚不存在，取值用 `?? 0` 防御**，ISS-066 落地后自动点亮）；深链用 `x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles`，经 Tauri opener（前端已有 tauri 模块，浏览器降级为显示打开路径说明文字，不伪造可点）；「重扫」走既有 `/api/scan` 入口并复用状态反馈；三种授权状态（未授权/已授权/已撤回）的说明文案从 denied/collection 状态推导并明确"本应用不代改系统权限"；无 emoji；不改 API 与后端。
@@ -171,7 +171,7 @@
   - [ ] 深链按钮在 mock Tauri 桥下被检查脚本驱动并验证；图标只经 icons.js
   - [ ] 前端检查计数同步（PM 运行 node 命令并同步）；浏览器 39 项不回退
   - [ ] 文案不出现"数量=影响"或"未记录=已删除"表述
-- **证据/接续**：不得勾选验收项。实机 TCC 三态、真实系统设置跳转留父卡 ISS-002 人工验收。
+- **证据/接续**（PAUSED 诊断，2026-09-17 01:25，供下个修复波直接使用）：实现 head `da8302f`（分支 `iss-002a-coverage-deeplink-r2`，含 r1 两 commit + r2 追加式修复 + PM 检查期望修正；已 push）。PM 代跑 `verify_frontend_refresh.cjs`：**73 passed / 3 failed**。失败与根因：(1) `coverage-scan-note-shows-all-three-counts` 与 (2) `coverage-full-shows-only-complete` 共同根因——**`#overview-coverage-note` 区块在 dual 路径未被渲染**（overview.js 的 `_ensureCoverageNote` 只在部分路径被调用；dual full 时 note 为空、partial-all 时三类明细出现在 `[data-test='coverage-classes']` 但 note 容器为空，两检查都断言 note 内容）→ 属前端实现缺陷（需把 `_renderCoverageNoteBlock` 接到 dual 路径的 loadScanNote/quality 渲染链）；(3) `permissions-tauri-mock-deeplink-invokes-opener`——检查取 `invokes[0]`，但页面启动后首个 invoke 是 `update_tray_status` → 检查缺陷（应 filter 到 `cmd` 含 opener 的项）。修复 episode 记录：r1（ctx_cbbd09e260fa，把既有 scan-note 文案替换掉→PM 代跑发现）→ r2（ctx_1f57cdc4a18b，追加式修复，仍 3 failed）→ PM 例外修正检查 #5 期望（`da8302f`，测试专属）。**node 检查只能 PM 跑**（MiniMax 守卫拒 node），修复波建议：worker 修 (1)(2) 前端缺陷 + (3) 检查，PM 代跑验证。实机 TCC 三态、真实系统设置跳转留父卡 ISS-002 人工验收。
 
 ### ISS-065 · 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照）
 

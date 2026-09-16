@@ -268,6 +268,16 @@ def render_markdown(
             "（如需覆盖 ~/Library 受保护区域，为运行终端授予「完全磁盘访问权限」），"
             "这些目录及其子目录本次未记录"
         )
+    # ISS-065：扫描期间消失的目录单独计数（不进 denied_count）；du 列到时
+    # 存在、校验时已被系统清理——既是测量期事实（KB 数保留）也是部分覆盖
+    # 的一种，与 denied/transient 并列展示，不冒充完整覆盖也不夸大。
+    vanished_count = new_meta["vanished_count"] if "vanished_count" in new_meta.keys() else 0
+    if vanished_count:
+        lines.append(
+            f"- 注意：另有 {vanished_count} 个目录在扫描期间已消失"
+            "（记录时存在、校验时不在，如云同步缓存/临时被系统清理），"
+            "它们的累计大小作为测量期事实保留，但本次未对其重新扫描"
+        )
     lines.append("")
 
     def section(title: str, items: list[DirChange], note: str | None = None) -> None:
@@ -355,12 +365,14 @@ def write_daily_report(
     out.write_text(md, encoding="utf-8")
     # 通知放在日报落盘之后，且 notify 自吞全部异常：通知失败不影响日报（ISS-003）。
     # CLI scan 与 API 手动扫描都经过本函数，两路自动覆盖。快照采集状态
-    # （partial/denied_count）一并传入，通知正文据此注明覆盖缺口（ISS-003A）。
+    # （partial/denied_count/vanished_count）一并传入，通知正文据此注明
+    # 覆盖缺口（ISS-003A + ISS-065）。
     if notify_after_write:
         notify.notify_scan_done(
             diff, new_vol[1] if new_vol else None,
             collection_status=new_meta["collection_status"],
             denied_count=new_meta["denied_count"] or 0,
+            vanished_count=new_meta["vanished_count"] if "vanished_count" in new_meta.keys() else 0,
         )
     return out
 
@@ -372,6 +384,7 @@ def notify_for_snapshot(conn: sqlite3.Connection, sid: int) -> bool:
         diff, new_vol[1] if new_vol else None,
         collection_status=new_meta["collection_status"],
         denied_count=new_meta["denied_count"] or 0,
+        vanished_count=new_meta["vanished_count"] if "vanished_count" in new_meta.keys() else 0,
     )
 
 
@@ -382,7 +395,7 @@ def notify_first_snapshot_for(conn: sqlite3.Connection, sid: int) -> bool:
     只说明快照已建立与覆盖/剩余状态，不出现 0 变化式误导文案。
     """
     row = conn.execute(
-        "SELECT collection_status, denied_count FROM snapshots WHERE id=?", (sid,)
+        "SELECT collection_status, denied_count, vanished_count FROM snapshots WHERE id=?", (sid,)
     ).fetchone()
     free_row = conn.execute(
         "SELECT free_bytes FROM volume_stats WHERE snapshot_id = ?", (sid,)
@@ -393,6 +406,7 @@ def notify_first_snapshot_for(conn: sqlite3.Connection, sid: int) -> bool:
         free_row["free_bytes"] if free_row else None,
         collection_status=row["collection_status"],
         denied_count=row["denied_count"] or 0,
+        vanished_count=row["vanished_count"] or 0,
     )
 
 

@@ -173,17 +173,37 @@
 
 ### ISS-068 · Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝修复）
 
-- **状态**：READY（P1/M1，2026-09-17）；来源：ISS-002A 独立 reviewer 阻断观察（PR #97，2026-09-17），经 PM 独立复核确认为真实接缝。
+- **状态**：DONE-PENDING-PM（P1/M1，2026-09-17；实现与门禁完成，待 PM 复核/代推）；来源：ISS-002A 独立 reviewer 阻断观察（PR #97，2026-09-17），经 PM 独立复核确认为真实接缝。
 - **问题**：前端深链调用 `plugin:opener|open_url`，但 `apps/desktop/src-tauri/src/lib.rs` 的 `tauri::Builder` **从未 `.plugin(tauri_plugin_opener::init())`**（全文件零 `.plugin(` 调用），且 `capabilities/default.json` 只有 `core:default`、未声明 opener 权限。`Cargo.toml` 第 15 行虽已依赖 `tauri-plugin-opener = "2"`，但依赖存在 ≠ 已注册。
 - **影响**：真机（非 mock）点击「打开系统设置」将因插件未注册 / 权限未声明而 **invoke 失败**，ISS-002A 的深链功能在实际打包应用中不可用。`verify_frontend_refresh.cjs` 走 mock Tauri 桥（断言的是前端发出的 cmd 与 args），**结构上无法覆盖运行时插件注册**，故 76/76 全绿掩盖了该缺陷。
 - **范围**：`apps/desktop/src-tauri/src/lib.rs`（注册 `tauri_plugin_opener::init()`）、`apps/desktop/src-tauri/capabilities/default.json`（声明最小必要 opener 权限，仅 `open_url` 且限定 `x-apple.systempreferences:` 前缀）、`scripts/verify_app_bundle.sh` 或等价壳层检查（新增可机器验证的注册断言）。
 - **实施边界**：只放开 `open_url` 最小权限，不得引入通用 shell/任意 URL 打开能力（安全）；深链 URL 须限定 `x-apple.systempreferences:` 前缀；不改前端调用形状（前端已定 `plugin:opener|open_url` + 目标 URL）；无 emoji。
 - **验收**：
-  - [ ] `lib.rs` 注册 opener 插件，`capabilities/default.json` 含最小 opener 权限（限定 URL 前缀）
-  - [ ] 新增壳层检查断言「插件已注册 + 权限已声明」；**先在未注册状态红**→后绿
-  - [ ] `cargo test` 23 不回退、`cargo locked offline build` ok、`verify_app_bundle.sh` 既有段不回退
-  - [ ] 若可行，附真机或最小集成证据证明 invoke 成功（不可行则明确标注 `NOT_VERIFIED` 并说明理由，不得以 mock 结果冒充）
-- **证据/接续**：待实现。
+  - [x] `lib.rs` 注册 opener 插件，`capabilities/default.json` 含最小 opener 权限（`opener:allow-open-url`；深链为非 http/https 的自定义 scheme，`opener:default` 的 `allow-default-urls` 白名单不覆盖它，故必须显式授权；未启用 `reveal_item_in_dir`）
+  - [x] 新增壳层检查断言「插件已注册 + 权限已声明」；**先在未注册状态红**→后绿（见证据段两次实测）
+  - [x] `cargo test` 23→**24**（+1 不回退）、`cargo locked offline build` ok、`verify_app_bundle.sh` 既有段不回退
+  - [ ] 真机或最小集成证据证明 invoke 成功 —— **NOT_VERIFIED**：本环境无 `.app` 产物（`verify_app_bundle.sh` 报 `BLOCKED：未找到 .app`），且 macOS TCC 完全磁盘访问面板跳转需实机确认；不以 mock 结果冒充
+- **证据/接续**（2026-09-17，branch `iss-068-tauri-opener`）：
+
+  **实现**：`lib.rs` 的 `run()` 加 `.plugin(tauri_plugin_opener::init())`（注释说明前缀 `opener` 由前端命令名决定，不可改名）+ 常量 `REGISTERED_PLUGIN_NAMES`；`capabilities/default.json` 加 `"opener:allow-open-url"`；`gen/schemas/capabilities.json`（已入库）由 tauri-build 自动重生成并同步。
+
+  **关键发现（推翻卡片原设想的断言口径）**：`scripts/verify_app_bundle.sh` 依赖 `.app` 产物，本环境不可用。改用 tauri-build 的 ACL 落盘产物断言时**实测发现 ACL 无法观察 `.plugin()`**——删掉 `.plugin(tauri_plugin_opener::init())` 后重新 `cargo build`：
+  - `target/debug/build/*/out/acl-manifests.json` md5 红绿两态**均为** `017eab4eb5804c0193cef8542d309c28`（逐字节相同）；
+  - `gen/schemas/capabilities.json` md5 红绿两态**均为** `f111f29d776cde0936a1ae7b26a7a6e5`。
+
+  原因是 tauri-build 的 ACL 只由 `Cargo.toml` + `capabilities/*.json` 推导，与运行期 `.plugin()` 无关。故「ACL 存在 opener 键」**不能**证明注册；本实现改为三条互补 + 一条 Rust 单测，其中只有源码层能抓根因。
+
+  **两次实测（红→绿）**，脚本 `scripts/ci_tauri_opener_registered.sh`：
+  - 红（删 `.plugin(...)` 行后）：`FAIL: apps/desktop/src-tauri/src/lib.rs 未见 .plugin(tauri_plugin_opener::init())` / `EXIT=1`；
+  - 绿（恢复后）：`source check: run() 已注册 tauri_plugin_opener::init()` + `tauri opener registered: ok（源码注册 + ACL opener/allow-open-url + schema opener:allow-open-url）` / `EXIT=0`。
+
+  断言构成：(a) **源码层正则查 `.plugin(tauri_plugin_opener::init())`（唯一能抓根因）**；(b) ACL manifest 含 `opener.allow-open-url`（拦权限标识符拼写漂移——写错时 tauri-build 直接失败）；(c) `gen/schemas/capabilities.json` 的 `default.permissions` 含 `opener:allow-open-url`（拦入库产物与源 capabilities 漂移）。Rust 侧强断言 `tests::opener_plugin_name_matches_frontend_command_prefix` 绑定**真实插件实例**的 `Plugin::name()`，断言其等于前端命令前缀 `opener`（非硬编码字符串自证），随 `cargo test` 门禁运行。
+
+  **接线**：`scripts/ci_tauri_opener_registered.sh`（新建，bundle 无关）加入 `.github/workflows/ci.yml` 的 `cargo-locked` job，紧随 `ci_cargo_locked.sh`（依赖其刚生成的 ACL 产物）。
+
+  **门禁（本地实测全绿）**：`ci_cargo_locked.sh` ok；`ci_tauri_opener_registered.sh` ok（含红→绿）；`cargo test` **24 passed**；`ci_pytest.sh` **528 passed**；`ci_browser_checks.sh` **39 passed**；`verify_frontend_refresh.cjs` **76 passed / 0 failed**；`check_version_consistency.sh` ok。
+
+  **76/76 为何仍未覆盖本缺陷**：其中 `permissions-tauri-mock-deeplink-invokes-opener` 断言的是 mock 桥收到的 `cmd=plugin:opener|open_url` 与 `args`，只证明**前端发对了**，不证明壳层**注册了**——这正是新增源码层断言的存在理由。
 
 ### ISS-066 · 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5）
 

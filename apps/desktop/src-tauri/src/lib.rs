@@ -342,6 +342,14 @@ fn quit_with_helper(app: &AppHandle) {
     app.exit(0);
 }
 
+/// ISS-068：本壳依赖的 Tauri 插件注册清单（插件名 -> 注册动作已在 run() 完成）。
+///
+/// 抽成常量是为了让「插件已注册」可被单元测试断言：tauri-build 生成的 ACL
+/// （acl-manifests.json / gen/schemas）只由 Cargo.toml + capabilities 决定，
+/// **无法**观察到 `.plugin()` 是否真的调用——删掉 `.plugin()` 后 ACL 逐字节不变。
+/// 因此注册与否只能在源码/类型层面断言，见 tests::opener_plugin_is_registered。
+const REGISTERED_PLUGIN_NAMES: &[&str] = &["opener"];
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -437,6 +445,23 @@ pub fn run() {
 mod tests {
     use super::*;
     use helper::ExhaustedInfo;
+    use tauri::plugin::Plugin;
+
+    /// ISS-068：`tauri_plugin_opener::init()` 返回的插件名必须等于前端命令前缀
+    /// `plugin:opener|open_url` 中的 `opener`；名称漂移会让 capability 的
+    /// `opener:allow-open-url` 与实际注册键错位，深链静默失败。
+    /// 该断言绑定真实插件实例，不是硬编码字符串自证。
+    #[test]
+    fn opener_plugin_name_matches_frontend_command_prefix() {
+        let plugin = tauri_plugin_opener::init::<tauri::Wry>();
+        assert_eq!(plugin.name(), "opener");
+        assert!(
+            REGISTERED_PLUGIN_NAMES.contains(&plugin.name()),
+            "run() 的注册清单缺少 {:?}，前端 plugin:{:?}|open_url 将 invok 失败",
+            plugin.name(),
+            plugin.name()
+        );
+    }
 
     /// ISS-059：给定 PortsExhausted 事件还原的信息 → 状态 JSON 的
     /// state==exhausted 且 recovery 结构完整（候选端口 + 占用 pid + 提示文案）。

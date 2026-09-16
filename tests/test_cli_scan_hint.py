@@ -105,6 +105,51 @@ class TestHintContent:
         hint = cli._scan_duration_hint(config.DEFAULT_ROOT)
         assert "上次实测 du 不到 1 分钟" in hint
 
+    def test_inf_du_seconds_falls_back_to_no_record(self):
+        # ISS-063：库中 du_seconds=inf 时不能 OverflowError（int(minutes+0.5)
+        # 会抛），必须按"无实测记录"分支走。SQLite REAL 接受 inf 真值（Python
+        # float 与 SQLite REAL 都按 IEEE 754 编码），可以直接走 _insert_snapshot。
+        import math
+
+        _insert_snapshot(str(config.DEFAULT_ROOT), math.inf)
+        hint = cli._scan_duration_hint(config.DEFAULT_ROOT)
+        assert "首次或无实测记录" in hint
+        assert "分钟" not in hint
+        assert "本次安全时限 14400 秒" in hint
+
+    def test_nan_du_seconds_falls_back_to_no_record(self, monkeypatch):
+        # ISS-063：库中 du_seconds=nan 时浮点比较全为 False，必须按"无实测记录"
+        # 回落，且永不抛（即使在 try 之外的 int(minutes+0.5)）。
+        #
+        # Python sqlite3 适配层把 math.nan 绑为 NULL → du_seconds REAL NOT NULL
+        # 触发 IntegrityError，因此 _insert_snapshot 无法复现 nan 真值；
+        # monkeypatch sqlite3.connect 直接以 SQL 字面量 'nan' 注入（SQLite 3.24+
+        # 接受 nan 作为 numeric literal），保留从 DB row → isfinite 守卫的
+        # 整条代码路径——old guard 仍 OverflowError（红），new guard 返回 None（绿）。
+        import sqlite3
+
+        real_connect = sqlite3.connect
+
+        def fake_connect(uri, *args, **kwargs):
+            conn = real_connect(":memory:")
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                "CREATE TABLE snapshots ("
+                "id INTEGER PRIMARY KEY, root TEXT, du_seconds REAL)"
+            )
+            conn.execute(
+                "INSERT INTO snapshots(root, du_seconds) VALUES (?, 'nan')",
+                (str(config.DEFAULT_ROOT),),
+            )
+            conn.commit()
+            return conn
+
+        monkeypatch.setattr(cli.sqlite3, "connect", fake_connect)
+        hint = cli._scan_duration_hint(config.DEFAULT_ROOT)
+        assert "首次或无实测记录" in hint
+        assert "分钟" not in hint
+        assert "本次安全时限 14400 秒" in hint
+
 
 class TestCmdScanWiring:
     """cmd_scan 的开场行确实携带该提示（打印发生在 run_scan 之前）。"""

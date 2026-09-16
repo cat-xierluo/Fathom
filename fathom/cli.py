@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import platform
 import signal
@@ -69,7 +70,10 @@ def _last_measured_du_seconds(root: Path) -> float | None:
         if row is None or row[0] is None:
             return None
         seconds = float(row[0])
-        return seconds if seconds > 0 else None
+        # 库中现存 inf/nan 时 int(minutes+0.5) 会 OverflowError；按 ISS-063 卫生波
+        # 把守卫同时收紧到 isfinite（产品唯一写路径是 scanner 实测墙钟，本不应写入
+        # inf/nan；此处只兜底不改变正常行为）。
+        return seconds if math.isfinite(seconds) and seconds > 0 else None
     except Exception:  # noqa: BLE001 - 提示逻辑绝不让扫描失败
         return None
 

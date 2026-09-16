@@ -150,17 +150,25 @@
 
 ### ISS-067 · `/api/snapshots` 补齐 vanished_count 与 exclude_names（ISS-002A 接缝修复）
 
-- **状态**：READY（P1/M1，2026-09-17）；来源：ISS-002A 独立 reviewer 阻断观察（PR #97，2026-09-17），经 PM 独立复核确认为真实接缝。
-- **问题**：`fathom/api.py` 的 `/api/snapshots` SELECT 只取 `s.id, s.created_at, s.root, s.total_kb, s.dir_count, s.denied_count, s.min_kb, s.collection_status, v.total_bytes, v.free_bytes`——**不含 `vanished_count`，也不含生效的 `exclude_names`**（ISS-066 已在 `/api/status` 暴露后者，但 overview/settings 走的是 `/api/snapshots`）。
+- **状态**：DONE（P1/M1，2026-09-17；pytest 524→528）；来源：ISS-002A 独立 reviewer 阻断观察（PR #97，2026-09-17），经 PM 独立复核确认为真实接缝。
+- **问题**：`fathom/api.py` 的 `/api/snapshots` SELECT 只取 `s.id, s.created_at, s.root, s.total_kb, s.dir_count, s.denied_count, s.min_kb, s.collection_status, v.total_bytes, v.free_bytes`——**不含 `vanished_count`，也不含生效的 `exclude_names`**（ISS-066 已在 `/api/status` 暴露后者，但 overview/settings 走的是 `/api/snapshots`）。**开工复核确认前提无误**：`overview.js:163/177` 确从 `/api/snapshots` 取行，其 `_coverage()` 读 `latest.vanished_count` / `latest.exclude_names`，二者均不在旧 SELECT 列内。
 - **影响**：ISS-002A 三类覆盖说明中，**「扫描期间消失」与「排除掩码」两项在生产中恒为 0/空**——前端 `snapshot.vanished_count ?? 0` 与 `snapshot.exclude_names ?? []` 的防御取值把缺失字段静默降级，用户看不到这两类缺口的任何提示。卡片头号验收目标（三类缺口可解释）实际只兑现了一类。**测试未捕获**：`verify_frontend_refresh.cjs` 的夹具同时服务 `/api/status` 与 `/api/snapshots`，两侧返回同形对象，掩盖了端点接缝差异。
 - **范围**：`fathom/api.py`（SELECT 补列；若 `exclude_names` 存于配置层而非快照行，需按 ISS-066 的数据集身份口径取生效值并标注来源）、`tests/`（端点契约测试：合成库写入 vanished_count 后断言 `/api/snapshots` 如实返回）、`scripts/verify_frontend_refresh.cjs`（夹具拆分：`/api/snapshots` 与 `/api/status` 不再共用同形对象，使接缝缺陷可被检出）。
 - **实施边界**：不改 (root, min_kb) 数据集身份口径（ISS-021 约定）；不改 `/api/status` 既有字段；exclude_names 的语义与来源标注须与 ISS-066 一致（未配置时为空，不得伪造）；测试用合成库，不读写生产库。
 - **验收**：
-  - [ ] `/api/snapshots` 返回 `vanished_count`；排除掩码生效时返回 `exclude_names`（未配置为空）
-  - [ ] 新增端点契约测试，**先在旧 SELECT 上红**（vanished_count 缺失）→ 后绿
-  - [ ] `verify_frontend_refresh.cjs` 夹具拆分后，002A 三项覆盖检查在「vanished/excluded 非 0」夹具下仍全绿；若拆分后 002A 检查转红，须作为真实缺陷修复而非改断言
-  - [ ] 全量计数同步四处
-- **证据/接续**：待实现。
+  - [x] `/api/snapshots` 返回 `vanished_count`；排除掩码生效时返回 `exclude_names`（未配置为空串，DB 层 NOT NULL DEFAULT ''）
+  - [x] 新增端点契约测试，**先在旧 SELECT 上红**（`KeyError: 'exclude_names'`）→ 后绿
+  - [x] `verify_frontend_refresh.cjs` 夹具拆分后，002A 三项覆盖检查在「vanished/excluded 非 0」夹具下仍全绿（无需改断言——夹具拆分未使任何 002A 检查转红）
+  - [x] 全量计数同步：CI `env` 注释 + `EXPECTED_PYTEST_PASSED` + pytest step 名（3 处 524→528；TASKS.md 181/190/191/204 为 ISS-065/066/002A 历史记录，如实保留当时数字）
+- **证据/接续**（2026-09-17，分支 `iss-067-snapshots-vanished` 基于 `cb1c970`，3 commit，**未 push**）：
+  - 前提复核：**卡片诊断准确**，无前提错误。`exclude_names` 存于快照行（ISS-066 v5 迁移 `_SNAPSHOT_ALTER_V5`），**非**配置层——故直接补 `s.exclude_names` 即得「快照采集时生效的掩码」，天然满足「锚定快照、改配置后历史行不漂移」。另核对：`/api/status` 的顶层 `exclude_names` 是进程当前配置（`config.EXCLUDE_NAMES`），与快照无关，本次**未改其语义**（符合实施边界）。
+  - `481618c` 红测试：4 项，旧 SELECT 上 4 failed（`KeyError: 'exclude_names'`），覆盖逐行补齐 / 空掩码为空串 / 非最新历史行 / 掩码锚定快照而非当前配置。
+  - `b903c0e` 后端补列 + CI 计数。
+  - `bc23d05` 夹具拆分：`/api/snapshots` 改走 `snapshotsForSnapshotsEndpoint()`，按 `SNAPSHOTS_ENDPOINT_COLUMNS` 显式列白名单裁剪；隔离验证确认「旧 SELECT 漏列 → 字段从响应消失（`undefined`）」而非静默退化；`partial-no-fields` 模式仍刻意不给两字段以保留 `?? 0` 防御检查。
+  - **PM 独立复跑**：`pytest -q` **528 passed / 0 failed**（本地 macOS arm64 / Python 3.14.6，venv 于主仓）。`node --check verify_frontend_refresh.cjs` 语法 OK；夹具 shaper 逻辑经隔离 node 脚本验证（三类缺口 non-zero + 漏列可检出）。
+  - **未在本机实跑浏览器 39 项**：本机无 Playwright chromium 缓存（`~/.cache/ms-playwright` 为空），`ci_browser_checks.sh` 无法离线满足。夹具改动为纯数据整形（不碰 DOM 断言），002A 检查口径未变，**留 PM/CI 代跑确认**。
+  - 生产库未触碰（测试全部走合成临时库）。
+
 
 ### ISS-068 · Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝修复）
 

@@ -354,3 +354,90 @@ class TestDuTimeoutConfig:
             json.loads(blank.stdout.strip().splitlines()[-1])["du_timeout_s"]
             == 14400.0
         )
+
+
+class TestISS066ExcludeNamesValidation:
+    """ISS-066：配置层 exclude_names 校验与来源标注。
+
+    设计取舍（用户可否决）：掩码语义按 fnmatch；配置形态 list[str]；
+    校验：每项非空、无 /、无 NUL、非 ./..、fnmatch 可用、去重排序 ≤50；
+    规范串 = 排序去重后 ``;`` 拼接；环境变量 FATHOM_EXCLUDE_NAMES 分号分隔。
+    """
+
+    @staticmethod
+    def _valid(raw: object) -> object:
+        """复用 parse_user_settings 走完整校验路径（白盒：与 ISS-016A 同一入口）。"""
+        return config.parse_user_settings({"exclude_names": raw})
+
+    def test_default_is_empty_list(self):
+        settings = config.parse_user_settings({})
+        assert settings.exclude_names is None  # 未持久化 → None，落盘不留键
+
+    def test_valid_list_canonicalizes_to_sorted_unique_semicolon(self):
+        settings = self._valid(["b", "a", "a", "c"])
+        assert settings.exclude_names == "a;b;c"
+
+    def test_env_var_semicolon_split_deduplicates_and_sorts(self, monkeypatch):
+        monkeypatch.setenv("FATHOM_EXCLUDE_NAMES", "  z;a ; b;a ")
+        # 通过 refresh_user_settings 走完整环境变量路径。
+        config.refresh_user_settings(environ={"FATHOM_EXCLUDE_NAMES": "  z;a ; b;a "})
+        assert config.EXCLUDE_NAMES == ["a", "b", "z"]
+
+    def test_invalid_empty_item_rejected(self):
+        with pytest.raises(config.ConfigurationError, match="exclude_names"):
+            self._valid([""])
+
+    def test_invalid_slash_rejected(self):
+        with pytest.raises(config.ConfigurationError, match="exclude_names"):
+            self._valid(["dir/child"])
+
+    def test_invalid_dot_dot_rejected(self):
+        with pytest.raises(config.ConfigurationError, match="exclude_names"):
+            self._valid([".."])
+
+    def test_invalid_dot_rejected(self):
+        with pytest.raises(config.ConfigurationError, match="exclude_names"):
+            self._valid(["."])
+
+    def test_invalid_nul_byte_rejected(self):
+        with pytest.raises(config.ConfigurationError, match="exclude_names"):
+            self._valid(["bad\x00name"])
+
+    def test_invalid_too_many_items_rejected(self):
+        with pytest.raises(config.ConfigurationError, match="exclude_names"):
+            self._valid([f"mask{i}" for i in range(51)])
+
+    def test_invalid_type_rejected(self):
+        # list / 规范串均合法；非这两类的对象必须拒绝（保持公共 API 入口
+        # 的输入语义：settings.json 落盘的是规范串，PUT/合并层是列表）。
+        # None 是「未设置」语义，被 parse_user_settings 跳过（与既有约定一致）。
+        for bad in (42, {"k": "v"}, 3.14, True):
+            with pytest.raises(config.ConfigurationError):
+                self._valid(bad)
+
+    def test_exclude_names_persists_in_settings_json(self, tmp_path):
+        path = tmp_path / "settings.json"
+        settings = config.parse_user_settings({"exclude_names": ["a", "b"]})
+        config.save_user_settings(path, settings)
+        loaded = config.load_user_settings(path)
+        assert loaded.exclude_names == "a;b"
+
+    def test_exclude_names_source_annotation_in_effective_view(self, monkeypatch):
+        """effective_settings_view 标注来源：env > settings > default。
+
+        显式 reset 模块内 _USER_SETTINGS 到默认 UserSettings()，
+        避免被前序用例（test_exclude_names_persists_in_settings_json 等）
+        通过 refresh_user_settings 注入的 _USER_SETTINGS 残留污染。
+        """
+        monkeypatch.delenv("FATHOM_EXCLUDE_NAMES", raising=False)
+        config.refresh_user_settings(settings=config.UserSettings())
+        view = config.effective_settings_view()
+        assert view["sources"]["exclude_names"] == "default"
+        assert view["exclude_names"] == []
+
+        # 通过 settings.json 持久化后来源变 settings
+        settings = config.parse_user_settings({"exclude_names": ["a"]})
+        config.update_user_settings({"exclude_names": ["a"]})
+        view = config.effective_settings_view()
+        assert view["sources"]["exclude_names"] == "settings"
+        assert view["exclude_names"] == ["a"]

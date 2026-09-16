@@ -140,6 +140,69 @@ class TestBSDDuPaths:
             scanner.classify_collection(result, str(tmp_path))
 
 
+class TestISS066ExcludeNamesArgv:
+    """ISS-066：du argv 注入 -I <mask> 来自配置；无配置时 argv 与现状完全一致。
+
+    设计要求（PM 已实测）：``du -I mask`` 按名字匹配并跳过整棵子树；
+    两处 du 调用点（库直调 + 协调器入口）都要按当前配置注入 -I <mask>。
+    无配置时（默认空）argv 与现状逐项相同——零行为变化证明。
+    """
+
+    @staticmethod
+    def _capture_du_argv(monkeypatch, *, exclude_names: list[str] | None = None):
+        """替换 du 为 fake，捕获 run_du 实际下发的 argv（含 -I）。"""
+        captured: dict[str, object] = {}
+
+        def fake_subprocess_run(*args, **kwargs):
+            captured["args"] = list(args[0]) if args else []
+            return scanner.subprocess.CompletedProcess(
+                args=[], returncode=0,
+                stdout=f"0\t{args[0][-1]}\n".encode(),
+                stderr=b"",
+            )
+
+        monkeypatch.setattr(scanner.subprocess, "run", fake_subprocess_run)
+        if exclude_names is not None:
+            monkeypatch.setattr(config, "EXCLUDE_NAMES", exclude_names)
+        return captured
+
+    def test_default_argv_has_no_exclude_flags(self, tmp_path, monkeypatch):
+        """无配置时（EXCLUDE_NAMES 默认空）argv 与现状一致——零行为变化证明。"""
+        captured = self._capture_du_argv(monkeypatch, exclude_names=[])
+        (tmp_path / "ok").mkdir()
+        scanner.run_du(tmp_path)
+        # 必须包含 -xk 与根路径，但不得注入 -I。
+        argv = captured["args"]
+        assert "-I" not in argv
+        assert "-xk" in argv
+        assert str(tmp_path) in argv
+
+    def test_exclude_names_injected_as_repeated_I_flag(self, tmp_path, monkeypatch):
+        """配置 exclude_names 后 fake du 须收到 -I <每项>。"""
+        captured = self._capture_du_argv(
+            monkeypatch, exclude_names=["skip.noindex", "*.noindex"]
+        )
+        (tmp_path / "ok").mkdir()
+        scanner.run_du(tmp_path)
+        argv = captured["args"]
+        # BSD du -I 可重复；每项必须出现紧邻的 -I <mask>。
+        i_indices = [i for i, a in enumerate(argv) if a == "-I"]
+        assert len(i_indices) == 2
+        masks = [argv[i + 1] for i in i_indices]
+        assert masks == ["skip.noindex", "*.noindex"]
+
+    def test_exclude_names_canonical_order(self, tmp_path, monkeypatch):
+        """config 层保证 EXCLUDE_NAMES 是规范排序的；扫描器按此顺序注入 argv。"""
+        captured = self._capture_du_argv(
+            monkeypatch, exclude_names=["a", "b", "c"]  # canonical form
+        )
+        (tmp_path / "ok").mkdir()
+        scanner.run_du(tmp_path)
+        argv = captured["args"]
+        i_indices = [i for i, a in enumerate(argv) if a == "-I"]
+        assert [argv[i + 1] for i in i_indices] == ["a", "b", "c"]
+
+
 class TestISS065VanishedPath:
     """ISS-065：扫描期间消失的目录不使整次采集无效（vanishing path）。
 

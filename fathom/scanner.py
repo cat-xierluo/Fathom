@@ -34,6 +34,13 @@
   数据集口径的一部分）和 collection_status（full/partial，来自
   classify_collection）一并落库；v3 之前的旧行两列为 NULL，不补造未知
   元数据。退出码、stderr 摘要等更细的质量细节仍只存在于当次 DuResult。
+- du 安全时限的时钟（ISS-064，生产实证 2026-09-16）：deadline 以墙钟
+  （time.time()）为主、monotonic 为第二轨，任一到期即超时——macOS 的
+  time.monotonic() 基于 mach_absolute_time，系统睡眠期间不前进，单轨
+  会让时限变成"清醒秒"，合盖即暂停计时、扫描无限挂起并持锁；墙钟被
+  人为回拨时由 monotonic 轨兜底。超时报文附 du 阻塞位置的只读线索
+  （最后输出路径或 lsof 当前目录，取不到则省略，线索采集本身至多
+  约 2 秒），SIGTERM 3 秒后 SIGKILL 的既有回收语义不变。
 """
 
 from __future__ import annotations
@@ -238,6 +245,70 @@ def _validate_du_paths(sizes: dict[str, int], root: Path) -> tuple[int, str]:
     return error_count, error_sample
 
 
+def _last_du_output_path(partial_output: bytes) -> str:
+    """从 communicate 轮询累计的部分 stdout 取最后一条完整 du 记录的路径。
+
+    只取最后一个换行之前最近的一条完整记录（"大小\\t路径"）；尾部没有
+    换行的残余字节是 du 写到一半的碎片，不能当作路径线索。这是超时报文
+    的阻塞位置线索之一，解析失败只意味着线索不可得，不影响超时本身。
+    """
+    if not partial_output:
+        return ""
+    end = partial_output.rfind(b"\n")
+    if end <= 0:
+        return ""
+    start = partial_output.rfind(b"\n", 0, end)
+    record = partial_output[start + 1:end]
+    _size, sep, path_raw = record.partition(b"\t")
+    if not sep or not path_raw:
+        return ""
+    return path_raw.decode("utf-8", errors="replace").strip()
+
+
+def _lsof_du_cwd(pid: int) -> str:
+    """只读查询 du（PID）当前所在目录：lsof -p 输出的 cwd 行。
+
+    ISS-064 生产证据链即用此法定位到 du 阻塞在 WPS 容器内的目录。
+    任何失败（无 lsof、权限、超时）都返回空串并让报文省略该线索；
+    timeout=2 保证线索采集不会明显延长超时回收路径的阻塞。
+    """
+    try:
+        completed = subprocess.run(
+            ["/usr/sbin/lsof", "-p", str(pid)],
+            capture_output=True, timeout=2,
+        )
+    except Exception:
+        return ""
+    if completed.returncode != 0:
+        return ""
+    for line in completed.stdout.decode("utf-8", errors="replace").splitlines():
+        # BSD lsof 列：COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME；
+        # NAME 是最后一列，路径本身可含空格，故按前 8 个空白字段切分。
+        fields = line.split(None, 8)
+        if len(fields) == 9 and fields[3] == "cwd":
+            return fields[8].strip()
+    return ""
+
+
+def _timeout_message(
+    timeout_seconds: float, proc: "subprocess.Popen[bytes]", partial_output: bytes
+) -> str:
+    """构造 du 超时报文：基线文案 + 阻塞位置线索（可得时）。
+
+    线索优先级：du 最后一条输出记录的路径（更精确），否则 lsof 只读
+    查询的当前目录；两者都取不到则保持基线文案。lsof 须在 du 仍存活
+    时调用，故本函数只在 raise 之前、回收之前调用一次。
+    """
+    message = f"du 超过 {timeout_seconds:g} 秒安全时限"
+    last_path = _last_du_output_path(partial_output)
+    if last_path:
+        return f"{message}；du 最后输出路径：{last_path}"
+    cwd = _lsof_du_cwd(proc.pid)
+    if cwd:
+        return f"{message}；du 当前目录（lsof）：{cwd}"
+    return message
+
+
 def run_du(root: Path) -> DuResult:
     """执行 du -xk，返回结构化采集结果（大小表、退出码、质量线索、真实耗时）。
 
@@ -268,20 +339,34 @@ def run_du(root: Path) -> DuResult:
             start_new_session=True,
             pass_fds=(inherited_fd,),
         )
-        deadline = started + timeout_seconds
+        # ISS-064：deadline 以墙钟为主（time.time() 睡眠期间照常前进），
+        # monotonic 作第二轨——macOS 的 time.monotonic() 基于
+        # mach_absolute_time，系统睡眠期间不前进，单轨 monotonic 会把
+        # "N 秒安全时限"变成"N 清醒秒"，合盖即暂停计时；墙钟被人为回拨
+        # 时则由 monotonic 轨兜底。两轨任一到期即超时。
+        mono_deadline = started + timeout_seconds
+        wall_deadline = time.time() + timeout_seconds
+        partial_output = b""
         try:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise ScanInterruptedError("扫描已取消")
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+                mono_remaining = mono_deadline - time.monotonic()
+                wall_remaining = wall_deadline - time.time()
+                if mono_remaining <= 0 or wall_remaining <= 0:
                     raise ScanInterruptedError(
-                        f"du 超过 {timeout_seconds:g} 秒安全时限"
+                        _timeout_message(timeout_seconds, proc, partial_output)
                     )
                 try:
-                    stdout, stderr_raw = proc.communicate(timeout=min(0.2, remaining))
+                    stdout, stderr_raw = proc.communicate(
+                        timeout=min(0.2, min(mono_remaining, wall_remaining))
+                    )
                     break
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
+                    # communicate 轮询超时时已读输出经 exc.output 携带
+                    # （累计口径：Popen 内部输出缓冲跨重试保留），留作
+                    # 超时报文的阻塞位置线索。
+                    partial_output = exc.output or b""
                     continue
         except BaseException:
             # start_new_session=True 使 pgid 只属于本任务创建的 du；绝不按外部 PID 杀进程。

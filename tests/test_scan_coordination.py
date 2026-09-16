@@ -701,6 +701,96 @@ class TestScanTimeoutConfigurable:
         new_lease.release()
 
 
+def test_timeout_kills_sigterm_ignoring_du_and_marks_interrupted(tmp_path, monkeypatch):
+    """ISS-064 协调器级回收收尾：du 忽略 SIGTERM 阻塞时，超时后
+    进程组被 SIGKILL 回收、scan_runs=interrupted 且 message 含上限与
+    阻塞线索、上次快照原样保留、flock 锁立即可被新进程取走。"""
+    runtime = tmp_path / "runtime"
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "x.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(config, "DB_PATH", runtime / "data" / "fathom.db")
+    monkeypatch.setattr(config, "REPORTS_DIR", runtime / "reports")
+    monkeypatch.setattr(config, "LOGS_DIR", runtime / "logs")
+    monkeypatch.setattr(config, "DEFAULT_ROOT", root)
+    monkeypatch.setattr(config, "DU_TIMEOUT_S", 0.3)
+    # 线索路径注入确定值，避免真实 lsof 干扰计时与环境差异。
+    monkeypatch.setattr(scanner, "_lsof_du_cwd",
+                        lambda pid: "/synthetic/wps/container")
+
+    # 注入一张旧有效快照（生产实证形态：2026-09-12），超时路径必须
+    # 原样保留它，不写任何新快照。
+    config.ensure_runtime_dirs()
+    seed_conn = db.connect()
+    try:
+        cur = seed_conn.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb, min_kb, collection_status) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ("2026-09-12T08:00:00", str(root), 3, 0, 12.0, 1024,
+             config.MIN_DIR_KB, "full"),
+        )
+        old_id = cur.lastrowid
+        seed_conn.execute(
+            "INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,?)",
+            (old_id, f"{root}/old", 1),
+        )
+        seed_conn.commit()
+    finally:
+        seed_conn.close()
+
+    real_popen = subprocess.Popen
+    child_pid: list[int] = []
+
+    def term_ignoring_popen(*args, **kwargs):
+        proc = real_popen(
+            [str(PYTHON), "-c",
+             "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+             "signal.pause()"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True, pass_fds=kwargs.get("pass_fds", ()),
+        )
+        child_pid.append(proc.pid)
+        return proc
+
+    monkeypatch.setattr(scanner.subprocess, "Popen", term_ignoring_popen)
+
+    started = time.monotonic()
+    with pytest.raises(
+        scanner.ScanInterruptedError, match="du 超过 0.3 秒安全时限"
+    ):
+        scan_coordinator.run_scan(source="cli", root=root)
+    # 0.3s 超时 + TERM 3s 宽限 + KILL + 收尾：整个回收链有界完成。
+    assert time.monotonic() - started < 8
+
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT status, message FROM scan_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["status"] == "interrupted"
+        assert "du 超过 0.3 秒安全时限" in row["message"]
+        assert "/synthetic/wps/container" in row["message"]  # 阻塞位置线索
+        # 上次有效快照原样保留，当日没有新增任何快照/条目。
+        snapshots = [tuple(r) for r in conn.execute(
+            "SELECT id, created_at FROM snapshots ORDER BY id")]
+        assert snapshots == [(old_id, "2026-09-12T08:00:00")]
+        assert conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM volume_stats").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+    # du 进程组已被 KILL 回收，无孤儿。
+    assert child_pid
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid[0], 0)
+    # 扫描锁已释放：flock 立即可被新进程取得。
+    lock_path = runtime / "data" / "fathom.db.scan.lock"
+    new_lease = scan_coordinator.ScanLease.acquire(lock_path, source="cli")
+    new_lease.release()
+
+
 class TestISS003ANotificationSemantics:
     """ISS-003A：首扫/partial/中断三态通知语义经协调器真实接线钉住。
 

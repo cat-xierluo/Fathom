@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**当前 READY 队列为空**：剩余均为人工门或 GUI/实机验收。新 PM 的默认下一项：**ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**2026-09-16 09:10 用户指令「继续找可自动化推进的事」**：把 WAITING/BLOCKED 卡中的代码部分拆为可自动派发的切片卡（父卡保留实机/GUI 验收作为人工门）——**ISS-003A**（P1 通知语义统一）→ **ISS-016A**（P1 设置持久化代码切片）→ **ISS-010A**（P1 登录项/计划只读桥 dry-run）→ **ISS-063**（P3 微卫生），按序单卡在飞、每张独立 reviewer。新 PM 的默认下一项即上述顺序中首个 READY；之后才是 **ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -108,6 +108,10 @@
 | ISS-060 | 切片 1 打包/校验脚本卫生（review 非阻断观察收口） | P3 | M2 | DONE | ISS-009 |
 | ISS-061 | 定时扫描在生产规模下被 3600s du 时限中断 | P0 | M1 | DONE | ISS-001 |
 | ISS-062 | CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口 | P3 | M1 | DONE | ISS-061 |
+| ISS-003A | 通知语义统一与测试补强（ISS-003 代码切片） | P1 | M1 | READY | ISS-020 |
+| ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | READY | ISS-025、ISS-028 |
+| ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | READY | ISS-020 |
+| ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | READY | ISS-062 |
 
 ## 任务卡
 
@@ -137,6 +141,55 @@
   - [ ] 反例：端口范围全部被占 → 握手页显示 ports-exhausted 与恢复指引，无未知进程被发信号 —— 机器可验部分全 pass（verify `i-no-fathom-health` / `i-zero-kill`（7953..7956 dummy pid 前后一致）/ `i-shell-alive` / `i-ports-exhausted-marker` / `i-exit-cleanup`；单测 `ports_exhausted_status_json_shape` 等 4 项覆盖 `state=exhausted`+`recovery`，reviewer 逐行确认前端字段名一致）；**握手页实机渲染截图 `NOT_VERIFIED`**（GUI 交互），并入 ISS-009 验收框"后台未就绪可恢复"
   - [x] `verify_app_bundle.sh` 既有 12 段仍全 pass（record 名与断言一字未改，汇总 12→20）；cargo check exit 0（仅既有 2 个 dead_code warning）
 - **证据/接续**（2026-09-15 DONE）：worker ctx_8d7cfc67c0d0（iss-059-handshake-liveness，base `f87bc76`）交付 3 commits：`a378f57`（A：路径 1 命中身份匹配 instance 后 `probe_health`；不健康且 pid 不在运行——`ps -p` 只读判定、不发任何信号含信号 0——判陈旧删文件走 spawn，pid 仍在则保留等待；决策拆为可注入纯函数 `instance_disposition`；**附带修复**路径 2 命中本壳刚拉起的子进程被误标 `reused` 致退出漏回收）、`6223da1`（B：`PortsExhausted{candidates}` 记入 `ExhaustedInfo`，`helper_status` 返回 `state=exhausted`+`recovery{ports[{port,occupied_pid}],hint}`，`helper_retry` 仍耗尽保持 exhausted、普通 Err 仍 error；index.html 分派由从不发出的 `"ports-exhausted"` 改匹配 `"exhausted"` 并渲染端口占用表）、`24c08a2`（C：verify 新增 h×3 + i×5 段）。**三方独立验证一致**：worker / PM（在 worker worktree）/ reviewer（自建 worktree）各自 cargo check exit 0、`cargo test` 13/13（5 旧 + 8 新）、build_helper SHA256 `95756a0e…`、build_app ok、verify **20/20 PASS**。独立 reviewer ctx_bd79c7c0b366（review-iss059）7 条要点全 CONFIRMED **ACCEPT**、`review-acceptance-gate` ok；`worker-value-postflight` ok；`pr-audit` adopt。[PR #71](https://github.com/cat-xierluo/fathom/pull/71) squash 合并为 main `d53a7af`；合并后 main：pytest 338、浏览器 39、版本一致性 ok、cargo test 13/13。云端 CI 停用（DEC-021）。reviewer 非阻断观察转 ISS-060（`handshake_rejects_wrong_identity` 断言弱、`decode_exit_event` 扫整份 helper.log）。证据：`.git/orchestration/wave10-evidence/{iss059-spec,iss059-postflight,pr71-audit,REVIEW-ISS-059}.json`、`archived-sessions/iss-059-handshake-liveness/`。
+
+### ISS-003A · 通知语义统一与测试补强（ISS-003 代码切片）
+
+- **状态**：READY（P1/M1）；来源：用户 2026-09-16 指令拆分 ISS-003（WAITING）——通知代码早已合并（PR #3，`fathom/notify.py`，挂在日报写完后），剩余可自动化部分在此，实机收到通知留父卡。
+- **目标**：通知在四种扫描结果下语义一致且可解释：首扫无日报（无同数据集基线）、零变化、部分覆盖（`collection_status` 非完整）、低空间告警；扫描被中断/超时时**不发"完成"通知**；低空间阈值单一来源。
+- **范围**：`fathom/notify.py`、`fathom/reports.py`（仅通知调用点与传参）、`tests/test_notification.py`、必要时 `fathom/scan_coordinator.py` 的通知触发点（不改扫描/锁语义）。
+- **实施边界**：(1) 先复现：构造首扫（无基线）、partial、interrupted 三种 `scan_runs`/快照状态，记录当前通知文案与是否发送；(2) 首扫→"首次快照已建立，下次扫描起可比较"类文案，不出现空 diff/0 变化误导；零变化→明确"无变化"；partial→注明"部分覆盖（N 处权限受限）"且不夸大；低空间→沿用 `config.FREE_ALERT_GB` 单一源（不新增第二个阈值常量；ISS-016A 落设置时再改为可配置）；(3) `interrupted`/超时路径不调用 `notify_scan_done` 的"完成"文案——要么不发、要么发"已中断，保留上次快照"；(4) 通知 body 有长度上限（macOS 会截断），超长按可解释规则截断并测试；(5) 现有转义/静默模式/失败退路测试保留。不改日报 Markdown 结构；通知失败仍不影响快照与日报。
+- **验收**：
+  - [ ] 四种结果各有测试钉住文案关键语义；interrupted 不发"完成"通知有测试
+  - [ ] 低空间阈值只有 `config.FREE_ALERT_GB` 一个来源（grep 无第二常量）；长度截断可解释
+  - [ ] 既有 `test_notification.py` 全部保留通过；全量 pytest 计数同步
+  - [ ] 未改 Markdown 日报结构、锁与扫描语义；不读写生产库
+- **证据/接续**：不得勾选验收项。父卡 ISS-003 的"macOS 实际收到内容正确的通知，拒绝权限时有退路"仍为人工门。
+
+### ISS-016A · 设置持久化代码切片：配置读写 API 与设置页真实值（ISS-016 代码切片）
+
+- **状态**：READY（P1/M2）；来源：用户 2026-09-16 指令拆分 ISS-016（BLOCKED，父卡依赖 ISS-010 的真实服务重载）——本切片不含任何系统注册/重载动作。
+- **目标**：扫描根、计划时间、入库阈值 `min_kb`、低空间阈值可读可改可校验，保存后重启进程仍生效；设置页显示真实配置而非硬编码；无效值被拒且旧值可用。
+- **范围**：`fathom/config.py`（运行根下 `settings.json` 持久化层，环境变量 `FATHOM_*` 优先级明确）、`fathom/api.py`（`GET/PUT /api/config`，Host/Origin/写令牌守卫同既有非安全方法）、`frontend/modules/pages/` 设置页、`tests/`、`scripts/verify_frontend_refresh.cjs`/`verify_api_security.cjs` 如需新增检查项。
+- **实施边界**：(1) 兼容：无 `settings.json` 时全部默认值，旧运行根不迁移不报错；写入原子（临时文件 + rename），失败保留旧文件；(2) 校验：计划时间 HH:MM、路径存在且为目录、`min_kb`/阈值为有限正数（复用 ISS-061 的 fail-closed 风格）；400 + 中文 detail；(3) 换根：新根形成新数据集（ISS-021 身份约定），不删旧数据；(4) **服务重载/launchd 变更不在本切片**：PUT 返回 `{"applied": true, "service_reload": "requires_user_action", "hint": ...}` 之类明确结构，设置页如实显示"需重新安装计划才生效"；(5) 前端只读取 `/api/config`，删除硬编码路径/端口/阈值；无 emoji，图标只在 icons.js。
+- **验收**：
+  - [ ] API：默认值/校验拒绝/原子写失败回退/重启后保留 各有 pytest；全量计数同步
+  - [ ] 设置页显示真实配置；无效输入有反馈且旧值仍显示；`verify_frontend_refresh.cjs`/浏览器检查计数同步（PM 同步门禁）
+  - [ ] 换根后旧数据集仍在库中且可按 ISS-021 口径区分
+  - [ ] 不注册/不重载任何 launchd 服务；`FATHOM_*` 环境变量优先级有测试
+- **证据/接续**：不得勾选验收项。父卡 ISS-016 的"后台计划与显示值一致（真实重载）"留人工/ISS-010 实机。
+
+### ISS-010A · 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片）
+
+- **状态**：READY（P1/M2）；来源：用户 2026-09-16 指令拆分 ISS-010（BLOCKED 于 ISS-009 切片 2 实机验收）——本切片**绝不真实注册/注销任何登录项或 launchd 服务**。
+- **目标**：壳与设置页能读取真实系统状态（登录项是否注册、`com.maoscripts.fathom-scan`/`fathom-web` 是否已加载）并如实显示"已开启/未开启/未知"；提供 dry-run：生成将要写入的 plist 内容与将执行的命令预览，返回"需用户批准"的结构。
+- **范围**：`apps/desktop/src-tauri/src/`（新模块，只读 `launchctl print`/`launchctl list` 与 `SMAppService` 状态查询封装；**不得新增 crate**，`--locked --offline` 门禁）、`fathom/launchd.py`（只读查询与 dry-run 复用既有 plist 生成逻辑）、设置页开关的只读展示、`tests/` 与 Rust 单测。
+- **实施边界**：开关状态 = 系统查询结果；查询失败或权限不足显示"未知"，**绝不显示"已开启"**；dry-run 输出可测（fake `launchctl` 输出注入）；任何会修改系统的路径（`launchctl bootstrap/load/enable`、`SMAppService.register`）不得出现在本切片代码中——留 ISS-010 实机切片由用户批准后执行。
+- **验收**：
+  - [ ] 三种状态映射有单测（含 fake 输出）；失败不显示已开启
+  - [ ] dry-run 生成的 plist 与 `fathom/launchd.py` 现有生成一致（同源），预览可测
+  - [ ] `cargo check/test/clippy` 通过且无新增 crate；pytest 计数同步
+  - [ ] 代码审查确认零系统写入路径
+- **证据/接续**：不得勾选验收项。真实注册、睡眠/重启恢复、去重补扫留父卡 ISS-010。
+
+### ISS-063 · 微卫生：du_seconds 提示的 isfinite 守卫
+
+- **状态**：READY（P3/M1）；来源：ISS-062 reviewer 非阻断 O-1。
+- **目标**：`fathom/cli.py` `_last_measured_du_seconds` 过滤改为 `math.isfinite(seconds) and seconds > 0`，并补 `inf`/`nan` 回落"无记录"的测试；不改其它逻辑。
+- **范围**：`fathom/cli.py`、`tests/test_cli_scan_hint.py`。
+- **验收**：
+  - [ ] 合成库 `du_seconds=inf`/`nan` 时提示走"首次或无实测记录"且不抛异常
+  - [ ] 定向与全量 pytest 通过，计数同步
+- **证据/接续**：不得勾选验收项。
 
 ### ISS-062 · CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口
 
@@ -640,6 +693,7 @@
   - [ ] macOS 实际收到内容正确的通知，拒绝权限时有退路
   - [ ] 首扫无日报、零变化、部分覆盖及低空间告警有一致语义
 - **证据/接续**：[PR #3](https://github.com/cat-xierluo/fathom/pull/3) 已审查修正并合并；24 passed，组合 36 passed。复现并修正新增 200 MB 目录仍提示今日无增长，补摘要限长和准确日志；真实扫描/次日报告/通知 stub 链路通过。命令行 report 不触发通知。ISS-020 已统一首扫/部分覆盖与入口生命周期；系统实际展示、拒绝通知权限及设置阈值统一仍 `NOT_VERIFIED`。本卡因需要真实 macOS 通知与权限环境保持 WAITING；具备可观察通知的实机窗口并明确允许验证后再转 READY。
+- **切片（2026-09-16）**：代码部分拆为 ISS-003A（可自动派发）；本卡保留「macOS 实际收到通知、拒绝权限退路」实机验收。
 
 ### ISS-008 · 接续 tray 链路与实机验证
 
@@ -660,8 +714,8 @@
 - **验收**：
   - [ ] 无 Python/Rust/Homebrew 测试账户从安装进入首扫与分布
   - [ ] 关闭/退出行为正确；后台未就绪可恢复且不要求 main.py install
-  - [ ] 路径含空格/中文，资源只读，端口冲突、二次启动均可控
-  - [ ] 构建步骤/支持矩阵/产物校验值记录；未签名内测明确标记，不冒充公开包
+  - [x] 路径含空格/中文，资源只读，端口冲突、二次启动均可控 —— `verify_app_bundle.sh` (c) 段把 .app 拷入「Fathom 验证 & 启动目录」（空格/中文/&）后 `open` 启动并全程在该路径验证；(b) 只读布局指纹一致；(d) 端口冲突让位 + 零击杀；(e) 二次启动不重复拉起；(f)(h)(i) 退出/陈旧 instance/端口耗尽。main `47391ae` 起 20/20 PASS（PM 与两轮 reviewer 各自独立复跑）
+  - [x] 构建步骤/支持矩阵/产物校验值记录；未签名内测明确标记，不冒充公开包 —— README「构建未签名的桌面包」（2026-09-16）记录三步命令、`checksums.txt` 与 helper SHA256、仅 darwin-aarch64 的支持矩阵并明确未签名/未公证/占位图标；TESTING §4 发行矩阵；CHANGELOG 限制段同口径
 - **切片 1 已合并（2026-09-15 09:47，PM）**：[PR #61](https://github.com/cat-xierluo/fathom/pull/61) head `b880939`（8 commits：f6dc9bb 原始实现 + ISS-053/054/055×4/057 修复链）squash 合并为 main `a158889`。合并依据（TASKS 策略第 11 条 / DEC-018 本地门禁）：PM 两次独立复跑打包链（06:25、09:05）`cargo check` exit 0 → `build_helper` exit 0（arm64 Mach-O，SHA256 `95756a0e…`）→ `build_app` exit 0（Fathom.app + Fathom_0.3.0_aarch64.dmg）→ `verify_app_bundle.sh` **12/12 PASS**；独立 fixed-head reviewer（ctx_8c27cf67ee44）7 条要点全 CONFIRMED **ACCEPT**、`review-acceptance-gate` ok；`pr-audit` suspected 仅因 `same_base_ref_different_base_sha`（#62–#66 docs 在后落地）+ 指纹格式差异，`git merge-tree` 无冲突且 main→合并树与 base→head 的 `patch-id` 相同（`efca027f`），文件集与 main 前进零交集。**云端 CI 5 个 job 记 `NOT_RUN`**（GitHub billing 在执行前拒绝，自 09-14 起所有 run 同状态）。合并后 main 门禁：cargo check ok、版本一致性 ok、浏览器 39/39、前端刷新 61/61、**pytest 337/338**（夹具锚点过时，转 ISS-058，P0）。本卡验收框保持未勾：无 Python/Rust 测试账户首启、tray 菜单实机退出、含空格/中文路径、真实下载产物、签名/公证仍 `NOT_VERIFIED`，归切片 2 与发行验收；verify 已覆盖的子项（只读布局、端口冲突让位、二次启动、退出回收）在切片 2 复用。reviewer 非阻断观察转 ISS-059（握手 liveness / ports-exhausted 接线）与 ISS-060（脚本卫生）；AGENTS/ARCHITECTURE 的 apps/desktop 描述已随本 PR 同步。
 - **切片 1 状态（2026-09-15 00:59，PM）**：代码层已交付 PR [#61](https://github.com/cat-xierluo/fathom/pull/61)（分支 `iss-009-app-bundle`，head `f6dc9bb`，未合并）：`helper.rs` 生命周期（locate/spawn/handshake/让位/端口耗尽/SIGTERM 10s）、`lib.rs` 接入与 tray 退出、tauri bundle 配置、握手页、四个打包/校验脚本。**但三条合同验证命令在 worker 环境未执行**（白名单拒绝），由 PM 复跑，结果：`cargo check --locked --offline` **失败**（`resources/helper/**` glob 无匹配 → 阻断构建，已登记 ISS-053）；`build_app.sh`/`verify_app_bundle.sh` 因依赖已冻结 helper 尚未跑通。**故切片 1 不得合并、不得勾选验收项**，需先修 ISS-053 再继续。另 spawn 的 safe-push 白名单 `--base` 参数生成有误（写成 `main`，脚本要求 `origin/main`），本次由 PM 代推，属需修的工具缺陷。
 - **证据/接续**（2026-09-14 晚，PM 切片决策）：除 ISS-045（Logo/图标方向，人工门）外前置全部 DONE。按用户“不要阻塞”指令，先派**切片 1：壳-helper 生命周期 + 未签名打包流水线**——Tauri 壳启动时拉起内嵌 PyInstaller onedir helper（release 模式，数据根 `~/Library/Application Support/Fathom`），经 `helper-instance.json`/`/health` 握手后导航到本地服务，退出时按身份 SIGTERM 回收；同服务已在运行则复用不重复拉起；`scripts/build_helper.sh` / `build_app.sh` / `verify_app_bundle.sh` 产出未签名 `.app`/`.dmg` 并做结构、只读布局、含空格/中文路径启动、端口冲突让位、二次启动、校验值记录。图标用现有 `icon.png` 生成占位 iconset（**NOT_VERIFIED，公开前必须换 ISS-045 正式图标**）。新账户/断网首启与真实下载产物验收留 `NOT_VERIFIED`（切片 2 或实机验收）。不签名、不公证、不注册 launchd、不改 fathom/ 生产代码。
@@ -676,6 +730,7 @@
   - [ ] 登录/关闭窗口/退出 UI 后调度符合已说明语义
   - [ ] 睡眠恢复不重复补扫，同一天处理明确；重启实测有记录
 - **证据/接续**：尚未执行；不得勾选验收项。
+- **切片（2026-09-16）**：只读状态桥与 dry-run 拆为 ISS-010A（可自动派发，零系统写入）；真实注册/睡眠恢复/重启实测留本卡。
 
 ### ISS-016 · 设置持久化与真实服务反馈
 
@@ -688,6 +743,7 @@
   - [ ] 换根不混历史；设置页无 data/disk.db 等旧硬编码
   - [ ] 告警/通知阈值同源，保存反馈可访问
 - **证据/接续**：尚未执行；不得勾选验收项。
+- **切片（2026-09-16）**：配置读写 API 与设置页真实值拆为 ISS-016A（可自动派发，不含服务重载）；真实重载一致性留本卡。
 
 ### ISS-030 · 安装升级卸载与历史恢复
 

@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE snapshots (
@@ -77,6 +77,10 @@ _SNAPSHOT_COLUMNS_V2 = (
 _SNAPSHOT_COLUMNS_V3 = _SNAPSHOT_COLUMNS_V2 + (
     ("min_kb", "INTEGER", 0, 0), ("collection_status", "TEXT", 0, 0),
 )
+# v4 中间态：v3 + vanished_count；用于迁移链上"已升 v4 但还没升 v5"的校验。
+_SNAPSHOT_COLUMNS_V4 = _SNAPSHOT_COLUMNS_V3 + (
+    ("vanished_count", "INTEGER", 1, 0),
+)
 _SNAPSHOT_ALTER_V3 = (
     # ALTER 追加列的 DDL 片段（幂等：迁移前检查列是否已存在）。
     "min_kb INTEGER",            # 入库阈值（KiB）：数据集口径的一部分
@@ -87,11 +91,17 @@ _SNAPSHOT_ALTER_V3 = (
 # 与 v3 的 NULL 语义保持一致（NULL ≠ "0 个消失"，但该值在采集时即
 # 固化，无需外部推断，故允许 NOT NULL）。
 _SNAPSHOT_ALTER_V4 = ("vanished_count INTEGER NOT NULL DEFAULT 0",)
+# v5（ISS-066）为 snapshots 增加 exclude_names：本次采集生效的 du -I 掩码
+# 规范串（排序去重后 ``;`` 拼接）；持久化以便后续差分按 (root, min_kb,
+# exclude_names) 分组——数据集身份升级为三元组。
+# NOT NULL DEFAULT ''——旧行（v4 之前无此字段）通过默认获得空串，与
+# 新写入的"无配置"快照同身份可比；默认路径零行为变化由测试钉住。
+_SNAPSHOT_ALTER_V5 = ("exclude_names TEXT NOT NULL DEFAULT ''",)
 
 _EXPECTED_TABLE_INFO = {
     # (name, declared type, notnull, primary-key order)
-    "snapshots": _SNAPSHOT_COLUMNS_V3 + (
-        ("vanished_count", "INTEGER", 1, 0),
+    "snapshots": _SNAPSHOT_COLUMNS_V4 + (
+        ("exclude_names", "TEXT", 1, 0),
     ),
     "entries": (
         ("snapshot_id", "INTEGER", 1, 1), ("path", "TEXT", 1, 2),
@@ -120,13 +130,15 @@ _EXPECTED_TABLE_INFO = {
 def _expected_table_info(
     version: int,
 ) -> dict[str, tuple[tuple[str, str, int, int], ...]]:
-    """指定版本下每张表的期望列结构（v4 起 snapshots 含 vanished_count）。
+    """指定版本下每张表的期望列结构（v5 起 snapshots 含 exclude_names）。
 
-    中间版本（v3）保留 _SNAPSHOT_COLUMNS_V3 用于迁移链上"已升 v3 但
-    还没升 v4"的中间状态校验；v2 及更早回到 v2 的最小列集合。
+    中间版本（v4）保留 _SNAPSHOT_COLUMNS_V4 用于迁移链上"已升 v4 但
+    还没升 v5"的中间状态校验；v3 回到 v3；v2 及更早回到 v2 的最小列集合。
     """
     if version >= SCHEMA_VERSION:
         return _EXPECTED_TABLE_INFO
+    if version >= 4:
+        return dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V4)
     if version >= 3:
         return dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V3)
     info = dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V2)
@@ -299,16 +311,18 @@ def _snapshot_column_names(conn: sqlite3.Connection) -> set[str]:
 def _detect_schema_version(conn: sqlite3.Connection) -> int:
     """根据 snapshots 实际列结构推断 schema 版本。
 
-    旧启发式「scan_run_details 存在即 v2」在 v3/v4 引入新列后失效——
-    snapshots 才是版本演化的承载列。检测路径与 _migrate_v3/v4 的幂等检查
-    一致：vanished_count → 4；min_kb+collection_status → 3；scan_run_details
-    表存在 → 2；只有 v1 表 → 1；空库 → 0。
+    旧启发式「scan_run_details 存在即 v2」在 v3/v4/v5 引入新列后失效——
+    snapshots 才是版本演化的承载列。检测路径与 _migrate_v3/v4/v5 的幂等
+    检查一致：exclude_names → 5；vanished_count → 4；min_kb+collection_status → 3；
+    scan_run_details 表存在 → 2；只有 v1 表 → 1；空库 → 0。
     """
     tables = _user_tables(conn)
     if not tables:
         return 0
     if "snapshots" in tables:
         cols = _snapshot_column_names(conn)
+        if "exclude_names" in cols:
+            return 5
         if "vanished_count" in cols:
             return 4
         if {"min_kb", "collection_status"} <= cols:
@@ -355,11 +369,33 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
 
 
+def _migrate_v4(conn: sqlite3.Connection) -> None:
+    """为排除集纳入数据集身份补快照元数据列（ISS-066）。
+
+    与 v3 迁移同口径：幂等 ALTER，不改写任何既有行。列已齐全时
+    （user_version 被手动回退）只做结构校验，不重复追加。旧行
+    exclude_names 通过列定义 NOT NULL DEFAULT '' 自动获得空串——
+    "该快照未持久化 exclude_names"的事实由空串表达，与新写入
+    的"无配置"快照同身份可比（same_dataset 三元组测试钉住）。
+    新快照由 create_snapshot 在采集时点显式提供规范串（来自
+    config.EXCLUDE_NAMES）。
+    """
+    columns = _snapshot_column_names(conn)
+    if "exclude_names" in columns:
+        _validate_schema(conn, allow_missing=False)
+        return
+    _validate_schema(conn, allow_missing=False, version=4)
+    for ddl in _SNAPSHOT_ALTER_V5:
+        if ddl.split()[0] not in columns:
+            conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     0: _migrate_v0,
     1: _migrate_v1,
     2: _migrate_v2,
     3: _migrate_v3,
+    4: _migrate_v4,
 }
 
 

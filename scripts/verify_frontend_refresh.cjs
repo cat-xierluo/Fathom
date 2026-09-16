@@ -1389,19 +1389,24 @@ async function main() {
         !covDefended.coverageNote.includes("排除掩码"),
       `scan=${covDefended.scanNote.slice(0, 80)} | cov=${covDefended.coverageNote.slice(0, 80)}`);
 
-    // 5) full 状态只显示完整覆盖，不显示三类缺口
+    // 5) full 状态：dual 模式沿用既有 quality 措辞「覆盖完整」（ISS-028 既有检查依赖），
+    //    新三类明细只出现在 #overview-coverage-note；full 时该区块只显示完整覆盖 chip、
+    //    无三类缺口列表。
     await setMode("dual");
     await openPage("#/overview");
     await page.waitForFunction(() =>
-      document.getElementById("overview-quality")?.textContent.includes("完整覆盖"));
+      document.getElementById("overview-quality")?.textContent.includes("覆盖完整"));
     const covFull = await page.evaluate(() => ({
       classes: document.querySelector("[data-test='coverage-classes']")?.textContent || "",
       quality: document.getElementById("overview-quality")?.textContent || "",
+      note: document.getElementById("overview-coverage-note")?.textContent || "",
     }));
     record("coverage-full-shows-only-complete",
-      covFull.quality.includes("完整覆盖") && covFull.classes === "" &&
-        !covFull.quality.includes("权限受限") && !covFull.quality.includes("扫描期间消失"),
-      covFull.quality.slice(0, 120));
+      covFull.quality.includes("覆盖完整") && covFull.classes === "" &&
+        covFull.note.includes("完整覆盖") &&
+        !covFull.quality.includes("权限受限") && !covFull.quality.includes("扫描期间消失") &&
+        !covFull.note.includes("权限受限"),
+      JSON.stringify({ q: covFull.quality.slice(0, 60), n: covFull.note.slice(0, 60) }));
 
     /* ---------- ISS-002A 设置页：浏览器降级渲染路径文字 ----------
      * 默认 page（无 Tauri 桥）下，深链按钮隐藏，回退为显示固定路径文字；

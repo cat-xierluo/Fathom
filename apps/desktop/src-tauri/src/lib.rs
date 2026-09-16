@@ -26,6 +26,7 @@ use tauri::{
     AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindow, WindowEvent,
 };
 
+mod autostart;
 mod helper;
 
 use helper::{
@@ -348,6 +349,7 @@ pub fn run() {
             update_tray_status,
             helper_status,
             helper_retry,
+            autostart::autostart_status,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

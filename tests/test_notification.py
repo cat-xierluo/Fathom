@@ -38,6 +38,29 @@ def _diff(grown: list[reports.DirChange] | None = None) -> dict:
     return {"grown": grown or [], "shrunk": [], "added": [], "removed": []}
 
 
+def _insert_snapshot(
+    conn, day: str, entries: dict[str, int], free_bytes: int,
+    *, denied_count: int = 0, collection_status: str | None = None,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, total_kb,"
+        " collection_status) VALUES (?,?,?,?,?,?,?)",
+        (f"{day}T12:00:00", "/tmp/x", len(entries), denied_count, 0.0,
+         sum(entries.values()), collection_status),
+    )
+    sid = cur.lastrowid
+    conn.executemany(
+        "INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,?)",
+        [(sid, p, s) for p, s in entries.items()],
+    )
+    conn.execute(
+        "INSERT INTO volume_stats(snapshot_id, total_bytes, free_bytes) VALUES (?,?,?)",
+        (sid, 500 * 1024**3, free_bytes),
+    )
+    conn.commit()
+    return sid
+
+
 class TestBuildNotification:
     def test_body_contains_top1_and_free(self):
         diff = _diff([reports.DirChange("/Users/x/下载", 1024, 3 * 1024 * 1024 + 1024, 3 * 1024 * 1024)])
@@ -113,24 +136,7 @@ class TestNotifyScanDone:
 class TestWiring:
     """write_daily_report 尾部接线：CLI scan 与 API 手动扫描都经此函数。"""
 
-    @staticmethod
-    def _insert_snapshot(conn, day: str, entries: dict[str, int], free_bytes: int) -> int:
-        cur = conn.execute(
-            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, total_kb)"
-            " VALUES (?,?,?,?,?,?)",
-            (f"{day}T12:00:00", "/tmp/x", len(entries), 0, 0.0, sum(entries.values())),
-        )
-        sid = cur.lastrowid
-        conn.executemany(
-            "INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,?)",
-            [(sid, p, s) for p, s in entries.items()],
-        )
-        conn.execute(
-            "INSERT INTO volume_stats(snapshot_id, total_bytes, free_bytes) VALUES (?,?,?)",
-            (sid, 500 * 1024**3, free_bytes),
-        )
-        conn.commit()
-        return sid
+    _insert_snapshot = staticmethod(_insert_snapshot)
 
     def test_report_written_and_notification_sent(self, osascript):
         conn = db.connect()
@@ -189,3 +195,157 @@ def test_summary_bounds_paths_but_keeps_capacity():
     _, body, _ = notify.build_notification(diff, 5 * 1024**3)
     assert "\n" not in body and len(body) < 240
     assert "剩余 5.0 GB" in body
+
+
+class TestISS003AFourStateCopy:
+    """ISS-003A：首扫/零变化/partial/中断四态文案与长度上限（构造层）。"""
+
+    def test_zero_change_body_says_no_change(self):
+        _, body, _ = notify.build_notification(_diff(), None)
+        assert "与上次相比无变化" in body
+
+    def test_partial_denied_note(self):
+        diff = _diff([reports.DirChange("/a", 0, 2048, 2048)])
+        _, body, _ = notify.build_notification(
+            diff, 50 * 1024**3, collection_status="partial", denied_count=3
+        )
+        assert "部分覆盖（3 处权限受限）" in body
+        assert "完整" not in body
+
+    def test_partial_transient_note(self):
+        # ISS-047：瞬时错误非零也归 partial，但缺口不是权限，不能谎称权限受限。
+        _, body, _ = notify.build_notification(
+            _diff(), None, collection_status="partial", denied_count=0
+        )
+        assert "部分覆盖（瞬时读取错误）" in body
+        assert "权限受限" not in body
+
+    def test_full_and_legacy_null_have_no_partial_note(self):
+        diff = _diff([reports.DirChange("/a", 0, 2048, 2048)])
+        for status in ("full", None):  # None = v3 前旧口径，未知不冒充 partial
+            _, body, _ = notify.build_notification(
+                diff, None, collection_status=status, denied_count=0
+            )
+            assert "部分覆盖" not in body
+
+    def test_first_snapshot_copy(self):
+        title, body, sound = notify.build_first_notification(50 * 1024**3)
+        assert title == notify.TITLE_FIRST
+        assert "首次快照已建立" in body and "下次扫描起可比较" in body
+        # 首扫无基线，不得出现对比类文案。
+        assert "无变化" not in body and "无 1MB 以上增长" not in body
+        assert "剩余 50.0 GB" in body and sound is None
+
+    def test_first_snapshot_low_free_alerts(self):
+        title, _, sound = notify.build_first_notification(5 * 1024**3)
+        assert title == notify.TITLE_ALERT and sound == notify.ALERT_SOUND
+
+    def test_interrupted_copy_with_reason(self):
+        title, body, sound = notify.build_interrupted_notification("du 超过 14400 秒安全时限")
+        assert title == notify.TITLE_INTERRUPTED
+        assert "扫描已中断，保留上次快照" in body
+        assert "du 超过 14400 秒安全时限" in body
+        assert sound is None
+
+    def test_interrupted_copy_without_reason(self):
+        title, body, sound = notify.build_interrupted_notification(None)
+        assert title == notify.TITLE_INTERRUPTED
+        assert body == "扫描已中断，保留上次快照"
+        assert sound is None
+
+    def test_interrupted_never_uses_done_title(self):
+        for reason in (None, "", "du 超过 0.1 秒安全时限", "扫描在启动前被取消"):
+            title, _, _ = notify.build_interrupted_notification(reason)
+            assert title == notify.TITLE_INTERRUPTED != notify.TITLE_DONE
+
+
+class TestISS003ABodyCap:
+    """ISS-003A：最终正文（含剩余空间后缀）≤ 200 字符的可解释截断。"""
+
+    def test_long_body_with_free_suffix_capped_and_suffix_kept(self):
+        diff = _diff([reports.DirChange("/tmp/" + "长" * 300, 0, 2048, 2048)])
+        _, body, _ = notify.build_notification(diff, 5 * 1024**3)
+        assert len(body) <= notify.BODY_MAX_CHARS
+        assert body.endswith("剩余 5.0 GB")  # 低空间事实不截断
+        assert "…" in body  # 截断有省略号标记
+
+    def test_long_body_without_free_capped(self):
+        diff = _diff([reports.DirChange("/tmp/" + "长" * 300, 0, 2048, 2048)])
+        _, body, _ = notify.build_notification(diff, None)
+        assert len(body) <= notify.BODY_MAX_CHARS and body.endswith("…")
+
+    def test_short_body_not_truncated(self):
+        diff = _diff([reports.DirChange("/a", 0, 2048, 2048)])
+        _, body, _ = notify.build_notification(diff, 20 * 1024**3)
+        assert "…" not in body
+
+    def test_interrupted_reason_truncated(self):
+        _, body, _ = notify.build_interrupted_notification("长" * 500)
+        assert len(body) <= notify.BODY_MAX_CHARS and body.endswith("…")
+        assert "扫描已中断，保留上次快照" in body
+
+    def test_first_snapshot_long_partial_note_capped(self):
+        _, body, _ = notify.build_first_notification(
+            50 * 1024**3, collection_status="partial", denied_count=10**9
+        )
+        assert len(body) <= notify.BODY_MAX_CHARS
+        assert body.endswith("剩余 50.0 GB")
+
+
+class TestISS003AWiringStates:
+    """ISS-003A：reports 调用点把快照采集状态传进通知（partials 不被吞掉）。"""
+
+    def test_write_daily_report_passes_partial_state(self, osascript):
+        conn = db.connect()
+        try:
+            self._insert_snapshot(conn, "2026-09-11", {"/tmp/x/a": 100 * 1024}, 200 * 1024**3)
+            sid2 = self._insert_snapshot(
+                conn, "2026-09-12", {"/tmp/x/a": 300 * 1024}, 200 * 1024**3,
+                denied_count=7, collection_status="partial",
+            )
+            reports.write_daily_report(conn, sid2)
+        finally:
+            conn.close()
+        script = osascript[0][2]
+        assert "部分覆盖（7 处权限受限）" in script
+
+    def test_notify_for_snapshot_passes_partial_state(self, osascript):
+        conn = db.connect()
+        try:
+            self._insert_snapshot(conn, "2026-09-11", {"/tmp/x/a": 100 * 1024}, 200 * 1024**3)
+            sid2 = self._insert_snapshot(
+                conn, "2026-09-12", {"/tmp/x/a": 100 * 1024}, 200 * 1024**3,
+                denied_count=0, collection_status="partial",
+            )
+            assert reports.notify_for_snapshot(conn, sid2) is True
+        finally:
+            conn.close()
+        assert "部分覆盖（瞬时读取错误）" in osascript[0][2]
+
+    def test_notify_first_snapshot_for_sends_first_copy(self, osascript):
+        conn = db.connect()
+        try:
+            sid = self._insert_snapshot(
+                conn, "2026-09-11", {"/tmp/x/a": 100 * 1024}, 200 * 1024**3,
+                denied_count=2, collection_status="partial",
+            )
+            assert reports.notify_first_snapshot_for(conn, sid) is True
+        finally:
+            conn.close()
+        script = osascript[0][2]
+        assert notify.TITLE_FIRST in script
+        assert "首次快照已建立" in script and "部分覆盖（2 处权限受限）" in script
+
+    def test_notify_first_snapshot_failure_is_silent(self, monkeypatch):
+        def _boom(*a, **kw):
+            raise RuntimeError("no osascript")
+
+        monkeypatch.setattr(notify.subprocess, "run", _boom)
+        conn = db.connect()
+        try:
+            sid = self._insert_snapshot(conn, "2026-09-11", {"/tmp/x/a": 1}, 200 * 1024**3)
+            assert reports.notify_first_snapshot_for(conn, sid) is False
+        finally:
+            conn.close()
+        log = (config.LOGS_DIR / "notify.log").read_text(encoding="utf-8")
+        assert "通知发送异常" in log

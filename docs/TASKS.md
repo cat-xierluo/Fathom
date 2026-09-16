@@ -108,7 +108,7 @@
 | ISS-060 | 切片 1 打包/校验脚本卫生（review 非阻断观察收口） | P3 | M2 | DONE | ISS-009 |
 | ISS-061 | 定时扫描在生产规模下被 3600s du 时限中断 | P0 | M1 | DONE | ISS-001 |
 | ISS-062 | CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口 | P3 | M1 | DONE | ISS-061 |
-| ISS-003A | 通知语义统一与测试补强（ISS-003 代码切片） | P1 | M1 | READY | ISS-020 |
+| ISS-003A | 通知语义统一与测试补强（ISS-003 代码切片） | P1 | M1 | REVIEW | ISS-020 |
 | ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | READY | ISS-025、ISS-028 |
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | READY | ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | READY | ISS-062 |
@@ -158,16 +158,16 @@
 
 ### ISS-003A · 通知语义统一与测试补强（ISS-003 代码切片）
 
-- **状态**：READY（P1/M1）；来源：用户 2026-09-16 指令拆分 ISS-003（WAITING）——通知代码早已合并（PR #3，`fathom/notify.py`，挂在日报写完后），剩余可自动化部分在此，实机收到通知留父卡。
+- **状态**：REVIEW（P1/M1，2026-09-16 20:40：全部门禁已过，仅待 GitHub 网络恢复后合并 PR #82；合并后转 DONE 并同步 pytest 门禁 354→375）；来源：用户 2026-09-16 指令拆分 ISS-003（WAITING）——通知代码早已合并（PR #3，`fathom/notify.py`，挂在日报写完后），剩余可自动化部分在此，实机收到通知留父卡。
 - **目标**：通知在四种扫描结果下语义一致且可解释：首扫无日报（无同数据集基线）、零变化、部分覆盖（`collection_status` 非完整）、低空间告警；扫描被中断/超时时**不发"完成"通知**；低空间阈值单一来源。
 - **范围**：`fathom/notify.py`、`fathom/reports.py`（仅通知调用点与传参）、`tests/test_notification.py`、必要时 `fathom/scan_coordinator.py` 的通知触发点（不改扫描/锁语义）。
 - **实施边界**：(1) 先复现：构造首扫（无基线）、partial、interrupted 三种 `scan_runs`/快照状态，记录当前通知文案与是否发送；(2) 首扫→"首次快照已建立，下次扫描起可比较"类文案，不出现空 diff/0 变化误导；零变化→明确"无变化"；partial→注明"部分覆盖（N 处权限受限）"且不夸大；低空间→沿用 `config.FREE_ALERT_GB` 单一源（不新增第二个阈值常量；ISS-016A 落设置时再改为可配置）；(3) `interrupted`/超时路径不调用 `notify_scan_done` 的"完成"文案——要么不发、要么发"已中断，保留上次快照"；(4) 通知 body 有长度上限（macOS 会截断），超长按可解释规则截断并测试；(5) 现有转义/静默模式/失败退路测试保留。不改日报 Markdown 结构；通知失败仍不影响快照与日报。
 - **验收**：
-  - [ ] 四种结果各有测试钉住文案关键语义；interrupted 不发"完成"通知有测试
-  - [ ] 低空间阈值只有 `config.FREE_ALERT_GB` 一个来源（grep 无第二常量）；长度截断可解释
-  - [ ] 既有 `test_notification.py` 全部保留通过；全量 pytest 计数同步
-  - [ ] 未改 Markdown 日报结构、锁与扫描语义；不读写生产库
-- **证据/接续**：不得勾选验收项。父卡 ISS-003 的"macOS 实际收到内容正确的通知，拒绝权限时有退路"仍为人工门。
+  - [x] 四种结果各有测试钉住文案关键语义（首扫「首次快照已建立」/零变化「与上次相比无变化」/partial「部分覆盖（N 处权限受限）」与 transient 措辞/中断只发「已中断」标题）；interrupted 不发"完成"通知有协调器级测试
+  - [x] 低空间阈值只有 `config.FREE_ALERT_GB` 一个来源（grep 仅 config.py:283 定义 + notify.py 读取）；长度截断可解释（最终正文含后缀 ≤200，后缀完整、主文案 `…`）
+  - [x] 既有 `test_notification.py` 全部保留通过；全量 pytest 354→**375**（+21），门禁计数随合并同步
+  - [x] 未改 Markdown 日报结构（`render_markdown` 未动）、锁与扫描语义（中断分支双保险在 `_finish` 前）；测试用合成运行根，不读写生产库
+- **证据/接续**（2026-09-16）：第 1 次派发（ctx_5b04dbd34636）9 分钟时开 6 个子代理、18 分钟时进程消失零产出，已 settle 并在合同追加「不得并行派子代理」；第 2 次派发 worker ctx_8a9e818f8e57（iss-003a-notification-semantics-r2）顺序完成，**复现记录**：首扫完全不发通知、partial 无注明、中断不发任何反馈、截断在拼后缀前致正文可达 213 字符；交付 `08d3d91`（21 个红测试，20 failed 基线）+ `cf59666`（实现绿）。PM 独立复跑定向 80 / 全量 375；`worker-value-postflight` ok。独立 reviewer ctx_be9c6978ae45（review-wave20-003a）**ACCEPT**（0 blocking；非阻断：200/201 边界用例缺失、一条 partial 长文案断言未真正触及截断 → 并入 ISS-063；双 Ctrl-C 理论边缘良性）。[PR #82](https://github.com/cat-xierluo/fathom/pull/82) 待合并（20:40 GitHub 经代理不可达）。父卡 ISS-003 的"macOS 实际收到内容正确的通知，拒绝权限时有退路"仍为人工门。
 
 ### ISS-016A · 设置持久化代码切片：配置读写 API 与设置页真实值（ISS-016 代码切片）
 
@@ -198,8 +198,8 @@
 ### ISS-063 · 微卫生：du_seconds 提示的 isfinite 守卫
 
 - **状态**：READY（P3/M1）；来源：ISS-062 reviewer 非阻断 O-1。
-- **目标**：`fathom/cli.py` `_last_measured_du_seconds` 过滤改为 `math.isfinite(seconds) and seconds > 0`，并补 `inf`/`nan` 回落"无记录"的测试；不改其它逻辑。
-- **范围**：`fathom/cli.py`、`tests/test_cli_scan_hint.py`。
+- **目标**：(a) `fathom/cli.py` `_last_measured_du_seconds` 过滤改为 `math.isfinite(seconds) and seconds > 0`，并补 `inf`/`nan` 回落"无记录"的测试；(b)（ISS-003A reviewer 补充）`tests/test_notification.py` 补通知正文恰 200/201 字符的精确边界用例，并让 `test_first_snapshot_long_partial_note_capped` 的主文案真正触及 200 上限；不改其它逻辑。
+- **范围**：`fathom/cli.py`、`tests/test_cli_scan_hint.py`、`tests/test_notification.py`。
 - **验收**：
   - [ ] 合成库 `du_seconds=inf`/`nan` 时提示走"首次或无实测记录"且不抛异常
   - [ ] 定向与全量 pytest 通过，计数同步

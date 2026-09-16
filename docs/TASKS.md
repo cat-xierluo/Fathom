@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**2026-09-16 09:10 用户指令「继续找可自动化推进的事」**：把 WAITING/BLOCKED 卡中的代码部分拆为可自动派发的切片卡（父卡保留实机/GUI 验收作为人工门）——ISS-003A（#82）、ISS-064（#85）、ISS-010A（#87）、ISS-063（#88）已 DONE；**用户 2026-09-16 21:00 指令「派几个 MiniMax worker」**：GLM lane 降至 4% 后 implementer 与 reviewer 全部改走 minimax-M3，并行上限 3（遵守 ≤3 活跃 / ≤2 待验收）。当前在飞：**ISS-065**（P1，minimax）。其后：**ISS-016A**（需 node/浏览器验证，待 GLM 恢复或由 PM 代跑 node 部分）→ ISS-009 切片 2（人工门）。新 PM 的默认下一项即上述顺序中首个 READY；之后才是 **ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**2026-09-16 09:10 用户指令「继续找可自动化推进的事」**：把 WAITING/BLOCKED 卡中的代码部分拆为可自动派发的切片卡（父卡保留实机/GUI 验收作为人工门）——ISS-003A（#82）、ISS-064（#85）、ISS-010A（#87）、ISS-063（#88）已 DONE；**用户 2026-09-16 21:00 指令「派几个 MiniMax worker」**：GLM lane 降至 4% 后 implementer 与 reviewer 全部改走 minimax-M3，并行上限 3（遵守 ≤3 活跃 / ≤2 待验收）。ISS-065（#90）亦已 DONE；**当前无在途 worker，READY 仅剩 ISS-016A**（设置持久化代码切片；其验收含 `verify_frontend_refresh.cjs`/浏览器检查等 node 命令——MiniMax lane 曾出现 node 命令被拒（runbook 24），派发时可让 worker 只自验 pytest，node/浏览器部分由 PM 代跑并同步计数；GLM lane 00:14 后重置亦可直接派 GLM）。其后为 ISS-009 切片 2（人工门）。**09-17 12:00 后须只读观察生产**：期望 scan_run 4 `completed`、`snapshots` 新增 09-16/17 行且库升 v4 并生成 backup-v3；若 `interrupted`（4h 墙钟）或 `failed`，按 message 分流新卡。新 PM 的默认下一项即上述顺序中首个 READY；之后才是 **ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -113,7 +113,7 @@
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | DONE | ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | DONE | ISS-062 |
 | ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
-| ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | READY | ISS-064 |
+| ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | DONE | ISS-064 |
 
 ## 任务卡
 
@@ -146,16 +146,16 @@
 
 ### ISS-065 · 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照）
 
-- **状态**：READY（P1/M1）；来源：PM 只读生产观察（2026-09-16 20:40，ISS-064 观察的后续——scan_run 3 自行结束后的终态）。
+- **状态**：DONE（P1/M1，2026-09-16 22:25；PR #90 → main `9d92e85`，pytest 409→424，snapshots schema v3→v4）；来源：PM 只读生产观察（2026-09-16 20:40，ISS-064 观察的后续——scan_run 3 自行结束后的终态）。
 - **目标**：du 在扫描期间自然消失的目录（缓存/临时/系统清理）不再导致整次采集被判 `failed` 丢弃；该情形计为新类别（如 `vanished_count`），快照照常写入并如实标注覆盖语义；真正无法无歧义解析的行（内嵌换行/根外路径）仍 fail-closed。
 - **范围**：`fathom/scanner.py`（路径校验/`classify_collection`/`DuResult` 字段）、`fathom/db.py`（如需快照元数据列，须有兼容路径与迁移）、`fathom/reports.py`（日报对 vanished 的呈现）、`fathom/notify.py`（partial 语义联动，仅传参）、`tests/test_scanner.py`、`tests/test_reports_diff.py`、`tests/test_notification.py`（如涉及）。
 - **实施边界（PM 只读证据）**：scan_run 3（2026-09-16 12:01:01→20:02:58，约 8 小时）终态 `failed`，message：「du 采集无效：stdout 含不可无歧义解析的路径记录 30 行（如 解析路径无法确认为目录: /Users/maoking/Pictures/Photos Library.photoslibrary/resources/cpl/cloudsync.noindex/storage/filecache/AVS）。已拒绝本次写入，当日旧快照保持不变」。该路径属照片图库云同步缓存——du 列到它时存在、8 小时后校验时已被系统清理；`scanner.py:212-232` 以校验时刻 `os.path.isdir` 为准，把「扫描期间消失」与「解析歧义」混为一类（`:141` path_error_count 非零时采集无效），导致约 93.7 万行有效事实被 30 行丢弃，`snapshots` 仍只有 09-12 一条。设计要求：(1) 「du 输出时是目录、校验时不在」→ `vanished`，**不**进 `path_error_count`；快照保留这些行的事实（du 数值是测量期事实），快照元数据记 `vanished_count`；(2) 覆盖语义：vanished 与 denied/transient 并列为部分覆盖的一种并如实呈现（日报/通知注明「另有 N 个目录在扫描期间已消失」），不得当作完整覆盖也不得夸大；(3) 根外路径与无法解析的行维持 fail-closed（现状）；(4) 若新增 DB 列须带 v0 兼容读取与失败回退（不删旧库）；(5) 与 ISS-021 数据集身份约定一致：不改 (root, min_kb) 口径。先复现：fake du 输出含一个校验前删除的目录 → 旧代码整次 `failed`（红）→ 修后快照写入且 `vanished_count=1`、日报/通知如实标注（绿）。
 - **验收**：
-  - [ ] 反例先红后绿（整次失败 → 保留快照 + vanished 计数）
-  - [ ] 无法解析/根外路径仍使采集无效（既有 fail-closed 测试保留）；EINTR/超时/负数/缺根记录等既有无效判据全部不变
-  - [ ] 日报与通知对 vanished 有如实呈现（不冒充完整覆盖）；DB 兼容路径有测试
-  - [ ] 全量 pytest 计数同步；不读写生产库
-- **证据/接续**：不得勾选验收项。与 ISS-064 的关系：064 修「跑不完」，065 修「跑完了却整包丢弃」；两者都修好前，09-17 12:00 的扫描仍可能失败。
+  - [x] 反例先红后绿：`cca9326` 红测试（校验前删除的根内目录 → 旧代码整次无效）→ `36fb892` 后快照写入且 `vanished_count=1`、`collection_status=partial`
+  - [x] 无法解析/根外路径/存在但非目录仍使采集无效（既有 fail-closed 测试保留）；EINTR（047）/超时（061/064 墙钟双轨）/负数/缺根记录判据不变，定向 122 全绿
+  - [x] 日报顶部说明与通知 partial 注把 denied/vanished/transient 并列（「另有 N 个目录在扫描期间已消失」），不冒充完整覆盖；`tests/test_db_migrations.py` +110 行覆盖 v3→v4 幂等迁移、旧行默认 0、列结构推断
+  - [x] 全量 381→396（其 base 上）；合入后 main **424**，计数已同步；测试用合成库，不读写生产库
+- **证据/接续**（2026-09-16 DONE）：worker ctx_ef95f49eadb9（**minimax-M3**，iss-065-vanished-paths）交付 3 commit（红测试 / scanner+db：`DuResult.vanished_count/vanished_sample`、`SCHEMA_VERSION=4`、`_SNAPSHOT_ALTER_V4`（NOT NULL DEFAULT 0）、`_migrate_v3` 幂等、`_detect_schema_version` 改按列结构推断 / reports+notify 呈现）。worker 的 push 未生效，由 PM 代推。PM 独立复跑定向 122、全量 396；**PM 另在生产库 `data/fathom.db` 的只读副本上实测 v3→v4 迁移**：user_version 3→4、`vanished_count` 列加入、1 条快照 + 3 条 scan_runs 完整保留、自动生成 `fathom.db.backup-v3-*`、原库未动。reviewer ctx_afce6845ade7（minimax-M3，review-wave23-065）**ACCEPT**（0 blocking；信息性：partial 子句顺序被测试钉住、vanished_sample 只在日志/报告层不落库、`_detect_schema_version` 需配合一致备份路径、真实生产库迁移将在下次 12:00 扫描时发生）。`postflight` ok、`pr-audit` adopt。[PR #90](https://github.com/cat-xierluo/fathom/pull/90) squash 合并为 main `9d92e85`，生产目录已 pull。与 ISS-064 的关系：064 修「跑不完」（墙钟时限），065 修「跑完了却整包丢弃」（vanished 语义）——**两者均已进入生产目录，09-17 12:00 的定时扫描将首次同时带上 4h 墙钟时限、vanished 保留与 v3→v4 迁移**，其结果是 ISS-001 的关键观察点。
 
 ### ISS-064 · du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径
 
@@ -699,6 +699,7 @@
 - **证据/接续**：NOT_VERIFIED。2026-09-14 PM 只读观察：`launchctl list` 显示 `com.maoscripts.fathom-scan` 上次退出码 1；`logs/launchd-scan.err.log` 记录 2026-09-13 12:00 定时任务确实触发（out 日志“开始扫描”），但被 `InvalidScanError`（stderr 两行 `Interrupted system call` 判为非权限致命）拒绝，生产库 `data/fathom.db`（v0 schema）仍仅有 2026-09-12 一个快照，第二个有效日期未产生。根因已由 ISS-047 修复并合并，主仓代码已同步；最早 2026-09-15 12:00 后重新观察。原任务“增长非全零”门槛已纠正。
   **2026-09-15 17:33 PM 只读复查（窗口已到）**：定时任务确实按时触发（`logs/launchd-scan.out.log` 09-15 有新“开始扫描”行；launchd 上次退出码仍 1），但**第二个快照依然未产生**。生产库只读读取 `scan_runs`：run 2（09-15 12:00:07→13:00:07）与 run 1（09-14 12:00:06→13:00:06）**均为 `interrupted`，message 为 `du 超过 3600 秒安全时限`**——即连续两天在整 1 小时被中断，与 ISS-047 的 EINTR 问题**不同**。err 日志内 19 行均为 ISS-047 合并前的历史内容（无“瞬时/partial”新措辞），`.venv` 导入的主仓代码已含 ISS-047 修复（`_TRANSIENT_MESSAGES`/`transient_error_count` 在）。本卡阻塞已定位并转 **ISS-061**；观察窗口续等 ISS-061 修复后。
   **2026-09-16 00:55 PM**：ISS-061 已合并为 main `6789245`（du 时限 `FATHOM_DU_TIMEOUT_S` 默认 14400s），生产目录 main 已同步，launchd 定时任务以仓库 `.venv/bin/python main.py scan` 运行，故 **2026-09-16 12:00 的定时扫描将首次以 4h 上限执行**。观察方法（只读）：12:00 起最迟 16:01 前后读取 `scan_runs` 最新行（期望 `status=completed` 且 `finished_at-started_at` 记录真实耗时）与 `snapshots` 是否新增 09-16 一行；完成则本卡"两个不同有效日期"取得证据，并可据 `du_seconds` 校准 ISS-062 的时长提示；若再次 `interrupted`（14400 秒），须开自适应/分段扫描新卡而不是继续加大上限。附：常驻 `fathom-web`（PID 6026）为合并前进程，重启前 API 触发扫描仍用旧 3600s，属生产操作待用户授权。
+  **2026-09-16 22:30 PM**：ISS-064（墙钟时限）与 ISS-065（vanished 保留快照、DB v4）均已合并并 pull 到生产目录；生产库副本迁移实测通过。**09-17 12:00 为三项修复（061/064/065）叠加后的首次真实定时扫描**——观察 `scan_runs` 第 4 行状态/耗时/message、`snapshots` 是否新增、`pragma user_version` 是否为 4、`data/` 是否出现 `fathom.db.backup-v3-*`。完成则本卡取得第二个有效日期。
   **2026-09-16 20:40 PM 终态**：scan_run 3 于 20:02:58 自行结束（du 阻塞解除后跑完，约 8 小时），终态 `failed`——「du 采集无效：stdout 含不可无歧义解析的路径记录 30 行（如 解析路径无法确认为目录: Photos 图库云同步缓存…）」，即「扫描期间消失的目录」令整次采集被丢弃，快照仍只有 09-12 一条；已登记 **ISS-065（P1）**。生产进程已自然退出、锁已释放，无需 kill。
   **2026-09-16 19:42 PM 只读观察**：12:01:01 定时扫描按时触发（`scan_runs` 第 3 行），但 19:42 仍 `running`（7h41m），未在 14400s 中断；du 阻塞于 WPS 容器路径的 `open()`（无输出），且机器下午多次睡眠——根因定位为 `time.monotonic()` 不计睡眠 + du 挂起，已登记 **ISS-064（P0）**。本卡「第二个有效日期」仍未取得；生产进程持锁待用户处置（见 ISS-064）。
 

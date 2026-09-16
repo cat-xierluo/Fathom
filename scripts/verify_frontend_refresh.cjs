@@ -1484,8 +1484,12 @@ async function main() {
         permTauri.note.includes("不代改系统权限"),
       JSON.stringify(permTauri).slice(0, 200));
     await tpage2.click("#btn-open-system-prefs");
-    await tpage2.waitForFunction(() => (window.__tauriMock2.invokes || []).length >= 1);
-    const deeplinkInvoke = await tpage2.evaluate(() => window.__tauriMock2.invokes[0]);
+    await tpage2.waitForFunction(() => (window.__tauriMock2.invokes || []).some(
+      (c) => c && c.cmd === "plugin:opener|open_url"));
+    // settings 页加载时状态层会先推送 tray 状态（update_tray_status），
+    // 因此不能在 invokes[0] 上断言；在全部记录中定位 opener 调用。
+    const deeplinkInvoke = await tpage2.evaluate(() => (window.__tauriMock2.invokes || [])
+      .find((c) => c && c.cmd === "plugin:opener|open_url"));
     record("permissions-tauri-mock-deeplink-invokes-opener",
       deeplinkInvoke?.cmd === "plugin:opener|open_url" &&
         deeplinkInvoke?.args?.url === "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",

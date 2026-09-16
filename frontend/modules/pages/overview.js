@@ -83,9 +83,11 @@ function _renderCoverageClasses(coverage) {
       const chipCls = k === "excluded" ? "quality-chip miss" : "quality-chip warn";
       const chipIcon = k === "excluded" ? "filter" : "alert";
       const unit = k === "excluded" ? "项" : "处";
+      // ISS-002A 计数前置（N 处权限受限 / N 处扫描期间消失 / N 项排除掩码）：
+      // 验收契约要求「计数在前、类目在后」，避免读成「类目 N」被误当影响大小。
       return `<li class="cov-class">
         <span class="cov-class-head">
-          <span class="${chipCls}">${icon(chipIcon, 12)} ${escapeHtml(note.label)} ${counts[k]} ${unit}</span>
+          <span class="${chipCls}">${icon(chipIcon, 12)} ${counts[k]} ${unit}${escapeHtml(note.label)}</span>
         </span>
         <p class="cov-class-note">${escapeHtml(note.means)} ${escapeHtml(note.doesnt)}</p>
       </li>`;
@@ -223,9 +225,11 @@ function _renderCoverageNoteBlock(latest, cov) {
     return;
   }
   const markup = _renderCoverageClasses(cov);
-  // _renderCoverageClasses 已返回 <ul data-test="coverage-classes">…</ul> 或
-  // 完整覆盖 chip；full 时整块置空以便既有 state-matrix-partial-* 检查不受影响。
-  container.innerHTML = cov.state === "full" ? "" : markup;
+  // _renderCoverageClasses 在 partial 时返回 <ul data-test="coverage-classes">…</ul>，
+  // 在 full 时返回不带 data-test 的「完整覆盖」chip。两者都渲染：
+  // full 时该区块显式给出「完整覆盖」，避免读者把「区块为空」误当成未知；
+  // 同时因无 coverage-classes 节点，既有 state-matrix-partial-* 检查不受影响。
+  container.innerHTML = markup;
 }
 
 async function loadVolumeTrend() {

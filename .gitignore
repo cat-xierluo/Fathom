@@ -2,6 +2,8 @@
 data/
 reports/
 logs/
+# 开发模式运行根=项目根，用户设置会落在这里（ISS-016A）
+settings.json
 
 # 内部研究文档（用户指示：参照项目的研究资料不入 Git）
 docs/research/

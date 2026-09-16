@@ -57,9 +57,9 @@ async function getApiToken() {
   return apiToken;
 }
 
-export async function apiPost(url, body) {
+export async function apiSend(method, url, body) {
   const send = (token) => fetch(url, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json", "X-Fathom-Token": token },
     body: body === undefined ? null : JSON.stringify(body),
   });
@@ -76,6 +76,10 @@ export async function apiPost(url, body) {
   }
   return res;
 }
+
+export function apiPost(url, body) { return apiSend("POST", url, body); }
+
+export function apiPut(url, body) { return apiSend("PUT", url, body); }
 
 export async function revealInFinder(path) {
   try {

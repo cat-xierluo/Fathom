@@ -15,15 +15,25 @@
 
 ``FATHOM_DB`` 仅作旧入口兼容：未指定运行根时，它的父目录成为运行
 根，不再出现“只隔离 DB，其他仍写源码树”的半隔离状态。
+
+ISS-016A 起运行根下可有 ``settings.json`` 持久化用户设置（扫描根/计划
+时间/入库阈值/低空间阈值）。生效优先级：显式 CLI 覆盖 > ``FATHOM_*``
+环境变量 > ``settings.json`` > 内置默认。环境变量优先的理由：它是
+ISS-025 以来的运维与隔离合同入口（TESTING 的隔离验证、launchd plist、
+helper 都靠它钉住扫描根），若落盘设置能反超环境变量，一份意外落盘的
+``settings.json`` 就能把扫描重定向到错误根并静默形成新数据集。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 import math
 import os
 from pathlib import Path
+import re
 import sys
+import threading
 from typing import Mapping
 
 
@@ -254,8 +264,12 @@ def configure(
     resource_dir: Path | str | None = None,
     mode: str | None = None,
 ) -> RuntimeConfig:
-    """在打开任何运行资源前应用显式的进程级 CLI/helper 覆盖。"""
-    global _ACTIVE
+    """在打开任何运行资源前应用显式的进程级 CLI/helper 覆盖。
+
+    显式 ``--scan-root`` 之后再不被 settings.json 覆盖（CLI > 环境变量 >
+    settings.json，见模块 docstring）；运行根变化后按新根重读 settings.json。
+    """
+    global _ACTIVE, _CLI_SCAN_ROOT_PINNED
     _ACTIVE = _ACTIVE.with_overrides(
         runtime_dir=runtime_dir,
         scan_root=scan_root,
@@ -263,7 +277,10 @@ def configure(
         resource_dir=resource_dir,
         mode=mode,
     )
+    if scan_root is not None:
+        _CLI_SCAN_ROOT_PINNED = True
     _publish_compatibility_values(_ACTIVE)
+    refresh_user_settings()
     return _ACTIVE
 
 
@@ -274,13 +291,17 @@ def ensure_runtime_dirs(value: RuntimeConfig | None = None) -> None:
         directory.mkdir(parents=True, exist_ok=True)
 
 
-# 快照保留策略与通知阈值（非运行路径）
-MIN_DIR_KB = 10 * 1024
+# 快照保留策略与通知阈值。MIN_DIR_KB / FREE_ALERT_GB / SCAN_HOUR /
+# SCAN_MINUTE 四项可被运行根 settings.json 覆盖（ISS-016A，模块尾部统一
+# 重发布）；保留策略与大文件默认值当前是代码策略，不入 settings.json。
+_DEFAULT_MIN_KB = 10 * 1024
+_DEFAULT_FREE_ALERT_GB = 10
+MIN_DIR_KB = _DEFAULT_MIN_KB
+FREE_ALERT_GB = _DEFAULT_FREE_ALERT_GB
 KEEP_DAILY_DAYS = 35
 KEEP_WEEKLY_WEEKS = 12
 BIGFILE_DEFAULT_DAYS = 7
 BIGFILE_DEFAULT_MB = 100
-FREE_ALERT_GB = 10
 
 # 大文件查询预算（ISS-032 Phase 2 写入）。
 # 依据：tests/test_bigfiles.py::TestResourceMeasurement 实测
@@ -322,7 +343,9 @@ del _raw_du_timeout
 LAUNCHAGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 SCAN_LABEL = "com.maoscripts.fathom-scan"
 WEB_LABEL = "com.maoscripts.fathom-web"
+# 计划时间（launchd 安装时读取；SCAN_MINUTE 的 plist 写入留父卡 ISS-016）
 SCAN_HOUR = 12
+SCAN_MINUTE = 0
 
 # 端口策略（ISS-029 G6）：默认绑定 7952；占用时按 PORT_RANGE 个候选
 # 端口依序让位（7952..7952+PORT_RANGE）。零击杀：从不向任何进程发信号；
@@ -332,3 +355,254 @@ SCAN_HOUR = 12
 PORT_RANGE = 0
 # helper 进程发现文件（0600）由 cli.cmd_serve 写入运行根供应用壳读取。
 HELPER_INSTANCE_FILENAME = "helper-instance.json"
+
+
+# ---------- 用户设置持久化（ISS-016A：运行根下 settings.json） ----------
+
+SETTINGS_FILENAME = "settings.json"
+DEFAULT_SCAN_TIME = "12:00"
+_SCAN_TIME_PATTERN = re.compile(r"\A([01]\d|2[0-3]):([0-5]\d)\Z")
+_SETTING_KEYS = ("scan_root", "scan_time", "min_kb", "free_alert_gb")
+
+# PUT /api/config 与 configure() 可能并发触发合并写；设置写入低频，互斥足够。
+_SETTINGS_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class UserSettings:
+    """已持久化的用户设置；``None`` 表示该项未持久化（按内置默认）。"""
+
+    scan_root: str | None = None
+    scan_time: str | None = None
+    min_kb: float | None = None
+    free_alert_gb: float | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "scan_root": self.scan_root,
+            "scan_time": self.scan_time,
+            "min_kb": self.min_kb,
+            "free_alert_gb": self.free_alert_gb,
+        }
+
+
+def _validated_scan_time(raw: object) -> str:
+    if not isinstance(raw, str) or not _SCAN_TIME_PATTERN.fullmatch(raw.strip()):
+        raise ConfigurationError(f"scan_time 必须是 HH:MM 格式（00:00–23:59）：{raw!r}")
+    return raw.strip()
+
+
+def _parse_hhmm(text: str) -> tuple[int, int]:
+    match = _SCAN_TIME_PATTERN.fullmatch(text.strip())
+    if match is None:
+        raise ConfigurationError(f"scan_time 必须是 HH:MM 格式（00:00–23:59）：{text!r}")
+    return int(match.group(1)), int(match.group(2))
+
+
+def _validated_positive_number(raw: object, name: str) -> float:
+    # bool 是 int 的子类，先排除；字符串/None/容器一律拒绝。
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ConfigurationError(f"{name} 必须是数值：{raw!r}")
+    value = float(raw)
+    # nan 与任何值比较均为 False、inf > 0 为真——两者都会绕过单纯的
+    # ``<= 0`` 检查（ISS-061 同款 fail-closed），必须同时要求有限且为正。
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigurationError(f"{name} 必须是正的有限数值：{raw!r}")
+    return value
+
+
+def _validated_scan_root(raw: object) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigurationError(f"scan_root 必须是非空字符串：{raw!r}")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ConfigurationError(f"scan_root 必须是绝对路径：{raw}")
+    resolved = path.resolve()
+    if not resolved.exists():
+        raise ConfigurationError(f"scan_root 路径不存在：{resolved}")
+    if not resolved.is_dir():
+        raise ConfigurationError(f"scan_root 必须是目录：{resolved}")
+    return str(resolved)
+
+
+def parse_user_settings(data: Mapping[str, object]) -> UserSettings:
+    """把（部分）设置字典校验为 UserSettings；未知键或坏值 fail-closed。"""
+    unknown = sorted(set(data) - set(_SETTING_KEYS))
+    if unknown:
+        raise ConfigurationError(f"未知的配置项：{', '.join(unknown)}")
+    values: dict[str, object] = {}
+    validators = {
+        "scan_root": _validated_scan_root,
+        "scan_time": _validated_scan_time,
+        "min_kb": lambda raw: _validated_positive_number(raw, "min_kb"),
+        "free_alert_gb": lambda raw: _validated_positive_number(raw, "free_alert_gb"),
+    }
+    for key, validate in validators.items():
+        raw = data.get(key)
+        values[key] = None if raw is None else validate(raw)
+    return UserSettings(**values)  # type: ignore[arg-type]
+
+
+def merge_user_settings(
+    current: UserSettings, changes: Mapping[str, object]
+) -> UserSettings:
+    """部分更新：只改 ``changes`` 里出现的键，其余保持 ``current``。"""
+    merged = dict(current.as_dict())
+    for key, value in parse_user_settings(changes).as_dict().items():
+        if key in changes:
+            merged[key] = value
+    return UserSettings(**merged)  # type: ignore[arg-type]
+
+
+def load_user_settings(path: Path) -> UserSettings:
+    """读取 settings.json；文件不存在 → 全部默认。
+
+    旧运行根没有该文件时零迁移零报错；文件存在但损坏/含坏值则
+    fail-closed（ConfigurationError）——静默回落默认值会把扫描根换掉并
+    静默形成新数据集，比拒绝启动更糟。
+    """
+    try:
+        raw_text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return UserSettings()
+    except OSError as exc:
+        raise ConfigurationError(f"settings.json 无法读取（{path}）：{exc}") from exc
+    try:
+        data = json.loads(raw_text)
+    except ValueError as exc:
+        raise ConfigurationError(f"settings.json 不是合法 JSON（{path}）：{exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigurationError(f"settings.json 必须是 JSON 对象：{path}")
+    try:
+        return parse_user_settings(data)
+    except ConfigurationError as exc:
+        raise ConfigurationError(f"settings.json 内容无效（{path}）：{exc}") from exc
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """临时文件 + rename 原子写；任一步失败都保留旧文件不动。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def save_user_settings(path: Path, settings: UserSettings) -> None:
+    """原子写入 settings.json（只落已持久化的键）。失败抛 OSError。"""
+    payload = {key: value for key, value in settings.as_dict().items()
+               if value is not None}
+    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    _atomic_write_text(path, text)
+
+
+# 进程内当前生效的持久化设置（_USER_SETTINGS）与是否被 CLI 显式钉住扫描根。
+_USER_SETTINGS = UserSettings()
+_CLI_SCAN_ROOT_PINNED = False
+
+
+def get_user_settings() -> UserSettings:
+    return _USER_SETTINGS
+
+
+def settings_path() -> Path:
+    """settings.json 的规范位置：当前运行根下。"""
+    return _ACTIVE.runtime_dir / SETTINGS_FILENAME
+
+
+def _publish_policy_values(settings: UserSettings) -> None:
+    """把（合并后的）设置发布为模块常量；未持久化项回落内置默认。"""
+    global MIN_DIR_KB, FREE_ALERT_GB, SCAN_HOUR, SCAN_MINUTE
+    MIN_DIR_KB = settings.min_kb if settings.min_kb is not None else _DEFAULT_MIN_KB
+    FREE_ALERT_GB = (
+        settings.free_alert_gb
+        if settings.free_alert_gb is not None
+        else _DEFAULT_FREE_ALERT_GB
+    )
+    SCAN_HOUR, SCAN_MINUTE = _parse_hhmm(settings.scan_time or DEFAULT_SCAN_TIME)
+
+
+def refresh_user_settings(
+    settings: UserSettings | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> UserSettings:
+    """把持久化设置合并进进程内生效值（优先级见模块 docstring）。
+
+    - 扫描根：CLI 显式覆盖 > ``FATHOM_SCAN_ROOT`` > settings.json > 默认；
+    - 计划时间/入库阈值/低空间阈值：settings.json > 默认（无环境变量入口）。
+    """
+    global _ACTIVE, _USER_SETTINGS
+    env = os.environ if environ is None else environ
+    if settings is None:
+        settings = load_user_settings(_ACTIVE.runtime_dir / SETTINGS_FILENAME)
+    _USER_SETTINGS = settings
+    env_scan_root = env.get("FATHOM_SCAN_ROOT", "").strip()
+    if (not _CLI_SCAN_ROOT_PINNED and not env_scan_root
+            and settings.scan_root is not None):
+        _ACTIVE = _ACTIVE.with_overrides(scan_root=settings.scan_root)
+        _publish_compatibility_values(_ACTIVE)
+    _publish_policy_values(settings)
+    return settings
+
+
+def update_user_settings(changes: Mapping[str, object]) -> UserSettings:
+    """校验 + 原子写入 + 刷新进程内生效值（PUT /api/config 的入口）。
+
+    任一步失败：旧文件不动、进程内生效值不变（校验失败抛
+    ConfigurationError，写失败抛 OSError，两者都不产生半更新状态）。
+    """
+    with _SETTINGS_LOCK:
+        merged = merge_user_settings(_USER_SETTINGS, changes)
+        save_user_settings(settings_path(), merged)
+        return refresh_user_settings(merged)
+
+
+def effective_settings_view() -> dict[str, object]:
+    """GET /api/config 数据源：生效值 + 每项来源 + 默认值与只读策略。"""
+    env_scan_root = os.environ.get("FATHOM_SCAN_ROOT", "").strip()
+    settings = _USER_SETTINGS
+    if env_scan_root or _CLI_SCAN_ROOT_PINNED:
+        scan_root_source = "env" if env_scan_root else "cli"
+    elif settings.scan_root is not None:
+        scan_root_source = "settings"
+    else:
+        scan_root_source = "default"
+    sources = {
+        "scan_root": scan_root_source,
+        "scan_time": "settings" if settings.scan_time is not None else "default",
+        "min_kb": "settings" if settings.min_kb is not None else "default",
+        "free_alert_gb": "settings" if settings.free_alert_gb is not None else "default",
+    }
+    return {
+        "scan_root": str(_ACTIVE.scan_root),
+        "scan_time": settings.scan_time or DEFAULT_SCAN_TIME,
+        "min_kb": MIN_DIR_KB,
+        "free_alert_gb": FREE_ALERT_GB,
+        "sources": sources,
+        "defaults": {
+            "scan_root": str(_ACTIVE.home_dir),
+            "scan_time": DEFAULT_SCAN_TIME,
+            "min_kb": _DEFAULT_MIN_KB,
+            "free_alert_gb": _DEFAULT_FREE_ALERT_GB,
+        },
+        "policies": {
+            "keep_daily_days": KEEP_DAILY_DAYS,
+            "keep_weekly_weeks": KEEP_WEEKLY_WEEKS,
+            "du_timeout_s": DU_TIMEOUT_S,
+            "bigfile_default_days": BIGFILE_DEFAULT_DAYS,
+            "bigfile_default_mb": BIGFILE_DEFAULT_MB,
+        },
+        "settings_path": str(settings_path()),
+    }
+
+
+# 启动即合并一次：无 settings.json 的旧运行根全部默认值，不迁移不报错；
+# 有则按上述优先级生效（保存后重启进程仍生效即依赖这一行）。
+refresh_user_settings()

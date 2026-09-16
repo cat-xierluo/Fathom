@@ -348,6 +348,18 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
 
 /* ===== 设置页 ===== */
 
+/* 可修改设置表单（ISS-016A）：标签定宽对齐，输入复用 ctl-input 令牌 */
+.config-form { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 10px; }
+.cfg-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.cfg-row label { width: 150px; color: var(--muted); flex: none; }
+.cfg-row .ctl-input { width: 160px; }
+.cfg-row .ctl-input.cfg-wide { width: min(420px, 100%); }
+.cfg-actions { display: flex; gap: 8px; }
+#config-effective { margin: 8px 0 0; word-break: break-all; }
+#config-feedback { margin: 6px 0 0; }
+#config-feedback.cfg-error { color: var(--danger); }
+#config-feedback.cfg-ok { color: var(--ok); }
+
 .settings-actions p { margin: 6px 0; }
 code {
   background: var(--bg); border: 1px solid var(--border); border-radius: 4px;

@@ -22,7 +22,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 
 | 模块 | 实现 | 已确认局限 |
 |---|---|---|
-| config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口 | 尚无持久化设置 UI；release 模式只定义路径合同，不证明 `.app` 已自包含 |
+| config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口；运行根下 `settings.json` 用户设置持久化（ISS-016A：原子写、校验 fail-closed、优先级 CLI > `FATHOM_*` 环境变量 > settings.json > 默认，覆盖项经 `/api/config` 读写并发布回 `MIN_DIR_KB`/`FREE_ALERT_GB`/`SCAN_HOUR`/`SCAN_MINUTE` 常量） | 计划时间的 launchd plist 写入（含分钟级）与真实服务重载留父卡 ISS-016；release 模式只定义路径合同，不证明 `.app` 已自包含 |
 | db.py | sqlite3、WAL、外键、schema v2；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 支持 v0/v1→v2；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
 | scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 承载采集结果、退出码、耗时、权限/瞬时/其他错误分类计数与样例；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同数据集同日快照 | 无法无歧义映射/解码时拒绝采集；瞬时系统错误（Interrupted system call/Resource temporarily unavailable，按行尾 errno 段精确匹配）单独计数且使采集归 partial、永不 full，与真实致命错误并存仍整体拒绝；快照持久化 min_kb 与 collection_status（full/partial），v3 之前旧行为 NULL；瞬时计数尚未入库 |
 | reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown；按传入 sid 查找同数据集（同根同 `min_kb`）前驱，报头带 a/b 快照 ID 与记录口径说明 | 单条目仍无法区分低于阈值与移除，措辞如实表达为未记录/首次记录；报告状态由协调器单独记录 |
@@ -32,7 +32,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 | api.py | 查询、非 daemon 扫描线程；Host/Origin/写令牌守卫；受监控根约束的 reveal；挂载静态文件 | 实际 Tauri WebView 尚未真机验证 |
 | cli.py | scan/report/bigfiles/status/serve/install/uninstall；scan 可标记 cli/scheduled 来源；report 按同数据集前驱生成（可 --snapshot-id 指定 b），无前驱明确文案并非零退出；`--version`；serve 支持 `--port/--port-range` 让位与零击杀 | 与 API 共用协调合同；install/uninstall 仍是开发版入口 |
 | launchd.py | 拼接 XML，安装扫描/常驻 Web 两个 plist | 路径不做 XML 转义；bootstrap 失败只打印，不能可靠表示安装失败 |
-| frontend/ | 无构建链原生 ES modules：modules/ 下 request（世代号+pageScoped 防倒序覆盖）、format、charts（隐藏 stale/重显 resume）、polling（幂等单实例）、tauri（浏览器降级）、router（hash 路由+单一刷新入口）、status 与五页 enter/leave 模块；ECharts 本地 vendor | 真实 Tauri WebView 桥接与真实 FastAPI StaticFiles 下 module MIME/CSP 实机未验证；正式 UX 原型尚未实装到生产页面 |
+| frontend/ | 无构建链原生 ES modules：modules/ 下 request（世代号+pageScoped 防倒序覆盖、apiPost/apiPut 写令牌）、format、charts（隐藏 stale/重显 resume）、polling（幂等单实例）、tauri（浏览器降级）、router（hash 路由+单一刷新入口）、status 与五页 enter/leave 模块；设置页读 `/api/config`+`/api/status` 渲染真实值并可编辑保存（ISS-016A，校验以服务端为准、失败保持旧值可辨）；ECharts 本地 vendor | 真实 Tauri WebView 桥接与真实 FastAPI StaticFiles 下 module MIME/CSP 实机未验证；正式 UX 原型尚未实装到生产页面 |
 | apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行；打包态 `helper.rs` 负责冻结 helper 的 locate/spawn/握手（陈旧 `helper-instance.json` 经 `/health` 探活 + 只读 pid 判定后跳过，`d53a7af` 起）/让位/幂等回收，端口耗尽经 `helper_status` 以 `state=exhausted`+`recovery` 交握手页渲染并可 `helper_retry`；`bundle.resources` 深键 map 把 helper 落到 `Contents/Resources/helper/`；`scripts/build_helper.sh`/`build_app.sh`/`verify_app_bundle.sh` 产出并校验未签名 .app/.dmg（20 项） | 未签名、未公证、仅 arm64、图标占位（ISS-045）；新账户首启、含空格/中文路径、tray 菜单实机退出、握手页 exhausted 实机渲染未验 |
 | apps/desktop/experiments/iss029/ | PyInstaller onedir 与 helper 生命周期合同原型；只写指定数据根，结果被版本化规则忽略 | 生产 `build_helper.sh` 默认复用其 `.venv-build`（PyInstaller 6.22.3）冻结 helper 并打进 `.app`（`a158889` 起）；x86_64 未冻结（ISS-041） |
 
@@ -81,6 +81,8 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | GET | /api/reports | reports/*.md 文件列表 |
 | GET | /api/reports/{date} | 仅接受完整 `YYYY-MM-DD` 片段，返回对应 Markdown 原文；不存在时 404 |
 | POST | /api/reveal | 需 `X-Fathom-Token`；只接受对象 JSON；规范化并解析路径后校验位于受监控根内、实际存在，再调用 `/usr/bin/open -R`；拒绝利用 `..` 越界、符号链接逃逸和相似前缀根 |
+| GET | /api/config | 当前生效用户设置（ISS-016A）：scan_root/scan_time/min_kb/free_alert_gb 生效值 + 逐项来源（env/settings/default/cli）+ 恢复默认值 + 只读策略（保留/du 时限/大文件默认）+ settings_path；只读无副作用 |
+| PUT | /api/config | 需 `X-Fathom-Token`；部分更新（缺省键不变），校验 scan_time HH:MM、scan_root 存在且为目录、min_kb/free_alert_gb 有限正数（拒绝 nan/inf/0/负/非数值），无效 400 + 中文 detail 且旧值不动；有效则原子写运行根 settings.json（失败 500 且旧文件保留）并在当前进程生效；不注册/不重载 launchd，恒返回 `{"applied": true, "service_reload": "requires_user_action", hint}` |
 
 参数校验失败统一返回 400 + 中文 detail（原 FastAPI 默认 422 已全局收敛，前端与测试无 422 依赖）。所有请求只接受回环 Host；带 Origin 的请求只接受同源或允许的 Tauri loader，非安全方法还必须通过进程内写令牌。应用页面使用严格 CSP；`/docs`、`/redoc` 和 `/openapi.json` 仅在精确路径使用文档所需策略。令牌生命周期和桌面发行身份仍需后续任务收口。
 

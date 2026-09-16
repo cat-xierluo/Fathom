@@ -16,6 +16,12 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# ISS-068：测试用。glob 的匹配语义必须与 tauri-plugin-opener 所解析的
+# 同一 crate 一致（upstream scope.rs 用 glob::Pattern::matches），故直接依赖
+# 它而非自造匹配。区间与 Cargo.lock 既有 0.3.4 收敛，--locked 不受影响。
+[dev-dependencies]
+glob = "0.3"
+
 [lib]
 name = "fathom_desktop"
 crate-type = ["staticlib", "cdylib", "rlib"]

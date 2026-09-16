@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**2026-09-16 09:10 用户指令「继续找可自动化推进的事」**：把 WAITING/BLOCKED 卡中的代码部分拆为可自动派发的切片卡（父卡保留实机/GUI 验收作为人工门）——ISS-003A（#82）、ISS-064（#85）、ISS-010A（#87）、ISS-063（#88）已 DONE；**用户 2026-09-16 21:00 指令「派几个 MiniMax worker」**：GLM lane 降至 4% 后 implementer 与 reviewer 全部改走 minimax-M3，并行上限 3（遵守 ≤3 活跃 / ≤2 待验收）。ISS-065（#90）、ISS-016A（#92，cron v4 自主完成：GLM 实现 + MiniMax reviewer + PM 复跑 488/65/39）均 DONE。2026-09-17 00:15 手动 PM 按用户「继续推进」登记两张新卡并行派发：**ISS-066 已 DONE**（#95，门禁 488→524，生产副本 v3→v5 实测）；**ISS-002A 已 PAUSED**（两个修复 episode 用尽，73/76，卡片内含三项失败的根因诊断与修复建议，分支 `iss-002a-coverage-deeplink-r2` 保留）。**当前 READY 为空**；下一波默认先派 ISS-002A 修复（诊断已就绪，node 由 PM 代跑），其后 ISS-009 切片 2（人工门）（设置持久化代码切片；其验收含 `verify_frontend_refresh.cjs`/浏览器检查等 node 命令——MiniMax lane 曾出现 node 命令被拒（runbook 24），派发时可让 worker 只自验 pytest，node/浏览器部分由 PM 代跑并同步计数；GLM lane 00:14 后重置亦可直接派 GLM）。其后为 ISS-009 切片 2（人工门）。**09-17 12:00 后须只读观察生产**：期望 scan_run 4 `completed`、`snapshots` 新增 09-16/17 行且库升 v4 并生成 backup-v3；若 `interrupted`（4h 墙钟）或 `failed`，按 message 分流新卡。新 PM 的默认下一项即上述顺序中首个 READY；之后才是 **ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**2026-09-16 09:10 用户指令「继续找可自动化推进的事」**：把 WAITING/BLOCKED 卡中的代码部分拆为可自动派发的切片卡（父卡保留实机/GUI 验收作为人工门）——ISS-003A（#82）、ISS-064（#85）、ISS-010A（#87）、ISS-063（#88）已 DONE；**用户 2026-09-16 21:00 指令「派几个 MiniMax worker」**：GLM lane 降至 4% 后 implementer 与 reviewer 全部改走 minimax-M3，并行上限 3（遵守 ≤3 活跃 / ≤2 待验收）。ISS-065（#90）、ISS-016A（#92，cron v4 自主完成：GLM 实现 + MiniMax reviewer + PM 复跑 488/65/39）均 DONE。2026-09-17 00:15 手动 PM 按用户「继续推进」登记两张新卡并行派发：**ISS-066 已 DONE**（#95，门禁 488→524，生产副本 v3→v5 实测）；**ISS-002A 已 DONE**（第三 episode 达成 76/76，#97 squash 合并 main `7a86965`；门禁 pytest 524/前端 76/浏览器 39/cargo 23）。ISS-002A 独立 reviewer 另发现**两条跨卡接缝**（非本卡引入，main 上同样存在）已登记：**ISS-067**（`/api/snapshots` 缺 `vanished_count`/`exclude_names`，致三类缺口在生产只兑现一类，P1）、**ISS-068**（Tauri opener 插件未注册 + 能力未声明，致深链在实机不可用，P1）。**当前 READY = ISS-067、ISS-068**；下一波默认先派 ISS-067（P1，端点契约 + 夹具拆分使接缝可检出），其后 ISS-068（P1，Tauri 注册，需 cargo 门禁）。二者完成后 ISS-009 切片 2（人工门，设置持久化代码切片；其验收含 `verify_frontend_refresh.cjs`/浏览器检查等 node 命令——MiniMax lane 曾出现 node 命令被拒（runbook 24），派发时可让 worker 只自验 pytest，node/浏览器部分由 PM 代跑并同步计数；GLM lane 00:14 后重置亦可直接派 GLM）。**09-17 12:00 后须只读观察生产**：期望 scan_run 4 `completed`、`snapshots` 新增 09-16/17 行且库升 v4 并生成 backup-v3；若 `interrupted`（4h 墙钟）或 `failed`，按 message 分流新卡。新 PM 的默认下一项即上述顺序中首个 READY；之后才是 **ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -113,7 +113,9 @@
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | DONE | ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | DONE | ISS-062 |
 | ISS-066 | 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5） | P1 | M1 | DONE | ISS-016A、ISS-065 |
-| ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | PAUSED | ISS-028、ISS-065 |
+| ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | DONE | ISS-028、ISS-065 |
+| ISS-067 | `/api/snapshots` 补齐 vanished_count 与 exclude_names（ISS-002A 接缝） | P1 | M1 | READY | ISS-066、ISS-002A |
+| ISS-068 | Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝） | P1 | M1 | READY | ISS-002A |
 | ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
 | ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | DONE | ISS-064 |
 
@@ -146,6 +148,34 @@
   - [x] `verify_app_bundle.sh` 既有 12 段仍全 pass（record 名与断言一字未改，汇总 12→20）；cargo check exit 0（仅既有 2 个 dead_code warning）
 - **证据/接续**（2026-09-15 DONE）：worker ctx_8d7cfc67c0d0（iss-059-handshake-liveness，base `f87bc76`）交付 3 commits：`a378f57`（A：路径 1 命中身份匹配 instance 后 `probe_health`；不健康且 pid 不在运行——`ps -p` 只读判定、不发任何信号含信号 0——判陈旧删文件走 spawn，pid 仍在则保留等待；决策拆为可注入纯函数 `instance_disposition`；**附带修复**路径 2 命中本壳刚拉起的子进程被误标 `reused` 致退出漏回收）、`6223da1`（B：`PortsExhausted{candidates}` 记入 `ExhaustedInfo`，`helper_status` 返回 `state=exhausted`+`recovery{ports[{port,occupied_pid}],hint}`，`helper_retry` 仍耗尽保持 exhausted、普通 Err 仍 error；index.html 分派由从不发出的 `"ports-exhausted"` 改匹配 `"exhausted"` 并渲染端口占用表）、`24c08a2`（C：verify 新增 h×3 + i×5 段）。**三方独立验证一致**：worker / PM（在 worker worktree）/ reviewer（自建 worktree）各自 cargo check exit 0、`cargo test` 13/13（5 旧 + 8 新）、build_helper SHA256 `95756a0e…`、build_app ok、verify **20/20 PASS**。独立 reviewer ctx_bd79c7c0b366（review-iss059）7 条要点全 CONFIRMED **ACCEPT**、`review-acceptance-gate` ok；`worker-value-postflight` ok；`pr-audit` adopt。[PR #71](https://github.com/cat-xierluo/fathom/pull/71) squash 合并为 main `d53a7af`；合并后 main：pytest 338、浏览器 39、版本一致性 ok、cargo test 13/13。云端 CI 停用（DEC-021）。reviewer 非阻断观察转 ISS-060（`handshake_rejects_wrong_identity` 断言弱、`decode_exit_event` 扫整份 helper.log）。证据：`.git/orchestration/wave10-evidence/{iss059-spec,iss059-postflight,pr71-audit,REVIEW-ISS-059}.json`、`archived-sessions/iss-059-handshake-liveness/`。
 
+### ISS-067 · `/api/snapshots` 补齐 vanished_count 与 exclude_names（ISS-002A 接缝修复）
+
+- **状态**：READY（P1/M1，2026-09-17）；来源：ISS-002A 独立 reviewer 阻断观察（PR #97，2026-09-17），经 PM 独立复核确认为真实接缝。
+- **问题**：`fathom/api.py` 的 `/api/snapshots` SELECT 只取 `s.id, s.created_at, s.root, s.total_kb, s.dir_count, s.denied_count, s.min_kb, s.collection_status, v.total_bytes, v.free_bytes`——**不含 `vanished_count`，也不含生效的 `exclude_names`**（ISS-066 已在 `/api/status` 暴露后者，但 overview/settings 走的是 `/api/snapshots`）。
+- **影响**：ISS-002A 三类覆盖说明中，**「扫描期间消失」与「排除掩码」两项在生产中恒为 0/空**——前端 `snapshot.vanished_count ?? 0` 与 `snapshot.exclude_names ?? []` 的防御取值把缺失字段静默降级，用户看不到这两类缺口的任何提示。卡片头号验收目标（三类缺口可解释）实际只兑现了一类。**测试未捕获**：`verify_frontend_refresh.cjs` 的夹具同时服务 `/api/status` 与 `/api/snapshots`，两侧返回同形对象，掩盖了端点接缝差异。
+- **范围**：`fathom/api.py`（SELECT 补列；若 `exclude_names` 存于配置层而非快照行，需按 ISS-066 的数据集身份口径取生效值并标注来源）、`tests/`（端点契约测试：合成库写入 vanished_count 后断言 `/api/snapshots` 如实返回）、`scripts/verify_frontend_refresh.cjs`（夹具拆分：`/api/snapshots` 与 `/api/status` 不再共用同形对象，使接缝缺陷可被检出）。
+- **实施边界**：不改 (root, min_kb) 数据集身份口径（ISS-021 约定）；不改 `/api/status` 既有字段；exclude_names 的语义与来源标注须与 ISS-066 一致（未配置时为空，不得伪造）；测试用合成库，不读写生产库。
+- **验收**：
+  - [ ] `/api/snapshots` 返回 `vanished_count`；排除掩码生效时返回 `exclude_names`（未配置为空）
+  - [ ] 新增端点契约测试，**先在旧 SELECT 上红**（vanished_count 缺失）→ 后绿
+  - [ ] `verify_frontend_refresh.cjs` 夹具拆分后，002A 三项覆盖检查在「vanished/excluded 非 0」夹具下仍全绿；若拆分后 002A 检查转红，须作为真实缺陷修复而非改断言
+  - [ ] 全量计数同步四处
+- **证据/接续**：待实现。
+
+### ISS-068 · Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝修复）
+
+- **状态**：READY（P1/M1，2026-09-17）；来源：ISS-002A 独立 reviewer 阻断观察（PR #97，2026-09-17），经 PM 独立复核确认为真实接缝。
+- **问题**：前端深链调用 `plugin:opener|open_url`，但 `apps/desktop/src-tauri/src/lib.rs` 的 `tauri::Builder` **从未 `.plugin(tauri_plugin_opener::init())`**（全文件零 `.plugin(` 调用），且 `capabilities/default.json` 只有 `core:default`、未声明 opener 权限。`Cargo.toml` 第 15 行虽已依赖 `tauri-plugin-opener = "2"`，但依赖存在 ≠ 已注册。
+- **影响**：真机（非 mock）点击「打开系统设置」将因插件未注册 / 权限未声明而 **invoke 失败**，ISS-002A 的深链功能在实际打包应用中不可用。`verify_frontend_refresh.cjs` 走 mock Tauri 桥（断言的是前端发出的 cmd 与 args），**结构上无法覆盖运行时插件注册**，故 76/76 全绿掩盖了该缺陷。
+- **范围**：`apps/desktop/src-tauri/src/lib.rs`（注册 `tauri_plugin_opener::init()`）、`apps/desktop/src-tauri/capabilities/default.json`（声明最小必要 opener 权限，仅 `open_url` 且限定 `x-apple.systempreferences:` 前缀）、`scripts/verify_app_bundle.sh` 或等价壳层检查（新增可机器验证的注册断言）。
+- **实施边界**：只放开 `open_url` 最小权限，不得引入通用 shell/任意 URL 打开能力（安全）；深链 URL 须限定 `x-apple.systempreferences:` 前缀；不改前端调用形状（前端已定 `plugin:opener|open_url` + 目标 URL）；无 emoji。
+- **验收**：
+  - [ ] `lib.rs` 注册 opener 插件，`capabilities/default.json` 含最小 opener 权限（限定 URL 前缀）
+  - [ ] 新增壳层检查断言「插件已注册 + 权限已声明」；**先在未注册状态红**→后绿
+  - [ ] `cargo test` 23 不回退、`cargo locked offline build` ok、`verify_app_bundle.sh` 既有段不回退
+  - [ ] 若可行，附真机或最小集成证据证明 invoke 成功（不可行则明确标注 `NOT_VERIFIED` 并说明理由，不得以 mock 结果冒充）
+- **证据/接续**：待实现。
+
 ### ISS-066 · 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5）
 
 - **状态**：DONE（P1/M1，2026-09-17 01:20；PR #95 → main `42eaf76`，pytest 488→524，snapshots v4→v5）；来源：ISS-064/065 生产事故的关联观察（微信/EINTR、WPS/挂起、照片图库/消失目录都发生在第三方容器目录）+ ISS-016A 已落地 settings.json。**设计取舍（用户可否决）**：排除集纳入数据集身份（root, min_kb, exclude_names）——与 ISS-021「同根同阈值口径才可比」一致；默认空列表 = 与现状完全相同的身份与行为（v5 迁移旧行默认空串）。
@@ -162,7 +192,7 @@
 
 ### ISS-002A · 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端）
 
-- **状态**：PAUSED（P2/M1，2026-09-17 01:25：两个修复 episode 用尽，前端检查 73/76，分支保留待下个修复波）；来源：ISS-002（WAITING）拆分——实机三种授权状态留父卡，代码部分在此。
+- **状态**：DONE（P2/M1，2026-09-17；第三 episode 达成 76/76，PR #97 squash 合并 main `7a86965`）；来源：ISS-002（WAITING）拆分——实机三种授权状态留父卡，代码部分在此。**遗留两条跨卡接缝已转 ISS-067/068**（见下），不属本卡范围。
 - **目标**：用户在界面能看懂「权限受限 N 处 / 扫描期间消失 N 处 / 完整覆盖」各自意味着什么、不意味着什么（数量≠影响大小；未记录不构成删除证据），并能一键打开系统设置的「完全磁盘访问」页；重扫按钮给出可见反馈。
 - **范围**：`frontend/modules/pages/overview.js`、`frontend/modules/pages/settings.js`、`frontend/icons.js`（新图标只加在此）、`frontend/style.css`、`scripts/verify_frontend_refresh.cjs`（新增检查项）。
 - **实施边界**：文案依据 AGENTS 不变量与 ISS-028/065 已有语义：`collection_status` full/partial + `denied_count` + `vanished_count`（**字段可能尚不存在，取值用 `?? 0` 防御**，ISS-066 落地后自动点亮）；深链用 `x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles`，经 Tauri opener（前端已有 tauri 模块，浏览器降级为显示打开路径说明文字，不伪造可点）；「重扫」走既有 `/api/scan` 入口并复用状态反馈；三种授权状态（未授权/已授权/已撤回）的说明文案从 denied/collection 状态推导并明确"本应用不代改系统权限"；无 emoji；不改 API 与后端。
@@ -171,7 +201,7 @@
   - [ ] 深链按钮在 mock Tauri 桥下被检查脚本驱动并验证；图标只经 icons.js
   - [ ] 前端检查计数同步（PM 运行 node 命令并同步）；浏览器 39 项不回退
   - [ ] 文案不出现"数量=影响"或"未记录=已删除"表述
-- **证据/接续**（PAUSED 诊断，2026-09-17 01:25，供下个修复波直接使用）：实现 head `da8302f`（分支 `iss-002a-coverage-deeplink-r2`，含 r1 两 commit + r2 追加式修复 + PM 检查期望修正；已 push）。PM 代跑 `verify_frontend_refresh.cjs`：**73 passed / 3 failed**。失败与根因：(1) `coverage-scan-note-shows-all-three-counts` 与 (2) `coverage-full-shows-only-complete` 共同根因——**`#overview-coverage-note` 区块在 dual 路径未被渲染**（overview.js 的 `_ensureCoverageNote` 只在部分路径被调用；dual full 时 note 为空、partial-all 时三类明细出现在 `[data-test='coverage-classes']` 但 note 容器为空，两检查都断言 note 内容）→ 属前端实现缺陷（需把 `_renderCoverageNoteBlock` 接到 dual 路径的 loadScanNote/quality 渲染链）；(3) `permissions-tauri-mock-deeplink-invokes-opener`——检查取 `invokes[0]`，但页面启动后首个 invoke 是 `update_tray_status` → 检查缺陷（应 filter 到 `cmd` 含 opener 的项）。修复 episode 记录：r1（ctx_cbbd09e260fa，把既有 scan-note 文案替换掉→PM 代跑发现）→ r2（ctx_1f57cdc4a18b，追加式修复，仍 3 failed）→ PM 例外修正检查 #5 期望（`da8302f`，测试专属）。**node 检查只能 PM 跑**（MiniMax 守卫拒 node），修复波建议：worker 修 (1)(2) 前端缺陷 + (3) 检查，PM 代跑验证。实机 TCC 三态、真实系统设置跳转留父卡 ISS-002 人工验收。
+- **证据/接续**（DONE，2026-09-17，第三 episode）：base `da8302f`（r1 两 commit + r2 追加式 + PM 检查期望修正）。**PM 先前诊断有一处误判须纠正**：r1/r2 失败的根因**不是**「note 区块在 dual 路径未被渲染」——`loadScanNote()` 已在 194 行调用 `_renderCoverageNoteBlock`，接线本来就通；真实根因是 (1) `_renderCoverageClasses` 缺口 chip 输出「权限受限 6 处」（标签前置），而验收契约要求「6 处权限受限」（计数前置）；(2) `_renderCoverageNoteBlock` 在 `cov.state === "full"` 时把容器置空，而检查（PM 于 `da8302f` 修正过的期望）要求 full 时显式出现「完整覆盖」chip；(3) 深链检查取 `invokes[0]`，实际首个 invoke 是 `update_tray_status`。worker ctx_f3cf9732e7 交付 `36b61ea`（rebase 后 `a78fa2a`）：chip 改计数前置、full 渲染不带 `data-test` 的「完整覆盖」chip、深链检查改 filter + 等待 opener 调用。**PM 独立复跑**：pytest 524/524、`verify_frontend_refresh.cjs` **76/76**、浏览器 **39/39**、cargo test **23/23**、`cargo locked offline build` ok。分支已 rebase 到 `5c5fac4`（原分支落后 36 项 ISS-066 测试）。独立 reviewer ctx_35085bda（未参与实现）**REJECT**：2 blocking，均为**跨卡接缝、非本卡引入**（PM 独立复核确认：`/api/snapshots` 确不含 `vanished_count`/`exclude_names`；`lib.rs` 确零 `.plugin(` 注册、capabilities 仅 `core:default`；且两者在 main `5c5fac4` 同样存在）→ 登记为 **ISS-067**（/api/snapshots 补列）与 **ISS-068**（Tauri opener 注册与权限）。本卡前端范围已达成且边界合规（diff 仅 frontend/ + scripts/，零后端/Tauri 改动），[PR #97](https://github.com/cat-xierluo/fathom/pull/97) squash 合并 main `7a86965`。**教训**：`verify_frontend_refresh.cjs` 夹具同时服务 `/api/status` 与 `/api/snapshots`，同形对象掩盖了端点接缝——故 76/76 全绿**不证明**三类缺口在生产可见（vanished/excluded 恒为 0）。实机 TCC 三态、真实系统设置跳转仍留父卡 ISS-002 人工验收。
 
 ### ISS-065 · 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照）
 

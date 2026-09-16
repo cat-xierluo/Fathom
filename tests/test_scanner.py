@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -381,3 +386,217 @@ class TestPrune:
             assert all(d >= (today - dt.timedelta(days=40)).isoformat() for d in remaining)
         finally:
             conn.close()
+
+
+# 睡眠模拟钟（ISS-064）：只在 scanner 命名空间内替换 time 绑定，
+# subprocess 轮询内部仍用真实 monotonic，communicate 会照常按时超时
+# 返回，让旧实现的反例等待保持有界而不是挂起。
+_REAL_TIME = time
+
+
+class _SleepSimClock:
+    """macOS 睡眠模拟：monotonic 冻结（mach_absolute_time 睡眠不前进），
+    墙钟照常前进。"""
+
+    @staticmethod
+    def monotonic() -> float:
+        return 12345.0
+
+    @staticmethod
+    def time() -> float:
+        return _REAL_TIME.time()
+
+
+class TestISS064WallClockDeadline:
+    """ISS-064：du 安全时限须以墙钟计，超时报文留阻塞路径线索。
+
+    生产反例（PM 只读证据 2026-09-16）：du 阻塞在 WPS 容器内 open() 上
+    无输出、机器下午反复 maintenance sleep；旧实现 deadline 只算
+    time.monotonic()（睡眠期间不前进），把"14400 秒安全时限"变成
+    "14400 清醒秒"，扫描挂起 7h41m 仍 running 并持锁，次日定时扫描被
+    ScanBusyError 拒绝。
+    """
+
+    @staticmethod
+    def _fake_du_popen(monkeypatch, child_pids: list[int], child_code: str) -> None:
+        """把 run_du 启动的 du 换成给定 python 子进程（独立进程组）。"""
+        real_popen = subprocess.Popen
+
+        def fake_popen(*args, **kwargs):
+            proc = real_popen(
+                [sys.executable, "-c", child_code],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True, pass_fds=kwargs.get("pass_fds", ()),
+            )
+            child_pids.append(proc.pid)
+            return proc
+
+        monkeypatch.setattr(scanner.subprocess, "Popen", fake_popen)
+
+    def test_wall_clock_deadline_fires_when_monotonic_frozen(
+        self, tmp_path, monkeypatch
+    ):
+        """睡眠模拟（墙钟前进、monotonic 冻结）下超时必须触发（红→绿 pin）。
+
+        旧实现 deadline 只算 monotonic：冻结后 remaining 永大于 0，永不
+        超时。用 3 秒兜底取消让旧实现以"扫描已取消"失败而不是无限挂起；
+        修复后墙钟 0.5 秒即触发"du 超过 0.5 秒安全时限"。
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+        fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        cancel = threading.Event()
+        cancel_net = threading.Timer(3.0, cancel.set)  # 旧实现的兜底退出
+        cancel_net.daemon = True
+        cancel_net.start()
+        monkeypatch.setattr(scanner, "time", _SleepSimClock)
+        child_pids: list[int] = []
+        self._fake_du_popen(monkeypatch, child_pids, "import signal; signal.pause()")
+        # 本用例只钉时钟语义，lsof 线索路径返回空保持报文确定。
+        monkeypatch.setattr(scanner, "_lsof_du_cwd", lambda pid: "", raising=False)
+        started = _REAL_TIME.monotonic()
+        try:
+            with scanner.du_process_context(
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.5
+            ):
+                with pytest.raises(
+                    scanner.ScanInterruptedError, match="du 超过 0.5 秒安全时限"
+                ):
+                    scanner.run_du(root)
+        finally:
+            cancel_net.cancel()
+            os.close(fd)
+        # 墙钟 0.5s 触发 + 回收，全程有界；远早于 3s 兜底取消。
+        assert _REAL_TIME.monotonic() - started < 2.5
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pids[0], 0)
+
+    def test_timeout_message_carries_last_output_path(self, tmp_path, monkeypatch):
+        """du 已有输出后阻塞：超时报文须带最后一条输出记录的路径线索。"""
+        root = tmp_path / "root"
+        root.mkdir()
+        fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        cancel = threading.Event()
+        child_pids: list[int] = []
+        child_code = (
+            "import signal, sys\n"
+            "sys.stdout.write('4096\\t/synthetic/du-last-output-dir\\n')\n"
+            "sys.stdout.flush()\n"
+            "signal.pause()\n"
+        )
+        self._fake_du_popen(monkeypatch, child_pids, child_code)
+        lsof_calls: list[int] = []
+        monkeypatch.setattr(
+            scanner, "_lsof_du_cwd",
+            lambda pid: lsof_calls.append(pid) or "", raising=False,
+        )
+        try:
+            with scanner.du_process_context(
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.3
+            ):
+                with pytest.raises(scanner.ScanInterruptedError) as excinfo:
+                    scanner.run_du(root)
+        finally:
+            os.close(fd)
+        message = str(excinfo.value)
+        assert "du 超过 0.3 秒安全时限" in message
+        assert "du 最后输出路径：/synthetic/du-last-output-dir" in message
+        # 已有输出线索时不得再花 lsof 的 2 秒预算。
+        assert lsof_calls == []
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pids[0], 0)
+
+    def test_timeout_message_falls_back_to_lsof_cwd(self, tmp_path, monkeypatch):
+        """du 无输出阻塞：报文退回 lsof 只读查询的当前目录线索。"""
+        root = tmp_path / "root"
+        root.mkdir()
+        fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        cancel = threading.Event()
+        child_pids: list[int] = []
+        self._fake_du_popen(monkeypatch, child_pids, "import signal; signal.pause()")
+        fake_lsof = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(
+                b"COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
+                b"du 9999 someone cwd DIR 1,7 4 2 /synthetic/wps/container\n"
+            ),
+        )
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake_lsof)
+        try:
+            with scanner.du_process_context(
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.3
+            ):
+                with pytest.raises(scanner.ScanInterruptedError) as excinfo:
+                    scanner.run_du(root)
+        finally:
+            os.close(fd)
+        message = str(excinfo.value)
+        assert "du 超过 0.3 秒安全时限" in message
+        assert "du 当前目录（lsof）：/synthetic/wps/container" in message
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pids[0], 0)
+
+    def test_timeout_message_omits_clue_when_lsof_fails(self, tmp_path, monkeypatch):
+        """线索不可得（lsof 超时/失败）时整体省略，报文保持基线文案。"""
+        root = tmp_path / "root"
+        root.mkdir()
+        fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        cancel = threading.Event()
+        child_pids: list[int] = []
+        self._fake_du_popen(monkeypatch, child_pids, "import signal; signal.pause()")
+
+        def lsof_times_out(*args, **kwargs):
+            raise subprocess.TimeoutExpired(["/usr/sbin/lsof"], 2)
+
+        monkeypatch.setattr(scanner.subprocess, "run", lsof_times_out)
+        try:
+            with scanner.du_process_context(
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.3
+            ):
+                with pytest.raises(scanner.ScanInterruptedError) as excinfo:
+                    scanner.run_du(root)
+        finally:
+            os.close(fd)
+        assert str(excinfo.value) == "du 超过 0.3 秒安全时限"
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pids[0], 0)
+
+    def test_timeout_reaps_sigterm_ignoring_du_via_sigkill(
+        self, tmp_path, monkeypatch
+    ):
+        """du 阻塞在不可中断 syscall（忽略 SIGTERM）时仍须被回收：
+        SIGTERM 3 秒宽限后 SIGKILL 生效，全程有界、无孤儿。
+
+        生产反例形态：du 卡在 open$NOCANCEL 上不退出也不响应 TERM——
+        回收链必须是 TERM → wait(3s) → KILL → wait，不得挂起等待。
+        """
+        root = tmp_path / "root"
+        root.mkdir()
+        fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        cancel = threading.Event()
+        child_pids: list[int] = []
+        self._fake_du_popen(
+            monkeypatch, child_pids,
+            "import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "signal.pause()",
+        )
+        # 本用例只钉回收链，线索路径返回空避免真实 lsof 干扰计时。
+        monkeypatch.setattr(scanner, "_lsof_du_cwd", lambda pid: "")
+        started = _REAL_TIME.monotonic()
+        try:
+            with scanner.du_process_context(
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.3
+            ):
+                with pytest.raises(
+                    scanner.ScanInterruptedError, match="du 超过 0.3 秒安全时限"
+                ):
+                    scanner.run_du(root)
+        finally:
+            os.close(fd)
+        elapsed = _REAL_TIME.monotonic() - started
+        # TERM 被忽略 → 3 秒宽限 → KILL；下界证明确实走了宽限路径，
+        # 上界证明回收有界完成（没有无限等待 du 退出）。
+        assert 3.0 <= elapsed < 6.0
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pids[0], 0)  # 无孤儿：进程组已彻底回收

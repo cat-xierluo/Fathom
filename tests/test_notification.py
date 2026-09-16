@@ -295,6 +295,8 @@ class TestISS003ABodyCap:
 class TestISS003AWiringStates:
     """ISS-003A：reports 调用点把快照采集状态传进通知（partials 不被吞掉）。"""
 
+    _insert_snapshot = staticmethod(_insert_snapshot)
+
     def test_write_daily_report_passes_partial_state(self, osascript):
         conn = db.connect()
         try:

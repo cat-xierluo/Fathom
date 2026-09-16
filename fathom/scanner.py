@@ -30,6 +30,18 @@
   虽指名出错路径，却无法证明任何子树（含其祖先）数据完整，故瞬时计数
   非零的采集只归 partial、永不 full；瞬时计数经 DuResult 返回值表达，
   不落快照 schema（持久化留后续卡，见任务卡 ISS-047 实施边界）。
+- 扫描期间消失的目录（ISS-065，生产实证 2026-09-16 scan_run 3）：
+  du 列出该目录时它存在（云同步缓存/临时/系统清理），但 8 小时后
+  校验时已不在——这条记录既不是路径歧义、也不是非目录，也不是根外，
+  本质上是测量期与校验期之间的竞态。把它与解析歧义混为一类会让约
+  93.7 万行有效事实被 30 行干掉、整次采集被判 failed、当日快照丢弃。
+  修法：在 _validate_du_paths 里把「根内 + os.path.isdir=False +
+  os.path.exists=False」单独计为 vanished_count（DuResult 字段，进
+  snapshots.vanished_count），不进 path_error_count；du 给出的 KB
+  数是测量期事实，按现状保留进 entries；vanished 与 denied/transient
+  并列为部分覆盖的一种，collection_status=partial，与 denied/transient
+  一起如实呈现给日报与通知（不冒充完整覆盖）。根外路径、含换行/无法
+  解析的行、仍存在但非目录（文件）的路径维持既有 fail-closed 语义。
 - 采集质量的持久化（ISS-021）：schema v3 起，快照与 min_kb（入库阈值，
   数据集口径的一部分）和 collection_status（full/partial，来自
   classify_collection）一并落库；v3 之前的旧行两列为 NULL，不补造未知
@@ -147,6 +159,11 @@ class DuResult:
     transient_error_sample 首条瞬时错误行，仅诊断用
     path_error_count   stdout 中无法无歧义解析的路径记录数；非零时采集无效
     path_error_sample  首条路径解析错误，仅诊断用
+    vanished_count     根内但校验时已不在的目录数（ISS-065：扫描期间被
+                       系统清理的缓存/临时目录）；不进 path_error_count，
+                       与 denied/transient 并列为部分覆盖的一种；du 给
+                       出的 KB 数是测量期事实，按现状保留进 entries
+    vanished_sample    首条消失的目录路径，仅诊断用
     """
 
     sizes: dict[str, int]
@@ -160,6 +177,8 @@ class DuResult:
     transient_error_sample: str = ""
     path_error_count: int = 0
     path_error_sample: str = ""
+    vanished_count: int = 0
+    vanished_sample: str = ""
 
     def stderr_hint(self) -> str:
         return self.stderr_tail[-1] if self.stderr_tail else ""
@@ -215,12 +234,24 @@ def _parse_du_stdout(stdout: bytes | str) -> tuple[dict[str, int], int, str]:
     return sizes, error_count, error_sample
 
 
-def _validate_du_paths(sizes: dict[str, int], root: Path) -> tuple[int, str]:
-    """拒绝不在扫描根内或已无法确认为目录的解析结果。
+def _validate_du_paths(
+    sizes: dict[str, int], root: Path
+) -> tuple[int, int, str, str]:
+    """对解析结果做三类分流：fail-closed / 接受 / vanished。
 
     这层校验使含换行的恶意/巧合路径即使后半段长得像另一条合法 du 记录，
-    也不能静默注入根外路径或文件路径。扫描期间恰好消失的目录同样保守视为
-    本次采集质量不足；Fathom 不把竞态后的不可复核路径写入事实快照。
+    也不能静默注入根外路径或文件路径。扫描期间恰好消失的目录
+    （du 列到它时存在、校验时已被系统清理；生产实证 2026-09-16 scan_run 3
+    的云同步缓存）不再与解析歧义混为一类——它们是测量期与校验期之间的
+    竞态事实，du 给出的 KB 数属于测量期事实，按现状保留进快照元数据
+    （entries 与 snapshots.vanished_count）；仅在覆盖语义上如实标注
+    部分覆盖（partial），不冒充完整覆盖也不夸大。
+
+    返回 (path_error_count, vanished_count, path_error_sample, vanished_sample)：
+    - path_error_count/path_error_sample  须整体拒绝的根外/非目录路径，
+                                          任何一条都使采集无效（fail-closed）；
+    - vanished_count/vanished_sample     根内 + 校验时不在的目录数与首条样本，
+                                          不使采集无效，仅参与 partial 标注。
     """
     root_str = str(root)
     root_prefix = root_str.rstrip("/")
@@ -228,6 +259,8 @@ def _validate_du_paths(sizes: dict[str, int], root: Path) -> tuple[int, str]:
         root_prefix = "/"
     error_count = 0
     error_sample = ""
+    vanished_count = 0
+    vanished_sample = ""
     for path in sizes:
         within_root = (
             path.startswith("/") if root_prefix == "/"
@@ -235,14 +268,21 @@ def _validate_du_paths(sizes: dict[str, int], root: Path) -> tuple[int, str]:
         )
         if not within_root:
             reason = "解析路径越出扫描根"
-        elif not os.path.isdir(path):
+        elif os.path.isdir(path):
+            continue
+        elif os.path.exists(path):
             reason = "解析路径无法确认为目录"
         else:
+            # 根内 + du 当时存在 + 校验时已被系统清理：
+            # vanished 是测量期与校验期之间的竞态事实，du 的 KB 数保留。
+            vanished_count += 1
+            if not vanished_sample:
+                vanished_sample = path
             continue
         error_count += 1
         if not error_sample:
             error_sample = f"{reason}: {path!r}"
-    return error_count, error_sample
+    return error_count, vanished_count, error_sample, vanished_sample
 
 
 def _last_du_output_path(partial_output: bytes) -> str:
@@ -385,7 +425,10 @@ def run_du(root: Path) -> DuResult:
         returncode = proc.returncode
     elapsed = time.monotonic() - started
     sizes, path_error_count, path_error_sample = _parse_du_stdout(stdout)
-    invalid_path_count, invalid_path_sample = _validate_du_paths(sizes, root)
+    (
+        invalid_path_count, vanished_count,
+        invalid_path_sample, vanished_sample,
+    ) = _validate_du_paths(sizes, root)
     if invalid_path_count:
         path_error_count += invalid_path_count
         if not path_error_sample:
@@ -422,6 +465,8 @@ def run_du(root: Path) -> DuResult:
         transient_error_sample=transient_sample,
         path_error_count=path_error_count,
         path_error_sample=path_error_sample,
+        vanished_count=vanished_count,
+        vanished_sample=vanished_sample,
     )
 
 
@@ -448,6 +493,13 @@ def classify_collection(result: DuResult, root_str: str) -> str:
     partial、永不 full，不声称任何子树数据完整；瞬时缺口数量经
     DuResult.transient_error_count 返回值表达，不与权限缺口
     （denied_count）混同，也不落快照 schema。
+
+    扫描期间消失（ISS-065）：du 列到时存在、校验时不在的目录（云同步
+    缓存/临时被系统清理）单独计 vanished_count，与 denied/transient 并列
+    为部分覆盖的一种并归 partial。vanished 行的 KB 数是测量期事实，
+    按现状保留进 entries 与 snapshots.vanished_count——既不删也不改
+    du 的原始数值；vanished_count 经 DuResult 返回值表达，再由
+    create_snapshot 透传到 snapshots 表。
     """
     if root_str not in result.sizes:
         hint = f"；du stderr：{result.stderr_hint()}" if result.stderr_hint() else ""
@@ -501,6 +553,7 @@ def classify_collection(result: DuResult, root_str: str) -> str:
         result.exit_code != 0
         or result.denied_count > 0
         or result.transient_error_count > 0
+        or result.vanished_count > 0
     ):
         return "partial"
     return "full"
@@ -549,6 +602,11 @@ def create_snapshot(
     当日旧快照原样保留；可证明仅权限或瞬时受限且根记录有效时按部分
     覆盖落库（denied_count 记录权限缺口数量；瞬时缺口不落 schema，经
     DuResult 返回值表达，ISS-047）。du_seconds 记录本次采集实测耗时。
+
+    扫描期间消失的目录（ISS-065）记 vanished_count：du 列出时存在、
+    校验时不在的目录数；不进 path_error_count，du 给出的 KB 数保留进
+    entries（测量期事实），collection_status=partial，与 denied/transient
+    并列为部分覆盖的一种并如实呈现给日报与通知。
     """
     root = Path(root) if root else config.DEFAULT_ROOT
     min_kb = config.MIN_DIR_KB if min_kb is None else min_kb
@@ -565,10 +623,10 @@ def create_snapshot(
         _drop_same_day(conn, now.strftime("%Y-%m-%d"), root_str, min_kb)
         cur = conn.execute(
             "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, total_kb, "
-            "min_kb, collection_status) VALUES (?,?,?,?,?,?,?,?)",
+            "min_kb, collection_status, vanished_count) VALUES (?,?,?,?,?,?,?,?,?)",
             (now.isoformat(timespec="seconds"), root_str, len(sizes),
              result.denied_count, result.elapsed_seconds, total_kb,
-             min_kb, collection_status),
+             min_kb, collection_status, result.vanished_count),
         )
         sid = cur.lastrowid
         conn.executemany(

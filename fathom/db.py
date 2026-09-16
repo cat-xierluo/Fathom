@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE snapshots (
@@ -72,16 +72,26 @@ _SNAPSHOT_COLUMNS_V2 = (
     ("denied_count", "INTEGER", 1, 0), ("du_seconds", "REAL", 1, 0),
     ("total_kb", "INTEGER", 1, 0),
 )
+# v3 的 snapshots 列结构：v2 + min_kb + collection_status；
+# 用于 _expected_table_info(v=3) 的中间版本校验。
+_SNAPSHOT_COLUMNS_V3 = _SNAPSHOT_COLUMNS_V2 + (
+    ("min_kb", "INTEGER", 0, 0), ("collection_status", "TEXT", 0, 0),
+)
 _SNAPSHOT_ALTER_V3 = (
     # ALTER 追加列的 DDL 片段（幂等：迁移前检查列是否已存在）。
     "min_kb INTEGER",            # 入库阈值（KiB）：数据集口径的一部分
     "collection_status TEXT",    # 采集质量：full / partial
 )
+# v4（ISS-065）为 snapshots 增加 vanished_count：扫描期间消失的目录数；
+# NOT NULL DEFAULT 0——旧记录通过默认值获得 0，不补造未知元数据，
+# 与 v3 的 NULL 语义保持一致（NULL ≠ "0 个消失"，但该值在采集时即
+# 固化，无需外部推断，故允许 NOT NULL）。
+_SNAPSHOT_ALTER_V4 = ("vanished_count INTEGER NOT NULL DEFAULT 0",)
 
 _EXPECTED_TABLE_INFO = {
     # (name, declared type, notnull, primary-key order)
-    "snapshots": _SNAPSHOT_COLUMNS_V2 + (
-        ("min_kb", "INTEGER", 0, 0), ("collection_status", "TEXT", 0, 0),
+    "snapshots": _SNAPSHOT_COLUMNS_V3 + (
+        ("vanished_count", "INTEGER", 1, 0),
     ),
     "entries": (
         ("snapshot_id", "INTEGER", 1, 1), ("path", "TEXT", 1, 2),
@@ -110,9 +120,15 @@ _EXPECTED_TABLE_INFO = {
 def _expected_table_info(
     version: int,
 ) -> dict[str, tuple[tuple[str, str, int, int], ...]]:
-    """指定版本下每张表的期望列结构（v3 起 snapshots 带口径/质量列）。"""
+    """指定版本下每张表的期望列结构（v4 起 snapshots 含 vanished_count）。
+
+    中间版本（v3）保留 _SNAPSHOT_COLUMNS_V3 用于迁移链上"已升 v3 但
+    还没升 v4"的中间状态校验；v2 及更早回到 v2 的最小列集合。
+    """
     if version >= SCHEMA_VERSION:
         return _EXPECTED_TABLE_INFO
+    if version >= 3:
+        return dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V3)
     info = dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V2)
     if version <= 1:
         info = {t: cols for t, cols in info.items() if t in _V1_TABLES}
@@ -247,9 +263,16 @@ def _create_missing_tables(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v0(conn: sqlite3.Connection) -> None:
-    """把可识别的无版本开发库提升为 v1；不改写既有业务行。"""
-    has_v2_detail = "scan_run_details" in _user_tables(conn)
-    _validate_schema(conn, allow_missing=True, version=2 if has_v2_detail else 1)
+    """把可识别的无版本开发库提升为 v1；不改写既有业务行。
+
+    user_version=0 时，结构可能已是 v3/v4（用户手工改 user_version）；
+    按实际列结构推断版本再校验，避免把 v3 结构错认为 v2 后漏 ALTER。
+    """
+    actual = _detect_schema_version(conn)
+    if actual >= SCHEMA_VERSION:
+        _validate_schema(conn, allow_missing=True)
+    else:
+        _validate_schema(conn, allow_missing=True, version=actual)
     existing = _user_tables(conn)
     for table, statement in zip(_EXPECTED_TABLE_INFO, _SCHEMA_STATEMENTS, strict=True):
         if table in _V1_TABLES and table not in existing:
@@ -258,8 +281,9 @@ def _migrate_v0(conn: sqlite3.Connection) -> None:
 
 def _migrate_v1(conn: sqlite3.Connection) -> None:
     """为统一扫描生命周期增加一对一详情表，保留旧 scan_runs 合同。"""
+    actual = _detect_schema_version(conn)
     if "scan_run_details" in _user_tables(conn):
-        _validate_schema(conn, allow_missing=False, version=2)
+        _validate_schema(conn, allow_missing=False, version=actual)
     else:
         _validate_schema(conn, allow_missing=False, version=1)
         conn.execute(_SCHEMA_STATEMENTS[-1])
@@ -270,6 +294,28 @@ def _snapshot_column_names(conn: sqlite3.Connection) -> set[str]:
         str(row[1])
         for row in conn.execute('PRAGMA table_info("snapshots")')
     }
+
+
+def _detect_schema_version(conn: sqlite3.Connection) -> int:
+    """根据 snapshots 实际列结构推断 schema 版本。
+
+    旧启发式「scan_run_details 存在即 v2」在 v3/v4 引入新列后失效——
+    snapshots 才是版本演化的承载列。检测路径与 _migrate_v3/v4 的幂等检查
+    一致：vanished_count → 4；min_kb+collection_status → 3；scan_run_details
+    表存在 → 2；只有 v1 表 → 1；空库 → 0。
+    """
+    tables = _user_tables(conn)
+    if not tables:
+        return 0
+    if "snapshots" in tables:
+        cols = _snapshot_column_names(conn)
+        if "vanished_count" in cols:
+            return 4
+        if {"min_kb", "collection_status"} <= cols:
+            return 3
+    if "scan_run_details" in tables:
+        return 2
+    return 1
 
 
 def _migrate_v2(conn: sqlite3.Connection) -> None:
@@ -289,10 +335,31 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
 
 
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    """为 vanished 路径补快照元数据列（ISS-065）。
+
+    与 v2 迁移同口径：幂等 ALTER，不改写任何既有行。列已齐全时
+    （user_version 被手动回退）只做结构校验，不重复追加。旧行
+    vanished_count 通过列定义 NOT NULL DEFAULT 0 自动获得 0——
+    旧快照当时未持久化 vanished 计数的事实不补造未知值，0
+    表示"该快照未采集 vanished 信息"（与 v3 之前 NULL 语义同
+    等）。新快照由 create_snapshot 在采集时点显式提供 vanished_count。
+    """
+    columns = _snapshot_column_names(conn)
+    if "vanished_count" in columns:
+        _validate_schema(conn, allow_missing=False)
+        return
+    _validate_schema(conn, allow_missing=False, version=3)
+    for ddl in _SNAPSHOT_ALTER_V4:
+        if ddl.split()[0] not in columns:
+            conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     0: _migrate_v0,
     1: _migrate_v1,
     2: _migrate_v2,
+    3: _migrate_v3,
 }
 
 
@@ -352,9 +419,10 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
             tables = _user_tables(conn)
             # 空文件/新库不含用户数据，无需生成无意义的迁移备份。
             if tables:
-                preflight_version = (
-                    2 if "scan_run_details" in tables else max(version, 1)
-                )
+                # 以实际列结构推断版本（user_version 可能与结构不同步），
+                # 旧启发式「scan_run_details 在即 v2」在 v3/v4 引入新列后
+                # 不再适用——snapshots 才是版本演化的承载列。
+                preflight_version = _detect_schema_version(conn)
                 _validate_schema(conn, allow_missing=(version == 0),
                                  version=preflight_version)
                 _consistent_backup(conn, path, version)

@@ -5,7 +5,7 @@
 ## 领取与完成规则
 
 - 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
-- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**2026-09-16 09:10 用户指令「继续找可自动化推进的事」**：把 WAITING/BLOCKED 卡中的代码部分拆为可自动派发的切片卡（父卡保留实机/GUI 验收作为人工门）——ISS-003A 已 DONE（PR #82）→ **ISS-064**（**P0**，在飞：du 时限用 monotonic 不计睡眠 + du 阻塞无输出 → 扫描无限期挂起持锁）→ **ISS-065**（**P1**，2026-09-16 20:40 生产观察：8 小时 du 跑完后 30 个「扫描期间消失」目录令整次采集被判 failed 丢弃）→ **ISS-016A** → **ISS-010A** → **ISS-063**，按序单卡在飞、每张独立 reviewer。新 PM 的默认下一项即上述顺序中首个 READY；之后才是 **ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
+- 默认只选当前阶段 READY，P0 优先，再按编号；当前明确用户指令优先。ISS-021/024/027/032/047 已完成。ISS-026 人工门已由用户 2026-09-14 确认（“先合并，后续有问题再提意见”），PR #10 合并为 main `0faeda6`。ISS-028/037/048~052 已 DONE（2026-09-14 晚）。**ISS-009 切片 1 已于 2026-09-15 合并为 main `a158889`（PR #61，含 ISS-053/054/055/057 修复链）**；合并后暴露的 pytest 夹具回归已由 ISS-058 修复（PR #68，main `188d447` 全量 338/338 绿）；ISS-059 握手健壮性已于同日合并（PR #71，main `d53a7af`，verify 12→20 段、cargo test 13）。ISS-062 亦已于同日合并（PR #79，main `47391ae`，全量 354）。**2026-09-16 09:10 用户指令「继续找可自动化推进的事」**：把 WAITING/BLOCKED 卡中的代码部分拆为可自动派发的切片卡（父卡保留实机/GUI 验收作为人工门）——ISS-003A（#82）、ISS-064（#85）、ISS-010A（#87）、ISS-063（#88）已 DONE；**用户 2026-09-16 21:00 指令「派几个 MiniMax worker」**：GLM lane 降至 4% 后 implementer 与 reviewer 全部改走 minimax-M3，并行上限 3（遵守 ≤3 活跃 / ≤2 待验收）。当前在飞：**ISS-065**（P1，minimax）。其后：**ISS-016A**（需 node/浏览器验证，待 GLM 恢复或由 PM 代跑 node 部分）→ ISS-009 切片 2（人工门）。新 PM 的默认下一项即上述顺序中首个 READY；之后才是 **ISS-009 切片 2**（新账户/断网首启、tray 菜单实机退出、握手页 exhausted 实机渲染、含空格/中文路径启动——均为 GUI/实机验收，需用户在场或授权隔离账户，不得自动越过）。**2026-09-16 12:00 后须只读观察生产 `scan_runs`/`snapshots`**（ISS-001 卡有方法）：ISS-061 合并（默认 du 时限 4h）后的首次定时扫描能否完成——完成则 ISS-001 取得第二个有效日期、可据 `du_seconds` 校准提示；仍在 14400s 中断则开自适应/分段扫描新卡（P0）。无 READY 卡时巡检只做只读核对与 12:00 观察，不得为派发而造任务。ISS-045 仍是人工视觉门；LICENSE 已按用户选择落地（Apache-2.0，DEC-020）。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
 - 查看 `git worktree list`、分支 tip 与主干关系；已有成果先读 diff/验收，不能因任务框未勾就重新写。下面外部分支的哈希是审查记录，执行前必须刷新。
@@ -110,8 +110,8 @@
 | ISS-062 | CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口 | P3 | M1 | DONE | ISS-061 |
 | ISS-003A | 通知语义统一与测试补强（ISS-003 代码切片） | P1 | M1 | DONE | ISS-020 |
 | ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | READY | ISS-025、ISS-028 |
-| ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | READY | ISS-020 |
-| ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | READY | ISS-062 |
+| ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | DONE | ISS-020 |
+| ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | DONE | ISS-062 |
 | ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
 | ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | READY | ISS-064 |
 
@@ -198,26 +198,26 @@
 
 ### ISS-010A · 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片）
 
-- **状态**：READY（P1/M2）；来源：用户 2026-09-16 指令拆分 ISS-010（BLOCKED 于 ISS-009 切片 2 实机验收）——本切片**绝不真实注册/注销任何登录项或 launchd 服务**。
+- **状态**：DONE（P1/M2，2026-09-16 21:50；PR #87 → main `4e88b68`，pytest 381→403，cargo test 14→23）；来源：用户 2026-09-16 指令拆分 ISS-010（BLOCKED 于 ISS-009 切片 2 实机验收）——本切片**绝不真实注册/注销任何登录项或 launchd 服务**。
 - **目标**：壳与设置页能读取真实系统状态（登录项是否注册、`com.maoscripts.fathom-scan`/`fathom-web` 是否已加载）并如实显示"已开启/未开启/未知"；提供 dry-run：生成将要写入的 plist 内容与将执行的命令预览，返回"需用户批准"的结构。
 - **范围**：`apps/desktop/src-tauri/src/`（新模块，只读 `launchctl print`/`launchctl list` 与 `SMAppService` 状态查询封装；**不得新增 crate**，`--locked --offline` 门禁）、`fathom/launchd.py`（只读查询与 dry-run 复用既有 plist 生成逻辑）、设置页开关的只读展示、`tests/` 与 Rust 单测。
 - **实施边界**：开关状态 = 系统查询结果；查询失败或权限不足显示"未知"，**绝不显示"已开启"**；dry-run 输出可测（fake `launchctl` 输出注入）；任何会修改系统的路径（`launchctl bootstrap/load/enable`、`SMAppService.register`）不得出现在本切片代码中——留 ISS-010 实机切片由用户批准后执行。
 - **验收**：
-  - [ ] 三种状态映射有单测（含 fake 输出）；失败不显示已开启
-  - [ ] dry-run 生成的 plist 与 `fathom/launchd.py` 现有生成一致（同源），预览可测
-  - [ ] `cargo check/test/clippy` 通过且无新增 crate；pytest 计数同步
-  - [ ] 代码审查确认零系统写入路径
-- **证据/接续**：不得勾选验收项。真实注册、睡眠/重启恢复、去重补扫留父卡 ISS-010。
+  - [x] 三种状态映射有单测（Rust 9 例 + Python 22 例，全部 fake 输出不真实调用 launchctl）；Unknown 绝不映射 Enabled，权限不足/命令缺失/超时均 unknown
+  - [x] dry-run 生成的 plist 与 `_scan_plist/_web_plist` 同源（测试断言相等且路径在 `LAUNCHAGENTS_DIR` 下），命令列表含 bootstrap 字样但 fake run 记录零调用
+  - [x] `cargo check/test/clippy` 通过（test 14→23；clippy 仅既有 2 dead_code）；`Cargo.lock/Cargo.toml` 未变；pytest 375→397（在其 base 上）
+  - [x] 代码审查确认零系统写入路径：grep 无 bootstrap/bootout/load/enable/kickstart/SMAppService.register；`launchd.py` 新函数体不含 `_write_plist`/`_bootstrap`（有 grep 守护测试）
+- **证据/接续**（2026-09-16 DONE）：worker ctx_a854f9ed473e（**minimax-M3**，iss-010a-autostart-readonly-bridge）交付 `5055332`（autostart.rs + lib.rs 注册：`parse_launchctl_print` 三态纯函数、`autostart_status` 命令以 `id -u` 取 uid、≤2s 超时只 kill 自起子进程；`login_item` 恒 unknown 留父卡）与 `84d25cf`（launchd.py `status()`/`dry_run_plan()` + 22 测试）。PM 独立复跑五条合同命令全绿；reviewer ctx_f8bc8fdd2768（minimax-M3，review-wave22-010a）**ACCEPT**（0 blocking；信息性：真实 launchctl 三态仅 fake 验证、SMAppService 留父卡、设置页消费由 ISS-016A 交付）。`postflight` ok、`pr-audit` adopt。[PR #87](https://github.com/cat-xierluo/fathom/pull/87) squash 合并为 main `4e88b68`。**设置页开关只读展示随 ISS-016A 交付**（本切片有意不含前端）。真实注册、睡眠/重启恢复、去重补扫留父卡 ISS-010。
 
 ### ISS-063 · 微卫生：du_seconds 提示的 isfinite 守卫
 
-- **状态**：READY（P3/M1）；来源：ISS-062 reviewer 非阻断 O-1。
+- **状态**：DONE（P3/M1，2026-09-16 21:55；PR #88 → main `a7eafcf`，pytest 403→409）；来源：ISS-062 reviewer 非阻断 O-1 + ISS-003A reviewer O-1/O-2。
 - **目标**：(a) `fathom/cli.py` `_last_measured_du_seconds` 过滤改为 `math.isfinite(seconds) and seconds > 0`，并补 `inf`/`nan` 回落"无记录"的测试；(b)（ISS-003A reviewer 补充）`tests/test_notification.py` 补通知正文恰 200/201 字符的精确边界用例，并让 `test_first_snapshot_long_partial_note_capped` 的主文案真正触及 200 上限；不改其它逻辑。
 - **范围**：`fathom/cli.py`、`tests/test_cli_scan_hint.py`、`tests/test_notification.py`。
 - **验收**：
-  - [ ] 合成库 `du_seconds=inf`/`nan` 时提示走"首次或无实测记录"且不抛异常
-  - [ ] 定向与全量 pytest 通过，计数同步
-- **证据/接续**：不得勾选验收项。
+  - [x] `du_seconds=inf`（经真实 SQLite REAL）与 `nan`（monkeypatch `sqlite3.connect` + SQL 字面量，因 Python 适配层把 nan 绑为 NULL 撞 NOT NULL）时提示走"首次或无实测记录"且不抛异常；通知正文恰 200/201 边界用例 + long partial 用例真正触及截断
+  - [x] 定向 46 / 全量 381（其 base 上）通过；合入后 main 409，计数已同步
+- **证据/接续**（2026-09-16 DONE）：worker ctx_6db143f59a16（**minimax-M3**）交付 `2d38445`（cli 守卫 + inf/nan 用例）与 `9614ea3`（通知边界用例）。该 worker 的 shell 守卫拒绝了合同 pytest 与 git commit/push（同 lane 的 ISS-010A worker 无此问题；worker 自述曾派子代理，疑为子代理继承的守卫绑定导致）——按 MiniMax lane 预案由 **PM 代跑 pytest 并代 commit/push**（首次代跑抓到 nan 用例撞 NOT NULL，worker 改为 monkeypatch 后二次代跑全绿）。PM 判定平凡（一行守卫 + 纯测试）直接审阅，未派独立 reviewer（同 ISS-058 先例）。[PR #88](https://github.com/cat-xierluo/fathom/pull/88) squash 合并为 main `a7eafcf`。
 
 ### ISS-062 · CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口
 

@@ -23,13 +23,81 @@ function _shortTs(iso) {
   return String(iso).slice(0, 16).replace("T", " ");
 }
 
-/* 覆盖状态判定：collection_status 在 api.snapshots 里有值；fallback 到无 */
+/* 覆盖状态判定：collection_status 在 api.snapshots 里有值；fallback 到无
+ * 返回结构含三类缺口计数（ISS-002A）：
+ *   state: missing | partial | full
+ *   denied:      权限受限位置数（denied_count，?? 0 防御缺失字段）
+ *   vanished:    扫描期间消失位置数（vanished_count，字段 ISS-066 落地后才存在）
+ *   excluded:    排除掩码项数（exclude_names 数组长度；缺字段 0）
+ * 数字仅代表"未被采集的位置数"，不求和不推比例；详见 _explainClasses。 */
 function _coverage(snapshot) {
-  if (!snapshot) return "missing";
-  if (snapshot.collection_status === "partial") return "partial";
-  // 兼容：denied_count>0 视为 partial（旧版本可能不返回 collection_status）
-  if ((snapshot.denied_count || 0) > 0) return "partial";
-  return "full";
+  if (!snapshot) return { state: "missing", denied: 0, vanished: 0, excluded: 0 };
+  const denied = snapshot.denied_count ?? 0;
+  const vanished = snapshot.vanished_count ?? 0;
+  const ex = snapshot.exclude_names;
+  let excluded = 0;
+  if (Array.isArray(ex)) excluded = ex.length;
+  else if (typeof ex === "string" && ex.trim()) {
+    // ISS-066 持久化为规范串（";" 分隔）；前端取非空段数
+    excluded = ex.split(";").filter((s) => s.trim()).length;
+  }
+  let state;
+  if (snapshot.collection_status === "partial") state = "partial";
+  else if (denied > 0) state = "partial";  // 兼容旧版本
+  else state = "full";
+  return { state, denied, vanished, excluded };
+}
+
+/* 三类缺口的「意味着什么 / 不意味着什么」文案（ISS-002A）。
+ * 每类固定句：means 是真实事实，doesn't-means 是反对误读。
+ * 严禁出现"数量=影响大小"或"未记录=已删除"表述。 */
+const COV_NOTES = {
+  denied: {
+    label: "权限受限",
+    means: "这些目录本次未被系统授权读取；仅记录采集时被拒的位置。",
+    doesnt: "数量不代表影响大小，也无法判断真实占用。",
+  },
+  vanished: {
+    label: "扫描期间消失",
+    means: "目录在 du 输出时是目录，扫描结束前被系统清理。",
+    doesnt: "扫描期间的事实以读取时为准；未记录不构成删除证据。",
+  },
+  excluded: {
+    label: "排除掩码",
+    means: "这些目录从未进入扫描集；与默认配置形成不同数据集。",
+    doesnt: "历史可比范围相应收窄，但不改变已记录的事实。",
+  },
+};
+
+/* 把三类缺口渲染成可解释块；缺一类即不渲染该块；full 时只显示完整覆盖 */
+function _renderCoverageClasses(coverage) {
+  if (coverage.state === "full") {
+    return `<span class="quality-chip ok">${icon("shield", 12)} 完整覆盖</span>`;
+  }
+  const order = ["denied", "vanished", "excluded"];
+  const counts = { denied: coverage.denied, vanished: coverage.vanished, excluded: coverage.excluded };
+  const items = order
+    .filter((k) => counts[k] > 0)
+    .map((k) => {
+      const note = COV_NOTES[k];
+      const chipCls = k === "excluded" ? "quality-chip miss" : "quality-chip warn";
+      const chipIcon = k === "excluded" ? "filter" : "alert";
+      const unit = k === "excluded" ? "项" : "处";
+      // ISS-002A 计数前置（N 处权限受限 / N 处扫描期间消失 / N 项排除掩码）：
+      // 验收契约要求「计数在前、类目在后」，避免读成「类目 N」被误当影响大小。
+      return `<li class="cov-class">
+        <span class="cov-class-head">
+          <span class="${chipCls}">${icon(chipIcon, 12)} ${counts[k]} ${unit}${escapeHtml(note.label)}</span>
+        </span>
+        <p class="cov-class-note">${escapeHtml(note.means)} ${escapeHtml(note.doesnt)}</p>
+      </li>`;
+    });
+  if (!items.length) {
+    // partial 但三类计数全 0（极端：旧快照仅有 collection_status 标记）——
+    // 仍显式说明，避免误以为完整覆盖
+    return `<span class="quality-chip warn">${icon("alert", 12)} 部分覆盖（未统计缺口细节）</span>`;
+  }
+  return `<ul class="cov-classes" data-test="coverage-classes">${items.join("")}</ul>`;
 }
 
 /* 区域错误占位（DESIGN：保持高度，不塌陷） */
@@ -64,9 +132,12 @@ async function loadQualityLine() {
   }
   const latest = snaps[0];
   const cov = _coverage(latest);
-  const covChip = cov === "full"
+  // 既有口径（ISS-028 m1 验收字符串）：保留「部分目录未读取 / N 个」字样，
+  // 避免后续回归（state-matrix-partial-quality-shown 等既有检查依赖此句）。
+  // ISS-002A 三类缺口的详细可解释文案移到独立 #overview-coverage-note 区块。
+  const covChip = cov.state === "full"
     ? `<span class="quality-chip ok">${icon("alert", 12)} 覆盖完整</span>`
-    : cov === "partial"
+    : cov.state === "partial"
       ? `<span class="quality-chip warn">${icon("alert", 12)} 部分目录未读取（${latest.denied_count || 0} 个）</span>`
       : `<span class="quality-chip miss">${icon("alert", 12)} 覆盖未知</span>`;
   const rangeChip = snaps.length >= 2
@@ -107,12 +178,58 @@ async function loadScanNote() {
     `最近扫描 ${escapeHtml(_shortTs(latest.created_at))}`,
     `目录 ${latest.dir_count || 0} 个`,
   ];
-  if (cov === "partial") {
-    parts.push(`<span class="st st-restricted">${icon("alert", 12)} ${latest.denied_count || 0} 个目录读取受限</span>`);
-  } else if (cov === "full") {
+  // 既有口径（ISS-028 m3 验收字符串）：保留「读取受限 / N 个目录读取受限」
+  // 字样，避免后续回归（state-matrix-partial-scan-note-shown 等既有检查
+  // 依赖此句）。三类缺口详细解释放到独立区块 #overview-coverage-note，
+  // 本节只在存在 denied 时追加一句紧凑提示（不替换既有文案）。
+  if (cov.denied > 0) {
+    parts.push(`<span class="st st-restricted">${icon("alert", 12)} ${cov.denied} 个目录读取受限</span>`);
+  }
+  if (cov.state === "full") {
     parts.push(`<span class="st st-ok">覆盖完整</span>`);
+  } else if (cov.state === "partial" && !cov.denied) {
+    // partial 但三类缺口计数为 0（罕见：旧快照仅有 collection_status 标记）
+    parts.push(`<span class="st st-restricted">部分覆盖</span>`);
   }
   el.innerHTML = parts.join(" · ");
+  // 追加式三类覆盖说明（ISS-002A）：独立区块，不动既有 scan-note 文案。
+  _renderCoverageNoteBlock(latest, cov);
+}
+
+/* ISS-002A 三类覆盖说明——追加式（不替换既有 scan-note）。
+ * 数据来自 _coverage() 的 denied / vanished / excluded；
+ * full 时只渲染「完整覆盖」；三类缺口按需渲染，每个缺口都带
+ * 「意味着什么 / 不意味着什么」文案（详见 COV_NOTES）。
+ * 容器 id 由调用方决定：默认 `#overview-coverage-note`（与既有
+ * [data-test='coverage-classes'] 复用同一 DOM 节点）。 */
+function _ensureCoverageNote() {
+  let container = document.getElementById("overview-coverage-note");
+  if (container) return container;
+  const scanNote = document.getElementById("overview-scan-note");
+  if (!scanNote || !scanNote.parentNode) return null;
+  container = document.createElement("div");
+  container.id = "overview-coverage-note";
+  container.className = "coverage-note-block";
+  container.setAttribute("aria-live", "polite");
+  // 追加在 #overview-scan-note 之后；同一 panel 内，仍属「最近扫描」区块。
+  scanNote.parentNode.insertBefore(container, scanNote.nextSibling);
+  return container;
+}
+
+function _renderCoverageNoteBlock(latest, cov) {
+  const container = _ensureCoverageNote();
+  if (!container) return;
+  // 不可知：保留旧"加载中…"或留空，避免误以为完整覆盖
+  if (!latest || cov.state === "missing") {
+    container.innerHTML = "";
+    return;
+  }
+  const markup = _renderCoverageClasses(cov);
+  // _renderCoverageClasses 在 partial 时返回 <ul data-test="coverage-classes">…</ul>，
+  // 在 full 时返回不带 data-test 的「完整覆盖」chip。两者都渲染：
+  // full 时该区块显式给出「完整覆盖」，避免读者把「区块为空」误当成未知；
+  // 同时因无 coverage-classes 节点，既有 state-matrix-partial-* 检查不受影响。
+  container.innerHTML = markup;
 }
 
 async function loadVolumeTrend() {

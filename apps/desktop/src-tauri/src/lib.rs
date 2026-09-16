@@ -345,6 +345,12 @@ fn quit_with_helper(app: &AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // ISS-068：设置页「打开系统设置」走 plugin:opener|open_url 打开
+        // x-apple.systempreferences: 隐私深链。此前 Cargo.toml 已依赖
+        // tauri-plugin-opener，但 Builder 未注册插件、capability 未授权，
+        // 前端调用必被 ACL 拒绝。插件前缀 opener 由前端命令名
+        // plugin:opener|open_url 决定，不能改成 fathom。
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             update_tray_status,
             helper_status,

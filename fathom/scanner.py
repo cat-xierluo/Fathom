@@ -285,6 +285,21 @@ def _validate_du_paths(
     return error_count, vanished_count, error_sample, vanished_sample
 
 
+def _du_argv(root: str) -> list[str]:
+    """构造 du argv：基线 + 当前配置层生效的 -I <每项>。
+
+    ISS-066：``du -I mask`` 按名字匹配并跳过整棵子树（PM 已实测）。
+    掩码语义按 fnmatch（与 BSD du 实现一致）：``*.noindex`` / ``skip.noindex``
+    都能匹配；配置层已做排序去重（canonical form），此处仅按序展开。
+    无配置时（EXCLUDE_NAMES 为空）argv 与现状逐项相同——零行为变化证明。
+    """
+    argv: list[str] = ["/usr/bin/du", "-xk"]
+    for mask in config.EXCLUDE_NAMES:
+        argv.extend(["-I", mask])
+    argv.append(root)
+    return argv
+
+
 def _last_du_output_path(partial_output: bytes) -> str:
     """从 communicate 轮询累计的部分 stdout 取最后一条完整 du 记录的路径。
 
@@ -366,14 +381,14 @@ def run_du(root: Path) -> DuResult:
     if context is None:
         # 保留扫描器作为库被直接调用时的原合同；产品入口全部经协调器进入下支。
         completed = subprocess.run(
-            ["/usr/bin/du", "-xk", str(root)], capture_output=True
+            _du_argv(str(root)), capture_output=True
         )
         stdout, stderr_raw, returncode = (
             completed.stdout, completed.stderr, completed.returncode
         )
     else:
         proc = subprocess.Popen(
-            ["/usr/bin/du", "-xk", str(root)],
+            _du_argv(str(root)),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -566,17 +581,20 @@ def _volume_stat(root: Path) -> tuple[int, int]:
 
 
 def _drop_same_day(
-    conn: sqlite3.Connection, day: str, root: str, min_kb: int
+    conn: sqlite3.Connection, day: str, root: str, min_kb: int,
+    exclude_names: str = "",
 ) -> None:
-    """删除同数据集（同根同阈值口径）同一天的旧快照，实现"一天一行"。
+    """删除同数据集（同根同阈值同排除掩码口径）同一天的旧快照，实现"一天一行"。
 
     阈值口径不同的快照属于另一数据集，同日不替换（ISS-021）；更换根同理。
+    排除掩码口径不同的快照同样属于另一数据集（ISS-066）。
     """
     ids = [
         r["id"]
         for r in conn.execute(
-            "SELECT id FROM snapshots WHERE root = ? AND min_kb = ? AND created_at LIKE ?",
-            (root, min_kb, f"{day}%"),
+            "SELECT id FROM snapshots WHERE root = ? AND min_kb = ? "
+            "AND exclude_names IS ? AND created_at LIKE ?",
+            (root, min_kb, exclude_names, f"{day}%"),
         )
     ]
     for sid in ids:
@@ -619,14 +637,17 @@ def create_snapshot(
     kept = [(p, s) for p, s in sizes.items() if s >= min_kb]
 
     now = dt.datetime.now()
+    exclude_names = ";".join(config.EXCLUDE_NAMES)  # 规范串：已排序去重
     with conn:
-        _drop_same_day(conn, now.strftime("%Y-%m-%d"), root_str, min_kb)
+        _drop_same_day(conn, now.strftime("%Y-%m-%d"), root_str, min_kb,
+                       exclude_names)
         cur = conn.execute(
             "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, total_kb, "
-            "min_kb, collection_status, vanished_count) VALUES (?,?,?,?,?,?,?,?,?)",
+            "min_kb, collection_status, vanished_count, exclude_names) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (now.isoformat(timespec="seconds"), root_str, len(sizes),
              result.denied_count, result.elapsed_seconds, total_kb,
-             min_kb, collection_status, result.vanished_count),
+             min_kb, collection_status, result.vanished_count, exclude_names),
         )
         sid = cur.lastrowid
         conn.executemany(
@@ -664,17 +685,20 @@ def prune_snapshots(
     weekly_cutoff = today - dt.timedelta(weeks=keep_weekly_weeks)
 
     rows = conn.execute(
-        "SELECT id, created_at, root, min_kb FROM snapshots ORDER BY created_at, id"
+        "SELECT id, created_at, root, min_kb, exclude_names FROM snapshots "
+        "ORDER BY created_at, id"
     ).fetchall()
 
     # 每个数据集的每个 ISO 周保留最早一个快照（仅对超过每日保留期的部分）；
     # 用 id 锚定而非集合标记，同时间戳的两条也能正确只留一条。
+    # 数据集身份从 (root, min_kb) 升级为 (root, min_kb, exclude_names)（ISS-066）。
     daily_cutoff_date = dt.date.fromisoformat(daily_cutoff)
     weekly_keep_id: dict[tuple, int] = {}
     for r in rows:
         created = dt.date.fromisoformat(r["created_at"][:10])
+        excludes = r["exclude_names"] if "exclude_names" in r.keys() else ""
         if daily_cutoff_date > created >= weekly_cutoff:
-            key = (r["root"], r["min_kb"], created.isocalendar()[:2])
+            key = (r["root"], r["min_kb"], excludes, created.isocalendar()[:2])
             if key not in weekly_keep_id:
                 weekly_keep_id[key] = r["id"]
 
@@ -683,11 +707,11 @@ def prune_snapshots(
         created = dt.date.fromisoformat(r["created_at"][:10])
         if created >= daily_cutoff_date:
             continue  # 近 N 天全保留
+        excludes = r["exclude_names"] if "exclude_names" in r.keys() else ""
+        key = (r["root"], r["min_kb"], excludes, created.isocalendar()[:2])
         if created < weekly_cutoff:
             to_delete.append(r["id"])  # 超过每周保留期
-        elif r["id"] != weekly_keep_id.get(
-            (r["root"], r["min_kb"], created.isocalendar()[:2])
-        ):
+        elif r["id"] != weekly_keep_id.get(key):
             to_delete.append(r["id"])  # 该数据集每周非首个快照
     for sid in to_delete:
         conn.execute("DELETE FROM entries WHERE snapshot_id = ?", (sid,))

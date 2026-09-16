@@ -217,12 +217,24 @@ def api_status():
         count = conn.execute("SELECT COUNT(*) c FROM snapshots").fetchone()["c"]
         latest = _latest_snapshots(conn, 1)
         latest_row = dict(latest[0]) if latest else None
+        # ISS-066：把 vanished_count 和当前生效的 exclude_names 提升为顶层
+        # 字段——前端覆盖说明页（ISS-002A）直接消费，不需要走 latest_snapshot
+        # 表里再取；缺字段时（v4 之前旧库）以 0 / [] 兜底，与 DB 层 NOT NULL
+        # DEFAULT 同语义。
+        if latest_row is not None:
+            vanished_count = latest_row.get("vanished_count") or 0
+            latest_excludes = latest_row.get("exclude_names") or ""
+        else:
+            vanished_count = 0
+            latest_excludes = ""
         st = os.statvfs(config.DEFAULT_ROOT)
         db_size = config.DB_PATH.stat().st_size if config.DB_PATH.exists() else 0
         return {
             "root": str(config.DEFAULT_ROOT),
             "snapshot_count": count,
             "latest_snapshot": latest_row,
+            "vanished_count": vanished_count,
+            "exclude_names": config.EXCLUDE_NAMES,
             "disk": {
                 "total_bytes": st.f_blocks * st.f_frsize,
                 "free_bytes": st.f_bavail * st.f_frsize,

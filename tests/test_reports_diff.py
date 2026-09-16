@@ -798,6 +798,136 @@ class TestReportAbIdsAndFirstScan:
             conn.close()
 
 
+class TestISS066ExcludeNamesIdentity:
+    """ISS-066：数据集身份从 (root, min_kb) 升级为 (root, min_kb, exclude_names)。
+
+    设计取舍（用户可否决）：排除集变化如实形成新数据集，diff 报「无基线」；
+    同排除集可比；旧行（exclude_names=''）与新无配置快照（规范串也是 ''）
+    仍同身份——保证默认路径零行为变化。
+    """
+
+    def _v5_insert(self, conn, day, root, *, min_kb, exclude_names, entries,
+                   collection_status="full"):
+        cur = conn.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb, min_kb, collection_status, "
+            "vanished_count, exclude_names) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (f"{day}T12:00:00", root, len(entries) + 1, 0, 0.0,
+             max(entries.values(), default=0), min_kb, collection_status, 0,
+             exclude_names),
+        )
+        sid = cur.lastrowid
+        conn.executemany(
+            "INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,?)",
+            [(sid, p, s) for p, s in entries.items()],
+        )
+        conn.commit()
+        return sid
+
+    def test_different_exclude_names_not_same_dataset(self):
+        """同 root / 同 min_kb / 不同 exclude_names 不互为前驱。"""
+        conn = db.connect()
+        try:
+            a1 = self._v5_insert(
+                conn, "2026-09-10", "/synthetic/root-a",
+                min_kb=1024, exclude_names="",
+                entries={"/synthetic/root-a": 5_000},
+            )
+            a2 = self._v5_insert(
+                conn, "2026-09-12", "/synthetic/root-a",
+                min_kb=1024, exclude_names="skip.noindex",
+                entries={"/synthetic/root-a": 6_000},
+            )
+            # a2 没有同数据集前驱：find_same_dataset_predecessor 返回 None。
+            assert reports.find_same_dataset_predecessor(conn, a2) is None
+            # 反之，a1 看到 a2 是另一个数据集：仍不互为前驱。
+            assert reports.find_same_dataset_predecessor(conn, a1) is None
+        finally:
+            conn.close()
+
+    def test_same_exclude_names_comparable(self):
+        """同 root / 同 min_kb / 同 exclude_names 可比。"""
+        conn = db.connect()
+        try:
+            a1 = self._v5_insert(
+                conn, "2026-09-10", "/synthetic/root-a",
+                min_kb=1024, exclude_names="skip.noindex;*.tmp",
+                entries={"/synthetic/root-a": 5_000},
+            )
+            a2 = self._v5_insert(
+                conn, "2026-09-12", "/synthetic/root-a",
+                min_kb=1024, exclude_names="skip.noindex;*.tmp",
+                entries={"/synthetic/root-a": 6_000},
+            )
+            pred = reports.find_same_dataset_predecessor(conn, a2)
+            assert pred is not None and pred["id"] == a1
+        finally:
+            conn.close()
+
+    def test_default_path_zero_behavior_change_old_empty_vs_new_empty(self):
+        """旧行（exclude_names=''）与新无配置快照同身份可比——零行为变化。"""
+        conn = db.connect()
+        try:
+            a1 = self._v5_insert(
+                conn, "2026-09-10", "/synthetic/root-a",
+                min_kb=1024, exclude_names="",
+                entries={"/synthetic/root-a": 5_000},
+            )
+            a2 = self._v5_insert(
+                conn, "2026-09-12", "/synthetic/root-a",
+                min_kb=1024, exclude_names="",
+                entries={"/synthetic/root-a": 6_000},
+            )
+            pred = reports.find_same_dataset_predecessor(conn, a2)
+            assert pred is not None and pred["id"] == a1
+        finally:
+            conn.close()
+
+    def test_exclude_names_appears_in_report_header_when_nonzero(self):
+        """排除掩码非空时日报头部注明掩码清单（中文提示）。
+
+        两个快照使用相同 exclude_names（同一数据集身份），a2 才有
+        前驱可对比，日报能写出。
+        """
+        conn = db.connect()
+        try:
+            self._v5_insert(
+                conn, "2026-09-10", "/synthetic/root-a",
+                min_kb=1024, exclude_names="skip.noindex",
+                entries={"/synthetic/root-a": 5_000},
+            )
+            a2 = self._v5_insert(
+                conn, "2026-09-12", "/synthetic/root-a",
+                min_kb=1024, exclude_names="skip.noindex",
+                entries={"/synthetic/root-a": 6_000},
+            )
+            out = reports.write_daily_report(conn, a2, notify_after_write=False)
+            md = out.read_text(encoding="utf-8")
+            assert "排除掩码" in md and "skip.noindex" in md
+        finally:
+            conn.close()
+
+    def test_exclude_names_absent_in_report_when_empty(self):
+        """排除掩码空时日报不显示该行（避免空话）。"""
+        conn = db.connect()
+        try:
+            self._v5_insert(
+                conn, "2026-09-10", "/synthetic/root-a",
+                min_kb=1024, exclude_names="",
+                entries={"/synthetic/root-a": 5_000},
+            )
+            a2 = self._v5_insert(
+                conn, "2026-09-12", "/synthetic/root-a",
+                min_kb=1024, exclude_names="",
+                entries={"/synthetic/root-a": 6_000},
+            )
+            out = reports.write_daily_report(conn, a2, notify_after_write=False)
+            md = out.read_text(encoding="utf-8")
+            assert "排除掩码" not in md
+        finally:
+            conn.close()
+
+
 class TestBrowseBaseline:
     """/api/browse 与 diff/日报共用同数据集前驱；无基线不冒充增量（AUD-04）。"""
 

@@ -110,6 +110,22 @@ function createFixture() {
     }
     return [latest, snapshot(1, "2026-09-12T10:00:00")];
   };
+  // ISS-067：/api/snapshots 的合同是**显式列清单**（不含 select * 的额外列）。
+  // 后端曾因漏列 vanished_count / exclude_names，使 overview 的两类覆盖说明
+  // 在生产恒为 0/空；而同形夹具掩盖了这个接缝。这里如实建模该端点：仅保留
+  // 显式 SELECT 的列。若后端再次漏列，这些字段即从此响应消失，覆盖检查转红。
+  const SNAPSHOTS_ENDPOINT_COLUMNS = [
+    "id", "created_at", "root", "total_kb", "dir_count", "denied_count",
+    "min_kb", "collection_status", "vanished_count", "exclude_names",
+    "total_bytes", "free_bytes",
+  ];
+  const snapshotsForSnapshotsEndpoint = () => snapshots().map((s) => {
+    const row = {};
+    for (const key of SNAPSHOTS_ENDPOINT_COLUMNS) {
+      if (key in s) row[key] = s[key];
+    }
+    return row;
+  });
   const scanning = () => state.scanning || state.mode === "scanning-stuck";
 
   const diff = (a, b) => ({
@@ -148,6 +164,8 @@ function createFixture() {
       return json(res, 200, {
         root: ROOT,
         snapshot_count: rows.length,
+        // ISS-067：/api/status 的 latest_snapshot 对应后端 `SELECT *`，是完整行；
+        // /api/snapshots 则是显式列清单——两条独立合同，不能共用同一形状。
         latest_snapshot: rows[0] || null,
         disk: { total_bytes: 1024 ** 4, free_bytes: 256 * 1024 ** 3 },
         db_bytes: 4096,
@@ -161,10 +179,11 @@ function createFixture() {
     }
     if (url.pathname === "/api/snapshots") {
       if (state.mode === "snapshots500") return json(res, 500, { detail: "合成快照故障" });
+      const rows = snapshotsForSnapshotsEndpoint();
       if (state.scenario === "snapshots-delay" && nextCall("snapshots") === 1) {
-        return later(res, 200, snapshots(), 700);
+        return later(res, 200, rows, 700);
       }
-      return json(res, 200, snapshots());
+      return json(res, 200, rows);
     }
     if (url.pathname === "/api/volume-trend") {
       return json(res, 200, snapshots().slice().reverse().map((s) => ({

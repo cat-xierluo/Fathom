@@ -442,3 +442,98 @@ def test_api_status_no_snapshot_zero_fields(client):
     status = client.get("/api/status").json()
     assert status["vanished_count"] == 0
     assert status["exclude_names"] == []
+
+
+# ---------- /api/snapshots 补齐快照级缺口字段（ISS-067） ----------
+
+def _seed_snapshot_with_coverage(
+    root: str, min_kb: int, *, vanished_count: int, exclude_names: str,
+    created_at: str = "2026-09-15T12:00:00",
+) -> int:
+    """写入一条带 vanished/exclude 的快照行，返回 id。"""
+    conn = db.connect()
+    try:
+        cur = conn.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb, min_kb, collection_status, "
+            "vanished_count, exclude_names) "
+            "VALUES (?, ?, 1, 0, 1.0, 100, ?, 'partial', ?, ?)",
+            (created_at, root, min_kb, vanished_count, exclude_names),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def test_api_snapshots_exposes_vanished_count_and_exclude_names(client):
+    """ISS-067：/api/snapshots 的每行必须带 vanished_count 与 exclude_names。
+
+    ISS-002A 的 overview 覆盖说明读的是 /api/snapshots（不是 /api/status）；
+    旧 SELECT 漏了这两列，导致「扫描期间消失」与「排除掩码」两类缺口在生产
+    中恒为 0/空，前端 `?? 0` / `?? []` 防御把缺失静默降级。
+    """
+    sid = _seed_snapshot_with_coverage(
+        str(config.DEFAULT_ROOT), 10 * 1024,
+        vanished_count=3, exclude_names="*.noindex;*.tmp",
+    )
+
+    rows = client.get("/api/snapshots").json()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == sid
+    assert "vanished_count" in row, "overview 消费 vanished 必须由本端点提供"
+    assert row["vanished_count"] == 3
+    assert "exclude_names" in row, "overview 消费 excluded 必须由本端点提供"
+    # 与 DB 层一致：快照行里存的是 ';' 分隔串（dataset 身份口径）。
+    assert row["exclude_names"] == "*.noindex;*.tmp"
+
+
+def test_api_snapshots_empty_exclude_names_is_empty_string(client):
+    """默认全量采集（掩码空）→ exclude_names 为空串，前端解析为 0 项。"""
+    _seed_snapshot(str(config.DEFAULT_ROOT), 10 * 1024)
+
+    rows = client.get("/api/snapshots").json()
+    assert rows[0]["exclude_names"] == ""
+    assert rows[0]["vanished_count"] == 0
+
+
+def test_api_snapshots_covers_every_row_not_just_latest(client):
+    """列表端点须逐行补齐，历史行不得因只改最新行而缺失字段。"""
+    _seed_snapshot_with_coverage(
+        str(config.DEFAULT_ROOT), 10 * 1024,
+        vanished_count=0, exclude_names="", created_at="2026-09-13T12:00:00",
+    )
+    _seed_snapshot_with_coverage(
+        str(config.DEFAULT_ROOT), 10 * 1024,
+        vanished_count=5, exclude_names="*.cache", created_at="2026-09-15T12:00:00",
+    )
+
+    rows = client.get("/api/snapshots").json()
+    assert len(rows) == 2
+    # 端点按 created_at DESC 排序：最新在前。
+    assert rows[0]["vanished_count"] == 5
+    assert rows[0]["exclude_names"] == "*.cache"
+    assert rows[1]["vanished_count"] == 0
+    assert rows[1]["exclude_names"] == ""
+
+
+def test_api_snapshots_exclude_names_is_snapshot_not_live_config(client):
+    """ISS-067 核心接缝：exclude_names 必须是快照采集时的值。
+
+    改配置后（PUT /api/config）旧快照的 dataset 身份不得漂移——若用配置层
+    生效值顶替，用户改一次排除集，全部历史快照都会被打上当前掩码。
+    """
+    _seed_snapshot_with_coverage(
+        str(config.DEFAULT_ROOT), 10 * 1024,
+        vanished_count=0, exclude_names="*.oldmask",
+    )
+
+    # 之后把当前生效配置改成完全不同的掩码。
+    assert client.put("/api/config", json={
+        "exclude_names": ["*.newmask"]}).status_code == 200
+    assert client.get("/api/config").json()["exclude_names"] == ["*.newmask"]
+
+    rows = client.get("/api/snapshots").json()
+    # 快照行如实返回自己的采集掩码，不受当前配置影响。
+    assert rows[0]["exclude_names"] == "*.oldmask"

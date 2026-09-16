@@ -257,7 +257,9 @@ def api_snapshots():
     try:
         rows = conn.execute(
             """SELECT s.id, s.created_at, s.root, s.total_kb, s.dir_count, s.denied_count,
-                      s.min_kb, s.collection_status, v.total_bytes, v.free_bytes
+                      s.min_kb, s.collection_status,
+                      s.vanished_count, s.exclude_names,
+                      v.total_bytes, v.free_bytes
                FROM snapshots s LEFT JOIN volume_stats v ON v.snapshot_id = s.id
                ORDER BY s.created_at DESC, s.id DESC"""
         ).fetchall()

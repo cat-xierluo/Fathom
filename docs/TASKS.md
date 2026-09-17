@@ -259,6 +259,13 @@
     - `pytest -q`（`.venv` python，未改后端）→ **528 passed / 0 failed**（2 条 starlette/anyio 弃用告警，与本次改动无关）。
   - **新检查项**：`exclude-editor-renders-effective-masks`、`exclude-editor-rejects-illegal-masks-inline`、`exclude-editor-blocks-save-without-confirmation`、`exclude-editor-saves-via-put-and-hints-reinstall`、`exclude-editor-removes-mask`。
   - **未验证项与原因**：(1) 真实 `du -I` 生效与真实运行根 `settings.json` 落盘未验——按卡片约定随 ISS-009/ISS-010 实机验收；夹具只镜像 PUT 400 合同不触真实文件系统。(2) 未勾选任何验收项、状态保持 READY（按指令）。
+  - **修复轮（2026-09-17，B1/B2 两条潜伏缺陷）**：上列 5 项检查**全绿仍漏掉**两处真实缺陷（均在前端 `settings.js`，不涉后端），已按「复现红灯 → 修复 → 补检查」闭环。
+    - **B1 · 保存反馈从不回显服务端 hint**。根因：`saveExcludes` 写 `const data = await apiPut(...)` 后读 `data.hint`，但 `frontend/modules/request.js:82` 的 `apiPut` 返回的是**原始 `Response`**而非已解析 JSON，故 `data.hint` 恒为 `undefined`，永远落到硬编码兜底串 `需重新安装计划才生效。`；同文件 `saveConfig`（263 行）用的却是 `const res = await apiPut(...); const data = await res.json();`。不抛错，故旧检查 `exclude-editor-saves-via-put-and-hints-reinstall` 断言 `feedback.includes("需重新安装")` **恰好被兜底串满足**，无法区分回显与兜底。改法：`settings.js:198` 改为 `const res = await apiPut(...); const data = await res.json();`。
+    - **B2 · 显式确认勾选框保存后不复位**。根因：`#exclude-confirm` 只在 `saveExcludes`（188 行）被读、**从未被写**，保存成功后仍保持 checked，后续任何增删都能「沿用」上次勾选直接保存，卡片要求的「修改排除集必须显式确认」在首次保存后即被架空（旧检查只在首次保存前 `check()`，覆盖不到）。改法：保存成功分支（`settings.js:200-204`）复位 `confirmBox.checked = false`；保存失败**不**复位，便于用户直接重试。
+    - **新增检查项（+2）**：`exclude-editor-echoes-server-hint`（断言反馈含夹具特有的 `settings.json`/`launchd`/`main.py install`——这三个词只可能来自服务端响应，兜底串里没有）、`exclude-editor-resets-confirmation-after-save`（保存后断言未勾选；再删一项不勾选直接保存，断言 `configPut` 计数不变且反馈为「请先勾选确认」）。
+    - **红→绿证据**：`git stash` 暂存 `settings.js` 修复后重跑 → `81 passed / 2 failed`，两项新检查同时 RED（B1 detail 显示反馈为兜底串；B2 detail 显示 `checked:true` 且 `configPut 3→4`）；恢复修复后 → `83 passed / 0 failed`、`EXIT=0`。
+    - **实跑命令与结果（本机，非代跑）**：`node scripts/verify_frontend_refresh.cjs` → **83 passed / 0 failed**、`EXIT=0`；`node scripts/verify_api_security.cjs` → **39 passed / 0 failed**、`EXIT=0`（CI 口径 `EXPECTED_BROWSER_PASSED=39` 只计该套件，不回退）；`.runtime/bin/python -m pytest -q` → **528 passed / 0 failed**（35.13s）。改动文件仅 `frontend/modules/pages/settings.js`（+6/-1）与 `scripts/verify_frontend_refresh.cjs`（+40），**未触碰 `fathom/` 下任何后端文件**。
+    - **旁证（不在本卡范围，供 PM 判断）**：CI 无关；`ci_browser_checks.sh` 只跑 `verify_api_security.cjs`，故 39 与本卡的 83 是两套计数，不存在漂移。（前次证据段「node 命令由 PM 代跑」的约定本轮未采用——本机 node/Playwright 可用，sh 实跑已替代。）
 
 ### ISS-040A · latest.json 双架构生成与 fail-closed 校验工具（ISS-040 代码切片）
 

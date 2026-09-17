@@ -195,7 +195,12 @@ async function saveExcludes() {
     if (error) { setExcludeInlineError(error); showFeedback(error, "error"); return; }
   }
   try {
-    const data = await apiPut("/api/config", { exclude_names: masks });
+    const res = await apiPut("/api/config", { exclude_names: masks });
+    const data = await res.json();
+    // 一次确认只对一次保存有效：保存成功后复位勾选框，避免下一次增删
+    // 「沿用」旧勾选绕过显式确认。保存失败不复位，便于用户直接重试。
+    const confirmBox = document.getElementById("exclude-confirm");
+    if (confirmBox) confirmBox.checked = false;
     showFeedback(
       `已保存排除列表（${masks.length} 项）。${data.hint || "需重新安装计划才生效。"}`, "ok");
     // 保存成功后以服务端返回值重新渲染；等同重新拉取一次生效值。

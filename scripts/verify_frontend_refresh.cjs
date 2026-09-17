@@ -930,6 +930,20 @@ async function main() {
         String(fixture.state.config.exclude_names).includes("*.noindex"),
       JSON.stringify(saved).slice(0, 200));
 
+    // 保存反馈必须回显服务端 hint，而不是恒定兜底串。
+    // 反例（曾被潜伏放过）：saveExcludes 把 apiPut 返回的原始 Response 当已解析
+    // JSON 用，data.hint 恒为 undefined，于是永远显示硬编码兜底文案；而断言
+    // "需重新安装" 恰好在兜底串里也出现，故上面那条检查无法区分两者。
+    // 夹具 PUT 返回的 hint 含 "settings.json"/"launchd"/"main.py install"，
+    // 这三个词只可能来自服务端响应，兜底串里没有。
+    const serverHintEchoed =
+      saved.feedback.includes("settings.json") &&
+      saved.feedback.includes("launchd") &&
+      saved.feedback.includes("main.py install");
+    record("exclude-editor-echoes-server-hint",
+      serverHintEchoed,
+      JSON.stringify({ feedback: saved.feedback.slice(0, 200) }));
+
     // 删除一项并确认保存：PUT 只带 exclude_names，且不含被删掩码
     await page.click("#exclude-panel [data-test='exclude-row'][data-mask='*.noindex'] [data-test='exclude-remove']");
     await page.waitForFunction(
@@ -942,6 +956,32 @@ async function main() {
       !String(fixture.state.config.exclude_names).includes("*.noindex") &&
         String(fixture.state.config.exclude_names).includes("node_modules"),
       String(fixture.state.config.exclude_names));
+
+    // 一次确认只对一次保存有效：保存成功后必须复位确认勾选框，否则后续任何
+    // 增删都能「沿用」上一次的勾选直接保存，显式确认形同虚设。
+    // 反例（曾被潜伏放过）：exclude-confirm 只在 saveExcludes 里被读、从未被写，
+    // 上面所有检查都在首次保存前才 check()，故这处缺口 81 项全绿也发现不了。
+    const confirmAfterSave = await page.evaluate(() => ({
+      checked: !!document.querySelector("#exclude-confirm")?.checked,
+    }));
+    // 不复位确认的前提下再删一项、不再勾选直接保存：若真被拦，PUT 不应发生。
+    const putBeforeSecond = fixture.state.counts.configPut || 0;
+    await page.click("#exclude-panel [data-test='exclude-row'][data-mask='node_modules'] [data-test='exclude-remove']");
+    await page.waitForFunction(
+      () => !document.querySelector("#exclude-panel [data-test='exclude-row'][data-mask='node_modules']"),
+      null, { timeout: 5000 });
+    await page.click("#btn-exclude-save");
+    await page.waitForTimeout(150);
+    const secondSave = await page.evaluate(() => ({
+      feedback: document.querySelector("#config-feedback")?.textContent || "",
+    }));
+    record("exclude-editor-resets-confirmation-after-save",
+      !confirmAfterSave.checked &&
+        (fixture.state.counts.configPut || 0) === putBeforeSecond &&
+        String(fixture.state.config.exclude_names).includes("node_modules") &&
+        secondSave.feedback.includes("确认"),
+      JSON.stringify({ confirmAfterSave, putBeforeSecond,
+        putAfterSecond: fixture.state.counts.configPut || 0, secondSave }).slice(0, 240));
 
     /* ---------- 状态语义矩阵 ---------- */
     await setMode("onlyadded");

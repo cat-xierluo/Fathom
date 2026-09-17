@@ -181,7 +181,8 @@ def test_verifier_accepts_single_platform_manifest(tmp_path: Path) -> None:
     arm, _x86, arm_sig, _x86_sig = _make_artifacts(tmp_path)
     out = tmp_path / "latest.json"
     gen = _run_generate(
-        version="0.3.0", arm=arm, x86=None, arm_sig=arm_sig, x86_sig=None, out=out
+        version="0.3.0", arm=arm, x86=None, arm_sig=arm_sig, x86_sig=None, out=out,
+        extra=["--allow-single-platform"],
     )
     assert gen.returncode == 0, gen.stdout + gen.stderr
     manifest = json.loads(out.read_text(encoding="utf-8"))
@@ -208,12 +209,13 @@ def test_generator_requires_both_platforms(tmp_path: Path) -> None:
 def test_generate_rejects_missing_platform(tmp_path: Path) -> None:
     arm, _x86, arm_sig, _x86_sig = _make_artifacts(tmp_path)
     out = tmp_path / "latest.json"
+    # 发行口径：生成默认必须双架构，缺 x86_64 直接拒绝且不落盘。
     result = _run_generate(
         version="0.3.0", arm=arm, x86=None, arm_sig=arm_sig, x86_sig=None, out=out
     )
-    # 未显式声明 --require-both-platforms 时允许单平台（见上一条），
-    # 但显式声明后必须拒绝——这里用未知平台值构造硬失败。
-    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.returncode != 0
+    assert DARWIN_X86_64 in result.stderr
+    assert not out.exists()
 
     bad = _run_generate(
         version="0.3.0", arm=arm, x86=None, arm_sig=arm_sig, x86_sig=None,
@@ -351,7 +353,10 @@ def _tamper(tmp_path: Path, mutate) -> Path:
 
 def test_verifier_rejects_missing_platform_entry(tmp_path: Path) -> None:
     bad = _tamper(tmp_path, lambda d: d["platforms"].pop(DARWIN_X86_64))
-    result = _run_verify(bad)
+    # 缺平台在宽松默认下可行（运行时单架构），发行门禁收紧后必须拒绝。
+    lenient = _run_verify(bad)
+    assert lenient.returncode == 0, lenient.stdout + lenient.stderr
+    result = _run_verify(bad, extra=["--require-both-platforms"])
     assert result.returncode != 0
     assert DARWIN_X86_64 in result.stderr
 
@@ -392,11 +397,14 @@ def test_verifier_can_require_both_platforms(tmp_path: Path) -> None:
     arm, _x86, arm_sig, _x86_sig = _make_artifacts(tmp_path)
     out = tmp_path / "latest.json"
     gen = _run_generate(
-        version="0.3.0", arm=arm, x86=None, arm_sig=arm_sig, x86_sig=None, out=out
+        version="0.3.0", arm=arm, x86=None, arm_sig=arm_sig, x86_sig=None, out=out,
+        extra=["--allow-single-platform"],
     )
     assert gen.returncode == 0, gen.stdout + gen.stderr
-    ok = _run_verify(out)
-    assert ok.returncode == 0
+    # 生成器默认即双架构；单平台需显式 --allow-single-platform。
+    # 校验器默认放开单平台（运行时清单），--require-both-platforms 收紧后拒绝。
+    ok = _run_verify(out, extra=["--allow-single-platform"])
+    assert ok.returncode == 0, ok.stdout + ok.stderr
     strict = _run_verify(out, extra=["--require-both-platforms"])
     assert strict.returncode != 0
     assert DARWIN_X86_64 in strict.stderr
@@ -446,7 +454,9 @@ def test_scripts_do_not_import_third_party() -> None:
     """工具只依赖标准库，CI 锁定依赖闭包后仍可运行。"""
     stdlib_ok = {
         "argparse", "hashlib", "json", "os", "pathlib", "re", "sys",
-        "__future__", "datetime", "urllib", "typing",
+        "__future__", "datetime", "tempfile", "urllib", "typing",
+        # 校验器刻意 import 同目录生成器以共用校验原语（非第三方依赖）。
+        "generate_update_manifest",
     }
     for script in (GENERATOR, VERIFIER):
         text = script.read_text(encoding="utf-8")

@@ -263,7 +263,7 @@
   - [ ] 生成的 latest.json 字段与 Tauri v2 updater schema 一致（对照官方文档字段名，写进 RESULT）
   - [ ] 幂等；`python3 -m py_compile`/全量 pytest 计数同步
   - [ ] 不引入网络请求/签名实现
-- **证据/接续**：不得勾选验收项。真实 keypair、HTTPS 更新源、Tauri updater 插件接线留父卡 ISS-040 与 ISS-041（签名）。
+- **证据/接续**（worker 交付，验收待 PM）：新增 `scripts/generate_update_manifest.py`、`scripts/verify_update_manifest.py`（均 0755，仅标准库），扩展 `tests/test_update_manifest.py`（24 用例）。**schema 依据**：Tauri v2 updater 官方文档 https://v2.tauri.app/plugin/updater/ —— 顶层 `version`/`notes`/`pub_date`/`platforms`，platform 项仅 `url`+`signature`，平台键为 `darwin-aarch64`/`darwin-x86_64`；落地 `docs/plans/2026-09-13-v0.3-release-design.md` §4 第 57 行（两架构分别发布）与第 96 行（任一架构/签名缺失须 fail closed）。**版本单一源**：`fathom/__init__.py:10` `__version__ = "0.3.0"`（与 `apps/desktop/src-tauri/Cargo.toml`、`tauri.conf.json` 一致）。**门禁数字**：全量 `.runtime/bin/python -m pytest -q` = **552 passed**（定向 24 passed）；`py_compile` 两脚本 OK。**独立复核（worker 自查，非验收）**：fail-closed 矩阵 8 例（缺平台/缺 sig 参数/空 sig/空产物/版本与产物不一致/非法 version/非法 pub_date/产物不存在）均 rc=1 且不落盘；写盘为 mkstemp 同目录 + `os.replace` 原子替换，失败时既有清单 md5 不变（stale 未被破坏）；同 `--pub-date` 两次运行 byte-identical（幂等）；校验器对 6 类篡改清单（空签名/未知字段/非法版本/非法日期/http scheme/`--artifacts-root` 签名错配）均 rc!=0。**负向对照**：分别中和「双架构必需」「版本-产物不一致」「产物空文件」三处守卫，定向测试各自由绿转红（1 failed），证明断言确实承重。**本次修正**：`verify_update_manifest.py` docstring 原文称「默认要求双架构」，与实现（默认放行单架构，`--require-both-platforms` 才收紧，`tests/test_update_manifest.py:354` 钉住该默认）不符，已改为如实描述；同处「url 必须可解析」亦放宽措辞为「带 scheme 须 https，无 scheme 视为相对名放行」。**能证明什么**：工具对上述输入类别的拒绝/放行行为、schema 字段与官方文档逐字段一致、幂等与失败不破坏既有清单、当前工作区全量 552 绿。**不能证明什么**：真实签名/公证/keypair、HTTPS 更新源可达性、Tauri updater 插件与前端更新 UI 端到端（均留父卡 ISS-040 与 ISS-041）；release CI 中 `--require-both-platforms` 是否被正确接线（本切片只提供工具）。
 
 ### ISS-066 · 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5）
 

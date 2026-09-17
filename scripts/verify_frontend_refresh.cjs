@@ -511,7 +511,19 @@ function createFixture() {
       });
       return;
     }
-    if (url.pathname === "/api/config") return json(res, 200, { ...state.config });
+    if (url.pathname === "/api/config") {
+      // ISS-069：exclude-names-env 场景如实建模「生效值被环境变量钉住」——
+      // 后端在 FATHOM_EXCLUDE_NAMES 存在时 sources.exclude_names 恒为 env，
+      // 生效值取环境变量，PUT 只落盘 settings.json 而不改变生效值。
+      if (state.scenario === "exclude-names-env") {
+        return json(res, 200, {
+          ...state.config,
+          exclude_names: ["env_pinned"],
+          sources: { ...state.config.sources, exclude_names: "env" },
+        });
+      }
+      return json(res, 200, { ...state.config });
+    }
     if (url.pathname.startsWith("/api/scan/status")) {
       // 历史记录（ISS-028 m3 设置页）
       return json(res, 200, {
@@ -982,6 +994,84 @@ async function main() {
         secondSave.feedback.includes("确认"),
       JSON.stringify({ confirmAfterSave, putBeforeSecond,
         putAfterSecond: fixture.state.counts.configPut || 0, secondSave }).slice(0, 240));
+
+    /* ---------- ISS-069 续作：env 覆盖时编辑器只读且如实标注 ---------- */
+    // 后端在 FATHOM_EXCLUDE_NAMES 存在时 sources.exclude_names 恒为 env，
+    // PUT 只落盘 settings.json、生效值不变（已用真实后端实测确认）。前端若
+    // 仍允许编辑并报「已保存（N 项）」，用户会误信改动生效而实际被静默丢弃。
+    await setScenario("exclude-names-env");
+    await openPage("#/settings");
+    await page.waitForSelector("#exclude-list [data-test='exclude-row']");
+    const envLocked = await page.evaluate(() => ({
+      note: document.querySelector("#exclude-override-note")?.textContent || "",
+      noteHidden: document.querySelector("#exclude-override-note")?.hidden,
+      inputDisabled: document.querySelector("#exclude-new-input")?.disabled,
+      addDisabled: document.querySelector("#btn-exclude-add")?.disabled,
+      saveDisabled: document.querySelector("#btn-exclude-save")?.disabled,
+      confirmDisabled: document.querySelector("#exclude-confirm")?.disabled,
+      rendered: [...document.querySelectorAll("#exclude-list [data-test='exclude-row']")]
+        .map((r) => r.getAttribute("data-mask")),
+    }));
+    record("exclude-editor-locks-and-labels-when-env-pinned",
+      envLocked.note.includes("FATHOM_EXCLUDE_NAMES") &&
+        envLocked.noteHidden === false &&
+        envLocked.inputDisabled === true &&
+        envLocked.addDisabled === true &&
+        envLocked.saveDisabled === true &&
+        envLocked.confirmDisabled === true &&
+        JSON.stringify(envLocked.rendered) === JSON.stringify(["env_pinned"]),
+      JSON.stringify(envLocked).slice(0, 260));
+    const envPutBefore = fixture.state.counts.configPut || 0;
+    // 第二道防线：即便用脚本绕过 disabled 直接点保存，也不能发出 PUT。
+    await page.evaluate(() => {
+      const box = document.getElementById("exclude-confirm");
+      if (box) box.checked = true;
+      document.getElementById("btn-exclude-save")?.click();
+    });
+    await page.waitForTimeout(150);
+    record("exclude-editor-env-pinned-never-puts",
+      (fixture.state.counts.configPut || 0) === envPutBefore,
+      JSON.stringify({ before: envPutBefore, after: fixture.state.counts.configPut || 0 }));
+
+    await setScenario(null);
+
+    /* ---------- ISS-069 续作：保存路径自身必须拦住超限列表 ---------- */
+    // addExcludeMask 的守卫只覆盖「新增」一条路径；删除/重渲染/后续批量入口
+    // 都可能造出超限列表。这里直接构造 51 行再点保存：必须被前端拦下、不发
+    // PUT，且给出含上限数字的说明——否则请求必然被后端 400，用户只能从服务端
+    // 错误里倒推原因。
+    await openPage("#/settings");
+    await page.waitForSelector("#exclude-list [data-test='exclude-row']");
+    await page.evaluate(() => {
+      document.getElementById("btn-exclude-save")?.click();  // 清空既有 inline 错误
+      const list = document.getElementById("exclude-list");
+      list.innerHTML = "";
+      for (let i = 0; i < 51; i += 1) {
+        const row = document.createElement("li");
+        row.className = "exclude-row";
+        row.setAttribute("data-test", "exclude-row");
+        row.setAttribute("data-mask", `cap${i}`);
+        row.innerHTML = `<code>cap${i}</code>`;
+        list.appendChild(row);
+      }
+    });
+    const capPutBefore = fixture.state.counts.configPut || 0;
+    await page.evaluate(() => {
+      const box = document.getElementById("exclude-confirm");
+      if (box) box.checked = true;
+      document.getElementById("btn-exclude-save")?.click();
+    });
+    await page.waitForTimeout(150);
+    const capState = await page.evaluate(() => ({
+      inline: document.querySelector("#exclude-inline-error")?.textContent || "",
+      feedback: document.querySelector("#config-feedback")?.textContent || "",
+    }));
+    record("exclude-editor-save-path-rejects-over-cap-list",
+      (fixture.state.counts.configPut || 0) === capPutBefore &&
+        capState.inline.includes("50") &&
+        capState.feedback.includes("50"),
+      JSON.stringify({ capPutBefore, capPutAfter: fixture.state.counts.configPut || 0,
+        capState }).slice(0, 260));
 
     /* ---------- 状态语义矩阵 ---------- */
     await setMode("onlyadded");

@@ -29,6 +29,13 @@ const SOURCE_LABELS = {
   cli: "该字段被启动参数覆盖，保存不会改变当前生效值",
 };
 
+/* ISS-069：exclude_names 的覆盖来源文案（与 SOURCE_LABELS 同口径，但指名
+ * 真实的环境变量 FATHOM_EXCLUDE_NAMES——后端 sources.exclude_names 只会是
+ * env / settings / default，不存在 cli 分支）。 */
+const EXCLUDE_SOURCE_OVERRIDE = {
+  env: "扫描排除列表被环境变量 FATHOM_EXCLUDE_NAMES 覆盖，此处保存不会改变当前生效值",
+};
+
 function renderEffective(cfg) {
   const target = document.getElementById("config-effective");
   if (!target) return;
@@ -88,6 +95,7 @@ function _ensureExcludePanel() {
         <button type="button" id="btn-exclude-add" class="btn">${icon("plus")}新增</button>
       </div>
       <p class="hint cfg-error" id="exclude-inline-error" hidden></p>
+      <p class="hint exclude-override" id="exclude-override-note" data-test="exclude-override-note" hidden></p>
       <p class="hint exclude-warning" data-test="exclude-dataset-warning">修改排除列表会形成新的数据集用于后续扫描；旧数据不会被删除，但新数据集与既有历史不可直接对比。</p>
       <label class="exclude-confirm-label">
         <input type="checkbox" id="exclude-confirm">
@@ -123,6 +131,30 @@ function setExcludeInlineError(text) {
   node.hidden = !text;
 }
 
+/* ISS-069：生效值被环境变量钉住时，编辑器必须整体只读。后端 sources 为 env
+ * 时 PUT 虽能落盘 settings.json，但生效值仍取环境变量（实测：PUT 后 sources
+ * 仍为 env、生效值不变），若继续允许编辑并显示“已保存（N 项）”，用户会以为
+ * 改动生效、实际被静默丢弃。这里如实标注并锁定输入。 */
+function excludeOverriddenByEnv(cfg) {
+  return cfg?.sources?.exclude_names === "env";
+}
+
+function applyExcludeOverrideLock(cfg) {
+  const overridden = excludeOverriddenByEnv(cfg);
+  const note = document.getElementById("exclude-override-note");
+  if (note) {
+    note.textContent = overridden ? EXCLUDE_SOURCE_OVERRIDE.env : "";
+    note.hidden = !overridden;
+  }
+  for (const id of ["exclude-new-input", "btn-exclude-add", "btn-exclude-save", "exclude-confirm"]) {
+    const node = document.getElementById(id);
+    if (node) node.disabled = overridden;
+  }
+  const panel = document.getElementById(EXCLUDE_PANEL_ID);
+  if (panel) panel.classList.toggle("exclude-readonly", overridden);
+  return overridden;
+}
+
 function renderExcludeEditor(cfg) {
   const panel = _ensureExcludePanel();
   if (!panel) return;
@@ -137,8 +169,11 @@ function renderExcludeEditor(cfg) {
                 aria-label="删除 ${escapeHtml(mask)}">${icon("trash")}</button>
       </li>`).join("")
     : `<li class="hint exclude-empty">当前无排除掩码（扫描全部目录）。</li>`;
+  const overridden = applyExcludeOverrideLock(cfg);
   for (const button of list.querySelectorAll("[data-test='exclude-remove']")) {
+    button.disabled = overridden;
     button.addEventListener("click", () => {
+      if (excludeOverriddenByEnv(lastConfig)) return;  // 只读锁定：UI 禁用外的第二道防线
       button.closest("[data-test='exclude-row']")?.remove();
       setExcludeInlineError("");
       if (!list.querySelector("[data-test='exclude-row']")) {
@@ -150,6 +185,10 @@ function renderExcludeEditor(cfg) {
 }
 
 function addExcludeMask() {
+  if (excludeOverriddenByEnv(lastConfig)) {
+    setExcludeInlineError(EXCLUDE_SOURCE_OVERRIDE.env);
+    return;
+  }
   const input = document.getElementById("exclude-new-input");
   if (!input) return;
   const value = input.value.trim();
@@ -193,6 +232,15 @@ async function saveExcludes() {
   for (const mask of masks) {
     const error = validateExcludeMask(mask);
     if (error) { setExcludeInlineError(error); showFeedback(error, "error"); return; }
+  }
+  // 上限必须在保存路径上再校一次：addExcludeMask 的守卫只覆盖“新增”这一条
+  // 路径，删除/重渲染/后续批量入口都可能造出超限列表。不在此处拦截就会把
+  // 必然 400 的请求发出去，用户只能从服务端错误里倒推原因。
+  if (masks.length > MAX_EXCLUDE_NAMES) {
+    const error = `排除掩码项数不得超过 ${MAX_EXCLUDE_NAMES} 项（当前 ${masks.length} 项）`;
+    setExcludeInlineError(error);
+    showFeedback(error, "error");
+    return;
   }
   try {
     const res = await apiPut("/api/config", { exclude_names: masks });
@@ -263,6 +311,9 @@ async function saveConfig(event) {
     const data = await res.json();
     lastConfig = data.config;
     renderEffective(data.config);
+    // PUT 返回完整生效配置：一并刷新排除编辑器的只读锁定，避免保存其它字段
+    // 后锁状态与 sources 不一致（例如 exclude_names 被环境变量钉住时）。
+    renderExcludeEditor(data.config);
     clearInputs();
     showFeedback(`已保存。${data.hint || ""}`, "ok");
   } catch (e) {

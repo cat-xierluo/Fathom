@@ -422,6 +422,11 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
 .exclude-add { display: flex; align-items: center; gap: 8px; }
 .exclude-add .ctl-input { flex: 1; min-width: 0; }
 .exclude-warning { color: var(--muted); }
+/* 生效值被环境变量钉住：整体只读，控件视觉上也须可辨（ISS-069） */
+.exclude-override { color: var(--danger); }
+.exclude-readonly .exclude-add,
+.exclude-readonly .exclude-confirm-label { opacity: .6; }
+.exclude-readonly :disabled { cursor: not-allowed; }
 .exclude-confirm-label {
   display: flex; align-items: flex-start; gap: 8px;
   font-size: 13px; color: var(--muted); cursor: pointer;

@@ -251,6 +251,14 @@
   - [ ] 修改提示与数据集身份口径一致；无「数量=影响」类表述
   - [ ] 浏览器 39 项不回退；不改后端
 - **证据/接续**：不得勾选验收项。实机（真实设置页操作 + 真实 du -I 生效）随 ISS-009 切片 2/ISS-010 实机验收。
+  - **分支/提交**：`iss-069-exclude-editor`（基于 `origin/main` `94bf400`）。`eb574f4` test(frontend)：夹具 + exclude_names PUT 白名单/校验 + 5 项红灯检查；`14f209a` feat(frontend)：settings.js 排除列表面板 + style.css。
+  - **改动文件**：`frontend/modules/pages/settings.js`（+174）、`frontend/style.css`（+24）、`scripts/verify_frontend_refresh.cjs`（+139/-4）。未改 `fathom/` 后端与 API、未改 `index.html`（面板运行时注入，同 ISS-002A 权限面板模式）、未改 `frontend/icons.js`（复用既有 `filter`/`plus`/`trash`）。
+  - **实跑命令与结果**（本机执行，非代跑）：
+    - `node scripts/verify_frontend_refresh.cjs` → `ok:true`、**81 passed / 0 failed**（基线 76 + 新增 5），`EXIT=0`；连跑 3 次均 81/0（稳定）。红灯基线：实现前同一脚本超时于 `#exclude-panel [data-test='exclude-row']`（选择器不存在），确认检查确实挂在新增编辑器上。
+    - `bash scripts/ci_browser_checks.sh` → **39 passed (expected 39)**，不回退。
+    - `pytest -q`（`.venv` python，未改后端）→ **528 passed / 0 failed**（2 条 starlette/anyio 弃用告警，与本次改动无关）。
+  - **新检查项**：`exclude-editor-renders-effective-masks`、`exclude-editor-rejects-illegal-masks-inline`、`exclude-editor-blocks-save-without-confirmation`、`exclude-editor-saves-via-put-and-hints-reinstall`、`exclude-editor-removes-mask`。
+  - **未验证项与原因**：(1) 真实 `du -I` 生效与真实运行根 `settings.json` 落盘未验——按卡片约定随 ISS-009/ISS-010 实机验收；夹具只镜像 PUT 400 合同不触真实文件系统。(2) 未勾选任何验收项、状态保持 READY（按指令）。
 
 ### ISS-040A · latest.json 双架构生成与 fail-closed 校验工具（ISS-040 代码切片）
 

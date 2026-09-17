@@ -406,6 +406,30 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
 #config-feedback.cfg-error { color: var(--danger); }
 #config-feedback.cfg-ok { color: var(--ok); }
 
+/* 排除列表编辑器（ISS-069）：行式掩码 + 新增/删除，宽视口不横向溢出 */
+.exclude-panel { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 10px; }
+.exclude-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.exclude-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--card);
+}
+.exclude-row code { flex: 1; min-width: 0; word-break: break-all; font-size: 13px; }
+.exclude-empty { padding: 4px 0; }
+.exclude-add { display: flex; align-items: center; gap: 8px; }
+.exclude-add .ctl-input { flex: 1; min-width: 0; }
+.exclude-warning { color: var(--muted); }
+.exclude-confirm-label {
+  display: flex; align-items: flex-start; gap: 8px;
+  font-size: 13px; color: var(--muted); cursor: pointer;
+}
+.exclude-confirm-label input { flex: none; margin-top: 2px; }
+.exclude-actions { display: flex; gap: 8px; }
+#exclude-inline-error.cfg-error { color: var(--danger); }
+
 .settings-actions p { margin: 6px 0; }
 code {
   background: var(--bg); border: 1px solid var(--border); border-radius: 4px;

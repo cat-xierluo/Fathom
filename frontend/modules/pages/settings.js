@@ -33,12 +33,185 @@ function renderEffective(cfg) {
   const target = document.getElementById("config-effective");
   if (!target) return;
   const override = SOURCE_LABELS[cfg.sources?.scan_root];
+  const masks = excludeMasksFromConfig(cfg.exclude_names);
   target.innerHTML =
     `当前生效：监控根 <code>${escapeHtml(cfg.scan_root)}</code>` +
     ` · 计划 <code>${escapeHtml(cfg.scan_time)}</code>` +
     ` · 入库阈值 <code>${escapeHtml(String(cfg.min_kb))} KB</code>` +
     ` · 低空间提醒 <code>${escapeHtml(String(cfg.free_alert_gb))} GB</code>` +
+    ` · 排除掩码 <code>${masks.length ? escapeHtml(masks.join(";")) : "（无）"}</code>` +
     (override ? `<br>${escapeHtml(override)}` : "");
+}
+
+/* ---------- ISS-069 排除列表编辑器 ----------
+ * 消费 GET /api/config 的 exclude_names（列表或规范串，两端皆可），
+ * 保存只走既有 PUT /api/config。排除集变化会形成新数据集（旧数据不删），
+ * 故保存前必须显式勾选确认；非法输入（`/`、`.`、`..`、空项、重复）在
+ * 前端即时反馈，最终仍以服务端 400 为准。 */
+const EXCLUDE_PANEL_ID = "exclude-panel";
+const MAX_EXCLUDE_NAMES = 50;  // 与 fathom/config.py 一致（防御性上限）
+
+/** GET /api/config 的 exclude_names 既可能是列表也可能是规范串，统一成数组。 */
+function excludeMasksFromConfig(raw) {
+  if (Array.isArray(raw)) return raw.filter((s) => typeof s === "string" && s.trim());
+  if (typeof raw === "string" && raw.trim()) return raw.split(";").filter((s) => s.trim());
+  return [];
+}
+
+/** 单项即时校验：返回错误文案，合法则返回 ""。与后端合同同序同口径。 */
+function validateExcludeMask(mask) {
+  const value = String(mask ?? "").trim();
+  if (!value) return "排除掩码不能为空";
+  if (value.includes("/")) return "排除掩码不得包含路径分隔符 “/”（只按名字匹配）";
+  if (value === "." || value === "..") return `排除掩码不得为 “${value}”`;
+  return "";
+}
+
+function _ensureExcludePanel() {
+  const page = document.getElementById("page-settings");
+  if (!page) return null;
+  let panel = document.getElementById(EXCLUDE_PANEL_ID);
+  if (panel) return panel;
+  panel = document.createElement("div");
+  panel.id = EXCLUDE_PANEL_ID;
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h2>扫描排除列表</h2>
+      <p class="hint">按名字（fnmatch 通配）跳过整棵子树，例如 <code>node_modules</code>、<code>*.noindex</code>；不含路径分隔符。</p>
+    </div>
+    <div class="exclude-panel" data-test="exclude-panel-body">
+      <ul class="exclude-list" id="exclude-list"></ul>
+      <div class="exclude-add">
+        <input class="ctl-input cfg-wide" id="exclude-new-input" type="text"
+               placeholder="新增掩码，例如 node_modules" autocomplete="off">
+        <button type="button" id="btn-exclude-add" class="btn">${icon("plus")}新增</button>
+      </div>
+      <p class="hint cfg-error" id="exclude-inline-error" hidden></p>
+      <p class="hint exclude-warning" data-test="exclude-dataset-warning">修改排除列表会形成新的数据集用于后续扫描；旧数据不会被删除，但新数据集与既有历史不可直接对比。</p>
+      <label class="exclude-confirm-label">
+        <input type="checkbox" id="exclude-confirm">
+        <span>我已知晓：保存后按新数据集扫描，历史对比可能中断</span>
+      </label>
+      <div class="exclude-actions">
+        <button type="button" id="btn-exclude-save" class="btn primary">${icon("filter")}保存排除列表</button>
+      </div>
+    </div>`;
+  // 插在"扫描运行历史"面板之前；找不到则追加到页面末尾
+  const history = document.getElementById("scan-history");
+  const anchor = history ? history.closest(".panel") : null;
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor);
+  else page.appendChild(panel);
+  document.getElementById("btn-exclude-add")?.addEventListener("click", addExcludeMask);
+  document.getElementById("exclude-new-input")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); addExcludeMask(); }
+  });
+  document.getElementById("btn-exclude-save")?.addEventListener("click", saveExcludes);
+  return panel;
+}
+
+/** 当前编辑态掩码（DOM 为单一真源，保存时据此组装 PUT body）。 */
+function currentExcludeMasks() {
+  return [...document.querySelectorAll(`#${EXCLUDE_PANEL_ID} [data-test='exclude-row']`)]
+    .map((row) => row.getAttribute("data-mask"));
+}
+
+function setExcludeInlineError(text) {
+  const node = document.getElementById("exclude-inline-error");
+  if (!node) return;
+  node.textContent = text || "";
+  node.hidden = !text;
+}
+
+function renderExcludeEditor(cfg) {
+  const panel = _ensureExcludePanel();
+  if (!panel) return;
+  const list = document.getElementById("exclude-list");
+  if (!list) return;
+  const masks = excludeMasksFromConfig(cfg?.exclude_names);
+  list.innerHTML = masks.length
+    ? masks.map((mask) => `
+      <li class="exclude-row" data-test="exclude-row" data-mask="${escapeHtml(mask)}">
+        <code>${escapeHtml(mask)}</code>
+        <button type="button" class="btn-mini" data-test="exclude-remove"
+                aria-label="删除 ${escapeHtml(mask)}">${icon("trash")}</button>
+      </li>`).join("")
+    : `<li class="hint exclude-empty">当前无排除掩码（扫描全部目录）。</li>`;
+  for (const button of list.querySelectorAll("[data-test='exclude-remove']")) {
+    button.addEventListener("click", () => {
+      button.closest("[data-test='exclude-row']")?.remove();
+      setExcludeInlineError("");
+      if (!list.querySelector("[data-test='exclude-row']")) {
+        list.innerHTML = `<li class="hint exclude-empty">当前无排除掩码（扫描全部目录）。</li>`;
+      }
+    });
+  }
+  setExcludeInlineError("");
+}
+
+function addExcludeMask() {
+  const input = document.getElementById("exclude-new-input");
+  if (!input) return;
+  const value = input.value.trim();
+  const error = validateExcludeMask(value);
+  if (error) { setExcludeInlineError(error); return; }
+  const masks = currentExcludeMasks();
+  if (masks.includes(value)) { setExcludeInlineError(`“${value}” 已在列表中`); return; }
+  if (masks.length >= MAX_EXCLUDE_NAMES) {
+    setExcludeInlineError(`排除掩码项数不得超过 ${MAX_EXCLUDE_NAMES} 项`);
+    return;
+  }
+  const list = document.getElementById("exclude-list");
+  const empty = list.querySelector(".exclude-empty");
+  if (empty) empty.remove();
+  const row = document.createElement("li");
+  row.className = "exclude-row";
+  row.setAttribute("data-test", "exclude-row");
+  row.setAttribute("data-mask", value);
+  row.innerHTML =
+    `<code>${escapeHtml(value)}</code>` +
+    `<button type="button" class="btn-mini" data-test="exclude-remove" aria-label="删除 ${escapeHtml(value)}">${icon("trash")}</button>`;
+  row.querySelector("[data-test='exclude-remove']").addEventListener("click", () => {
+    row.remove();
+    setExcludeInlineError("");
+    if (!list.querySelector("[data-test='exclude-row']")) {
+      list.innerHTML = `<li class="hint exclude-empty">当前无排除掩码（扫描全部目录）。</li>`;
+    }
+  });
+  list.appendChild(row);
+  input.value = "";
+  setExcludeInlineError("");
+}
+
+async function saveExcludes() {
+  // 保存前显式确认：区别于其余字段的就地保存，排除集变化会形成新数据集。
+  if (!document.getElementById("exclude-confirm")?.checked) {
+    showFeedback("请先勾选确认：修改排除列表会形成新数据集用于后续扫描。", "error");
+    return;
+  }
+  const masks = currentExcludeMasks();
+  for (const mask of masks) {
+    const error = validateExcludeMask(mask);
+    if (error) { setExcludeInlineError(error); showFeedback(error, "error"); return; }
+  }
+  try {
+    const data = await apiPut("/api/config", { exclude_names: masks });
+    showFeedback(
+      `已保存排除列表（${masks.length} 项）。${data.hint || "需重新安装计划才生效。"}`, "ok");
+    // 保存成功后以服务端返回值重新渲染；等同重新拉取一次生效值。
+    try {
+      const fresh = await fetchJSON("/api/config");
+      lastConfig = fresh;
+      renderEffective(fresh);
+      renderExcludeEditor(fresh);
+    } catch { /* 刷新失败不覆盖已成功的保存反馈 */ }
+  } catch (e) {
+    showFeedback(
+      e.status === 0
+        ? "保存失败：无法连接本地服务，当前生效值保持不变。"
+        : `保存失败：${e.message} 当前生效值保持不变。`,
+      "error");
+  }
 }
 
 function showFeedback(text, kind) {
@@ -149,6 +322,7 @@ async function loadSettings() {
   if (c) {
     lastConfig = c;
     renderEffective(c);
+    renderExcludeEditor(c);
   }
   const p = c?.policies || {};
   const dbMb = s.db_bytes ? (s.db_bytes / 1024 / 1024).toFixed(1) : "0.0";

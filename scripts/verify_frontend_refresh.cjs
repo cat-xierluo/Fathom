@@ -54,8 +54,11 @@ function createFixture() {
     scan_time: "13:30",
     min_kb: 5120,
     free_alert_gb: 3.5,
-    sources: { scan_root: "default", scan_time: "settings", min_kb: "settings", free_alert_gb: "settings" },
-    defaults: { scan_root: "/fixture/home", scan_time: "12:00", min_kb: 10240, free_alert_gb: 10 },
+    // ISS-069：初始已有一项排除掩码（来源 settings），前端应原样渲染该值；
+    // 硬编码空列表或默认掩码的回归会被前端检查捕获。
+    exclude_names: ["*.noindex"],
+    sources: { scan_root: "default", scan_time: "settings", min_kb: "settings", free_alert_gb: "settings", exclude_names: "settings" },
+    defaults: { scan_root: "/fixture/home", scan_time: "12:00", min_kb: 10240, free_alert_gb: 10, exclude_names: [] },
     policies: { keep_daily_days: 21, keep_weekly_weeks: 8, du_timeout_s: 14400, bigfile_default_days: 7, bigfile_default_mb: 100 },
     settings_path: "/fixture/runtime/settings.json",
   });
@@ -448,7 +451,7 @@ function createFixture() {
         // 形状校验镜像 fathom/config.py 的合同；scan_root 的存在性/目录校验
         // 依赖真实文件系统，夹具根是合成路径，只校验键与数值形状（后端
         // pytest 已覆盖完整校验矩阵）。
-        const allowed = ["scan_root", "scan_time", "min_kb", "free_alert_gb"];
+        const allowed = ["scan_root", "scan_time", "min_kb", "free_alert_gb", "exclude_names"];
         const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
         if (unknown.length) {
           return json(res, 400, { detail: `未知的配置项：${unknown.join(", ")}` });
@@ -464,9 +467,40 @@ function createFixture() {
             return json(res, 400, { detail: `${key} 必须是正的有限数值` });
           }
         }
+        // ISS-069：镜像 fathom/config.py 的 exclude_names 合同（列表形态）；
+        // 前端只做即时反馈，最终以本 400 为准。
+        if (body.exclude_names != null) {
+          const raw = body.exclude_names;
+          if (!Array.isArray(raw)) {
+            return json(res, 400, { detail: "exclude_names 必须是字符串列表或规范串" });
+          }
+          for (const item of raw) {
+            if (typeof item !== "string") {
+              return json(res, 400, { detail: `exclude_names 每项必须是字符串：${JSON.stringify(item)}` });
+            }
+            const trimmed = item.trim();
+            if (!trimmed) return json(res, 400, { detail: "exclude_names 含空项" });
+            if (trimmed.includes("/")) {
+              return json(res, 400, { detail: `exclude_names 不得包含路径分隔符 '/'：${trimmed}` });
+            }
+            if (trimmed === "." || trimmed === "..") {
+              return json(res, 400, { detail: `exclude_names 不得为 '${trimmed}'` });
+            }
+          }
+          if (new Set(raw.map((s) => s.trim())).size > 50) {
+            return json(res, 400, { detail: "exclude_names 项数不得超过 50" });
+          }
+        }
         nextCall("configPut");
         for (const key of allowed) {
-          if (body[key] !== undefined && body[key] !== null) state.config[key] = body[key];
+          if (body[key] === undefined || body[key] === null) continue;
+          if (key === "exclude_names") {
+            // 规范串形态与后端一致：排序去重后 ';' 拼接
+            const canonical = [...new Set(body[key].map((s) => s.trim()))].sort().join(";");
+            state.config.exclude_names = canonical;
+          } else {
+            state.config[key] = body[key];
+          }
         }
         return json(res, 200, {
           applied: true,
@@ -811,6 +845,103 @@ async function main() {
         resetValues.effective.includes("09:15") &&
         (fixture.state.counts.configPut || 0) === putCountBeforeReset,
       JSON.stringify(resetValues).slice(0, 120));
+
+    /* ---------- ISS-069 设置页排除列表编辑器 ---------- */
+    await openPage("#/settings");
+    await page.waitForSelector("#exclude-panel [data-test='exclude-row']");
+    const exclInitial = await page.evaluate(() => ({
+      rows: [...document.querySelectorAll("#exclude-panel [data-test='exclude-row']")]
+        .map((r) => r.getAttribute("data-mask")),
+      warning: document.querySelector("#exclude-panel [data-test='exclude-dataset-warning']")?.textContent || "",
+      confirmRequired: !!document.querySelector("#exclude-panel #exclude-confirm"),
+      unbounded: document.body.textContent.includes("&lt;"),
+    }));
+    record("exclude-editor-renders-effective-masks",
+      exclInitial.rows.length === 1 && exclInitial.rows[0] === "*.noindex" &&
+        exclInitial.warning.includes("新数据集") && exclInitial.confirmRequired,
+      JSON.stringify(exclInitial).slice(0, 200));
+
+    // 非法输入即时反馈：'/'、'.'、'..'、空项；且不发起 PUT
+    const putBeforeInvalid = fixture.state.counts.configPut || 0;
+    const invalidCases = [
+      { value: "bad/name", expect: "路径分隔符" },
+      { value: "..", expect: "不得为" },
+      { value: ".", expect: "不得为" },
+    ];
+    const invalidObserved = [];
+    for (const item of invalidCases) {
+      await page.fill("#exclude-new-input", item.value);
+      await page.click("#btn-exclude-add");
+      await page.waitForTimeout(80);
+      const text = await page.locator("#exclude-inline-error").textContent();
+      invalidObserved.push({ value: item.value, expect: item.expect, text });
+    }
+    // 空项：直接点加（输入为空）
+    await page.fill("#exclude-new-input", "   ");
+    await page.click("#btn-exclude-add");
+    await page.waitForTimeout(80);
+    const emptyText = await page.locator("#exclude-inline-error").textContent();
+    record("exclude-editor-rejects-illegal-masks-inline",
+      invalidObserved.every((o) => o.text && o.text.includes(o.expect)) &&
+        emptyText.includes("空") &&
+        (fixture.state.counts.configPut || 0) === putBeforeInvalid,
+      JSON.stringify({ invalidObserved, emptyText }).slice(0, 240));
+
+    // 未勾选确认时不允许保存：给出提示且不发 PUT
+    await page.fill("#exclude-new-input", "node_modules");
+    await page.click("#btn-exclude-add");
+    await page.waitForTimeout(80);
+    const afterAdd = await page.evaluate(() => ({
+      rows: [...document.querySelectorAll("#exclude-panel [data-test='exclude-row']")]
+        .map((r) => r.getAttribute("data-mask")),
+      inlineError: document.querySelector("#exclude-inline-error")?.textContent || "",
+    }));
+    const putBeforeUnconfirmed = fixture.state.counts.configPut || 0;
+    await page.click("#btn-exclude-save");
+    await page.waitForTimeout(120);
+    const unconfirmed = await page.evaluate(() => ({
+      feedback: document.querySelector("#config-feedback")?.textContent || "",
+      feedbackVisible: !document.querySelector("#config-feedback")?.hidden,
+      effective: document.querySelector("#config-effective")?.textContent || "",
+    }));
+    record("exclude-editor-blocks-save-without-confirmation",
+      afterAdd.rows.includes("node_modules") && afterAdd.inlineError === "" &&
+        unconfirmed.feedbackVisible && unconfirmed.feedback.includes("确认") &&
+        unconfirmed.feedback.includes("新数据集") &&
+        (fixture.state.counts.configPut || 0) === putBeforeUnconfirmed &&
+        !(fixture.state.config.exclude_names || "").includes("node_modules"),
+      JSON.stringify({ afterAdd, unconfirmed }).slice(0, 240));
+
+    // 勾选确认后保存：走 PUT /api/config，生效值刷新且提示需重装
+    await page.check("#exclude-confirm");
+    await page.click("#btn-exclude-save");
+    await page.waitForFunction(
+      () => (document.querySelector("#config-effective")?.textContent || "").includes("node_modules"),
+      null, { timeout: 5000 });
+    const saved = await page.evaluate(() => ({
+      feedback: document.querySelector("#config-feedback")?.textContent || "",
+      effective: document.querySelector("#config-effective")?.textContent || "",
+      rows: [...document.querySelectorAll("#exclude-panel [data-test='exclude-row']")]
+        .map((r) => r.getAttribute("data-mask")),
+    }));
+    record("exclude-editor-saves-via-put-and-hints-reinstall",
+      saved.feedback.includes("需重新安装") &&
+        String(fixture.state.config.exclude_names).includes("node_modules") &&
+        String(fixture.state.config.exclude_names).includes("*.noindex"),
+      JSON.stringify(saved).slice(0, 200));
+
+    // 删除一项并确认保存：PUT 只带 exclude_names，且不含被删掩码
+    await page.click("#exclude-panel [data-test='exclude-row'][data-mask='*.noindex'] [data-test='exclude-remove']");
+    await page.waitForFunction(
+      () => !document.querySelector("#exclude-panel [data-test='exclude-row'][data-mask='*.noindex']"),
+      null, { timeout: 5000 });
+    await page.check("#exclude-confirm");
+    await page.click("#btn-exclude-save");
+    await page.waitForTimeout(150);
+    record("exclude-editor-removes-mask",
+      !String(fixture.state.config.exclude_names).includes("*.noindex") &&
+        String(fixture.state.config.exclude_names).includes("node_modules"),
+      String(fixture.state.config.exclude_names));
 
     /* ---------- 状态语义矩阵 ---------- */
     await setMode("onlyadded");

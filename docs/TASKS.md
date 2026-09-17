@@ -113,6 +113,8 @@
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | DONE | ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | DONE | ISS-062 |
 | ISS-066 | 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5） | P1 | M1 | DONE | ISS-016A、ISS-065 |
+| ISS-069 | 设置页排除列表编辑器（消费 /api/config，含新数据集确认提示） | P1 | M2 | READY | ISS-016A、ISS-066、ISS-002A |
+| ISS-040A | latest.json 双架构生成与 fail-closed 校验工具（ISS-040 代码切片） | P2 | M2 | READY | ISS-037 |
 | ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | DONE | ISS-028、ISS-065 |
 | ISS-067 | `/api/snapshots` 补齐 vanished_count 与 exclude_names（ISS-002A 接缝） | P1 | M1 | DONE | ISS-066、ISS-002A |
 | ISS-068 | Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝） | P1 | M1 | DONE | ISS-002A |
@@ -236,6 +238,32 @@
   **接线**：`scripts/ci_tauri_opener_registered.sh`（新建，bundle 无关）加入 `.github/workflows/ci.yml` 的 `cargo-locked` job，紧随 `ci_cargo_locked.sh`（依赖其刚生成的 ACL 产物）。
 
   **76/76 为何仍未覆盖本缺陷**：其中 `permissions-tauri-mock-deeplink-invokes-opener` 断言的是 mock 桥收到的 `cmd=plugin:opener|open_url` 与 `args`，只证明**前端发对了**，不证明壳层**注册了**、更不证明 **URL scope 放行了**——这正是新增源码层 + scope 断言的存在理由。
+
+### ISS-069 · 设置页排除列表编辑器（消费 /api/config，含新数据集确认提示）
+
+- **状态**：READY（P1/M2）；来源：ISS-066 只交付了后端（PUT /api/config 已校验 exclude_names），用户当前只能手改 `settings.json`；ISS-002A 已把设置页与覆盖说明就绪。
+- **目标**：设置页提供排除列表的查看/新增/删除（名字掩码），保存走既有 `PUT /api/config`；修改排除集会形成新数据集这一点必须在 UI 明确提示并需确认；非法输入（含 `/`、`.`、`..`、空项）前端即时反馈且以服务端 400 为准。
+- **范围**：`frontend/modules/pages/settings.js`、`frontend/style.css`（如需）、`frontend/icons.js`（如需新图标）、`scripts/verify_frontend_refresh.cjs`（新增检查项）。不改后端与 API。
+- **实施边界**：列表编辑沿用设置页既有表单模式与写令牌流程；每项掩码旁给一句可解释说明（「按名字匹配并整树跳过，如 com.tencent.xinWeChat」）；确认提示文案写明「保存后下一次扫描将形成新数据集，不与旧数据互比」（与 ISS-021/066 口径一致）；无 emoji；图标只经 icons.js；`verify_frontend_refresh.cjs` 新增检查（新增/删除/非法拒绝/确认提示/来源标注显示），node 命令由 PM 代跑（MiniMax 守卫拒 node，按 ISS-002A 预案）。
+- **验收**：
+  - [ ] 新增/删除/非法拒绝/确认提示各有前端检查项（65→65+N 全过，PM 代跑）
+  - [ ] 保存走既有 PUT 入口（fixture 计数），失败时旧值保持且可辨
+  - [ ] 修改提示与数据集身份口径一致；无「数量=影响」类表述
+  - [ ] 浏览器 39 项不回退；不改后端
+- **证据/接续**：不得勾选验收项。实机（真实设置页操作 + 真实 du -I 生效）随 ISS-009 切片 2/ISS-010 实机验收。
+
+### ISS-040A · latest.json 双架构生成与 fail-closed 校验工具（ISS-040 代码切片）
+
+- **状态**：READY（P2/M2）；来源：ISS-040（BLOCKED 于 ISS-009/010）拆分——updater 插件接线、keypair、Tauri 命令与设置页状态留父卡/后续卡，本切片只交付清单工具。
+- **目标**：`scripts/generate_update_manifest.py`（或 scripts/ 下同名工具）：输入 arm64/x86_64 两个产物路径 + 版本号 + 各自 `.sig`，产出 Tauri updater 兼容的 `latest.json`（含 `platforms` 下 `darwin-aarch64`/`darwin-x86_64` 的 `signature` 与 URL）；**缺任一平台、版本与产物不一致、`.sig` 缺失/为空时 fail-closed 拒绝生成**（exit 非 0 + 中文原因）；配套校验器（读已生成的 latest.json 断言同规则）。
+- **范围**：`scripts/generate_update_manifest.py`、`scripts/verify_update_manifest.py`（或合一）、`tests/test_update_manifest.py`。不引 crate、不动 Tauri 配置、不做真实签名（`.sig` 由调用方提供）。
+- **实施边界**：schema 参照 Tauri v2 updater 的 latest.json（`version`/`notes`/`pub_date`/`platforms.{darwin-aarch64,darwin-x86_64}.{signature,url}`）；URL 由参数传入不猜测；`pub_date` 用 UTC ISO8601；幂等（同输入同输出）；测试覆盖：双平台完整生成、单平台缺失拒绝、版本不一致拒绝、sig 空拒绝、校验器对合法/损坏清单的判定、JSON 结构逐字段断言。
+- **验收**：
+  - [ ] fail-closed 矩阵全部有测试（缺失平台/版本不一致/空 sig/坏 JSON）
+  - [ ] 生成的 latest.json 字段与 Tauri v2 updater schema 一致（对照官方文档字段名，写进 RESULT）
+  - [ ] 幂等；`python3 -m py_compile`/全量 pytest 计数同步
+  - [ ] 不引入网络请求/签名实现
+- **证据/接续**：不得勾选验收项。真实 keypair、HTTPS 更新源、Tauri updater 插件接线留父卡 ISS-040 与 ISS-041（签名）。
 
 ### ISS-066 · 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5）
 

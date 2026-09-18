@@ -122,7 +122,7 @@
 | ISS-068 | Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝） | P1 | M1 | DONE | ISS-002A |
 | ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
 | ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | DONE | ISS-064 |
-| ISS-072 | R3 测深视觉签名实装与仪器风数字排版（frontend/ 产品 UI） | P1 | M2 | REVIEW | ISS-026、ISS-028 |
+| ISS-072 | R3 测深视觉签名实装与仪器风数字排版（frontend/ 产品 UI） | P1 | M2 | DONE | ISS-026、ISS-028 |
 
 ## 任务卡
 
@@ -427,6 +427,7 @@
   - [x] 前端刷新检查 86 项与浏览器检查 39 项全绿（断言如因结构变化需调整，逐条说明） —— 86/0 与 39/39，零断言调整（品牌区 id/结构未动，只换注入内容）
   - [x] 980×640 / 1220×820 双视口截图目检：品牌元素稀疏、对比度未降、无布局破损 —— 安全夹具服务 + Playwright 双视口截图（analyze 目检：深度环/等深线/海沟蓝均确认，2x2 卡片窄视口整齐，无重叠溢出；截图留证 gitignore 目录）
 - **证据/接续**：来源：用户 2026-09-18 评审 UI「中规中矩、缺个性化」，选定方向 A（R3 落地）+ B（仪器风细节）。R3 原型资产（token/深度环 SVG/等深线生成）在 `prototypes/ux/`，PR #10 已合并；本卡为原型→实装的移植，不重新设计。
+- **DONE（2026-09-18 晚，[PR #114](https://github.com/cat-xierluo/fathom/pull/114) squash 合并为 main `a568b1d`）**：独立 reviewer（agent_c7101596）7 项全 CONFIRMED **ACCEPT**（深度环 path 与原型逐字符一致、等深线六圆参数逐属性一致、两项检查本机复跑 86/0 与 39/39、语义色未误动、越界零项）；其两条 non-blocking（索引状态、DESIGN 陈旧段落）已在合并前修正。reviewer 另备注 5 个已声明未消费的 token（--hairline/--text-2/--focus/--primary-weak/--font-mono）留待后续卡消费或清理。
 
 ### ISS-065 · 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照）
 

@@ -791,6 +791,65 @@ def test_timeout_kills_sigterm_ignoring_du_and_marks_interrupted(tmp_path, monke
     new_lease.release()
 
 
+def test_timeout_message_reports_partial_progress_count(tmp_path, monkeypatch):
+    """ISS-070：超时报文必须携带"du 已产出多少条完整记录"的进度线索。
+
+    生产实证（2026-09-18 run 5）：263 分钟后超时，报文只有"最后输出路径"，
+    运维无法区分两种根本不同的故障——(a) du 一直在推进、只是量大跑不完，
+    还是 (b) du 卡在某个目录、几乎不推进。二者处置完全不同。本用例先红后绿：
+    让假 du 在 0.3 秒内先后写出两条完整记录再挂起，断言超时报文含有
+    "已产出 N 条记录" 进度线索，且 N == 2（只数完整记录，半条碎片不计）。
+    """
+    runtime = tmp_path / "runtime"
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "x.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(config, "DB_PATH", runtime / "data" / "fathom.db")
+    monkeypatch.setattr(config, "REPORTS_DIR", runtime / "reports")
+    monkeypatch.setattr(config, "LOGS_DIR", runtime / "logs")
+    monkeypatch.setattr(config, "DEFAULT_ROOT", root)
+    monkeypatch.setattr(config, "DU_TIMEOUT_S", 0.4)
+    monkeypatch.setattr(scanner, "_lsof_du_cwd", lambda pid: "")
+
+    real_popen = subprocess.Popen
+
+    def progress_then_hang_popen(*args, **kwargs):
+        # 先写两条完整记录（换行结尾）+ 一条半截碎片，再永久挂起，模拟
+        # "du 有进展但未跑完"的超时形态；半截记录不得被计入进度数。
+        script = (
+            "import sys,time;"
+            "sys.stdout.write('1024\\t/a\\n');sys.stdout.flush();"
+            "sys.stdout.write('2048\\t/b\\n');sys.stdout.flush();"
+            "sys.stdout.write('4096\\t/half');sys.stdout.flush();"
+            "time.sleep(30)"
+        )
+        return real_popen(
+            [str(PYTHON), "-c", script],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True, pass_fds=kwargs.get("pass_fds", ()),
+        )
+
+    monkeypatch.setattr(scanner.subprocess, "Popen", progress_then_hang_popen)
+
+    with pytest.raises(scanner.ScanInterruptedError) as excinfo:
+        scan_coordinator.run_scan(source="cli", root=root)
+    message = str(excinfo.value)
+    assert "du 超过 0.4 秒安全时限" in message
+    # 进度线索：只数完整记录（2 条），末条路径为 /b。
+    assert "已产出 2 条记录" in message
+    assert "/b" in message
+
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT status, message FROM scan_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["status"] == "interrupted"
+        assert "已产出 2 条记录" in row["message"]
+    finally:
+        conn.close()
+
+
 class TestISS003ANotificationSemantics:
     """ISS-003A：首扫/partial/中断三态通知语义经协调器真实接线钉住。
 

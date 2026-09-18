@@ -750,7 +750,9 @@ class TestISS064WallClockDeadline:
                     scanner.run_du(root)
         finally:
             os.close(fd)
-        assert str(excinfo.value) == "du 超过 0.3 秒安全时限"
+        # ISS-070：线索全不可得时报文只保留基线 + 进度条数（此处 du 未产出
+        # 任何记录，故为 0——正是"卡住不推进"的形态）。
+        assert str(excinfo.value) == "du 超过 0.3 秒安全时限；已产出 0 条记录"
         with pytest.raises(ProcessLookupError):
             os.kill(child_pids[0], 0)
 

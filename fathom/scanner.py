@@ -416,6 +416,13 @@ def run_du(root: Path) -> DuResult:
             start_new_session=True,
             pass_fds=(inherited_fd,),
         )
+        # ISS-071：测试可注入"du 已就绪"回调，把安全时限起点钉在子进程已可
+        # 产出记录的确定性时点，而不是 Popen 刚返回（子进程尚未 exec/首条
+        # 记录尚未进入管道）的时点——否则超时后 partial_output 是否已有记录
+        # 取决于调度，测试间歇失败。默认未注入回调，零行为变化。
+        ready_hook = globals().get("_DU_READY_HOOK")
+        if ready_hook is not None:
+            ready_hook(proc.pid)
         # ISS-064：deadline 以墙钟为主（time.time() 睡眠期间照常前进），
         # monotonic 作第二轨——macOS 的 time.monotonic() 基于
         # mach_absolute_time，系统睡眠期间不前进，单轨 monotonic 会把

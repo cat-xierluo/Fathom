@@ -4,7 +4,7 @@
 #
 # 串联：
 #   1. build_helper.sh（生产 helper 冻结到 resources/helper/fathom-helper/）
-#   2. build_icons.sh（占位 icon.icns；NOT_VERIFIED）
+#   2. build_icons.sh（ISS-045 深度环正式 icon.icns）
 #   3. cargo tauri build --bundles app,dmg（未签名）
 #
 # 输出：
@@ -40,7 +40,7 @@ if [ "$HELPER_RC" -ne 0 ]; then
   exit 1
 fi
 
-log_step "2/3 占位 icon.icns（NOT_VERIFIED）"
+log_step "2/3 正式 icon.icns（ISS-045 深度环）"
 bash "$ROOT/scripts/build_icons.sh" 2>&1 | tee "$LOG_DIR/icons.log"
 ICONS_RC=${PIPESTATUS[0]}
 if [ "$ICONS_RC" -ne 0 ]; then

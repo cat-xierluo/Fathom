@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!--
+    Fathom 正式应用图标 canonical 声明（ISS-045，用户 2026-09-19 确认深度环方向）。
+    本文件是几何与配色的单一真值：1024 位图产物由 scripts/build_app_icon.py
+    按 scale=1024/24 从本几何渲染（两处参数须同步修改，改本文件必须重跑脚本）。
+
+    几何与 frontend/icons.js 的 brandRing（24 viewBox，stroke 2）逐参数对应，
+    仅把描边加粗到 2.4/2.2 以提升小尺寸可辨性；构图为海沟蓝 squircle 底 +
+    白色开放环（右上 50 度缺口）+ 白色中心探针 + 亮矿物青跨缺口刻度
+    （#3e7e7c 在深底上对比不足，图标用亮阶 #82c8c2）。
+    来源：全部自绘几何，无字体、无第三方素材；随仓库以 Apache-2.0 发布（DEC-020）。
+  -->
+  <rect x="0" y="0" width="24" height="24" rx="4.32" fill="#345d7f"/>
+  <g fill="none" stroke-linecap="butt">
+    <!-- 开放环：起点 (20,9.1) 即 -20°，终点 (14.9,4) 即 290°，大弧顺时针跨 310° -->
+    <path d="M20 9.1 A8.5 8.5 0 1 1 14.9 4" stroke="#ffffff" stroke-width="2.4"/>
+    <!-- 中心探针 -->
+    <line x1="12" y1="7.5" x2="12" y2="16.5" stroke="#ffffff" stroke-width="2.4"/>
+    <!-- 跨缺口短刻度（亮矿物青） -->
+    <line x1="17.2" y1="6.8" x2="19.3" y2="4.7" stroke="#82c8c2" stroke-width="2.2"/>
+  </g>
+</svg>

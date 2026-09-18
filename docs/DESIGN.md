@@ -130,9 +130,13 @@ Build / 项目名                                         [关闭]
 
 R3 原型（PR #10，head `a564e5e1287f89bf2719964a7339110923433a18`）通过 114/114 原型检查、13 张截图与独立 fixed-head review ACCEPT；ISS-026 已随用户 2026-09-14「先合并，后续有问题再提意见」合并为 main `0faeda6`。用户对 R3 视觉的主观确认发生在 2026-09-18（方向 A+B），实装见 ISS-072。
 
-## Logo 与应用图标人工门
+## Logo 与应用图标
 
-Logo/App Icon 是与 PR #10 页面视觉确认不同的第二个人工门，任务见 ISS-045。仓库外 A/B/C 概念板仅供选择，不是发行资产；当前推荐“A 的深度环骨架＋B 的一层轻微不规则等深线”。用户确认前不落仓库。确认后须生成可追溯 canonical SVG、完整 PNG/iconset/icns、独立单色 template tray 与可重复构建脚本，并在 Dock、Finder、Launchpad、Spotlight 及 18/22pt 深浅菜单栏实测。
+Logo/App Icon 曾是与 PR #10 页面视觉确认不同的第二个人工门（ISS-045），**用户已于 2026-09-19 确认深度环为正式方向**：与 ISS-072 落地的 R3「深度环」品牌签名（见上文视觉语言节）同构——海沟蓝 squircle 底 + 白色开放环（右上 50° 缺口）+ 白色中心探针 + 亮矿物青跨缺口刻度（`#3e7e7c` 在深底上对比不足，图标用亮阶 `#82c8c2`）。取舍说明：未采用概念板的「不规则等深线」进图标（小尺寸下不可辨，等深线保留在总览页背景纹理中）。
+
+资产合同：canonical 声明在 `apps/desktop/src-tauri/icons/icon.svg`（24 viewBox，与 `frontend/icons.js` 的 brandRing 逐参数对应，仅描边加粗 2.4/2.2）；1024 位图源由 `scripts/build_app_icon.py` 从该几何渲染；全尺寸 PNG/iconset/icns 由 `scripts/build_icons.sh` 缩放合成；菜单栏 tray 是 `scripts/make_tray_icon.py` 生成的同构**单色 template**（透明底白图形，运行时 `icon_as_template(true)` 由系统深浅反色），不缩小彩色 App 图标。全部自绘几何，无字体与第三方素材，随仓库 Apache-2.0 发布。
+
+实测（2026-09-19，隔离运行根）：DMG 安装窗口 Finder 图标、Dock 图标、菜单栏 tray（22pt、当前浅色外观）渲染正确；`NOT_VERIFIED`：Launchpad/Spotlight 检索呈现、深色模式与 18pt 小菜单栏下 tray 可辨性（并入 ISS-009 人工门清单）。
 
 ## 原型与实装验收
 

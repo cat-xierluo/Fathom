@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# ISS-009 切片 1 · 占位图标生成（NOT_VERIFIED）
+# ISS-045 · 正式图标集生成（深度环 Logo，用户 2026-09-19 确认）
 #
-# 用 sips / iconutil 把 ``apps/desktop/src-tauri/icons/icon.png`` 放大成
-# Tauri 期望的 iconset（16/32/64/128/256/512），再合成 ``icon.icns``。
-# 占位图标源是仓库内现有的 44×44 PNG；放大后细节模糊，仅用于占位，ISS-045
-# 正式 Logo 前不得公开。
+# 用 sips / iconutil 把 ``apps/desktop/src-tauri/icons/icon.png``（1024
+# 深度环源，由 scripts/build_app_icon.py 从 icons/icon.svg 的 canonical
+# 几何渲染）缩放成 Tauri 期望的 iconset（16/32/64/128/256/512），再合成
+# ``icon.icns``。
 #
 # 输出：
 # - apps/desktop/src-tauri/icons/icon.iconset/icon_*.png
@@ -67,4 +67,4 @@ dst.write_bytes(header + entry + png_bytes)
 PYEOF
 fi
 
-echo "[build_icons] OK：$ICON_DIR/icon.icns (NOT_VERIFIED 占位)"
+echo "[build_icons] OK：$ICON_DIR/icon.icns（正式，ISS-045）"

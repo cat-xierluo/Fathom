@@ -100,7 +100,7 @@ bash scripts/verify_app_bundle.sh
 
 - 产物校验值写在 `apps/desktop/src-tauri/target/release/bundle/checksums.txt`（SHA256）；冻结 helper 的 SHA256 由 `build_helper.sh` 打印，同一 pin 集合下可复现。**未签名分发的信任边界**：接收方只能靠校验值比对确认来源，安装与放行步骤见 DMG 背景提示。
 - 支持矩阵：仅 `darwin-aarch64`；`x86_64`、Developer ID 签名、Apple 公证与 stapling、应用内更新均未实现（签名/公证延后见 DEC-022；ISS-040/041），发行验收矩阵见 [TESTING §4](docs/TESTING.md#4-桌面与分发矩阵)。
-- 图标为占位（ISS-045）；未验证项：无 Python/Rust/Homebrew 新账户从 DMG 首启、tray 菜单手点退出、断网首启（握手页实机渲染已于 2026-09-18 验证）。
+- 应用图标与菜单栏 tray 为正式「深度环」品牌资产（ISS-045，2026-09-19 实测 DMG 安装窗口/Dock/菜单栏渲染）；图标未验证项：Launchpad/Spotlight 检索呈现、深色模式与 18pt 小菜单栏下 tray 可辨性。其余未验证项：无 Python/Rust/Homebrew 新账户从 DMG 首启、tray 菜单手点退出、断网首启（握手页实机渲染已于 2026-09-18 验证）。
 
 ## 许可证状态
 

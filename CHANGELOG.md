@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+### 正式应用图标与品牌资产（ISS-045）
+
+- 应用图标从占位换为正式「深度环」Logo：海沟蓝圆角底板 + 白色开放环（右上缺口）+ 中心探针 + 矿物青刻度，与界面品牌签名（ISS-072）同构。资产可追溯、可重建：几何 canonical 声明在 `apps/desktop/src-tauri/icons/icon.svg`，1024 位图源与全尺寸 iconset/icns 分别由 `scripts/build_app_icon.py`、`scripts/build_icons.sh` 生成；图标为自绘几何（无第三方素材），随仓库 Apache-2.0 发布。
+- 菜单栏托盘图标同步换为同构深度环的独立单色 template 版（系统自动适配深浅菜单栏），不再是旧雷达环。
+- 实机验证（隔离运行根）：DMG 安装窗口、Dock、菜单栏托盘三处图标渲染正确；`NOT_VERIFIED`：Launchpad/Spotlight 检索呈现、深色模式与 18pt 小菜单栏下托盘可辨性。
+
 ### 测深视觉签名与仪器风数字排版（ISS-072 / R3）
 
 - 界面主色从通用蓝换为低饱和「海沟蓝—矿物青」：主动作、当前选中、图表主线与链接统一为海沟蓝；成功/警告/错误等语义色不受影响。

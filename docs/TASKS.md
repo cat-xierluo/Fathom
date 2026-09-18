@@ -706,7 +706,7 @@
   - [x] Dock、Finder 与实际打包 app 实测；小尺寸轮廓、圆角安全区及对比度可辨——2026-09-19 隔离实机（`launchctl setenv` 隔离运行根 + 7960 端口段）：DMG 挂载 Finder 安装窗口 App 图标、Dock 图标、菜单栏 tray 三处均确认为深度环渲染；16/32/128/512/1024 合成拼板目检小尺寸可辨
   - [ ] Launchpad、Spotlight 检索呈现实测（需 GUI 检索交互，并入 ISS-009 人工门清单，标准不降低）
   - [x] 原始设计、字体/图形/工具来源和许可可追踪，ISS-009/037 可直接消费——全部自绘几何无字体无第三方素材（icon.svg 注释声明，Pillow/iconutil/sips 为系统与既有构建工具），随仓库 Apache-2.0（DEC-020）；ISS-009 打包链本次已用新 icns 完整编译消费
-- **证据/接续**（2026-09-19）：全链 `build_app.sh`（helper 冻结 + 正式 iconset + cargo tauri build）退出 0；`verify_app_bundle.sh` 22/22 PASS（指纹 `1f568c92…`）；DMG 安装窗口/Dock/菜单栏 tray 实机截图存 `apps/desktop/src-tauri/verify-results/iss045-live/`（gitignore，目检记录见 DESIGN）。PR 号合并后回填。剩余 Launchpad/Spotlight/深色模式/18pt 为 ISS-009 人工门子项，不阻塞本卡资产交付。
+- **证据/接续**（2026-09-19）：全链 `build_app.sh`（helper 冻结 + 正式 iconset + cargo tauri build）退出 0；`verify_app_bundle.sh` 22/22 PASS（指纹 `1f568c92…`）；DMG 安装窗口/Dock/菜单栏 tray 实机截图存 `apps/desktop/src-tauri/verify-results/iss045-live/`（gitignore，目检记录见 DESIGN）。[PR #116](https://github.com/cat-xierluo/fathom/pull/116) squash 合并为 main `408722a`（2026-09-19，独立 reviewer 9 要点全 CONFIRMED ACCEPT：canonical 参数与 brandRing 精确一致、图标产物实测 1024、无范围外文件）。剩余 Launchpad/Spotlight/深色模式/18pt 为 ISS-009 人工门子项，不阻塞本卡资产交付。
 
 ### ISS-044 · 同步扫描协调后的 pytest 精确门禁
 

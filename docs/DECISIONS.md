@@ -5,7 +5,15 @@
 
 ---
 
-### [DEC-021] - 2026-09-15 - 账户 Actions 额度耗尽期间停用 CI workflow，以本地同口径门禁为主
+### [DEC-022] - 2026-09-18 - v0.3.0 不做 Developer ID 签名与公证，改为 DMG 安装界面提示首次打开放行方法
+
+**背景**：ROADMAP M2 原门槛含「Developer ID 签名、公证与 draft Release 齐备」（ISS-041）。用户 2026-09-18 明确：签名/公证先不管——同开发者的 Folia 即以未签名方式分发；直接在安装页面做好提示即可。技术事实：未签名且未公证的 app 被他人从下载渠道获取时，首次双击会被 Gatekeeper 阻止（「无法验证开发者」），需要右键打开或系统设置放行；提示必须在用户首次双击 app **之前**触达，DMG 安装窗口（打开 DMG 后、拖拽安装前即呈现）是正确载体。
+
+**决策**：v0.3.0 分发产物保持未签名、未公证；DMG 安装窗口背景图承载安装引导与「首次打开提示」（未签名说明 + 右键「打开」/系统设置 → 隐私与安全性 →「仍要打开」两步放行指引）。落地为 `scripts/build_dmg_background.py`（Pillow 生成，产物 `icons/dmg-background.png` 入库，日常构建不依赖 Pillow）、`tauri.conf.json` 的 `bundle.macOS.dmg`（background/windowSize/appPosition/applicationFolderPosition）与 `verify_app_bundle.sh` (j) 段（DMG 内背景图 + app + Applications 链接在位断言）。ISS-041 的签名/公证部分**延后至另行决策**（其双架构与 Release CI 部分不受本条影响）；将来正式公开发布是否恢复签名公证，届时修订本条。
+
+**验证**：2026-09-18 实测——重建 DMG 后 `hdiutil attach` 确认 `.background/dmg-background.png`（约 41KB）与 `Fathom.app`、`Applications` 符号链接在位；Finder 打开挂载卷截图目检：绿色箭头从 app 图标准确指向 Applications、全部中文文案完整无乱码、背景与窗口尺寸匹配；verify 全量含 (j) 段通过（见 TASKS ISS-009 卡记录）。
+
+**影响**：内测接收方首次打开会按预期被 Gatekeeper 拦截一次，需按背景指引放行——这是明示的产品行为而非缺陷；`x86_64` 双架构、应用内更新的签名防绕过等 ISS-040/041 其余范围不变；ROADMAP M2 门槛描述已随本条加注。未签名包不通过公证渠道时的信任边界（来源可校验性仅靠 checksums.txt）由 README 分发说明明示。
 
 **背景**：DEC-018 生效后，`CI` workflow 仍对每个 pull_request 与每次 push main 触发 5 个 macOS runner job（私有仓 macOS 分钟按 10 倍计费），自 2026-09-14T16:58Z 起全部在执行任何步骤前被 billing 拒绝（check-run annotation "The job was not started because recent account payments have failed or your spending limit needs to be increased"），累计 108 个 run 无一执行，另有 1 个 run 长期卡在 queued。用户 2026-09-15 确认账户额度已用光，要求能本地跑的 CI 就本地跑、收回 Actions 消耗。
 

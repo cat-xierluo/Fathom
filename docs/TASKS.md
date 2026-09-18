@@ -122,6 +122,7 @@
 | ISS-068 | Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝） | P1 | M1 | DONE | ISS-002A |
 | ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
 | ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | DONE | ISS-064 |
+| ISS-072 | R3 测深视觉签名实装与仪器风数字排版（frontend/ 产品 UI） | P1 | M2 | READY | ISS-026、ISS-028 |
 
 ## 任务卡
 
@@ -413,6 +414,19 @@
   - [ ] 前端检查计数同步（PM 运行 node 命令并同步）；浏览器 39 项不回退
   - [ ] 文案不出现"数量=影响"或"未记录=已删除"表述
 - **证据/接续**（DONE，2026-09-17，第三 episode）：base `da8302f`（r1 两 commit + r2 追加式 + PM 检查期望修正）。**PM 先前诊断有一处误判须纠正**：r1/r2 失败的根因**不是**「note 区块在 dual 路径未被渲染」——`loadScanNote()` 已在 194 行调用 `_renderCoverageNoteBlock`，接线本来就通；真实根因是 (1) `_renderCoverageClasses` 缺口 chip 输出「权限受限 6 处」（标签前置），而验收契约要求「6 处权限受限」（计数前置）；(2) `_renderCoverageNoteBlock` 在 `cov.state === "full"` 时把容器置空，而检查（PM 于 `da8302f` 修正过的期望）要求 full 时显式出现「完整覆盖」chip；(3) 深链检查取 `invokes[0]`，实际首个 invoke 是 `update_tray_status`。worker ctx_f3cf9732e7 交付 `36b61ea`（rebase 后 `a78fa2a`）：chip 改计数前置、full 渲染不带 `data-test` 的「完整覆盖」chip、深链检查改 filter + 等待 opener 调用。**PM 独立复跑**：pytest 524/524、`verify_frontend_refresh.cjs` **76/76**、浏览器 **39/39**、cargo test **23/23**、`cargo locked offline build` ok。分支已 rebase 到 `5c5fac4`（原分支落后 36 项 ISS-066 测试）。独立 reviewer ctx_35085bda（未参与实现）**REJECT**：2 blocking，均为**跨卡接缝、非本卡引入**（PM 独立复核确认：`/api/snapshots` 确不含 `vanished_count`/`exclude_names`；`lib.rs` 确零 `.plugin(` 注册、capabilities 仅 `core:default`；且两者在 main `5c5fac4` 同样存在）→ 登记为 **ISS-067**（/api/snapshots 补列）与 **ISS-068**（Tauri opener 注册与权限）。本卡前端范围已达成且边界合规（diff 仅 frontend/ + scripts/，零后端/Tauri 改动），[PR #97](https://github.com/cat-xierluo/fathom/pull/97) squash 合并 main `7a86965`。**教训**：`verify_frontend_refresh.cjs` 夹具同时服务 `/api/status` 与 `/api/snapshots`，同形对象掩盖了端点接缝——故 76/76 全绿**不证明**三类缺口在生产可见（vanished/excluded 恒为 0）。实机 TCC 三态、真实系统设置跳转仍留父卡 ISS-002 人工验收。
+
+### ISS-072 · R3 测深视觉签名实装与仪器风数字排版
+
+- **目标**：把原型第三轮「Fathom 视觉签名」（`prototypes/ux/`，DESIGN「原型第三轮」合同）落进 `frontend/` 产品 UI：通用 SaaS 蓝替换为低饱和「海沟蓝—矿物青」，侧栏品牌区/总览主结论背景/选中态出现稀疏等深线与深度环；叠加仪器风数字排版（等宽数字对齐）。
+- **范围**：frontend/style.css、frontend/icons.js、frontend/index.html、frontend/modules/（图表配色、主结论等深线注入）；DESIGN「原型第三轮」节转正为实装合同。
+- **实施边界**：不改变五页布局/信息层级/交互（ISS-026/028 已验收范围不动）；等深线与深度环摆位稀疏（侧栏字标、总览主结论背景、选中态、扫描指示）；品牌色不进语义色（成功/警告/错误/增减）；动效 160–240ms 且服从 prefers-reduced-motion；禁 emoji 与写实海洋元素；不新增构建链依赖。
+- **验收**：
+  - [x] token 全量替换后无 `#2f6fed` 残留（图表硬编码处一并换 `#345d7f` 系） —— grep frontend/ 零命中（overview/browse/changes 三处图表主色已换）
+  - [x] 侧栏品牌区含深度环字标；总览主结论背景等深线仅非错误结论出现且 pointer-events 关闭 —— brandRing 替代 anchor（R3 禁船锚）；`.brand-contour` 绝对定位 + pointer-events:none + reduced-motion 关闭动画
+  - [x] 数字列 tabular-nums 等宽对齐；路径等宽 —— body 级 `font-variant-numeric: tabular-nums` + `.card-value` 补齐（路径 mono 既有）
+  - [x] 前端刷新检查 86 项与浏览器检查 39 项全绿（断言如因结构变化需调整，逐条说明） —— 86/0 与 39/39，零断言调整（品牌区 id/结构未动，只换注入内容）
+  - [x] 980×640 / 1220×820 双视口截图目检：品牌元素稀疏、对比度未降、无布局破损 —— 安全夹具服务 + Playwright 双视口截图（analyze 目检：深度环/等深线/海沟蓝均确认，2x2 卡片窄视口整齐，无重叠溢出；截图留证 gitignore 目录）
+- **证据/接续**：来源：用户 2026-09-18 评审 UI「中规中矩、缺个性化」，选定方向 A（R3 落地）+ B（仪器风细节）。R3 原型资产（token/深度环 SVG/等深线生成）在 `prototypes/ux/`，PR #10 已合并；本卡为原型→实装的移植，不重新设计。
 
 ### ISS-065 · 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照）
 

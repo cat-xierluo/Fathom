@@ -289,6 +289,8 @@
 ### ISS-071 · `test_timeout_message_carries_last_output_path` 在高负载下间歇失败（时序竞态）
 
 - **状态**：DONE（P1/M1，2026-09-18；commit `b63b3d8`，pytest 553 不变）；来源：PM 合并后 main 全量门禁复跑时发现（2026-09-18 ~18:20）。**根因确认为测试自身时序竞态**；生产代码零行为变化（仅新增一个默认不存在的测试钩子）。
+  - **PM 裁定：接受本次范围偏离，并如实登记**。卡片原写「不改生产代码」，实际改了 `fathom/scanner.py`（+7 行 test seam）。PM 核实为何测试侧方案不可行：`mono_deadline`/`wall_deadline` 在 `run_du()` 内部计算（Popen 之后立即），**测试无法从外部移动计时起点**；而 deadline 之前的钩子是唯一能把「子进程已就绪」这一事件同步给计时的位置。改动形式受 review 认可：`globals().get("_DU_READY_HOOK")` 默认返回 None → `if` 不进入；全仓仅测试 monkeypatch 注入；独立 reviewer 证明无全局泄漏、无并发风险。
+  - **残留脆弱性（如实记录，未消除）**：钩子只重置**墙钟**轨；`started = time.monotonic()`（`scanner.py:397`，`run_du()` 入口）仍早于钩子，故 **monotonic 轨起点未移动**。若钩子内等待（限界 15s）超过测试的 0.3s 超时窗口，`mono_deadline` 仍会先到期并使 `partial_output` 为空——同一竞态的残留形态，只是窗口从「子进程启动」移到「钩子等待」。**实战未触发**：PM 连跑 30 次全绿（load 49/62/39）、高负载复测 20/20、独立 reviewer 用 8 个 CPU burner 压测 40/40。判定为理论性残留（需子进程 0.3s 内未 exec 才成立），**已记录，若日后再现则改为同时重置 monotonic 起点**。
 - **现象**：`tests/test_scanner.py::TestISS064WallClockDeadline::test_timeout_message_carries_last_output_path` **间歇失败**。PM 实测：单跑 10 次 **0 失败**（耗时 0.32–0.73s，紧贴 0.3s 超时窗口）；**全量连跑 5 次有 1 次失败**（约 20% 噪声率）。
 - **失败形态（PM 捕获的断言原文）**：
   ```

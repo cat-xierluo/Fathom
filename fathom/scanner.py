@@ -320,6 +320,21 @@ def _last_du_output_path(partial_output: bytes) -> str:
     return path_raw.decode("utf-8", errors="replace").strip()
 
 
+def _count_du_records(partial_output: bytes) -> int:
+    """数部分 stdout 里的**完整** du 记录条数（ISS-070 进度线索）。
+
+    只数以换行结尾的完整记录（"大小\\t路径"）；尾部没有换行的残余字节是
+    du 写到一半的碎片，不计入。0 是合法取值（超时时一条都没产出），
+    用来区分"一直在推进但量大跑不完"与"卡住几乎不推进"两种故障。
+    """
+    if not partial_output:
+        return 0
+    complete = partial_output.rfind(b"\n")
+    if complete < 0:
+        return 0
+    return partial_output[: complete + 1].count(b"\n")
+
+
 def _lsof_du_cwd(pid: int) -> str:
     """只读查询 du（PID）当前所在目录：lsof -p 输出的 cwd 行。
 
@@ -353,8 +368,15 @@ def _timeout_message(
     线索优先级：du 最后一条输出记录的路径（更精确），否则 lsof 只读
     查询的当前目录；两者都取不到则保持基线文案。lsof 须在 du 仍存活
     时调用，故本函数只在 raise 之前、回收之前调用一次。
+
+    ISS-070：报文同时携带**进度条数**（超时时 du 已产出的完整记录数）。
+    生产实证（2026-09-18 run 5）暴露旧报文只有"最后路径"、无法区分两种
+    处置完全不同的故障——一直在推进只是量大跑不完 vs 卡在某个目录几乎
+    不推进。进度条数是纯只读线索、不影响超时本身。
     """
     message = f"du 超过 {timeout_seconds:g} 秒安全时限"
+    records = _count_du_records(partial_output)
+    message = f"{message}；已产出 {records} 条记录"
     last_path = _last_du_output_path(partial_output)
     if last_path:
         return f"{message}；du 最后输出路径：{last_path}"

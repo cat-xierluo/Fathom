@@ -45,6 +45,17 @@
       <!-- ===== 总览 ===== -->
       <section class="page" id="page-overview">
         <div class="cards">
+          <!-- 等深线背景（R3）：低对比同心圆，纯装饰、不参与交互 -->
+          <div class="brand-contour" aria-hidden="true">
+            <svg viewBox="0 0 340 160" preserveAspectRatio="xMaxYMid slice" focusable="false">
+              <circle cx="340" cy="80" r="70"  fill="none" stroke="#345d7f" stroke-opacity="0.100" stroke-width="1"/>
+              <circle cx="340" cy="80" r="105" fill="none" stroke="#345d7f" stroke-opacity="0.088" stroke-width="1"/>
+              <circle cx="340" cy="80" r="140" fill="none" stroke="#345d7f" stroke-opacity="0.076" stroke-width="1"/>
+              <circle cx="340" cy="80" r="175" fill="none" stroke="#345d7f" stroke-opacity="0.064" stroke-width="1"/>
+              <circle cx="340" cy="80" r="210" fill="none" stroke="#345d7f" stroke-opacity="0.052" stroke-width="1"/>
+              <circle cx="340" cy="80" r="245" fill="none" stroke="#345d7f" stroke-opacity="0.040" stroke-width="1"/>
+            </svg>
+          </div>
           <div class="card"><p class="card-label">磁盘剩余</p><p class="card-value" id="card-free">--</p></div>
           <div class="card"><p class="card-label">磁盘已用</p><p class="card-value" id="card-used">--</p></div>
           <div class="card"><p class="card-label">快照数量</p><p class="card-value" id="card-snaps">--</p></div>

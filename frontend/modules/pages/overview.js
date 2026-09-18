@@ -253,7 +253,7 @@ async function loadVolumeTrend() {
       series: [
         { name: "已用", type: "line", smooth: true, symbolSize: 5, symbol: "circle",
           data: rows.map((r) => r.total_bytes - r.free_bytes),
-          areaStyle: { opacity: 0.12 }, itemStyle: { color: "#2f6fed" } },
+          areaStyle: { opacity: 0.12 }, itemStyle: { color: "#345d7f" } },
         { name: "剩余", type: "line", smooth: true, symbol: "none",
           data: rows.map((r) => r.free_bytes), itemStyle: { color: "#2e9e5b" } },
       ],

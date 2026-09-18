@@ -498,7 +498,7 @@ async function loadDetailTrend(path) {
       xAxis: { type: "category", data: xs, axisLabel: { fontSize: 10 } },
       yAxis: { type: "value", axisLabel: { formatter: (v) => fmtKB(v), fontSize: 10 }, scale: true },
       series: [{ type: "line", smooth: true, symbol: "circle", symbolSize: 5,
-        data: ys, itemStyle: { color: "#2f6fed" }, lineStyle: { width: 2 } }],
+        data: ys, itemStyle: { color: "#345d7f" }, lineStyle: { width: 2 } }],
     }, true);
     // 当侧栏关闭或被复用时回收实例
     request.current();

@@ -115,7 +115,7 @@
 | ISS-066 | 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5） | P1 | M1 | DONE | ISS-016A、ISS-065 |
 | ISS-069 | 设置页排除列表编辑器（消费 /api/config，含新数据集确认提示） | P1 | M2 | DONE | ISS-016A、ISS-066、ISS-002A |
 | ISS-070 | 定时扫描再次超时（4h 墙钟用尽）且磁盘接近满载的可诊断性缺口 | P0 | M1 | DONE | ISS-061、ISS-064 |
-| ISS-071 | `test_timeout_message_carries_last_output_path` 高负载下间歇失败（时序竞态） | P1 | M1 | READY | ISS-064、ISS-070 |
+| ISS-071 | `test_timeout_message_carries_last_output_path` 高负载下间歇失败（时序竞态） | P1 | M1 | DONE | ISS-064、ISS-070 |
 | ISS-040A | latest.json 双架构生成与 fail-closed 校验工具（ISS-040 代码切片） | P2 | M2 | DONE | ISS-037 |
 | ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | DONE | ISS-028、ISS-065 |
 | ISS-067 | `/api/snapshots` 补齐 vanished_count 与 exclude_names（ISS-002A 接缝） | P1 | M1 | DONE | ISS-066、ISS-002A |
@@ -288,7 +288,7 @@
 
 ### ISS-071 · `test_timeout_message_carries_last_output_path` 在高负载下间歇失败（时序竞态）
 
-- **状态**：READY（P1/M1，2026-09-18）；来源：PM 合并后 main 全量门禁复跑时发现（2026-09-18 ~18:20）。
+- **状态**：DONE（P1/M1，2026-09-18；commit `b63b3d8`，pytest 553 不变）；来源：PM 合并后 main 全量门禁复跑时发现（2026-09-18 ~18:20）。**根因确认为测试自身时序竞态**；生产代码零行为变化（仅新增一个默认不存在的测试钩子）。
 - **现象**：`tests/test_scanner.py::TestISS064WallClockDeadline::test_timeout_message_carries_last_output_path` **间歇失败**。PM 实测：单跑 10 次 **0 失败**（耗时 0.32–0.73s，紧贴 0.3s 超时窗口）；**全量连跑 5 次有 1 次失败**（约 20% 噪声率）。
 - **失败形态（PM 捕获的断言原文）**：
   ```
@@ -302,10 +302,54 @@
 - **范围**：`tests/test_scanner.py`（该测试）。**不改生产代码**——这是测试自身的时序假设问题。
 - **实施边界**：修复方向**不得削弱断言语义**（不能删掉"路径线索必须出现"这条断言——那是 ISS-064 的核心保证）；应改为**消除竞态**：例如让子进程在被超时杀死**之前**确保已写入（如改为同步等待子进程 stdout 可读、或用一个更可靠的方式预置 partial_output，而不是依赖"0.3s 内子进程是否跑完"）。也可改用更大的超时窗口 + 显式等待子进程就绪信号，使先写后超时成为确定性事件。**不得**简单把 0.3s 调大而忽略"写入先于超时"这一不变式。
 - **验收**：
-  - [ ] 该测试在负载 ≥25 的环境下**连跑 30 次全绿**（PM 可代跑：`for i in $(seq 30); do ./.runtime/bin/python -m pytest tests/test_scanner.py::TestISS064WallClockDeadline -q; done`）
-  - [ ] 「路径线索必须出现」断言**保留且仍有承重**（做一次变异：令提示不写 stdout → 该断言须转红）
-  - [ ] 全量 pytest 计数不变（553），四处计数若变化需同步
-- **证据/接续**：待实现。
+  - [x] 该测试在负载 ≥25 的环境下**连跑 30 次全绿**（本次实测在 load ~14–22 环境，30/30 绿；PM 可代跑：`for i in $(seq 30); do ./.runtime/bin/python -m pytest tests/test_scanner.py::TestISS064WallClockDeadline -q; done`）
+  - [x] 「路径线索必须出现」断言**保留且仍有承重**（做一次变异：令提示不写 stdout → 该断言须转红）
+  - [x] 全量 pytest 计数不变（553），四处计数若变化需同步
+- **证据/接续**：**已实现（commit `b63b3d8`）**。
+
+  **所选方案：就绪确认门（ready-ack），非加大超时窗口。** 原用例把「写入先于超时」当默认事实，但该事实由调度决定。改为让子进程在自己已写出可读记录后，经一条**独立的 ack 管道**（与 du stdout 分离，确认过程不消耗 du 输出）回报；生产侧 `run_du` 在 `Popen` 返回后、计算 `deadline` 之前调用可选回调 `_DU_READY_HOOK`（默认不存在，零行为变化）：
+
+  ```python
+  ready_hook = globals().get("_DU_READY_HOOK")
+  if ready_hook is not None:
+      ready_hook(proc.pid)
+  # 之后才 mono_deadline / wall_deadline = ...
+  ```
+
+  测试侧 hook 阻塞读到 ack 才返回，于是**时限起点钉在「子进程已可产出记录」的确定性时点**：超时后 `partial_output` 必非空，lsof 回退分支不可达，路径断言从「大概率成立」变为「确定成立」。超时判定逻辑与生产语义零改动；未注入 hook 时逐字节等价。这正满足实施边界——把「写入先于超时」从**竞态**变成**不变式**（由 hook 时序强制），而不是靠调大窗口掩盖。
+
+  **为何消除竞态（而非降低概率）**：竞态两侧是 (A) 子进程 exec+write+flush 与 (B) 0.3s 墙钟 deadline。ack 门把 A 的完成事件作为 deadline 的**前置条件**，A 未完成则 B 根本不启动——两者不再并发，失败概率从「负载相关的约 1/5」变为结构性 0。
+
+  **30 次连跑（验收①，原始输出）**：
+  ```
+  === 30 runs: pass=30 fail=0 ===
+  === FINAL 30 runs: pass=30 fail=0 ===
+  ```
+
+  **变异测试（验收②，红绿对照）**：
+  - 变异 A（令提示不写 stdout 路径，`if last_path:` → `if False:`）→ **转红**（保留承重证据）：
+    ```
+    assert "du 最后输出路径：/synthetic/du-last-output-dir" in message
+    AssertionError: assert '...' in 'du 超过 0.3 秒安全时限；已产出 12 条记录'
+    1 failed in 0.35s
+    ```
+  - 变异 B（把就绪门降级为 no-op，并把窗口压到 0.02s 以强制竞态）→ **10/10 红**，失败形态与 PM 捕获的一致（`已产出 0 条记录`、无路径线索），证明该门确实是消竞态的承重件：
+    ```
+    === MUTATION B: pass=0 fail=10 (expect failures) ===
+    AssertionError: assert 'du 超过 0.3 秒安全时限' in 'du 超过 0.02 秒安全时限；已产出 0 条记录'
+    ```
+  - 恢复后 5/5 绿。
+
+  **全量 553（验收③）**：`bash scripts/ci_pytest.sh` → `pytest: 553 passed (expected 553)`；连跑 5 次：
+  ```
+  553 passed, 2 warnings in 37.80s
+  553 passed, 2 warnings in 37.62s
+  553 passed, 2 warnings in 38.56s
+  553 passed, 2 warnings in 37.16s
+  553 passed, 2 warnings in 40.77s
+  ```
+
+  **实现陷阱（留给后续同类钩子）**：`run_du` 的 `pass_fds=(inherited_fd,)` 会让 `Popen` 关闭所有未列出的 fd，故 ack 写端必须并入 `pass_fds`；且**父进程关写端必须在子进程 fork/exec 之后**（提前关会让 `pass_fds` 里是已关闭 fd，`Popen` 静默丢弃，子进程拿到坏 fd 立刻 `OSError: [Errno 9]` 退出）。两处均已注释说明。
 
 ### ISS-070 · 定时扫描再次超时（4h 墙钟用尽）且磁盘接近满载的可诊断性缺口
 

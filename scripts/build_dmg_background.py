@@ -18,7 +18,8 @@ Pillow 打开）。
 用法：
   python3 scripts/build_dmg_background.py [--force]
 退出码：0 成功；3 缺 Pillow；4 字体缺失。
-产物存在且源未变时默认跳过（--force 强制重生成）。
+产物已存在时默认跳过；若脚本文件比背景图新（文案/坐标可能已改）则打印
+再生成警告——确认后用 --force 重生成并将新 PNG 一并提交入库。
 """
 
 import sys
@@ -49,7 +50,12 @@ DRAG_CY = APP_POS[1] + ICON // 2  # 拖拽轴线 y
 def main() -> int:
     force = "--force" in sys.argv
     if OUT.exists() and not force:
-        print(f"[dmg-bg] 已存在 {OUT}（--force 重生成）")
+        # reviewer 护栏：脚本比产物新时提示再生成，避免改文案后旧图静默入库
+        if Path(__file__).stat().st_mtime > OUT.stat().st_mtime:
+            print("[dmg-bg] 警告：脚本比背景图新，文案/坐标可能已变——"
+                  "请 python3 scripts/build_dmg_background.py --force 重生成并把新 PNG 一并提交")
+        else:
+            print(f"[dmg-bg] 已存在 {OUT}（--force 重生成）")
         return 0
 
     try:

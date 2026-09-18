@@ -696,7 +696,8 @@ else
   else
     record "j-dmg-install-hint" fail "DMG 挂载失败：$J_DMG"
   fi
-  rm -rf "$J_MNT"
+  # detach 失败时挂载点仍是只读卷，rm 必然非零——兜底避免 set -e 在汇总前中止
+  rm -rf "$J_MNT" 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------- 汇总

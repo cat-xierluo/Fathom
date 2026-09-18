@@ -677,6 +677,28 @@ else
 fi
 rm -rf "$I_BASE"
 
+# ---------------------------------------------------------------- (j) DMG 安装界面（未签名提示，2026-09-18 用户决策）
+log "=== (j) DMG 安装界面：背景提示与布局载体在位 ==="
+J_DMG="$(ls "${APP_PATH%/*}/../dmg/Fathom_"*.dmg 2>/dev/null | head -1 || true)"
+if [ -z "$J_DMG" ]; then
+  record "j-dmg-install-hint" fail "未找到 DMG 产物（bundle/dmg/Fathom_*.dmg）"
+else
+  J_MNT="$(mktemp -d -t fathom-verify-j-XXXXXX)"
+  if hdiutil attach -nobrowse -mountpoint "$J_MNT" "$J_DMG" >> "$LOG" 2>&1; then
+    J_BG="$J_MNT/.background/dmg-background.png"
+    J_BG_SIZE="$(stat -f '%z' "$J_BG" 2>/dev/null || echo 0)"
+    if [ "$J_BG_SIZE" -gt 1000 ] && [ -d "$J_MNT/Fathom.app" ] && [ -L "$J_MNT/Applications" ]; then
+      record "j-dmg-install-hint" pass "DMG 含背景提示图（${J_BG_SIZE}B）+ Fathom.app + Applications 链接（未签名放行说明由背景承载）"
+    else
+      record "j-dmg-install-hint" fail "DMG 内容缺失：background=${J_BG_SIZE}B app=$([ -d "$J_MNT/Fathom.app" ] && echo ok || echo missing) link=$([ -L "$J_MNT/Applications" ] && echo ok || echo missing)"
+    fi
+    hdiutil detach "$J_MNT" -quiet >> "$LOG" 2>&1 || true
+  else
+    record "j-dmg-install-hint" fail "DMG 挂载失败：$J_DMG"
+  fi
+  rm -rf "$J_MNT"
+fi
+
 # ---------------------------------------------------------------- 汇总
 VERDICT="PASS"
 if [ "$FAILED" -gt 0 ]; then

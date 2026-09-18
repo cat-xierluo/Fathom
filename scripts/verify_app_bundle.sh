@@ -172,6 +172,20 @@ else
   record "c-helper-ready" fail "30s 内 helper 未就绪（open 启动 + launchctl setenv 可能未生效）"
 fi
 
+# ISS-009 切片 2：主界面 `/` 必须返回前端页面（html=True 挂载生效）。
+# 缺 frontend 资源时 api.py 静默跳过挂载、`/` 返回 FastAPI 404 JSON——
+# 切片 1 实机截图复现过该缺陷，此处断言防止回归。
+if [ "$HELPER_READY" = "yes" ]; then
+  ROOT_BODY="$(curl -s --max-time 2 "http://127.0.0.1:${HELPER_PORT}/" 2>/dev/null || true)"
+  if printf '%s' "$ROOT_BODY" | grep -qi '<!doctype html\|<html'; then
+    record "c-frontend-served" pass "/ 返回前端页面（首行：$(printf '%s' "$ROOT_BODY" | head -c 60)…）"
+  elif [ -n "$ROOT_BODY" ]; then
+    record "c-frontend-served" fail "/ 返回非 HTML：$(printf '%s' "$ROOT_BODY" | head -c 80)"
+  else
+    record "c-frontend-served" fail "/ 无响应体"
+  fi
+fi
+
 # helper-instance.json 0600 校验
 HI_PATH=""
 if [ "$LAUNCHCTL_SETENV_OK" = "yes" ]; then

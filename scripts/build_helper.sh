@@ -59,9 +59,13 @@ rm -rf "$OUT_DIR"/fathom-helper "$OUT_DIR"/_internal "$OUT_DIR"/build
 
 # ISS-029 G1：freeze_entry.py 已通过 from fathom.cli import main 触发对象
 # 导入；本脚本直接 freeze main.py 即可，不再用 freeze_entry 中转。
+# ISS-009 切片 2：--add-data 把 frontend/ 打进 _MEIPASS——fathom.config 冻结态
+# frontend_dir=_MEIPASS/frontend，缺失时 api.py 静默跳过挂载、主界面 404
+# （切片 1 实机截图复现，verify 只测 /health 故未拦截）。
 "$PIN_PY" --noconfirm --clean --onedir \
   --name fathom-helper \
   --paths "$ROOT" \
+  --add-data "$ROOT/frontend:frontend" \
   --distpath "$OUT_DIR" \
   --workpath "$WORK_DIR" \
   --specpath "$WORK_DIR" \
@@ -73,6 +77,14 @@ if [ ! -x "$BIN" ]; then
   echo "[build_helper] FAIL：未在 $OUT_DIR/fathom-helper/ 下生成可执行文件" >&2
   exit 1
 fi
+
+# 打包态前端资源断言（ISS-009 切片 2）：_internal/frontend/index.html 必须在位
+FRONTEND_INDEX="$OUT_DIR/fathom-helper/_internal/frontend/index.html"
+if [ ! -f "$FRONTEND_INDEX" ]; then
+  echo "[build_helper] FAIL：冻结树缺少 $FRONTEND_INDEX——打包态主界面将 404" >&2
+  exit 1
+fi
+echo "[build_helper] frontend 资源就位：$(dirname "$FRONTEND_INDEX")（$(ls "$(dirname "$FRONTEND_INDEX")" | wc -l | tr -d ' ') 项）"
 
 # Mach-O / 架构断言（仅 arm64 宿主；x86_64 由 ISS-041 在原生 runner 复验）
 FILE_OUT="$(file "$BIN")"

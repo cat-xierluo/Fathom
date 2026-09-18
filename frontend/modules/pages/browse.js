@@ -143,7 +143,7 @@ async function loadBrowse(path) {
       yAxis: { type: "value", axisLabel: { formatter: (v) => fmtBytes(v * 1024) }, scale: true },
       series: [{ type: "line", smooth: true, symbolSize: 4, symbol: "circle",
         data: b.trend.map((p) => p.size_kb),
-        areaStyle: { opacity: 0.12 }, itemStyle: { color: "#2f6fed" } }],
+        areaStyle: { opacity: 0.12 }, itemStyle: { color: "#345d7f" } }],
     }, true);
   } catch (e) {
     if (!request.current()) return;

@@ -15,7 +15,7 @@ import { listenTrayActions } from "./modules/tauri.js";
 
 function mountStaticIcons() {
   const brand = document.getElementById("brand-icon");
-  if (brand) brand.innerHTML = icon("anchor", 26, "brand-anchor");
+  if (brand) brand.innerHTML = icon("brandRing", 24, "brand-mark");
   document.querySelectorAll("[data-icon]").forEach((el) => {
     el.innerHTML = icon(el.dataset.icon, 18);
   });

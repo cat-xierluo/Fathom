@@ -5,9 +5,13 @@
  */
 
 export const ICON_PATHS = {
-  /* 水深测量锚：品牌图标（Fathom = 测深单位） */
-  anchor:
-    '<circle cx="12" cy="5" r="3"/><line x1="12" x2="12" y1="22" y2="8"/><path d="M5 12H2a10 10 0 0 0 20 0h-3"/>',
+  /* 深度环：品牌标记（R3 视觉签名，ISS-072）——开放圆环（海沟蓝，
+   * currentColor）+ 中心探针与跨刻度缺口的短刻度（矿物青，CSS 类染色）。
+   * Fathom = 测深单位；替代 R2 时期的船锚（R3 合同禁写实海洋元素） */
+  brandRing:
+    '<path class="dr-ring" d="M20 9.1A8.5 8.5 0 1 1 14.9 4"/>' +
+    '<line class="dr-probe" x1="12" y1="7.5" x2="12" y2="16.5"/>' +
+    '<line class="dr-tick" x1="17.2" y1="6.8" x2="19.3" y2="4.7"/>',
   /* 总览：仪表盘 */
   gauge:
     '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',

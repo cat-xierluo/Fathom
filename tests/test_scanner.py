@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import select
 import sqlite3
 import subprocess
 import sys
@@ -625,6 +626,97 @@ class TestISS064WallClockDeadline:
 
         monkeypatch.setattr(scanner.subprocess, "Popen", fake_popen)
 
+    def _fake_du_popen_with_ready_ack(
+        self,
+        monkeypatch,
+        child_pids: list[int],
+        root_path: str,
+        hold_open: bool = False,
+    ) -> int | None:
+        """让假 du 写完一条记录并确认就绪后，run_du 才开始计时。
+
+        ISS-071：原用例启动子进程后立刻让 run_du 计时，超时后管道里是否已有
+        记录取决于调度——高负载时 0.3s 时限可能先于首条记录写出，报文退回
+        lsof 分支，路径断言间歇失败。
+
+        这里给子进程额外一条 ack 管道（与 du stdout 分离，确认过程不消耗
+        du 输出）：子进程写完一条记录、flush 后立刻写 ack；DU_READY_HOOK 阻塞
+        读到 ack（或 ack 读端 EOF）才返回，run_du 之后才计算 deadline。时限
+        起点因此钉在"子进程已可产出记录"的确定性时点，partial_output 必非空，
+        lsof 分支不可达。超时判定逻辑零改动。
+
+        ``hold_open=True`` 时子进程以固定间隔持续追加记录，直至超时被杀——
+        模拟"仍在输出、只是慢"的真实 du；否则只写一条即 ``pause()``，对
+        不需要超时的用例足够。
+
+        返回 ack 管道读端 fd；若注入失败返回 None，交由调用方断言报错——
+        不用 pytest.fail 以免与 ``pytest.raises`` 混淆。
+        """
+        flush_and_ack = (
+            "sys.stdout.flush()\n"
+            "os.write(ack_fd, b'R')\n"
+            "os.close(ack_fd)\n"
+        )
+        if hold_open:
+            # 记录到达后仍持续产出：管道不 EOF，run_du 只能等 deadline。
+            tail = (
+                "while True:\n"
+                "    time.sleep(0.02)\n"
+                "    sys.stdout.write('4096\\t%s/synthetic/du-last-output-dir\\n'"
+                " % root_path)\n"
+                "    sys.stdout.flush()\n"
+            )
+        else:
+            tail = "signal.pause()\n"
+        child_code = (
+            "import os, signal, sys, time\n"
+            "ack_fd = int(sys.argv[1])\n"
+            f"root_path = {root_path!r}\n"
+            "sys.stdout.write('4096\\t%s\\n' % root_path)\n"
+            + flush_and_ack
+            + tail
+        )
+        ack_r, ack_w = os.pipe()
+        ack_w_open = True
+        real_popen = subprocess.Popen
+
+        def fake_popen(*args, **kwargs):
+            # run_du 只保留 pass_fds 中的 fd（其余在子进程里被关闭），故须把
+            # ack 写端并进去，否则子进程拿到的 ack_fd 是坏 fd、确认永远等不到。
+            nonlocal ack_w_open
+            pass_fds = tuple(kwargs.get("pass_fds") or ())
+            proc = real_popen(
+                [sys.executable, "-c", child_code, str(ack_w)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                start_new_session=True, pass_fds=pass_fds + (ack_w,),
+            )
+            # 必须等子进程继承后才关父进程写端：提前关会让 pass_fds 里的是个
+            # 已关闭 fd，Popen 静默丢弃它，子进程拿不到确认通道。
+            if ack_w_open:
+                os.close(ack_w)
+                ack_w_open = False
+            child_pids.append(proc.pid)
+            return proc
+
+        monkeypatch.setattr(scanner.subprocess, "Popen", fake_popen)
+
+        def ready_hook(pid: int) -> None:
+            # 高负载下子进程可能迟迟未调度到；用墙钟限界等待，避免死等。
+            # 读端 EOF（子进程已退出）也算"已就绪"——此时 partial_output 的
+            # 有无由子进程是否已写出决定，不再由超时与写出的先后决定。
+            deadline = time.monotonic() + 15.0
+            while time.monotonic() < deadline:
+                if select.select([ack_r], [], [], 0.2)[0]:
+                    try:
+                        os.read(ack_r, 1)
+                    except OSError:
+                        pass
+                    return
+            raise TimeoutError("假 du 未在 15s 内确认就绪")
+
+        monkeypatch.setattr(scanner, "_DU_READY_HOOK", ready_hook, raising=False)
+        return ack_r
+
     def test_wall_clock_deadline_fires_when_monotonic_frozen(
         self, tmp_path, monkeypatch
     ):
@@ -670,13 +762,13 @@ class TestISS064WallClockDeadline:
         fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
         cancel = threading.Event()
         child_pids: list[int] = []
-        child_code = (
-            "import signal, sys\n"
-            "sys.stdout.write('4096\\t/synthetic/du-last-output-dir\\n')\n"
-            "sys.stdout.flush()\n"
-            "signal.pause()\n"
+        ack_fd = self._fake_du_popen_with_ready_ack(
+            monkeypatch,
+            child_pids,
+            root_path="/synthetic/du-last-output-dir",
+            hold_open=True,
         )
-        self._fake_du_popen(monkeypatch, child_pids, child_code)
+        assert ack_fd is not None, "DU_READY_HOOK 注入失败"
         lsof_calls: list[int] = []
         monkeypatch.setattr(
             scanner, "_lsof_du_cwd",
@@ -690,6 +782,7 @@ class TestISS064WallClockDeadline:
                     scanner.run_du(root)
         finally:
             os.close(fd)
+            os.close(ack_fd)
         message = str(excinfo.value)
         assert "du 超过 0.3 秒安全时限" in message
         assert "du 最后输出路径：/synthetic/du-last-output-dir" in message

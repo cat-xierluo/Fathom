@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### DMG 安装界面与首次打开放行提示（ISS-009 / DEC-022）
+
+- v0.3.0 不做 Developer ID 签名与公证（用户决策，参照 Folia 分发模式）：DMG 安装窗口改为带安装引导的自定义背景——拖拽 Fathom 到 Applications 的箭头指引，以及「首次打开提示」：说明本应用未经 Apple 签名与公证、首次打开可能被 macOS 阻止，并给出两步放行方法（右键点按 Fathom 选「打开」，或前往 系统设置 → 隐私与安全性 点「仍要打开」）。
+- 背景图由 `scripts/build_dmg_background.py` 生成（产物入库，日常构建不依赖 Pillow）；打包校验新增 DMG 段断言（背景图 + app + Applications 链接在位），未签名分发的信任边界与放行步骤同步写入 README。
+
 ### 打包态主界面 404 修复与实机 GUI 验证（ISS-009 切片 2）
 
 - 桌面 app 此前打开后主窗口显示 `{"detail":"Not Found"}`：`frontend/` 静态资源从未打进 helper 冻结树，页面挂载被静默跳过（`/health` 等接口正常，切片 1 校验只探 `/health` 故未拦截），打包态用户完全无法使用界面。现在打包脚本把 `frontend/` 一并冻结、构建时断言 `_internal/frontend/index.html` 在位，bundle 校验新增「`/` 返回前端页面」防回归断言。

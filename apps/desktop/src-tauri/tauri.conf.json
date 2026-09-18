@@ -44,7 +44,13 @@
       "providerShortName": null,
       "signingIdentity": null,
       "entitlements": null,
-      "exceptionDomain": null
+      "exceptionDomain": null,
+      "dmg": {
+        "background": "icons/dmg-background.png",
+        "windowSize": { "width": 660, "height": 480 },
+        "appPosition": { "x": 170, "y": 170 },
+        "applicationFolderPosition": { "x": 360, "y": 170 }
+      }
     },
     "category": "DeveloperTool",
     "shortDescription": "Fathom — 本机目录容量历史追踪",

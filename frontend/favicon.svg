@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!--
+    Fathom 浏览器标签页 favicon（ISS-045 对齐收尾）。
+    几何与 apps/desktop/src-tauri/icons/icon.svg（canonical）及
+    frontend/icons.js 的 brandRing 逐参数对应，三处须同步修改。
+    说明：本文件是站点资源（<link rel="icon">），不进 DOM，故不经过
+    icons.js 注入；参数单一真值仍是 canonical icon.svg。
+  -->
+  <rect x="0" y="0" width="24" height="24" rx="4.32" fill="#345d7f"/>
+  <g fill="none" stroke-linecap="butt">
+    <path d="M20 9.1 A8.5 8.5 0 1 1 14.9 4" stroke="#ffffff" stroke-width="2.4"/>
+    <line x1="12" y1="7.5" x2="12" y2="16.5" stroke="#ffffff" stroke-width="2.4"/>
+    <line x1="17.2" y1="6.8" x2="19.3" y2="4.7" stroke="#82c8c2" stroke-width="2.2"/>
+  </g>
+</svg>

@@ -141,7 +141,7 @@
 | ISS-074 | PM 推进审查与权威上下文校正 | P1 | M2 | DONE | — |
 | ISS-075 | 已合并任务验收证据对账与接缝复核 | P1 | M2 | DONE | — |
 | ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | DONE | — |
-| ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | READY | ISS-028 |
+| ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | IN_PROGRESS | ISS-028 |
 
 ## 任务卡
 
@@ -251,7 +251,8 @@
   - [ ] 修复后真实 Tauri 壳内 Esc 关闭目录详情侧栏可用，Tab 焦点链不受影响
   - [ ] 有 fail-closed 断言覆盖（脚本化，可并入 ISS-028 三尺寸脚本或专项）
   - [ ] 不引入壳对页面的宽泛事件/能力授权；改动范围与证据可在 PR diff 复核
-- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-028 卡「三尺寸证据」段结构层发现①；ISS-076 清单 §2 实机步骤的键盘项。
+- **证据/接续**：尚未执行；不得勾选验收项。
+- **证据/接续**（2026-09-20 02:55 派发，IN_PROGRESS）：worker dispatch `ctx_12a48a1e7c24`，Orca run `run_8d477489db15`，task `task_14260b7750e1`，worktree `/Users/maoking/orca/workspaces/fathom/iss-077-esc-keydown`（分支 `iss-077-esc-keydown`），lane minimax-M3（provider lease active）。**spec 约束**：worker 只做脚本 + headless 断言 + 静态源码取证；**严禁抢前台/激活应用/open -a/System Events/CGEvent 等 GUI 实机操作**（用户 2026-09-20 规则），GUI 实机验证由 PM 亲自执行；必须前台才能取证项须标 `NOT_VERIFIED-需前台`。**派发环境**：quota preflight 因缺 `claude-provider-registry.json` 报 `provider_unknown_lane`（工具失灵非额度不足），PM 以 `--quota-preflight-override` 放行，授权来源=route-summary 实测 minimax 47%。**待 worker 交付后由 PM 复核。**关联：ISS-028 卡「三尺寸证据」段结构层发现①；ISS-076 清单 §2 实机步骤的键盘项。
 
 
 

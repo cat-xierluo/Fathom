@@ -6,6 +6,7 @@
  */
 import { fetchJSON, apiPost, beginRequest } from "./request.js";
 import { fmtBytes } from "./format.js";
+import { ICON_PATHS } from "../icons.js";
 import { pushTrayStatus } from "./tauri.js";
 import { createPoller, createInterval } from "./polling.js";
 import { state } from "./state.js";
@@ -17,6 +18,38 @@ const TRAY_HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000;
 const scanPoll = createPoller(() => loadStatus(), SCAN_POLL_INTERVAL_MS);
 const trayHeartbeat = createInterval(() => loadStatus(), TRAY_HEARTBEAT_INTERVAL_MS);
 
+// ISS-073：扫描徽章 = 可选旋转深度环 + 文本。SVG 只在进入/离开 running 时
+// 增删一次；文本节点首次创建后持有引用，轮询 tick 仅改其 textContent——
+// 不重建任何元素，动画与文本都稳定（reviewer 对 v1 的跳位 bug 修复）。
+let badgeRingEl = null;
+let badgeTextEl = null;
+
+function setBadge(running, text) {
+  const badge = document.getElementById("scan-badge");
+  if (!badge) return;
+  if (running && !badgeRingEl) {
+    badgeRingEl = document.createElement("span");
+    badgeRingEl.className = "badge-ring";
+    badgeRingEl.setAttribute("aria-hidden", "true");
+    badgeRingEl.innerHTML =
+      `<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="butt">${ICON_PATHS.brandRing}</svg>`;
+    badge.prepend(badgeRingEl);
+  }
+  if (!running && badgeRingEl) {
+    badgeRingEl.remove();
+    badgeRingEl = null;
+  }
+  if (!badgeTextEl || !badgeTextEl.isConnected) {
+    // 首次接管：清掉 HTML 里的初始占位等历史文本节点，此后文本只有受控这一个
+    [...badge.childNodes].forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) node.remove();
+    });
+    badgeTextEl = document.createTextNode("");
+    badge.append(badgeTextEl);
+  }
+  badgeTextEl.textContent = text;
+}
+
 export async function loadStatus() {
   const request = beginRequest("status", { pageScoped: false });
   const badge = document.getElementById("scan-badge");
@@ -26,7 +59,7 @@ export async function loadStatus() {
     s = await fetchJSON("/api/status");
   } catch (e) {
     if (!request.current()) return null;
-    badge.textContent = e.status === 0 ? "服务未连接" : "状态加载失败";
+    setBadge(false, e.status === 0 ? "服务未连接" : "状态加载失败");
     badge.classList.remove("running");
     btn.disabled = false;
     if (state.scanWasRunning) scanPoll.schedule();  // 扫描中失联：保住轮询链待恢复
@@ -53,12 +86,12 @@ export async function loadStatus() {
   const wasRunning = state.scanWasRunning;
   state.scanWasRunning = Boolean(s.scan.running);
   if (s.scan.running) {
-    badge.textContent = "扫描进行中…"; badge.classList.add("running"); btn.disabled = true;
+    setBadge(true, "扫描进行中…"); badge.classList.add("running"); btn.disabled = true;
     scanPoll.schedule();
   } else {
     scanPoll.cancel();
-    badge.textContent = s.scan.finished_at
-      ? `上次扫描 ${s.scan.finished_at.replace("T", " ")}` : "未手动扫描过";
+    setBadge(false, s.scan.finished_at
+      ? `上次扫描 ${s.scan.finished_at.replace("T", " ")}` : "未手动扫描过");
     badge.classList.remove("running"); btn.disabled = false;
     if (wasRunning) refreshActivePage();  // 扫描结束：单一刷新入口刷新当前页
   }

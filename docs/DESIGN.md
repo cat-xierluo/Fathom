@@ -130,13 +130,15 @@ Build / 项目名                                         [关闭]
 
 R3 原型（PR #10，head `a564e5e1287f89bf2719964a7339110923433a18`）通过 114/114 原型检查、13 张截图与独立 fixed-head review ACCEPT；ISS-026 已随用户 2026-09-14「先合并，后续有问题再提意见」合并为 main `0faeda6`。用户对 R3 视觉的主观确认发生在 2026-09-18（方向 A+B），实装见 ISS-072。
 
-## Logo 与应用图标
+## Logo 与应用图标（双形态体系）
 
-Logo/App Icon 曾是与 PR #10 页面视觉确认不同的第二个人工门（ISS-045），**用户已于 2026-09-19 确认深度环为正式方向**：与 ISS-072 落地的 R3「深度环」品牌签名（见上文视觉语言节）同构——海沟蓝 squircle 底 + 白色开放环（右上 50° 缺口）+ 白色中心探针 + 亮矿物青跨缺口刻度（`#3e7e7c` 在深底上对比不足，图标用亮阶 `#82c8c2`）。取舍说明：未采用概念板的「不规则等深线」进图标（小尺寸下不可辨，等深线保留在总览页背景纹理中）。
+App 图标人工门（ISS-045）经历了两次用户确认，形成**双形态体系**（DEC-023）：
 
-资产合同：canonical 声明在 `apps/desktop/src-tauri/icons/icon.svg`（24 viewBox，与 `frontend/icons.js` 的 brandRing 逐参数对应，仅描边加粗 2.4/2.2）；1024 位图源由 `scripts/build_app_icon.py` 从该几何渲染；全尺寸 PNG/iconset/icns 由 `scripts/build_icons.sh` 缩放合成；菜单栏 tray 是 `scripts/make_tray_icon.py` 生成的同构**单色 template**（透明底白图形，运行时 `icon_as_template(true)` 由系统深浅反色），不缩小彩色 App 图标。全部自绘几何，无字体与第三方素材，随仓库 Apache-2.0 发布。
+**App 图标 = 层叠深潭（位图系，正式）**：用户 2026-09-19 在 Logo 设计会话选中第二轮「层叠深潭」并要求只取核心——象牙白 squircle 底板 + 蓝青色不规则水滴状四层嵌套等深阶地向午夜蓝中心下陷 + 顶部测深刻痕，哑光层次质感（参考 FaroPDF 的层次感与 Funes 的轮廓表达，未复制主体；原稿与提示词见 `assets/brand/`，由内置 image_gen 生成）。落地为 `scripts/build_app_icon.py` 本地 Pillow 抠图（清暖灰环境背景 → 满幅 1024、透明四角圆角约 17%、边缘白雾清理），可重复、不调用生成模型；`build_icons.sh` 派生全尺寸 iconset/icns；`apple-touch-icon.png` 同源。历史注记：PR #116 曾以线条深度环作为 App 图标（同日清晨），当日由深潭替换。
 
-实测（2026-09-19，隔离运行根）：DMG 安装窗口 Finder 图标、Dock 图标、菜单栏 tray（22pt）渲染正确。同日补充实测：Launchpad/Spotlight 检索呈现（新图标构建替换本机 /Applications 后 GUI 自动化截图）与深浅色模式（显式深色 + 浅色暗壁纸，本机菜单栏背景亮度 32-37，tray 均白色 template 渲染、峰值 228、对比充分）；`NOT_VERIFIED` 仅剩 18pt 小菜单栏下 tray 可辨性（并入 ISS-009 人工门清单）。
+**界面小尺寸 = 深度环（矢量系）**：菜单栏 tray（22pt 灰度 template）、侧栏字标（`frontend/icons.js` brandRing）、浏览器 favicon（`frontend/favicon.svg`）保留 R3「深度环」线条形态——海沟蓝 squircle 底 + 白色开放环（右上 50° 缺口）+ 中心探针 + 亮矿物青刻度（`#82c8c2`）。取舍：深潭四层结构在 22pt 灰度下不可辨；等深线纹理保留在总览页背景。几何声明在 `apps/desktop/src-tauri/icons/icon.svg`（24 viewBox 与 brandRing 逐参数对应，仅描边加粗 2.4/2.2）；tray 由 `make_tray_icon.py` 距离场生成（透明底白图形，运行时 `icon_as_template(true)` 系统深浅反色），不缩小彩色 App 图标。四处几何由 `scripts/ci_brand_geometry.sh` 门禁保证同步。
+
+实测（2026-09-19，隔离运行根）：**深潭形态**——DMG 安装窗口 Finder 图标、Dock、Launchpad/Spotlight 检索（GUI 自动化）四入口渲染正确，64px 起四层结构完整，16/32px 退化为色块轮廓属已知取舍；**深度环形态**——菜单栏 tray 22pt 及显式深色/浅色暗壁纸两种外观均白色 template 渲染（像素级验证）。`NOT_VERIFIED`：透明裸核心（未交付，按需再议）；18pt 小菜单栏 tray（ISS-009 人工门清单）。
 
 ## 原型与实装验收
 

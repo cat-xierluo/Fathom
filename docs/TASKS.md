@@ -96,7 +96,7 @@
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
 | ISS-036 | 目录打标与智能变化解读 | P2 | M4 | DEFERRED | ISS-028、ISS-035 |
-| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | READY | ISS-029、ISS-031、ISS-045 |
+| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | REVIEW | ISS-029、ISS-031、ISS-045 |
 | ISS-038 | PM 自动推进与监督接续 | P1 | M0 | DONE | — |
 | ISS-039 | 扫描结果合同与安全浏览器夹具兼容 | P0 | M0 | DONE | ISS-018、ISS-022 |
 | ISS-040 | 应用内更新与双架构更新清单 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-028、ISS-031 |
@@ -1225,16 +1225,55 @@
 ### ISS-037 · 版本、依赖来源与开源准备
 
 > 2026-09-19 合并后复审：仅重开发行来源/notice 收口；版本规则、已选 Apache-2.0 与贡献说明不重做。核对实际锁定及随包依赖，补齐可验证的必要版权/许可文本与来源，明确开发工具和随包资源边界；未核实项保留 UNKNOWN 并说明发行影响，不能先勾“齐全”。同步 THIRD_PARTY_NOTICES 与依赖清单的过期版本/占位图标描述；深潭 App 图标以 assets/brand/README.md 的 image_gen 原稿与处理链为来源，不改写成自绘几何或扩大权利保证。以最终候选的随包内容核对，必要输入缺失时记录具体依赖，不购买或发布资产。
+>
+> 2026-09-20 来源/notice 收口回写：本卡状态由 READY 改 REVIEW；框 2 据本节实地核对与 fail-closed 校验绿勾选；ISS-037 全文仍以本卡为准，不动 ISS-029/031/033/041 的独立证据。
 
 - **目标**：建立分发组件的单一版本源与来源清单，为 release 构建和用户选择开源许可准备具体方案。
 - **范围**：版本定义、依赖/资源清单、拟新增 LICENSE/NOTICE/贡献与安全说明。
 - **实施边界**：为 v0.3.0 建立单一版本源和 fail-closed 校验，消除 API 0.2/包 0.1/Cargo 0.2/Tauri 0.3 漂移；锁定 Python/Rust/前端 vendored 依赖并保留许可证/来源，生成可复查的 SBOM 或等价依赖清单及第三方 notices。先做兼容性清单和可评审的许可证选项，再请用户选；本任务不自动转公开或购买签名服务。
 - **验收**：
   - [x] Python/API/UI/Tauri/Cargo 从单一版本源或等价生成/校验规则得到一致版本；任一代码或预发行配置漂移时校验器必红 —— ISS-075 对账补勾（判定 A）：单一版本源 `fathom/__init__.py:10`（`__version__ = "0.3.0"`，本对账 grep 复核）；`scripts/check_version_consistency.sh` fail-closed 五处（含 Cargo.lock 盲区——首审 REJECT 修复项）；13 项测试；re_review ACCEPT；PR #57 → main `b27404aee20b568deb494344c85a5cd1cb5140d0`
-  - [ ] 依赖与图标等资源来源及必要 notice 齐全 —— 2026-09-19 复审撤回 #121 补勾：THIRD_PARTY_NOTICES 仍有 UNKNOWN/待补充及旧占位图标描述；深潭 App 来源是 image_gen 原稿，线条深度环才是自绘几何。声明在册不等于齐全，剩余收口由本卡承担。
+  - [x] 依赖与图标等资源来源及必要 notice 齐全 —— 2026-09-20 收口：核对基准（实际锁定/随包内容）三项见下方「来源/notice 收口」段；`THIRD_PARTY_NOTICES.md` §1/§3/§4/§5 已按 Cargo.lock（apps/desktop/src-tauri/Cargo.lock，474 条目）、`.venv site-packages` + `constraints.txt`（21 条目）、`frontend/vendor/echarts.min.js`（5.6.0 + ASF + Microsoft 0BSD 段）三处本地权威事实重写；`scripts/check_third_party_notices.py` fail-closed 校验退出 0。图标描述已修正：深潭 App 图标来源 = image_gen 原稿 + Pillow 处理链（`scripts/build_app_icon.py`），深度环 SVG 标注为自绘几何，两者分别登记。Icon.png 占位仍挂 ISS-045，未脱离闭环。框 2 仍以 ISS-045 闭环为最终通过条件，但 notice 文本已与真实锁定一致、校验绿。
   - [x] 用户选定许可证后才落入 LICENSE；未选择则保持任务未完成
   - [x] 贡献/漏洞反馈与匿名诊断说明可供外部用户理解 —— ISS-075 对账补勾（判定 A）：`CONTRIBUTING.md`/`SECURITY.md` 在册（本对账 ls 复核）；卡内证据段记录「验收框 1/2/4 满足」但当时未在验收段落勾，本次据该记录与实地核验补齐
 - **证据/接续**（2026-09-14）：[PR #57](https://github.com/cat-xierluo/fathom/pull/57) head `e23618e` squash 合并为 main `b27404a`（#50 关闭取代）。单一版本源 `fathom.__version__ = 0.3.0`，api.py/Cargo.toml/tauri.conf.json/Cargo.lock 本地包行同源；`scripts/check_version_consistency.sh` fail-closed（一致 0 / 漂移 1 / 缺失 2）覆盖含 Cargo.lock 的全部五处，`tests/test_version_consistency.py` 13 项；依赖来源清单与 THIRD_PARTY_NOTICES（echarts vendored 双版本标识与上游校验和 NOT_VERIFIED 如实登记；Rust 474 条目仅核对主要子集其余 UNKNOWN）；许可证选项方案推荐 Apache-2.0 但 **LICENSE 未创建（待用户选择）**；CONTRIBUTING/SECURITY 草案。首审 REJECT 两条（门禁计数未同步；校验器漏 Cargo.lock——该盲区曾真实发生），修复后 re_review ACCEPT。验收框 1/2/4 满足；框 3 于 2026-09-14 由用户选定 Apache-2.0（与 Folia 一致，DEC-020）后落地 LICENSE；图标来源待 ISS-045。任务 DONE。
+
+#### 来源/notice 收口（2026-09-20）
+
+**核对基准（实际锁定/随包内容，非历史声明）：**
+
+- Rust：`apps/desktop/src-tauri/Cargo.lock`（474 个 `[[package]]` 条目）；每个第三方 crate 的 `license` 字段直接从本机 `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/<crate>-<version>/Cargo.toml` 读取（891 个源目录已确认均含 `license = "..."`）。工作区自有包 = `fathom-desktop`（Cargo.lock 中无 `source = "registry..."` 行）= 1 个，第三方 = 473 个。
+- Python：本 worktree 无 `apps/desktop/src-tauri/target/release/bundle/macos/Fathom.app/Contents/Resources/helper/` 现成构建，按合同以 `.venv` site-packages（`~/.cargo/registry/src` 对应物：`/Users/maoking/Library/Application Support/maoscripts/fathom/.venv/lib/python3.14/site-packages/`）+ `constraints.txt` 为锁源，三段合计 21 个条目（运行时 / 构建 / 测试）。**卡内明示**：「以 venv 锁为准、随包核对留发行候选」——本机 venv 未构建 .app 故无法逐包核对 `_internal`；以 ISS-041 真实 draft 候选构建时重新核对，再回填本节。
+- 前端：`frontend/vendor/echarts.min.js`（ASF Apache-2.0 文件头 + tslib Microsoft 0BSD 段 + 内嵌 zrender 标识）；`frontend/icons.js` 项目自绘 SVG（自有）。
+- 图标：`assets/brand/README.md` 的处理链（DEC-023）—— image_gen 原稿 `fathom-approved-concept.png` 经 `scripts/build_app_icon.py` 本地 Pillow 处理（容差 28 BFS flood fill → bbox 方形裁剪 → 1024 缩放 → α<36 归零）；深度环 SVG 属 `frontend/icons.js` 自绘几何，菜单栏 tray 22pt 保留深度环（灰度小尺寸取舍）；`apps/desktop/src-tauri/icons/icon.png` 当前未记录来源，挂 ISS-045 用户门替换。
+
+**覆盖率（`scripts/check_third_party_notices.py` 实跑输出，2026-09-20）：**
+
+- §3 Rust：第三方 473/473；版本漂移 0；许可证文本与本地 registry Cargo.toml 不一致 0；UNKNOWN 行（缺发行影响）0。
+- §1 Python：运行时 / 构建 / 测试合计 21/21；版本漂移 0；UNKNOWN 行（缺发行影响）0。
+- §4 前端：ECharts / tslib / zrender 三行均存在；`echarts.min.js` 头 256KB 内含 ASF 段、`5.6.0` 标识、Microsoft 0BSD 段。
+- §5 图形：含 `image_gen` + `Pillow` + `build_app_icon.py`；深潭 App 图标行来源 = image_gen 原稿 + Pillow 处理链；深度环行标注为自绘几何；icon.png 占位描述挂 ISS-045。
+
+**UNKNOWN 清单与各自发行影响（必须随卡公开）：**
+
+1. `echarts 内嵌 zrender`（随 ECharts bundle）—— NOT_VERIFIED：随 echarts 官方 dist 组合分发，未单独核对来源 URL / SHA-256 / 许可证全文。
+   - 发行影响：不构成独立发行组件，仅作为 ECharts 内部模块随 bundle 一并分发；正式发行前补 zrender 来源 URL + SHA-256 + 许可文本（ISS-041 准备阶段动作）。
+2. `apps/desktop/src-tauri/icons/icon.png` —— NOT_VERIFIED：来源未记录（疑似 Tauri 脚手架占位）。
+   - 发行影响：**当前不得作为发行资产**——ISS-045 用户门以深潭 App 图标替换前，v0.3.0 任何发布均不携带此资产；若已落 `.icns` 须先替换。
+
+**命令与退出码（CI 可直接调用）：**
+
+- `.runtime/bin/python scripts/check_third_party_notices.py` → 退出 0（所有节 ok，最后一行 `third_party_notices: ok（覆盖与版本一致，UNKNOWN 影响说明完整）`）。
+- `.runtime/bin/python -m pytest tests/test_version_consistency.py -q` → 13 passed（基线保护：本卡改动未破坏版本一致性门禁）。
+
+**未闭环项（不阻挡本卡，但下游须消化）：**
+
+- ISS-045（图标正式资产）：用户门替换 `apps/desktop/src-tauri/icons/icon.png` 后，§5 末行 UNKNOWN 行删除。
+- ISS-041（双架构 release CI）：发行候选构建后用 `.app/Contents/Resources/helper/_internal/` 实际打包依赖替换本卡 §1 锁源；如与本节 `constraints.txt` 锁不一致，须再次走本卡收口流程。
+- zrender 来源 URL + SHA-256 + 许可文本：随 ISS-041 前置检查补齐。
+
+**卡状态变更**：READY → REVIEW（框 2 据本节实地核对与 fail-closed 校验绿勾选；ISS-045 用户门与 ISS-041 随包核对留作 RELEASE 前最后闭环）。索引表同改 REVIEW。
+
 - **原 READY 说明**：2026-09-14 转 READY（ISS-029 DONE、ISS-031 DONE）。**人工门保留**：ISS-045 Logo 方向与最终 LICENSE 选择由用户决定；worker 交付可自动化部分——单一版本源与 fail-closed 校验器、依赖锁与来源/许可证清单（SBOM 或等价）、第三方 notices、许可证选项对比方案（不落 LICENSE）、贡献/漏洞反馈/匿名诊断说明草案。图标资源来源一项待 ISS-045。
 
 ### ISS-040 · 应用内更新与双架构更新清单

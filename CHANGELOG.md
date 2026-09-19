@@ -8,7 +8,7 @@
 
 ### 正式应用图标与品牌资产（ISS-045 / DEC-023 双形态体系）
 
-- 应用图标从占位换为用户在 Logo 设计会话选中的「层叠深潭」：象牙白圆角底板 + 蓝青四层嵌套等深阶地向午夜蓝中心下陷 + 顶部测深刻痕。资产可追溯、可重建：原稿与生成提示词存 `assets/brand/`，`scripts/build_app_icon.py` 本地像素抠图生成 1024 源（不调用生成模型），`scripts/build_icons.sh` 派生全尺寸 iconset/icns。
+- 应用图标从占位换为用户在 Logo 设计会话选中的「层叠深潭」：象牙白圆角底板 + 蓝青四层嵌套等深阶地向午夜蓝中心下陷 + 顶部测深刻痕。资产可追溯、可重建：原稿与生成提示词存 `assets/brand/`，`scripts/build_app_icon.py` 本地像素抠图生成 1024 源（不调用生成模型），`scripts/build_icons.sh` 派生全尺寸 iconset/icns；底板按 macOS 图标网格占画布 80.5%（824/1024）居中，与 Folia 图标视觉比例一致。
 - 界面小尺寸品牌保持「深度环」线条形态（与 ISS-072 视觉签名同构）：菜单栏托盘为独立单色 template 版（系统自动适配深浅菜单栏，不再是旧雷达环）、侧栏字标沿用 brandRing、浏览器标签页新增 `favicon.svg`（此前为浏览器默认图标）；`apple-touch-icon.png` 由深潭图标派生。
 - 新增品牌一致性门禁 `scripts/ci_brand_geometry.sh`（深度环四处几何 + 深潭资产链 + favicon 引用，fail-closed，已接线 CI 配置）。
 - 实机验证（隔离运行根）：深潭形态 DMG 安装窗口、Dock、Launchpad/Spotlight 检索四入口渲染正确（64px 起层叠结构完整，16/32px 为色块轮廓属已知取舍）；深度环托盘在深/浅色模式均清晰（像素级验证）。`NOT_VERIFIED`：18pt 小菜单栏下托盘可辨性。

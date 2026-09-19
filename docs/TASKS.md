@@ -706,6 +706,7 @@
 - **落地形态（DEC-023 修订）**：App 图标 = 层叠深潭完整底板构图（`scripts/build_app_icon.py` 从 `assets/brand/fathom-approved-concept.png` 抠图生成 1024：flood fill 清暖灰背景 → bbox 裁剪 → 白雾清理；透明四角圆角约 17%）；界面小尺寸（tray/字标/favicon）保留深度环——四层结构在 22pt 灰度下不可辨，明示取舍。
 - **验证**：门禁 verify 22/22、`ci_brand_geometry.sh`（调整为深度环四处几何 + 深潭资产链，正反两向）；GUI 实测（隔离运行根 + 本机 /Applications 替换）：DMG 安装窗口 Finder 图标、Dock、Spotlight 检索、Launchpad 检索四入口均为深潭形态渲染正确（截图存 `verify-results/iss045-basin-live/`，gitignore）；tray/favicon 未改动，沿用 2026-09-19 上午实测证据。16/32px 下深潭退化为色块轮廓（层结构不可辨）属已知取舍，64px 起结构完整。
 - **NOT_VERIFIED**：透明裸核心（未交付，按需再议）；18pt 小菜单栏（深度环人工门项不变）。
+- **尺寸修订（2026-09-19 晚，用户反馈「图标稍微有一些大」）**：底板从满幅调整为 824/1024（80.5%）居中四周透明——对齐 Apple macOS 11+ 图标网格与同开发者 Folia 图标实测 80.3% 占比；重新生成全链（编译 0、verify 22/22、/Applications 替换 + Dock 截图与 Folia 并排协调）。设计本身用户确认「没有什么问题」。
 - **合并记录**：[PR #117](https://github.com/cat-xierluo/fathom/pull/117) squash 合并为 main `55d6c3f`（2026-09-19 下午，独立 reviewer 全要点 CONFIRMED ACCEPT，含生成脚本确定性逐字节复现、TASKS 历史零篡改、DEC-023 脉络保留三重验证）。
 - **验收**：
   - [x] 用户明确选择方向，选择与取舍回写 DESIGN——用户 2026-09-18 评审产品 UI 选定 R3 方向 A+B（ISS-072），2026-09-19 指令「这个 logo 也是要合并到主分支，然后运用这个 logo 去编译软件」确认深度环为正式 Logo；取舍（不规则等深线不进图标、亮阶矿物青替代标准矿物青）已写 DESIGN「Logo 与应用图标」节

@@ -7,8 +7,8 @@
 - **交付事实**：扫描失败保护、schema v5 与三元数据集身份、设置持久化与排除列表、正式 UI、arm64 未签名自包含 app/DMG 已有实现；ISS-001 记录了 09-17/09-19 两个有效定时日期与首份真实对比日报。09-18 中间有一次中断，不能称连续两天成功。
 - **仍未完成**：ISS-002/003/008 权限、系统通知与 tray 实机门；ISS-009 新账户/断网/实际下载安装门；ISS-010/016 真正的后台注册与设置重载；ISS-040/041 更新、双架构和 Release；ISS-030 升级卸载恢复。代码切片 DONE 不等于父卡或 M1/M2 完成。
 - **最新用户取舍**：DEC-022 仅延期 Apple Developer ID 签名/公证，不豁免 updater 签名、双架构、下载 quarantine 实测或公开发布人工门；DEC-023 为深潭 App 图标与深度环小尺寸形态。视觉方向已确认，不再列为待用户选择。
-- **已合并**：ISS-073 的 PR #118 → `a9c7367`（SVG 集中维护与重复文本均在返修后关闭）；ISS-074 的 PR #119 → `9cf401e`；ISS-075 的 PR #121 → `a59702d`（15 张历史卡对账；本轮发现其中 ISS-028/037 两项证据不足，已撤回补勾并重开原卡）。审查开始时无开放 PR；后续新增在途工作以完整卡片与刷新后的远端状态为准。不要重复实施这三项，也不把历史审查报告中的“在途”当当前状态。
-- **当前在途与下一项**：ISS-076 已由现任 PM 经 PR #122 派发（IN_PROGRESS，worker 凭证见卡片），继续审查其现有交付，不重复派发。本轮补充其验证准备范围：将本轮重开的 ISS-028（仅 Tauri 三尺寸实测）与 ISS-037（仅剩余来源/notice）一并排入具体执行清单；这两张原卡为 READY，其余已验收实现不重做。ISS-076 的交付是：先把剩余安装/权限/通知/tray 与后台/更新的环境、候选和验收步骤准备到 TESTING，明确可自动执行与需用户操作的部分。它是验证准备，完成不代表父卡或发行已通过。新的工作先核对现任 PM/在途分支；本轮用户授权 review 合并与纠偏，不自动恢复旧心跳或并行启动另一个 PM。
+- **已合并**：ISS-073 的 PR #118 → `a9c7367`（SVG 集中维护与重复文本均在返修后关闭）；ISS-074 的 PR #119 → `9cf401e`；ISS-075 的 PR #121 → `a59702d`（15 张历史卡对账；本轮发现其中 ISS-028/037 两项证据不足，已撤回补勾并重开原卡）；ISS-076 的 PR #124 → `d98dfa6`（另一 PM 会话收口：G1–G13 发行实测准备清单）；ISS-028 三尺寸证据的 PR #125 → `4181fd2`（Wave33：零打扰验证脚本 + 三尺寸几何/总览图表实机 PASS；reviewer ACCEPT、合并后门禁 pytest 553/浏览器 39/品牌几何 OK）。审查开始时无开放 PR；后续新增在途工作以完整卡片与刷新后的远端状态为准。不要重复实施这些项，也不把历史审查报告中的“在途”当当前状态。
+- **当前在途与下一项**（2026-09-20 02:5x Wave33 收口后刷新）：① **ISS-037 已 PAUSED**——来源/notice 收口三轮派发各有新缺陷，预算耗尽暂停；最终成果保留在 `origin/iss-037-repair2-licenseexpr`（`66c7d6c`），解除需 PM 明确授权第 3 轮或另立收口切片（详见卡内暂停登记）。② **ISS-028 维持 READY**（第 4 框）——14 项需前台断言按用户 2026-09-20 规则由 **PM 亲自**在用户离线窗口复跑（不派 worker 做 GUI 实机操作），脚本 `bash scripts/verify_tauri_window_sizes.sh` 现成。③ 新登记 **ISS-077**（WKWebView 疑似不送达 Escape，READY）可按索引领取。④ ISS-076 清单 §6 建议的 ISS-010B 仍未登记，登记权在 PM。用户在线时段禁止任何 worker 做抢前台/激活应用的实机操作。
 - **后续实施顺序**：①完成 ISS-076 的具体准备，优先补齐 ISS-028 的 Tauri 三尺寸与 ISS-037 的发行声明；②在具备测试账户时执行 ISS-009，并复用同一候选完成 ISS-002/003/008 的原生验收；③主实现优先 ISS-010 的发行后台注册/唯一 owner/退出与睡眠恢复，再接 ISS-016 的设置与服务重载一致性；④其合同稳定后推进 ISS-040 更新、ISS-041 双架构与 draft 产物，最后 ISS-030 升级卸载恢复及 ISS-033 外部验收。仍按索引依赖领取；若实机条件暂缺，可先登记不依赖该条件、输入与失败回退完整的隔离代码切片，经独立审查推进，不能直接把 BLOCKED 父卡改 READY，也不能长期用文档或视觉小修替代主链。
 
 - **扫描观察**：ISS-070 已交付超时进度信息，run 5 性能异常根因仍未定位。09-19 成功只能证明该次完成；若后续再次中断，在原卡补匿名化证据再判断是否另开修复卡。不据此再次全量扫描生产 HOME，不把旧日期指令当自动调度。
@@ -16,7 +16,7 @@
 
 ## 领取与完成规则
 
-- 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现。
+- 状态只在本文件维护：`READY` 可领取；`IN_PROGRESS` 在做；`BLOCKED` 依赖未完成；`WAITING` 等日期/人工环境；`REVIEW_EXTERNAL` 已有其他分支，先审查集成；`REVIEW` 已交付待用户合并；`DONE` 已验收合并；`DEFERRED` 远期草案，禁止直接实现；`PAUSED` 验收失败修复预算耗尽暂停（解除需 PM 明确重派决定或用户指示，不按 READY 自动领取）。
 - 默认只选当前阶段 READY，P0 优先，再按编号；用户当前指令优先。当前接手顺序仅见上方摘要，不从历史进度叙述挑选“下一项”。
 - WAITING 的日期/环境条件具备后先核查再转 READY；REVIEW_EXTERNAL 可以进行已有成果审查与集成准备，不能重新实现，也不能把外部分支尚未合并的能力当作主干事实。
 - BLOCKED 的依赖变 DONE 后先核对卡片与新基线，再改 READY；DEFERRED 必须先补齐明确输入/验收/资源预算，并确认阶段开放。不能按“无前置”推定可以做未来任务。
@@ -96,7 +96,7 @@
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
 | ISS-036 | 目录打标与智能变化解读 | P2 | M4 | DEFERRED | ISS-028、ISS-035 |
-| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | READY | ISS-029、ISS-031、ISS-045 |
+| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | PAUSED | ISS-029、ISS-031、ISS-045 |
 | ISS-038 | PM 自动推进与监督接续 | P1 | M0 | DONE | — |
 | ISS-039 | 扫描结果合同与安全浏览器夹具兼容 | P0 | M0 | DONE | ISS-018、ISS-022 |
 | ISS-040 | 应用内更新与双架构更新清单 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-028、ISS-031 |
@@ -141,6 +141,7 @@
 | ISS-074 | PM 推进审查与权威上下文校正 | P1 | M2 | DONE | — |
 | ISS-075 | 已合并任务验收证据对账与接缝复核 | P1 | M2 | DONE | — |
 | ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | DONE | — |
+| ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | READY | ISS-028 |
 
 ## 任务卡
 
@@ -237,6 +238,20 @@
 - **证据**：worker task_c26b67bad11f（分支 `iss-076-release-prep`，基于 main `a59702d82f5e664675409c70a1946d671b17142a`）。交付三处落笔：新增 `docs/plans/2026-09-19-release-live-verification-prep.md`（§0 执行顺序 / §1 候选标识 / §2 G1–G13 逐门 / §3 自动与授权 / §4 未实现 / §5 环境缺口 / §6 下一条任务 / §7 限制）、TESTING §4 尾段（父卡归属 + 清单链接 + 未实现声明）、本卡验收与证据。**纯静态准备**：未重建候选、未跑构建/测试/浏览器入口（`NOT_RUN`，文档卡无对应运行入口；§3.1 命令通过状态均引用卡内既有记录）；未读写生产库、未触碰生产 PID 6026、未触发生产扫描、未变更权限/调度。引用的 40 位 SHA 与 file:line 锚点均在基线工作区以 git rev-parse / grep / ls 实检。ISS-010B 与夹具合同 F1/F2 仅列合同未入索引，PM 审阅本卡后决定登记。
 - **验收结论**（2026-09-19 23:5x，PM）：独立 reviewer **ACCEPT**（对抗性审阅 head `543877b18a799c93aa25f2dea5d2be97aa292a5d`）：8 个引用 SHA 全部存在且内容相符；8 处代码行锚点（`api.py:588`/`launchd.py:95`/`autostart.rs:6,153`/`tauri.conf.json:45`/`main.py:2`/`TASKS.md:180,828`）逐一到源码核对属实；「未实现」声明经 grep 独立证实（updater 在 src-tauri 零命中）；六道门禁实跑全绿（pytest 553 / cargo locked ok / opener 断言 ok / 品牌几何 OK / 浏览器 39 / 前端 88）。边界合规：`git show --name-only` 确认零产品代码改动（3 个 docs 文件）；仅勾选本卡 4 框，未误改他人。4 项验收全部达成。**下一条可领取任务**：见清单 §6（建议新卡 ISS-010B「应用内更新接线」，合同已在 §6 备好）。
 - **证据/接续**（2026-09-19 23:42 派发，IN_PROGRESS）：worker dispatch `ctx_844047cc1736`，Orca run `run_f72018d279d1`，task `task_c26b67bad11f`，worktree `/Users/maoking/orca/workspaces/fathom/iss-076-release-prep`（分支 `iss-076-release-prep`），lane minimax-M3（provider lease active）。**派发环境说明**：`spawn-worker.sh` quota preflight 因缺真实 `claude-provider-registry.json` 报 `provider_unknown_lane`（工具失灵，非额度不足）；PM 以 `--quota-preflight-override` 放行，授权来源=route-summary 实测 minimax 92%（2026-09-19 23:40），已记入 METADATA。**待 worker 交付后由 PM 复核。**
+- **DONE**（2026-09-20 00:15，另一 PM 会话收口）：[PR #124](https://github.com/cat-xierluo/fathom/pull/124) squash 合并为 main `d98dfa6`（reviewer 逐 SHA/逐行锚点核实，见上「验收结论」）。
+
+### ISS-077 · Tauri 壳 WKWebView 疑似不送达 Escape keydown
+
+- **状态**：READY（P2/M1）；来源：ISS-028 三尺寸验证的结构层发现（2026-09-20，[PR #125](https://github.com/cat-xierluo/fathom/pull/125) 证据段登记）。
+- **目标**：查明并修复「目录详情侧栏按 Esc 不关闭」：前台模式 Esc×3 未产生 keydown（侧栏不收起）；同一页面在 Web/Playwright 下 Esc 可用、侧栏「关闭」按钮路径始终可用——怀疑 Tauri/WKWebView 层未把 Escape 送达页面，属壳层事件分发问题而非前端键盘处理缺失。
+- **范围**：`apps/desktop/src-tauri/`（事件监听/注入层）与必要的 frontend 键盘处理；不改扫描/API。
+- **实施边界**：先在真实 Tauri 壳复现（前台 Esc + 键盘事件监听日志/console 捕获），区分「壳吞 Escape」「焦点不在 WebView」「前端 handler 未绑」三种假设并逐一取证；修复优先壳层转发（Tauri onKeyEvent 或 JS 注入兜底），前端不做双绑定；修复后补零打扰可断言的回归检查进 `scripts/verify_tauri_window_sizes.sh` 或专项脚本（先红后绿）。GUI 实机操作按 2026-09-20 用户规则由 PM 亲自执行，worker 交脚本与 headless 断言。
+- **验收**：
+  - [ ] 反例复现与根因结论可复查（三假设有取证实录，不是猜测定论）
+  - [ ] 修复后真实 Tauri 壳内 Esc 关闭目录详情侧栏可用，Tab 焦点链不受影响
+  - [ ] 有 fail-closed 断言覆盖（脚本化，可并入 ISS-028 三尺寸脚本或专项）
+  - [ ] 不引入壳对页面的宽泛事件/能力授权；改动范围与证据可在 PR diff 复核
+- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-028 卡「三尺寸证据」段结构层发现①；ISS-076 清单 §2 实机步骤的键盘项。
 
 
 
@@ -1064,7 +1079,7 @@
 
 > 2026-09-19 合并后复审：仅重开 Tauri 三窗口尺寸证据缺口，保留已合并实现与 Web 证据，不重做 UI。按 TESTING 的 980×640、1220×820、1440×900 在隔离运行根验证实际 Tauri 页面无溢出、图表非零及键盘/详情可用，保留每个尺寸的断言或截图；环境未就绪先记录具体原因，不据单次全屏图勾选。ISS-076 负责准备步骤，结果回写本卡。
 
-- **三尺寸证据（2026-09-20，worker glm-5.3，分支 `iss-028-tauri-size-evidence` base `f3633c4`）**：新增 `scripts/verify_tauri_window_sizes.sh`（fail-closed：0 可执行断言全过 / 1 断言失败 / 3 环境阻塞；.app 缺失时按现有链自举构建——rustup 1.88.0，helper SHA256 `66d5e565…1667` 与 #110 逐字节一致；证据落 `apps/desktop/src-tauri/verify-results/window-sizes/`，gitignore 内不入库）。隔离：EnvProbe.app 先实证启动风格的环境注入（本轮 `open -g --env` 三变量齐传）+ 运行根 settings.json 保险带 + `/api/config` realpath 硬门；合成扫描根（du 实测）两日快照驱动增长/缩减（Media +50MB、Notes −20MB）；生产 7952（pid 6026）前后只读快照一致，真实 HOME 无本时段写入，退出回收/端口关闭/instance 清理全过。命令 `bash scripts/verify_tauri_window_sizes.sh` **退出码 0**（verdict `PASS_WITH_NOT_VERIFIED`，18 pass / 0 fail / 14 blocked-需前台；最终运行 `window-sizes/20260919T174650Z/`）：
+- **三尺寸证据（2026-09-20，worker glm-5.3，分支 `iss-028-tauri-size-evidence` base `f3633c4`；[PR #125](https://github.com/cat-xierluo/fathom/pull/125) 已由独立 reviewer ACCEPT（0 blocking / 3 non-blocking）+ PM 代开后 squash 合并为 main `4181fd28c08fd0668d8c2d3257b4aa6732f7bf29`；合并后 main 门禁 pytest 553 / 浏览器 39 / 品牌几何 OK）**：新增 `scripts/verify_tauri_window_sizes.sh`（fail-closed：0 可执行断言全过 / 1 断言失败 / 3 环境阻塞；.app 缺失时按现有链自举构建——rustup 1.88.0，helper SHA256 `66d5e565…1667` 与 #110 逐字节一致；证据落 `apps/desktop/src-tauri/verify-results/window-sizes/`，gitignore 内不入库）。隔离：EnvProbe.app 先实证启动风格的环境注入（本轮 `open -g --env` 三变量齐传）+ 运行根 settings.json 保险带 + `/api/config` realpath 硬门；合成扫描根（du 实测）两日快照驱动增长/缩减（Media +50MB、Notes −20MB）；生产 7952（pid 6026）前后只读快照一致，真实 HOME 无本时段写入，退出回收/端口关闭/instance 清理全过。命令 `bash scripts/verify_tauri_window_sizes.sh` **退出码 0**（verdict `PASS_WITH_NOT_VERIFIED`；worker 终跑 18/0/14、PM 复跑 18/0/14、reviewer 自举构建实跑 19/0/14——多出 app-bootstrap-build 一项属预期差异；reviewer 运行 `window-sizes/20260919T181829Z/`）：
   - **零打扰模式（PM 2026-09-20 用户在线指令后）已验证**：三尺寸几何双核实全过（System Events set size 不激活；CGWindowList 外框回读 + 截图像素：980×668 / 1220×848 / 1440×928 外框 = 目标内容 + 28pt 标题栏，@2x，内容区恰为 980×640/1220×820/1440×900）；总览页（应用默认页）图表带非空白三尺寸全过（灰度纹理强度 12.144/10.798/10.086；非前台窗口合成整体褪色使彩色计数失真，故纹理判定）。
   - **前台模式历史证据（指令下发前实机运行 `20260919T165433Z`，980×640 全矩阵）**：三页横向溢出探测全过（ArrowRight changed=0.0；ArrowDown 正控制位移 0.274 证明键控滚动生效）、变化页增长/缩减图表彩色 20160px、分布旭日图 86986px、Tab 焦点环可见（0.010）、Tab×7 焦点进表行（行操作按钮可见）、Enter 打开目录详情侧栏——同页图表与溢出在 1220/1440 亦有几何与滚动正控制证据，但因该轮页面身份核实缺陷（重载/签名机制 bug，后已定位为 Cmd+R 在本壳无效）溢出项按保守口径不采信。
   - **NOT_VERIFIED-需前台（14 项，脚本内单列 blocked）**：1220/1440 的三页溢出与变化/分布页图表/详情侧栏、980 溢出复核、键盘链路（Tab 焦点环/行聚焦/Enter/Esc）。原因：用户在线期间禁止抢前台（PM 指令），且实证后台交互通道不可用——Cmd+R 本壳无效、CGEventPostToPid 点击/滚轮非前台不被 WKWebView 处理、AX 置焦必激活应用、System Events 不暴露 Web AX 树。留待用户离线窗口或 PM 授权前台窗口复验（脚本一次运行约 5 分钟，含构建首次约 15 分钟）。
@@ -1089,7 +1104,7 @@
   - [x] 结论附时间/范围/质量；正负/未知/父子不可累加语义正确 —— ISS-075 对账补勾（判定 A）：父子不可累加由 reviewer REJECT 抓实并修复（净变化改根同口径差 `b.total_kb − a.total_kb`，父子重叠场景 +100 非 +166 两项具体值断言，卡内）；总览接入覆盖质量
   - [x] 键盘可达、Esc 焦点返回、行操作 focus 可见、长路径可复制 —— ISS-075 对账补勾（判定 A）：Tab/Esc 焦点返回、分布行可聚焦、长路径复制在卡内已实现清单与 59/59 检查覆盖
   - [ ] 最小窗口/标准窗口/大屏及 Tauri/Web 分别有证据；图表有表格替代 —— 2026-09-19 复审撤回 #121 补勾：Web 三视口与图表等价表格在册；2026-09-20 补齐 Tauri 三尺寸几何/总览图表证据与 980×640 前台模式全矩阵（见上「三尺寸证据」段），但溢出/键盘/详情在 1220/1440 及零打扰模式下仍 NOT_VERIFIED-需前台（14 项），三项子证据未在三个尺寸齐备——按合同维持未勾，状态保持 READY，待前台窗口复验后收口。
-- **证据/接续**：三尺寸验证脚本与两轮实机证据见上「三尺寸证据」段（最终 `window-sizes/20260919T174650Z/`，退出码 0；前台模式全矩阵 `20260919T165433Z/`）；后续：用户离线窗口复跑同一脚本补齐 14 项需前台断言后勾选第 4 框并转 REVIEW；Esc 送达问题建议拆卡。
+- **证据/接续**：三尺寸验证脚本与两轮实机证据见上「三尺寸证据」段（合并于 #125，main `4181fd2`）；后续：14 项需前台断言按 2026-09-20 用户规则由 PM 在用户离线窗口亲自复跑（同一脚本约 5 分钟）后勾选第 4 框并转 REVIEW；Esc 送达问题已拆卡 **ISS-077**（READY）。
 
 ### ISS-032 · 资源预算、大文件查询与诊断
 
@@ -1232,6 +1247,8 @@
 ### ISS-037 · 版本、依赖来源与开源准备
 
 > 2026-09-19 合并后复审：仅重开发行来源/notice 收口；版本规则、已选 Apache-2.0 与贡献说明不重做。核对实际锁定及随包依赖，补齐可验证的必要版权/许可文本与来源，明确开发工具和随包资源边界；未核实项保留 UNKNOWN 并说明发行影响，不能先勾“齐全”。同步 THIRD_PARTY_NOTICES 与依赖清单的过期版本/占位图标描述；深潭 App 图标以 assets/brand/README.md 的 image_gen 原稿与处理链为来源，不改写成自绘几何或扩大权利保证。以最终候选的随包内容核对，必要输入缺失时记录具体依赖，不购买或发布资产。
+>
+> **2026-09-20 暂停登记（Wave33 验收链，PM）**：本轮对框 2 派发三轮（初版 `f6d6bf6` → repair1 `a889a2e` → repair2 `66c7d6c`，分支均在远端、**均未合并**）。每轮交付各有真实价值但 PM 复核各发现一项缺陷：① notices 把 `icon.png` 误记为脚手架占位（与 #117/e033ef6 后的 main 现实相反，repair1 已修）；② 17 条 Python UNKNOWN 指向不存在的 §6 且校验器漏解析 PEP 639 `License-Expression`（repair2 已修，含三级许可证解析与章节引用存在性校验）；③ repair2 引入 certifi/pluggy 许可证值互换（本地 METADATA 实为 certifi=MPL-2.0、pluggy=MIT，表内相反），且校验器无许可证值级交叉核对故仍退出 0——此缺陷**未修**。修复 episode 预算（2）耗尽，按失败策略暂停本卡：框 2 维持未勾、状态 PAUSED；最终 head `66c7d6cfa9248fd5f2e270fe560cc85eb8db3c7f` 保留在 `origin/iss-037-repair2-licenseexpr`（含前两轮全部成果，可续用）。解除路径：PM 重派第 3 轮（超出默认预算，需明确授权）修复③并给校验器补值级核对，或以候选构建实机核对口径另立收口切片。
 
 - **目标**：建立分发组件的单一版本源与来源清单，为 release 构建和用户选择开源许可准备具体方案。
 - **范围**：版本定义、依赖/资源清单、拟新增 LICENSE/NOTICE/贡献与安全说明。

@@ -123,7 +123,7 @@
 | ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
 | ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | DONE | ISS-064 |
 | ISS-072 | R3 测深视觉签名实装与仪器风数字排版（frontend/ 产品 UI） | P1 | M2 | DONE | ISS-026、ISS-028 |
-| ISS-073 | 视觉与夹具收尾：扫描中旋转深度环指示、未消费 token 清理、前端检查夹具卫生 | P3 | M2 | IN_PROGRESS | ISS-072、ISS-069 |
+| ISS-073 | 视觉与夹具收尾：扫描中旋转深度环指示、未消费 token 清理、前端检查夹具卫生 | P3 | M2 | DONE | ISS-072、ISS-069 |
 
 ## 任务卡
 
@@ -426,7 +426,8 @@
   - [ ] style.css 中五个 token 的声明删除后，前端 86/浏览器 39 全绿，无 var() 悬空引用
   - [ ] 夹具 defaults 与真实 `effective_settings_view().defaults` 键集合一致；前端 86/浏览器 39 全绿
   - [ ] 独立 reviewer ACCEPT
-- **证据/接续**：进行中。
+- **证据/接续**（2026-09-19 下午）：三件事全部实施——①徽章环 SVG 与 brandRing 同几何（从 icons.js 导入 ICON_PATHS.brandRing，零硬编码副本）、CSS 动画仅在 prefers-reduced-motion: no-preference 下旋转；②5 token 删除后 grep 零悬空引用；③夹具 defaults 4 键与 `effective_settings_view()` 逐键一致。**独立 reviewer v1 REJECT 抓到真缺陷**（live childNodes.forEach 边删边遍历跳位 → 第 2 个轮询 tick 起文案重复且永久残留空文本节点；includes 式断言与 SVG 探针均无法捕捉——门禁全绿≠无缺陷的又一实例）：v2 重写为文本节点首次创建后持引用只改 textContent + 首次接管清除 HTML 初始占位 + 断言升级为文本全等与单文本节点计数。**两轮验证**：前端 88/0（含新断言）、浏览器 39/39、pytest 553、实机 Playwright 12 帧×500ms transform 持续变化且文本稳定。
+- **验收勾选与合并**：四框全过（环指示动画跨 tick 稳定+reduced-motion 静止 ✓；token 删除无悬空 ✓；夹具键集一致 ✓；reviewer ACCEPT ✓）。[PR #118](https://github.com/cat-xierluo/fathom/pull/118) squash 合并（v1 REJECT→v2 修复→复审 ACCEPT，reviewer 独立复跑 88/88 与 8 tick Chromium DOM 序列）；前端门禁计数 86→**88**。reviewer 两条非 blocking 备注（badgeRingEl 可补 isConnected 对称防御/顶栏重建假设需重审模块引用）留后续顺手处理。**ISS-073 DONE。**
 
 ### ISS-072 · R3 测深视觉签名实装与仪器风数字排版
 

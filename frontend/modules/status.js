@@ -17,6 +17,28 @@ const TRAY_HEARTBEAT_INTERVAL_MS = 10 * 60 * 1000;
 const scanPoll = createPoller(() => loadStatus(), SCAN_POLL_INTERVAL_MS);
 const trayHeartbeat = createInterval(() => loadStatus(), TRAY_HEARTBEAT_INTERVAL_MS);
 
+// ISS-073：扫描徽章 = 可选旋转深度环 + 文本。SVG 只在进入/离开 running 时
+// 增删一次，轮询 tick 只改文本节点（textContent），动画不被重建打断。
+const BADGE_RING_SVG =
+  '<span class="badge-ring" aria-hidden="true">' +
+  '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="butt">' +
+  '<path class="dr-ring" d="M20 9.1A8.5 8.5 0 1 1 14.9 4"/>' +
+  '<line class="dr-probe" x1="12" y1="7.5" x2="12" y2="16.5"/>' +
+  '<line class="dr-tick" x1="17.2" y1="6.8" x2="19.3" y2="4.7"/></svg></span>';
+
+function setBadge(running, text) {
+  const badge = document.getElementById("scan-badge");
+  if (!badge) return;
+  const ring = badge.querySelector(".badge-ring");
+  if (running && !ring) badge.insertAdjacentHTML("afterbegin", BADGE_RING_SVG);
+  if (!running && ring) ring.remove();
+  const ringNow = badge.querySelector(".badge-ring");
+  badge.childNodes.forEach((node) => { if (node.nodeType === Node.TEXT_NODE) node.remove(); });
+  badge.append(ringNow ? document.createTextNode("") : null);
+  if (ringNow) badge.append(document.createTextNode(text));
+  else badge.textContent = text;
+}
+
 export async function loadStatus() {
   const request = beginRequest("status", { pageScoped: false });
   const badge = document.getElementById("scan-badge");
@@ -26,7 +48,7 @@ export async function loadStatus() {
     s = await fetchJSON("/api/status");
   } catch (e) {
     if (!request.current()) return null;
-    badge.textContent = e.status === 0 ? "服务未连接" : "状态加载失败";
+    setBadge(false, e.status === 0 ? "服务未连接" : "状态加载失败");
     badge.classList.remove("running");
     btn.disabled = false;
     if (state.scanWasRunning) scanPoll.schedule();  // 扫描中失联：保住轮询链待恢复
@@ -53,12 +75,12 @@ export async function loadStatus() {
   const wasRunning = state.scanWasRunning;
   state.scanWasRunning = Boolean(s.scan.running);
   if (s.scan.running) {
-    badge.textContent = "扫描进行中…"; badge.classList.add("running"); btn.disabled = true;
+    setBadge(true, "扫描进行中…"); badge.classList.add("running"); btn.disabled = true;
     scanPoll.schedule();
   } else {
     scanPoll.cancel();
-    badge.textContent = s.scan.finished_at
-      ? `上次扫描 ${s.scan.finished_at.replace("T", " ")}` : "未手动扫描过";
+    setBadge(false, s.scan.finished_at
+      ? `上次扫描 ${s.scan.finished_at.replace("T", " ")}` : "未手动扫描过");
     badge.classList.remove("running"); btn.disabled = false;
     if (wasRunning) refreshActivePage();  // 扫描结束：单一刷新入口刷新当前页
   }

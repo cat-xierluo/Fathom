@@ -8,9 +8,7 @@
   --card: #ffffff;
   --sidebar: #eceef2;        /* 侧栏材质：与工作区轻微背景差异（R3） */
   --border: #e4e7ec;
-  --hairline: #e9ebef;       /* 弱分隔线（R3） */
   --text: #1a2233;
-  --text-2: #45474f;
   --muted: #6b7486;
   /* 品牌强调（低饱和）：海沟蓝承担主动作/当前选择/深度环主体，
    * 矿物青只作深度环的探针与刻度点缀；不进入语义色 */
@@ -18,14 +16,11 @@
   --trench-weak: #e8edf2;
   --mineral: #3e7e7c;
   --primary: #345d7f;
-  --primary-weak: #e8edf2;
   --danger: #d64545;
   --ok: #2e9e5b;
-  --focus: #345d7f;
   --sel: #e8edf2;
   --shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
   --sidenav-w: 72px;
-  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -94,6 +89,24 @@ body {
   padding: 4px 10px; border-radius: 999px;
 }
 .scan-badge.running { color: var(--primary); border-color: var(--primary); }
+
+/* ISS-073：扫描中的旋转深度环指示。SVG 只在 running 态进入/离开时增删一次，
+ * 轮询 tick 的文本更新不重建元素，动画因此不被打断；prefers-reduced-motion
+ * 时保持静止（环仍显示，作视觉占位）。 */
+.scan-badge .badge-ring {
+  display: inline-block;
+  width: 12px; height: 12px;
+  vertical-align: -2px;
+  margin-right: 6px;
+}
+.scan-badge .badge-ring svg { display: block; width: 100%; height: 100%; }
+.scan-badge.running .badge-ring .dr-ring,
+.scan-badge.running .badge-ring .dr-probe,
+.scan-badge.running .badge-ring .dr-tick { stroke: currentColor; }
+@media (prefers-reduced-motion: no-preference) {
+  .scan-badge.running .badge-ring svg { animation: badge-spin 1.6s linear infinite; }
+}
+@keyframes badge-spin { to { transform: rotate(360deg); } }
 
 .page-container { padding: 20px 26px 40px; max-width: 1280px; width: 100%; margin: 0 auto; }
 .page.hidden { display: none; }

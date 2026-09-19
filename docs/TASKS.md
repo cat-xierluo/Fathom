@@ -123,6 +123,7 @@
 | ISS-064 | du 安全时限须以墙钟计（macOS monotonic 不计睡眠）且超时留痕阻塞路径 | P0 | M1 | DONE | ISS-061 |
 | ISS-065 | 扫描期间消失的目录不应使整次采集无效（vanishing path 计数并保留快照） | P1 | M1 | DONE | ISS-064 |
 | ISS-072 | R3 测深视觉签名实装与仪器风数字排版（frontend/ 产品 UI） | P1 | M2 | DONE | ISS-026、ISS-028 |
+| ISS-073 | 视觉与夹具收尾：扫描中旋转深度环指示、未消费 token 清理、前端检查夹具卫生 | P3 | M2 | IN_PROGRESS | ISS-072、ISS-069 |
 
 ## 任务卡
 
@@ -414,6 +415,18 @@
   - [ ] 前端检查计数同步（PM 运行 node 命令并同步）；浏览器 39 项不回退
   - [ ] 文案不出现"数量=影响"或"未记录=已删除"表述
 - **证据/接续**（DONE，2026-09-17，第三 episode）：base `da8302f`（r1 两 commit + r2 追加式 + PM 检查期望修正）。**PM 先前诊断有一处误判须纠正**：r1/r2 失败的根因**不是**「note 区块在 dual 路径未被渲染」——`loadScanNote()` 已在 194 行调用 `_renderCoverageNoteBlock`，接线本来就通；真实根因是 (1) `_renderCoverageClasses` 缺口 chip 输出「权限受限 6 处」（标签前置），而验收契约要求「6 处权限受限」（计数前置）；(2) `_renderCoverageNoteBlock` 在 `cov.state === "full"` 时把容器置空，而检查（PM 于 `da8302f` 修正过的期望）要求 full 时显式出现「完整覆盖」chip；(3) 深链检查取 `invokes[0]`，实际首个 invoke 是 `update_tray_status`。worker ctx_f3cf9732e7 交付 `36b61ea`（rebase 后 `a78fa2a`）：chip 改计数前置、full 渲染不带 `data-test` 的「完整覆盖」chip、深链检查改 filter + 等待 opener 调用。**PM 独立复跑**：pytest 524/524、`verify_frontend_refresh.cjs` **76/76**、浏览器 **39/39**、cargo test **23/23**、`cargo locked offline build` ok。分支已 rebase 到 `5c5fac4`（原分支落后 36 项 ISS-066 测试）。独立 reviewer ctx_35085bda（未参与实现）**REJECT**：2 blocking，均为**跨卡接缝、非本卡引入**（PM 独立复核确认：`/api/snapshots` 确不含 `vanished_count`/`exclude_names`；`lib.rs` 确零 `.plugin(` 注册、capabilities 仅 `core:default`；且两者在 main `5c5fac4` 同样存在）→ 登记为 **ISS-067**（/api/snapshots 补列）与 **ISS-068**（Tauri opener 注册与权限）。本卡前端范围已达成且边界合规（diff 仅 frontend/ + scripts/，零后端/Tauri 改动），[PR #97](https://github.com/cat-xierluo/fathom/pull/97) squash 合并 main `7a86965`。**教训**：`verify_frontend_refresh.cjs` 夹具同时服务 `/api/status` 与 `/api/snapshots`，同形对象掩盖了端点接缝——故 76/76 全绿**不证明**三类缺口在生产可见（vanished/excluded 恒为 0）。实机 TCC 三态、真实系统设置跳转仍留父卡 ISS-002 人工验收。
+
+### ISS-073 · 视觉与夹具收尾：扫描中旋转深度环指示、未消费 token 清理、前端检查夹具卫生
+
+- **目标**：清掉 ISS-072/ISS-069 收尾时明确留下的三件小事，不让它们变成永久噪音。
+- **范围**：`frontend/modules/status.js`、`frontend/style.css`、`frontend/index.html`（扫描徽章区）、`scripts/verify_frontend_refresh.cjs`（夹具 defaults）、必要时 `tests/`。
+- **实施边界**：①扫描指示 = 徽章内嵌一个 CSS 旋转的深度环 SVG（复用 brandRing 形态，`prefers-reduced-motion` 时静止），文本更新只改 `textContent` 不重建元素——修复"每 tick 重建打断动画"；②5 个已声明未消费 token（--hairline/--text-2/--focus/--primary-weak/--font-mono）**删除声明**而非强行接线（当前无需要它们的场景，留声明只会继续误导）；③夹具 defaults 去掉真实 API 没有的 `exclude_names: []` 键——先确认前端确实不消费该键（ISS-069 结论），改完跑前端 86 与浏览器 39。
+- **验收**：
+  - [ ] 扫描进行中徽章显示旋转深度环 + 文案；轮询 tick 间 SVG 元素不被替换（断言同一 DOM 节点）；`prefers-reduced-motion` 不旋转
+  - [ ] style.css 中五个 token 的声明删除后，前端 86/浏览器 39 全绿，无 var() 悬空引用
+  - [ ] 夹具 defaults 与真实 `effective_settings_view().defaults` 键集合一致；前端 86/浏览器 39 全绿
+  - [ ] 独立 reviewer ACCEPT
+- **证据/接续**：进行中。
 
 ### ISS-072 · R3 测深视觉签名实装与仪器风数字排版
 

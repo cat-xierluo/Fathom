@@ -1256,9 +1256,17 @@ async function main() {
       return el.dataset.probe;
     });
     await page.waitForTimeout(5200);  // 跨一个 5s 轮询 tick
-    const ringPersist = await page.$eval("#scan-badge .badge-ring svg", (el) => el.dataset.probe === "ring-node" && document.querySelector("#scan-badge .badge-ring") !== null, ring1)
+    const ringPersist = await page.$eval("#scan-badge .badge-ring svg", (el) => el.dataset.probe === "ring-node")
       .catch(() => false);
-    record("scan-badge-ring-persists-across-poll-ticks", ringPersist === true, `probe=${ringPersist}`);
+    // ISS-073 review 修复验证：跨 tick 后徽章文本必须恰好一条且全等（v1 的
+    // live NodeList 跳位会产生「扫描进行中…扫描进行中…」，includes 式检查盲区）
+    const badgeTextExact = await page.$eval("#scan-badge", (el) => ({
+      text: el.textContent,
+      textNodes: [...el.childNodes].filter((n) => n.nodeType === 3 && n.textContent.length > 0).length,
+    }));
+    const textExactOk = badgeTextExact.text === "扫描进行中…" && badgeTextExact.textNodes === 1;
+    record("scan-badge-ring-persists-across-poll-ticks", ringPersist === true && textExactOk,
+      `probe=${ringPersist} text=${JSON.stringify(badgeTextExact.text)} textNodes=${badgeTextExact.textNodes}`);
     const statusBaseline = (await fixtureState()).counts.status || 0;
     const pollStart = Date.now();
     while (Date.now() - pollStart < 11200) {  // 覆盖 ≥2 个 5s 轮询周期

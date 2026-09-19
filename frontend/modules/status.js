@@ -6,6 +6,7 @@
  */
 import { fetchJSON, apiPost, beginRequest } from "./request.js";
 import { fmtBytes } from "./format.js";
+import { ICON_PATHS } from "../icons.js";
 import { pushTrayStatus } from "./tauri.js";
 import { createPoller, createInterval } from "./polling.js";
 import { state } from "./state.js";
@@ -18,25 +19,35 @@ const scanPoll = createPoller(() => loadStatus(), SCAN_POLL_INTERVAL_MS);
 const trayHeartbeat = createInterval(() => loadStatus(), TRAY_HEARTBEAT_INTERVAL_MS);
 
 // ISS-073：扫描徽章 = 可选旋转深度环 + 文本。SVG 只在进入/离开 running 时
-// 增删一次，轮询 tick 只改文本节点（textContent），动画不被重建打断。
-const BADGE_RING_SVG =
-  '<span class="badge-ring" aria-hidden="true">' +
-  '<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="butt">' +
-  '<path class="dr-ring" d="M20 9.1A8.5 8.5 0 1 1 14.9 4"/>' +
-  '<line class="dr-probe" x1="12" y1="7.5" x2="12" y2="16.5"/>' +
-  '<line class="dr-tick" x1="17.2" y1="6.8" x2="19.3" y2="4.7"/></svg></span>';
+// 增删一次；文本节点首次创建后持有引用，轮询 tick 仅改其 textContent——
+// 不重建任何元素，动画与文本都稳定（reviewer 对 v1 的跳位 bug 修复）。
+let badgeRingEl = null;
+let badgeTextEl = null;
 
 function setBadge(running, text) {
   const badge = document.getElementById("scan-badge");
   if (!badge) return;
-  const ring = badge.querySelector(".badge-ring");
-  if (running && !ring) badge.insertAdjacentHTML("afterbegin", BADGE_RING_SVG);
-  if (!running && ring) ring.remove();
-  const ringNow = badge.querySelector(".badge-ring");
-  badge.childNodes.forEach((node) => { if (node.nodeType === Node.TEXT_NODE) node.remove(); });
-  badge.append(ringNow ? document.createTextNode("") : null);
-  if (ringNow) badge.append(document.createTextNode(text));
-  else badge.textContent = text;
+  if (running && !badgeRingEl) {
+    badgeRingEl = document.createElement("span");
+    badgeRingEl.className = "badge-ring";
+    badgeRingEl.setAttribute("aria-hidden", "true");
+    badgeRingEl.innerHTML =
+      `<svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="butt">${ICON_PATHS.brandRing}</svg>`;
+    badge.prepend(badgeRingEl);
+  }
+  if (!running && badgeRingEl) {
+    badgeRingEl.remove();
+    badgeRingEl = null;
+  }
+  if (!badgeTextEl || !badgeTextEl.isConnected) {
+    // 首次接管：清掉 HTML 里的初始占位等历史文本节点，此后文本只有受控这一个
+    [...badge.childNodes].forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE) node.remove();
+    });
+    badgeTextEl = document.createTextNode("");
+    badge.append(badgeTextEl);
+  }
+  badgeTextEl.textContent = text;
 }
 
 export async function loadStatus() {

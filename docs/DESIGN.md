@@ -136,7 +136,7 @@ Logo/App Icon 曾是与 PR #10 页面视觉确认不同的第二个人工门（I
 
 资产合同：canonical 声明在 `apps/desktop/src-tauri/icons/icon.svg`（24 viewBox，与 `frontend/icons.js` 的 brandRing 逐参数对应，仅描边加粗 2.4/2.2）；1024 位图源由 `scripts/build_app_icon.py` 从该几何渲染；全尺寸 PNG/iconset/icns 由 `scripts/build_icons.sh` 缩放合成；菜单栏 tray 是 `scripts/make_tray_icon.py` 生成的同构**单色 template**（透明底白图形，运行时 `icon_as_template(true)` 由系统深浅反色），不缩小彩色 App 图标。全部自绘几何，无字体与第三方素材，随仓库 Apache-2.0 发布。
 
-实测（2026-09-19，隔离运行根）：DMG 安装窗口 Finder 图标、Dock 图标、菜单栏 tray（22pt、当前浅色外观）渲染正确；`NOT_VERIFIED`：Launchpad/Spotlight 检索呈现、深色模式与 18pt 小菜单栏下 tray 可辨性（并入 ISS-009 人工门清单）。
+实测（2026-09-19，隔离运行根）：DMG 安装窗口 Finder 图标、Dock 图标、菜单栏 tray（22pt）渲染正确。同日补充实测：Launchpad/Spotlight 检索呈现（新图标构建替换本机 /Applications 后 GUI 自动化截图）与深浅色模式（显式深色 + 浅色暗壁纸，本机菜单栏背景亮度 32-37，tray 均白色 template 渲染、峰值 228、对比充分）；`NOT_VERIFIED` 仅剩 18pt 小菜单栏下 tray 可辨性（并入 ISS-009 人工门清单）。
 
 ## 原型与实装验收
 

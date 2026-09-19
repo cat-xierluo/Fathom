@@ -1,13 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
   <!--
-    Fathom 正式应用图标 canonical 声明（ISS-045，用户 2026-09-19 确认深度环方向）。
-    本文件是几何与配色的单一真值：1024 位图产物由 scripts/build_app_icon.py
-    按 scale=1024/24 从本几何渲染（两处参数须同步修改，改本文件必须重跑脚本）。
+    Fathom「深度环」界面形态几何声明（ISS-072 / DEC-023 双形态体系）。
+    本 SVG 不再是 App 图标 canonical：2026-09-19 用户在 Logo 设计会话选中
+    「层叠深潭」为 App 图标（位图系，来源 assets/brand/fathom-approved-concept.png，
+    由 scripts/build_app_icon.py 抠图生成 1024）；深度环保留在界面小尺寸
+    场景——侧栏字标（frontend/icons.js brandRing）、favicon
+    （frontend/favicon.svg）、菜单栏 tray（scripts/make_tray_icon.py）。
 
     几何与 frontend/icons.js 的 brandRing（24 viewBox，stroke 2）逐参数对应，
-    仅把描边加粗到 2.4/2.2 以提升小尺寸可辨性；构图为海沟蓝 squircle 底 +
-    白色开放环（右上 50 度缺口）+ 白色中心探针 + 亮矿物青跨缺口刻度
-    （#3e7e7c 在深底上对比不足，图标用亮阶 #82c8c2）。
+    仅把描边加粗到 2.4/2.2；构图为海沟蓝 squircle 底 + 白色开放环
+    （右上 50 度缺口）+ 白色中心探针 + 亮矿物青跨缺口刻度。
+    本文件用于界面形态的参考与文档呈现，四处几何（icons.js / favicon.svg /
+    make_tray_icon.py / 本文件）须同步修改，由 scripts/ci_brand_geometry.sh
+    门禁保证。
     来源：全部自绘几何，无字体、无第三方素材；随仓库以 Apache-2.0 发布（DEC-020）。
   -->
   <rect x="0" y="0" width="24" height="24" rx="4.32" fill="#345d7f"/>

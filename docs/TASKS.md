@@ -140,7 +140,7 @@
 | ISS-073 | 视觉与夹具收尾：扫描中旋转深度环指示、未消费 token 清理、前端检查夹具卫生 | P3 | M2 | DONE | ISS-072、ISS-069 |
 | ISS-074 | PM 推进审查与权威上下文校正 | P1 | M2 | DONE | — |
 | ISS-075 | 已合并任务验收证据对账与接缝复核 | P1 | M2 | DONE | — |
-| ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | READY | — |
+| ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | IN_PROGRESS | — |
 
 ## 任务卡
 
@@ -235,6 +235,7 @@
   - [ ] 明确后台注册/重载与更新尚未实现，不把 dry-run 或 latest.json 生成器算成可用功能
   - [ ] 输出下一条真正可领取的任务及阻塞证据；不购买账户、不公开资产、不向测试者发送材料、不自动注册服务
 - **证据**：待执行；优先复用 TESTING 和现有发行方案，不新建平行任务系统。
+- **证据/接续**（2026-09-19 23:42 派发，IN_PROGRESS）：worker dispatch `ctx_844047cc1736`，Orca run `run_f72018d279d1`，task `task_c26b67bad11f`，worktree `/Users/maoking/orca/workspaces/fathom/iss-076-release-prep`（分支 `iss-076-release-prep`），lane minimax-M3（provider lease active）。**派发环境说明**：`spawn-worker.sh` quota preflight 因缺真实 `claude-provider-registry.json` 报 `provider_unknown_lane`（工具失灵，非额度不足）；PM 以 `--quota-preflight-override` 放行，授权来源=route-summary 实测 minimax 92%（2026-09-19 23:40），已记入 METADATA。**待 worker 交付后由 PM 复核。**
 
 
 

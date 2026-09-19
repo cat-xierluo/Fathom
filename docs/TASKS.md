@@ -140,7 +140,7 @@
 | ISS-073 | 视觉与夹具收尾：扫描中旋转深度环指示、未消费 token 清理、前端检查夹具卫生 | P3 | M2 | DONE | ISS-072、ISS-069 |
 | ISS-074 | PM 推进审查与权威上下文校正 | P1 | M2 | DONE | — |
 | ISS-075 | 已合并任务验收证据对账与接缝复核 | P1 | M2 | DONE | — |
-| ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | IN_PROGRESS | — |
+| ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | DONE | — |
 
 ## 任务卡
 
@@ -230,11 +230,12 @@
   4. 更新与双架构依赖：原生 Intel 环境、匿名或隔离 HTTPS 更新源、updater 签名、helper 停写/备份/握手、N→N+1 失败恢复；缺资源仅阻断依赖该资源的项。
   5. 下一条可执行工作：优先把 ISS-010/016 中输入已齐且能隔离验证的部分拆为完整切片；否则列明确缺少的环境/决定与可继续的准备项。不新增泛化 UI 美化、扫描器重写或智能功能卡。
 - **验收**：
-  - [ ] 每个剩余发行门有唯一父卡、前置条件、精确候选/产物标识、操作步骤、预期结果、失败处理与清理办法
-  - [ ] 可自动化验证与人工动作分开；必要授权集中到具体环境/动作，不重复询问已授权内容
-  - [ ] 明确后台注册/重载与更新尚未实现，不把 dry-run 或 latest.json 生成器算成可用功能
-  - [ ] 输出下一条真正可领取的任务及阻塞证据；不购买账户、不公开资产、不向测试者发送材料、不自动注册服务
-- **证据**：待执行；优先复用 TESTING 和现有发行方案，不新建平行任务系统。
+  - [x] 每个剩余发行门有唯一父卡、前置条件、精确候选/产物标识、操作步骤、预期结果、失败处理与清理办法 —— 清单 §2 G1–G13 逐门表格齐备（`docs/plans/2026-09-19-release-live-verification-prep.md`）；候选三要素与重建要求在 §1.1，含候选时间线（最后两次全量 verify 22/22 在 `c307040d4e3d0d7c4309552851d2caff991c254e` 与 `55d6c3fe5072311fdc2693866136ba5e9e6409b1`，其后 `a9c736745e296c3b2da7ddf49a34ad581eb8ebd5` 改动进包前端资产未记录复跑，实测前必须重建复验）。tray 手点退出与 18pt 可辨性按既有登记归 ISS-009（TASKS.md:180、TASKS.md:828），未误归 ISS-008
+  - [x] 可自动化验证与人工动作分开；必要授权集中到具体环境/动作，不重复询问已授权内容 —— 清单 §3.1 自动入口表（7 条现可跑命令）与 §3.2 授权表（P1–P6 已授权不再问，A1–A9 待授权逐门对应，另列「明确未授权」三项反面清单）；TESTING §4 尾部新增父卡归属段与清单链接
+  - [x] 明确后台注册/重载与更新尚未实现，不把 dry-run 或 latest.json 生成器算成可用功能 —— 清单 §4 三小节，锚点：`fathom/api.py:588`（恒 `requires_user_action`）、`apps/desktop/src-tauri/src/autostart.rs:6/153`（切片明令禁注册、login_item 恒 unknown）、`fathom/launchd.py:95` 为开发态 `main.py install`、`Cargo.toml`/`tauri.conf.json`/`lib.rs` 中 updater 零命中（基线 grep rc=1）；G8/G9/G10 三门的前置条件均显式标注「实现前置未满足」
+  - [x] 输出下一条真正可领取的任务及阻塞证据；不购买账户、不公开资产、不向测试者发送材料、不自动注册服务 —— 清单 §6 推荐 ISS-010B（发行态注册桥实现切片）含四条理由与合同要点；§5 环境缺口 E1–E7 为各门 WAITING 的唯一依据并排除「Apple 材料/父卡未 DONE」两类伪缺口；本卡全程未发生购买/公开/外发/真实注册动作
+- **证据**：worker task_c26b67bad11f（分支 `iss-076-release-prep`，基于 main `a59702d82f5e664675409c70a1946d671b17142a`）。交付三处落笔：新增 `docs/plans/2026-09-19-release-live-verification-prep.md`（§0 执行顺序 / §1 候选标识 / §2 G1–G13 逐门 / §3 自动与授权 / §4 未实现 / §5 环境缺口 / §6 下一条任务 / §7 限制）、TESTING §4 尾段（父卡归属 + 清单链接 + 未实现声明）、本卡验收与证据。**纯静态准备**：未重建候选、未跑构建/测试/浏览器入口（`NOT_RUN`，文档卡无对应运行入口；§3.1 命令通过状态均引用卡内既有记录）；未读写生产库、未触碰生产 PID 6026、未触发生产扫描、未变更权限/调度。引用的 40 位 SHA 与 file:line 锚点均在基线工作区以 git rev-parse / grep / ls 实检。ISS-010B 与夹具合同 F1/F2 仅列合同未入索引，PM 审阅本卡后决定登记。
+- **验收结论**（2026-09-19 23:5x，PM）：独立 reviewer **ACCEPT**（对抗性审阅 head `543877b18a799c93aa25f2dea5d2be97aa292a5d`）：8 个引用 SHA 全部存在且内容相符；8 处代码行锚点（`api.py:588`/`launchd.py:95`/`autostart.rs:6,153`/`tauri.conf.json:45`/`main.py:2`/`TASKS.md:180,828`）逐一到源码核对属实；「未实现」声明经 grep 独立证实（updater 在 src-tauri 零命中）；六道门禁实跑全绿（pytest 553 / cargo locked ok / opener 断言 ok / 品牌几何 OK / 浏览器 39 / 前端 88）。边界合规：`git show --name-only` 确认零产品代码改动（3 个 docs 文件）；仅勾选本卡 4 框，未误改他人。4 项验收全部达成。**下一条可领取任务**：见清单 §6（建议新卡 ISS-010B「应用内更新接线」，合同已在 §6 备好）。
 - **证据/接续**（2026-09-19 23:42 派发，IN_PROGRESS）：worker dispatch `ctx_844047cc1736`，Orca run `run_f72018d279d1`，task `task_c26b67bad11f`，worktree `/Users/maoking/orca/workspaces/fathom/iss-076-release-prep`（分支 `iss-076-release-prep`），lane minimax-M3（provider lease active）。**派发环境说明**：`spawn-worker.sh` quota preflight 因缺真实 `claude-provider-registry.json` 报 `provider_unknown_lane`（工具失灵，非额度不足）；PM 以 `--quota-preflight-override` 放行，授权来源=route-summary 实测 minimax 92%（2026-09-19 23:40），已记入 METADATA。**待 worker 交付后由 PM 复核。**
 
 

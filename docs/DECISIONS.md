@@ -5,6 +5,18 @@
 
 ---
 
+### [DEC-023] - 2026-09-19 - 深度环为 Fathom 正式 Logo，等深线纹理不进图标
+
+**背景**：ISS-045 自项目早期就是 Logo 人工门（仓库外 A/B/C 概念板仅供选择，PM 曾推荐「A 深度环骨架＋B 一层轻微不规则等深线」混合）。用户 2026-09-18 评审产品 UI 选定 R3 测深视觉签名方向（ISS-072 已把海沟蓝/深度环/等深线落进界面），2026-09-19 指令「这个 logo 也是要合并到主分支，然后运用这个 logo 去编译软件的」确认深度环为正式 Logo，人工门关闭。
+
+**决策**：正式 Logo = 与 `frontend/icons.js` brandRing 同构的深度环（海沟蓝 #345d7f squircle 底 + 白色开放环右上 50° 缺口 + 白色中心探针 + 亮矿物青 #82c8c2 跨缺口刻度）。两个明确取舍：①概念板 B 的「不规则等深线」不进图标——16/32px 等小尺寸下不可辨，等深线保留在总览页背景纹理；②刻度用亮阶 #82c8c2 而非标准矿物青 #3e7e7c——后者在深底上对比不足。资产合同：canonical 几何在 `apps/desktop/src-tauri/icons/icon.svg`（24 viewBox 与 brandRing 逐参数对应），`scripts/build_app_icon.py` 渲染 1024 源，`build_icons.sh` 生成全尺寸 iconset/icns，`make_tray_icon.py` 生成同构单色 template tray，`frontend/favicon.svg`/`apple-touch-icon.png` 为浏览器标签页资产——五处参数须同步维护。全部自绘几何，无字体与第三方素材，随仓库 Apache-2.0 发布（DEC-020）。
+
+**验证**：2026-09-19 实测——DMG 安装窗口 Finder 图标、Dock、Launchpad/Spotlight 检索（GUI 自动化）均显示新图标；深色模式与浅色模式（暗壁纸）下菜单栏 tray 均白色 template 渲染（像素级验证，背景亮度 32 vs 图标 228）；全链编译 + `verify_app_bundle.sh` 22/22；前端 86/86 与浏览器 39/39 在 favicon 接线后无回归。`NOT_VERIFIED`：18pt 小菜单栏（ISS-009 人工门）。证据见 TASKS ISS-045 卡与 `verify-results/iss045-live/`。
+
+**影响**：ISS-045 关闭；ISS-009/037 的图标依赖可直接消费（打包链已用新 icns 编译）。将来若调整 Logo，须同步修改上述五处参数并重跑三个生成脚本，不得只改位图。
+
+---
+
 ### [DEC-022] - 2026-09-18 - v0.3.0 不做 Developer ID 签名与公证，改为 DMG 安装界面提示首次打开放行方法
 
 **背景**：ROADMAP M2 原门槛含「Developer ID 签名、公证与 draft Release 齐备」（ISS-041）。用户 2026-09-18 明确：签名/公证先不管——同开发者的 Folia 即以未签名方式分发；直接在安装页面做好提示即可。技术事实：未签名且未公证的 app 被他人从下载渠道获取时，首次双击会被 Gatekeeper 阻止（「无法验证开发者」），需要右键打开或系统设置放行；提示必须在用户首次双击 app **之前**触达，DMG 安装窗口（打开 DMG 后、拖拽安装前即呈现）是正确载体。

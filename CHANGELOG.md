@@ -10,7 +10,8 @@
 
 - 应用图标从占位换为正式「深度环」Logo：海沟蓝圆角底板 + 白色开放环（右上缺口）+ 中心探针 + 矿物青刻度，与界面品牌签名（ISS-072）同构。资产可追溯、可重建：几何 canonical 声明在 `apps/desktop/src-tauri/icons/icon.svg`，1024 位图源与全尺寸 iconset/icns 分别由 `scripts/build_app_icon.py`、`scripts/build_icons.sh` 生成；图标为自绘几何（无第三方素材），随仓库 Apache-2.0 发布。
 - 菜单栏托盘图标同步换为同构深度环的独立单色 template 版（系统自动适配深浅菜单栏），不再是旧雷达环。
-- 实机验证（隔离运行根）：DMG 安装窗口、Dock、菜单栏托盘三处图标渲染正确；`NOT_VERIFIED`：Launchpad/Spotlight 检索呈现、深色模式与 18pt 小菜单栏下托盘可辨性。
+- 浏览器标签页图标对齐：新增 `frontend/favicon.svg`（与 App 图标同几何）与 `apple-touch-icon.png`，浏览器打开界面时标签页显示深度环标记（此前为浏览器默认图标）；桌面窗口外观不变。
+- 实机验证（隔离运行根）：DMG 安装窗口、Dock、菜单栏托盘三处图标渲染正确；Launchpad/Spotlight 检索呈现与深浅色模式托盘可辨性已于 2026-09-19 实测通过（GUI 自动化 + 像素级验证）；`NOT_VERIFIED` 仅剩 18pt 小菜单栏下托盘可辨性。
 
 ### 测深视觉签名与仪器风数字排版（ISS-072 / R3）
 

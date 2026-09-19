@@ -135,7 +135,7 @@
 | ISS-072 | R3 测深视觉签名实装与仪器风数字排版（frontend/ 产品 UI） | P1 | M2 | DONE | ISS-026、ISS-028 |
 | ISS-073 | 视觉与夹具收尾：扫描中旋转深度环指示、未消费 token 清理、前端检查夹具卫生 | P3 | M2 | DONE | ISS-072、ISS-069 |
 | ISS-074 | PM 推进审查与权威上下文校正 | P1 | M2 | REVIEW | — |
-| ISS-075 | 已合并任务验收证据对账与接缝复核 | P1 | M2 | READY | — |
+| ISS-075 | 已合并任务验收证据对账与接缝复核 | P1 | M2 | IN_PROGRESS | — |
 | ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | READY | — |
 
 ## 任务卡
@@ -164,7 +164,7 @@
   - [ ] ISS-002A→API 字段→Tauri opener 的组合合同有独立复核；原生设置深链尚无实测则留在 ISS-002，不冒充已过
   - [ ] ISS-070 的诊断信息交付与未定位性能根因明确分开；有限复测不被写成因果证明
   - [ ] 纯文档先验链接/引用；补代码验证时仅运行对应隔离入口并固定源码位置，不扫描生产 HOME、不变更权限/调度
-- **证据**：待执行。ISS-074 报告提供缺口清单；本任务不重复实现已合并功能。
+- **证据/接续**（2026-09-19 22:35 派发，IN_PROGRESS）：worker dispatch `ctx_7c82090d1808`，Orca run `run_21ccb8517cd2`，task `task_011bd23feebc`，worktree `/Users/maoking/orca/workspaces/fathom/iss-075-evidence-reconcile`（分支 `iss-075-evidence-reconcile`），lane minimax-M3（provider lease active）。**派发时环境说明**：`spawn-worker.sh` 的 quota preflight 因缺真实 `claude-provider-registry.json` 对 glm-api 与 minimax 均报 `provider_unknown_lane`（fail-closed 工具失灵，非额度不足）；PM 用 `--quota-preflight-override` 显式放行，授权来源已记入 METADATA：route-summary 实测 minimax 95% / glm-api 85%（2026-09-19 22:33）。**待 worker 交付后由 PM 复核并填写判定。**
 
 ### ISS-076 · 剩余发行实测准备与环境缺口清单
 

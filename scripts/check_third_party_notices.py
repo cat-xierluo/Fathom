@@ -171,20 +171,53 @@ def parse_constraints(path: Path) -> list[PyDep]:
 
 
 def _lookup_python_license(name: str, version: str) -> str:
-    """从 .venv site-packages/<name>-<version>.dist-info/METADATA 读 License 字段。"""
-    # 包名归一化（PEP 503）：下划线当连字符；本地目录可能保留原始名
+    """从 .venv site-packages/<name>-<version>.dist-info/METADATA 读 License 字段。
+
+    PEP 639 + 历史 License + 分类器三级优先级：
+      1) ``License-Expression:``（PEP 639，现代打包元数据规范）
+      2) ``License:``（旧式自由文本）
+      3) ``License :: ...``（Trove 分类器，倒数第二段作为简称）
+    三级全空 → UNKNOWN。
+
+    包名归一化（PEP 503）：下划线 ↔ 连字符在 dist-info 目录名中均会出现
+    （pip 安装沿用 PyPI 原始名，但部分包会替换），故同时尝试两种命名。
+    """
     norm = name.lower().replace("_", "-")
+    underscore = name.lower().replace("-", "_")
     candidates = [
         VENV_SITE / f"{name}-{version}.dist-info",
         VENV_SITE / f"{norm}-{version}.dist-info",
+        VENV_SITE / f"{underscore}-{version}.dist-info",
     ]
     for d in candidates:
         metadata = d / "METADATA"
         if metadata.is_file():
-            for ln in metadata.read_text(encoding="utf-8", errors="replace").splitlines():
+            text = metadata.read_text(encoding="utf-8", errors="replace")
+            lines = text.splitlines()
+            # 1) License-Expression:（PEP 639 优先；不读 License-Expression-File）
+            for ln in lines:
+                if ln.startswith("License-Expression:") and not ln.startswith("License-Expression-File:"):
+                    val = ln.split(":", 1)[1].strip()
+                    if val:
+                        return val
+            # 2) License:（旧式自由文本；排除 License-File / License-Expression-*）
+            for ln in lines:
                 if ln.startswith("License:"):
                     val = ln.split(":", 1)[1].strip()
-                    return val or "UNKNOWN"
+                    if val:
+                        return val
+            # 3) Classifier: License :: OSI Approved :: XXX License（取末段）
+            for ln in lines:
+                if ln.startswith("Classifier:") and "License" in ln:
+                    val = ln.split(":", 1)[1].strip()
+                    if "::" in val:
+                        parts = [p.strip() for p in val.split("::")]
+                        # 取末段；若末段以 "License" 结尾，去掉它（"MIT License" → "MIT"）
+                        last = parts[-1]
+                        if last.endswith(" License"):
+                            last = last[: -len(" License")]
+                        if last:
+                            return last
             return "UNKNOWN"
     return "UNKNOWN"  # 未找到 dist-info
 
@@ -466,6 +499,60 @@ def audit_python(deps: list[PyDep], notices: dict[str, list[dict[str, str]]]) ->
     return report
 
 
+def audit_section_refs(notices: dict[str, list[dict[str, str]]]) -> Report:
+    """校验 notices 行内「§N」类章节引用全部对应真实存在的章节标题。
+
+    解析 ``## N. <标题>`` 形式收集 section_numbers；扫描每段所有单元
+    格，匹配 ``§(\\d+)`` 形式（N 不接数字或小数点，避免误中 ``§4.1`` 类
+    协议条款引用）。任何引用了不存在章节的格子 → fail。
+    """
+    report = Report()
+    section_nums: set[int] = set()
+    section_titles: dict[int, str] = {}
+    for h2 in notices.keys():
+        m = re.match(r"^(\d+)\.\s", h2)
+        if m:
+            n = int(m.group(1))
+            section_nums.add(n)
+            section_titles[n] = h2
+    if not section_nums:
+        report.fail("未解析到任何 `## N.` 章节标题（结构异常）")
+        return report
+
+    # ``§(\\d+)`` 后面不接数字或小数点——避免误中 ``§4.1`` / ``§2/§3`` 之外
+    # 的 ``§2.0`` 这种协议条款小节
+    ref_re = re.compile(r"§(\d+)(?!\d|\.)")
+    dangling: list[str] = []
+    checked = 0
+    for h2, rows in notices.items():
+        sec_m = re.match(r"^(\d+)\.\s", h2)
+        cur_num = int(sec_m.group(1)) if sec_m else None
+        for row in rows:
+            for cell in row.values():
+                checked += 1
+                for m in ref_re.finditer(cell):
+                    target = int(m.group(1))
+                    # 章节内自指（如「见 §1 表体」）放行；跨章引用必须命中
+                    if cur_num is not None and target == cur_num:
+                        continue
+                    if target not in section_nums:
+                        sample = cell.strip()[:60]
+                        dangling.append(
+                            f"§{cur_num if cur_num is not None else '?'} → §{target}（{sample!r}）"
+                        )
+    if dangling:
+        for d in dangling:
+            report.fail(f"章节引用悬空：{d}")
+    else:
+        report.add(
+            "章节引用存在性",
+            "ok",
+            "ok",
+            f"扫描 {checked} 个单元格；所有「§N」引用均命中现有章节（{sorted(section_nums)}）",
+        )
+    return report
+
+
 def audit_frontend(notices: dict[str, list[dict[str, str]]]) -> Report:
     report = Report()
     section = notices.get("4. 前端 vendored 资源", [])
@@ -635,6 +722,7 @@ def cmd_audit() -> int:
         ("§1 Python 运行时", audit_python(py_deps, notices)),
         ("§4 前端 vendored", audit_frontend(notices)),
         ("§5 图形资源", audit_graphics(notices)),
+        ("章节引用", audit_section_refs(notices)),
     ]
     # 表头
     print(

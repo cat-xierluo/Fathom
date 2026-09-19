@@ -25,27 +25,27 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 
 | 组件 | 锁定版本 | 许可证 | 来源 | 类别 | 发行影响 |
 | --- | --- | --- | --- | --- | --- |
-| annotated-doc | 0.0.5 | UNKNOWN | https://pypi.org/project/annotated-doc/0.0.5/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| annotated-types | 0.8.0 | UNKNOWN | https://pypi.org/project/annotated-types/0.8.0/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| anyio | 4.15.1 | UNKNOWN | https://pypi.org/project/anyio/4.15.1/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| certifi | 2026.7.22 | MPL-2.0 | https://pypi.org/project/certifi/2026.7.22/ | 构建 |  |
-| click | 8.5.0 | UNKNOWN | https://pypi.org/project/click/8.5.0/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| fastapi | 0.141.1 | UNKNOWN | https://pypi.org/project/fastapi/0.141.1/ | 构建 | 见 §6 UNKNOWN 集中说明 |
+| annotated-doc | 0.0.5 | MIT | https://pypi.org/project/annotated-doc/0.0.5/ | 构建 |  |
+| annotated-types | 0.8.0 | MIT | https://pypi.org/project/annotated-types/0.8.0/ | 构建 |  |
+| anyio | 4.15.1 | MIT | https://pypi.org/project/anyio/4.15.1/ | 构建 |  |
+| certifi | 2026.7.22 | MIT | https://pypi.org/project/certifi/2026.7.22/ | 构建 |  |
+| click | 8.5.0 | BSD-3-Clause | https://pypi.org/project/click/8.5.0/ | 构建 |  |
+| fastapi | 0.141.1 | MIT | https://pypi.org/project/fastapi/0.141.1/ | 构建 |  |
 | h11 | 0.16.0 | MIT | https://pypi.org/project/h11/0.16.0/ | 构建 |  |
-| httpcore | 1.0.9 | UNKNOWN | https://pypi.org/project/httpcore/1.0.9/ | 构建 | 见 §6 UNKNOWN 集中说明 |
+| httpcore | 1.0.9 | BSD-3-Clause | https://pypi.org/project/httpcore/1.0.9/ | 构建 |  |
 | httpx | 0.28.1 | BSD-3-Clause | https://pypi.org/project/httpx/0.28.1/ | 构建 |  |
-| idna | 3.19 | UNKNOWN | https://pypi.org/project/idna/3.19/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| pydantic | 2.13.5 | UNKNOWN | https://pypi.org/project/pydantic/2.13.5/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| pydantic-core | 2.46.5 | UNKNOWN | https://pypi.org/project/pydantic-core/2.46.5/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| pytest | 9.1.1 | UNKNOWN | https://pypi.org/project/pytest/9.1.1/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| starlette | 1.6.0 | UNKNOWN | https://pypi.org/project/starlette/1.6.0/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| typing-extensions | 4.16.0 | UNKNOWN | https://pypi.org/project/typing-extensions/4.16.0/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| typing-inspection | 0.4.4 | UNKNOWN | https://pypi.org/project/typing-inspection/0.4.4/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| uvicorn | 0.52.4 | UNKNOWN | https://pypi.org/project/uvicorn/0.52.4/ | 构建 | 见 §6 UNKNOWN 集中说明 |
-| iniconfig | 2.3.0 | UNKNOWN | https://pypi.org/project/iniconfig/2.3.0/ | 测试 | 见 §6 UNKNOWN 集中说明 |
-| packaging | 26.3 | UNKNOWN | https://pypi.org/project/packaging/26.3/ | 测试 | 见 §6 UNKNOWN 集中说明 |
-| pluggy | 1.6.0 | MIT | https://pypi.org/project/pluggy/1.6.0/ | 测试 |  |
-| pygments | 2.21.0 | UNKNOWN | https://pypi.org/project/pygments/2.21.0/ | 测试 | 见 §6 UNKNOWN 集中说明 |
+| idna | 3.19 | BSD-2-Clause | https://pypi.org/project/idna/3.19/ | 构建 |  |
+| pydantic | 2.13.5 | MIT | https://pypi.org/project/pydantic/2.13.5/ | 构建 |  |
+| pydantic-core | 2.46.5 | MIT | https://pypi.org/project/pydantic-core/2.46.5/ | 构建 |  |
+| pytest | 9.1.1 | MIT | https://pypi.org/project/pytest/9.1.1/ | 构建 |  |
+| starlette | 1.6.0 | BSD-3-Clause | https://pypi.org/project/starlette/1.6.0/ | 构建 |  |
+| typing-extensions | 4.16.0 | BSD-3-Clause | https://pypi.org/project/typing-extensions/4.16.0/ | 构建 |  |
+| typing-inspection | 0.4.4 | MIT | https://pypi.org/project/typing-inspection/0.4.4/ | 构建 |  |
+| uvicorn | 0.52.4 | PSF-2.0 | https://pypi.org/project/uvicorn/0.52.4/ | 构建 |  |
+| iniconfig | 2.3.0 | MIT | https://pypi.org/project/iniconfig/2.3.0/ | 测试 |  |
+| packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | https://pypi.org/project/packaging/26.3/ | 测试 |  |
+| pluggy | 1.6.0 | MPL-2.0 | https://pypi.org/project/pluggy/1.6.0/ | 测试 |  |
+| pygments | 2.21.0 | BSD-3-Clause | https://pypi.org/project/pygments/2.21.0/ | 测试 |  |
 
 ## 2. 内嵌解释器与构建工具链
 

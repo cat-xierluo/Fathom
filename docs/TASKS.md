@@ -1227,6 +1227,8 @@
 > 2026-09-19 合并后复审：仅重开发行来源/notice 收口；版本规则、已选 Apache-2.0 与贡献说明不重做。核对实际锁定及随包依赖，补齐可验证的必要版权/许可文本与来源，明确开发工具和随包资源边界；未核实项保留 UNKNOWN 并说明发行影响，不能先勾“齐全”。同步 THIRD_PARTY_NOTICES 与依赖清单的过期版本/占位图标描述；深潭 App 图标以 assets/brand/README.md 的 image_gen 原稿与处理链为来源，不改写成自绘几何或扩大权利保证。以最终候选的随包内容核对，必要输入缺失时记录具体依赖，不购买或发布资产。
 >
 > 2026-09-20 来源/notice 收口回写：本卡状态由 READY 改 REVIEW；框 2 据本节实地核对与 fail-closed 校验绿勾选；ISS-037 全文仍以本卡为准，不动 ISS-029/031/033/041 的独立证据。
+>
+> 2026-09-20 repair2 收口回写（License-Expression 解析 + 悬空 §6 引用修复）：`scripts/check_third_party_notices.py` 解析 Python 依赖许可证升级为 PEP 639 `License-Expression:` → 旧式 `License:` → `License ::` 分类器三级优先级，包名归一化补齐 PEP 503 反向（下划线→连字符）候选；§1 表体据此重填（19 条原 UNKNOWN → 实际许可；certifi 旧 MPL-2.0 改为正确 MIT；pluggy 旧 MIT 改为正确 MPL-2.0）。修复后 §1 残留 UNKNOWN = 0，§6 「UNKNOWN 集中说明」按合同不新增；§1 内 17 条「见 §6 UNKNOWN 集中说明」引用全部清除。checker 新增 `audit_section_refs`：扫所有表格单元格的 `§N` 引用（§N 后不接数字/小数点，避免误中协议条款 `§4.1`），命中不存在的章节即非零退出；修复前反例演示（向 §1 临时插入 `见 §99`）必红，还原后归绿。
 
 - **目标**：建立分发组件的单一版本源与来源清单，为 release 构建和用户选择开源许可准备具体方案。
 - **范围**：版本定义、依赖/资源清单、拟新增 LICENSE/NOTICE/贡献与安全说明。
@@ -1243,16 +1245,17 @@
 **核对基准（实际锁定/随包内容，非历史声明）：**
 
 - Rust：`apps/desktop/src-tauri/Cargo.lock`（474 个 `[[package]]` 条目）；每个第三方 crate 的 `license` 字段直接从本机 `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/<crate>-<version>/Cargo.toml` 读取（891 个源目录已确认均含 `license = "..."`）。工作区自有包 = `fathom-desktop`（Cargo.lock 中无 `source = "registry..."` 行）= 1 个，第三方 = 473 个。
-- Python：本 worktree 无 `apps/desktop/src-tauri/target/release/bundle/macos/Fathom.app/Contents/Resources/helper/` 现成构建，按合同以 `.venv` site-packages（`~/.cargo/registry/src` 对应物：`/Users/maoking/Library/Application Support/maoscripts/fathom/.venv/lib/python3.14/site-packages/`）+ `constraints.txt` 为锁源，三段合计 21 个条目（运行时 / 构建 / 测试）。**卡内明示**：「以 venv 锁为准、随包核对留发行候选」——本机 venv 未构建 .app 故无法逐包核对 `_internal`；以 ISS-041 真实 draft 候选构建时重新核对，再回填本节。
+- Python：本 worktree 无 `apps/desktop/src-tauri/target/release/bundle/macos/Fathom.app/Contents/Resources/helper/` 现成构建，按合同以 `.venv` site-packages（`~/.cargo/registry/src` 对应物：`/Users/maoking/Library/Application Support/maoscripts/fathom/.venv/lib/python3.14/site-packages/`）+ `constraints.txt` 为锁源，三段合计 21 个条目（运行时 / 构建 / 测试）。**卡内明示**：「以 venv 锁为准、随包核对留发行候选」——本机 venv 未构建 .app 故无法逐包核对 `_internal`；以 ISS-041 真实 draft 候选构建时重新核对，再回填本节。许可证按 PEP 639 `License-Expression:` → 旧式 `License:` → `License ::` 分类器三级优先级从 `dist-info/METADATA` 读取；PEP 503 包名归一化同时尝试原始 / 连字符 / 下划线三种 dist-info 命名。
 - 前端：`frontend/vendor/echarts.min.js`（ASF Apache-2.0 文件头 + tslib Microsoft 0BSD 段 + 内嵌 zrender 标识）；`frontend/icons.js` 项目自绘 SVG（自有）。
 - 图标：`assets/brand/README.md` 的处理链（DEC-023）—— image_gen 原稿 `fathom-approved-concept.png` 经 `scripts/build_app_icon.py` 本地 Pillow 处理（容差 28 BFS flood fill → bbox 方形裁剪 → 1024 缩放 → α<36 归零）；深度环 SVG 属 `frontend/icons.js` 自绘几何，菜单栏 tray 22pt 保留深度环（灰度小尺寸取舍）；`apps/desktop/src-tauri/icons/icon.{png,icns}` 已接入同一深潭链（PR #117 / 55d6c3f → e033ef6，底板缩至 824/1024）。
 
-**覆盖率（`scripts/check_third_party_notices.py` 实跑输出，2026-09-20）：**
+**覆盖率（`scripts/check_third_party_notices.py` 实跑输出，2026-09-20 repair2 后）：**
 
 - §3 Rust：第三方 473/473；版本漂移 0；许可证文本与本地 registry Cargo.toml 不一致 0；UNKNOWN 行（缺发行影响）0。
-- §1 Python：运行时 / 构建 / 测试合计 21/21；版本漂移 0；UNKNOWN 行（缺发行影响）0。
+- §1 Python：运行时 / 构建 / 测试合计 21/21；版本漂移 0；UNKNOWN 行（缺发行影响）0（repair2 后无 UNKNOWN 残留，原 17 条「见 §6 UNKNOWN 集中说明」引用全部清除；certifi 旧 MPL-2.0 修正为 MIT；pluggy 旧 MIT 修正为 MPL-2.0；其余 19 条按 PEP 639 `License-Expression` 实读）。
 - §4 前端：ECharts / tslib / zrender 三行均存在；`echarts.min.js` 头 256KB 内含 ASF 段、`5.6.0` 标识、Microsoft 0BSD 段。
 - §5 图形：含 `image_gen` + `Pillow` + `build_app_icon.py`；深潭 App 图标行来源 = image_gen 原稿 + Pillow 处理链；深度环行标注为自绘几何；`icon.png`/`icon.icns` 已统一接入同一深潭链（§5 首行），旧版「占位/挂 ISS-045」描述替换为历史注记。
+- 章节引用存在性：扫描 2769 个表格单元格；所有 `§N` 引用均命中现有章节（§1—§5）；未触发悬空警告。
 
 **UNKNOWN 清单与各自发行影响（必须随卡公开）：**
 

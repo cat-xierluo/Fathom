@@ -6,12 +6,12 @@
 
 ## [Unreleased]
 
-### 正式应用图标与品牌资产（ISS-045）
+### 正式应用图标与品牌资产（ISS-045 / DEC-023 双形态体系）
 
-- 应用图标从占位换为正式「深度环」Logo：海沟蓝圆角底板 + 白色开放环（右上缺口）+ 中心探针 + 矿物青刻度，与界面品牌签名（ISS-072）同构。资产可追溯、可重建：几何 canonical 声明在 `apps/desktop/src-tauri/icons/icon.svg`，1024 位图源与全尺寸 iconset/icns 分别由 `scripts/build_app_icon.py`、`scripts/build_icons.sh` 生成；图标为自绘几何（无第三方素材），随仓库 Apache-2.0 发布。
-- 菜单栏托盘图标同步换为同构深度环的独立单色 template 版（系统自动适配深浅菜单栏），不再是旧雷达环。
-- 浏览器标签页图标对齐：新增 `frontend/favicon.svg`（与 App 图标同几何）与 `apple-touch-icon.png`，浏览器打开界面时标签页显示深度环标记（此前为浏览器默认图标）；桌面窗口外观不变。
-- 实机验证（隔离运行根）：DMG 安装窗口、Dock、菜单栏托盘三处图标渲染正确；Launchpad/Spotlight 检索呈现与深浅色模式托盘可辨性已于 2026-09-19 实测通过（GUI 自动化 + 像素级验证）；`NOT_VERIFIED` 仅剩 18pt 小菜单栏下托盘可辨性。
+- 应用图标从占位换为用户在 Logo 设计会话选中的「层叠深潭」：象牙白圆角底板 + 蓝青四层嵌套等深阶地向午夜蓝中心下陷 + 顶部测深刻痕。资产可追溯、可重建：原稿与生成提示词存 `assets/brand/`，`scripts/build_app_icon.py` 本地像素抠图生成 1024 源（不调用生成模型），`scripts/build_icons.sh` 派生全尺寸 iconset/icns。
+- 界面小尺寸品牌保持「深度环」线条形态（与 ISS-072 视觉签名同构）：菜单栏托盘为独立单色 template 版（系统自动适配深浅菜单栏，不再是旧雷达环）、侧栏字标沿用 brandRing、浏览器标签页新增 `favicon.svg`（此前为浏览器默认图标）；`apple-touch-icon.png` 由深潭图标派生。
+- 新增品牌一致性门禁 `scripts/ci_brand_geometry.sh`（深度环四处几何 + 深潭资产链 + favicon 引用，fail-closed，已接线 CI 配置）。
+- 实机验证（隔离运行根）：深潭形态 DMG 安装窗口、Dock、Launchpad/Spotlight 检索四入口渲染正确（64px 起层叠结构完整，16/32px 为色块轮廓属已知取舍）；深度环托盘在深/浅色模式均清晰（像素级验证）。`NOT_VERIFIED`：18pt 小菜单栏下托盘可辨性。
 
 ### 测深视觉签名与仪器风数字排版（ISS-072 / R3）
 

@@ -557,14 +557,62 @@ def audit_graphics(notices: dict[str, list[dict[str, str]]]) -> Report:
             report.add("§5 深潭 App 图标 ≠ 自绘几何", "是", "ok", "与深度环分别登记")
     else:
         report.fail("§5 缺少深潭 App 图标行")
-    # icon.png 仍为占位的状态需要挂 ISS-045
-    if "icon.png" in full_text:
-        if ("ISS-045" in full_text) and ("占位" in full_text or "UNKNOWN" in full_text):
-            report.add("§5 icon.png 占位闭环", "挂 ISS-045", "ok", "占位描述与替换计划完整")
+    # icon.png 自 PR #117 (55d6c3f) 起已与 icon.icns 一起接入深潭链（首行）。
+    # 不再断言「占位/挂 ISS-045」；§5 表格行中提到 icon.png 时必须显式链接
+    # 到深潭链（image_gen 原稿 + Pillow 处理链），并保留与深度环 SVG 的区分。
+    # 历史注记/勘误段（段说明 / blockquote）允许引用旧表述以记录修复，但
+    # 不应再次断言 icon.png 为占位资产。
+    icon_rows = [r for r in section if "icon.png" in (r.get("资源", "") or "")]
+    icon_pool_row = next(
+        (
+            r
+            for r in section
+            if ("icon.{png,icns}" in (r.get("资源", "") or ""))
+            or ("icon.png" in (r.get("资源", "") or "") and "icon.icns" in (r.get("资源", "") or ""))
+        ),
+        None,
+    )
+    # 段说明（非表格行）允许出现「占位/ISS-045」以记录历史勘误；只在表格
+    # 行中把 icon.png 列为独立占位资产才算旧表述。
+    if icon_rows:
+        for r in icon_rows:
+            src = (r.get("来源", "") or "").strip()
+            lic = (r.get("许可证", "") or "").strip()
+            if "占位" in src or "占位" in lic or lic == "UNKNOWN":
+                report.fail(
+                    "§5 表格行仍将 icon.png 描述为占位/UNKNOWN，已与 main 现实不符"
+                )
+                break
         else:
-            report.fail("§5 提到 icon.png 但未挂 ISS-045 替换计划")
+            report.add(
+                "§5 icon.png 表格行",
+                "已合并入深潭链",
+                "ok",
+                "icon.png/icon.icns 已在首行统一登记；不再单列占位行",
+            )
+    elif icon_pool_row is not None:
+        # 单行覆盖 icon.{png,icns}：校验来源行含深潭链关键词
+        src = (icon_pool_row.get("来源", "") or "").strip()
+        if ("image_gen" in src) and ("Pillow" in src) and ("build_app_icon.py" in src):
+            report.add(
+                "§5 icon.png/icon.icns 单行",
+                "深潭链",
+                "ok",
+                "image_gen 原稿 + Pillow 处理链",
+            )
+        else:
+            report.fail(
+                "§5 icon.png/icon.icns 单行未含深潭链关键词（image_gen/Pillow/build_app_icon.py）"
+            )
     else:
-        report.add("§5 icon.png", "已删除", "ok", "占位资产不再列入")
+        # 表格不再单列 icon.png 但全文仍可能提到（如历史注记）；放行
+        report.add(
+            "§5 icon.png",
+            "并入首行",
+            "ok",
+            "占位资产已统一接入深潭链；历史注记允许引用旧表述",
+        )
+        report.add("§5 icon.png", "未提及", "ok", "占位资产不再列入 §5")
     return report
 
 

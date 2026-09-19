@@ -541,7 +541,13 @@ Microsoft tslib 0BSD 声明原文（随 ECharts bundle 文件头）：
 | 深潭 App 图标 `apps/desktop/src-tauri/icons/icon.{png,icns}`（824/1024 底板 + 1024×1024 PNG；macOS 11+ 图标网格） | `assets/brand/README.md`（DEC-023）：内置 image_gen 原稿 `fathom-approved-concept.png` 经 `scripts/build_app_icon.py` 本地 Pillow 处理（容差 28 BFS flood fill 抠图 → bbox 方形裁剪 → 1024 缩放 → 边缘 α<36 归零） | 自有（项目原创；工具生成物权利限制见 DEC-023，不作超出已知事实的保证） | 作为发行资产无第三方义务；不复制 Folia/FaroPDF/Funes 主体 |
 | 深度环 SVG（界面小尺寸场景：菜单栏 tray、侧栏字标、favicon） | `frontend/icons.js` | 自有（自绘几何，无第三方权利） | 小尺寸场景保留——四层深潭在灰度下不可辨，属 DEC-023 明确取舍 |
 | `apps/desktop/src-tauri/icons/tray.png`（菜单栏 22pt） | `scripts/make_tray_icon.py`（纯 stdlib 生成） | 自有（项目原创，无第三方权利） | 随 bundle 分发 |
-| `apps/desktop/src-tauri/icons/icon.png` | **来源未记录（疑似 Tauri 脚手架占位）** | UNKNOWN（NOT_VERIFIED） | **当前不得作为发行资产**——ISS-045 用户门替换为深潭 App 图标后取消此行；任何在 v0.3.0 之前发布都以 `apps/desktop/src-tauri/icons/icon.icns`（来自 `icon.png`）随包者，须先以 §5.1 深潭 App 图标替换 |
 
 > 历史注记：PR #116 曾短暂以线条深度环作为 App 图标（2026-09-19 凌晨合并），
 > 当日由深潭形态替换（DEC-023）；tray/字标/favicon 交付继续有效。
+>
+> 2026-09-14 版 notices 曾将 `icon.png` 误记为「Tauri 脚手架占位／UNKNOWN／挂 ISS-045」。
+> 该描述与 main 现实不符——`icon.png` 已由 PR #117（commit 55d6c3f，2026-09-19）
+> 替换为 DEC-023 深潭 App 图标（`assets/brand/fathom-approved-concept.png` 经
+> `scripts/build_app_icon.py` 本地 Pillow 处理），随后 e033ef6 把底板缩至
+> 824/1024（80.5%）。`icon.{png,icns}` 现已在首行与同一深潭链统一登记，
+> 此处不再单列；ISS-045 用户门替换闭环自动作废。

@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前 pytest 门禁是 **488**（2026-09-16，ISS-016A 起：+64），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本次审查基线 `e033ef6` 的 pytest 门禁是 **553**（计数以 `scripts/ci_pytest.sh` 与 CI 配置为准），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -152,6 +152,8 @@ PY
 
 ## 4. 桌面与分发矩阵
 
+**当前生效范围（DEC-022，2026-09-18）**：v0.3.0 内部候选暂为未签名、未公证包，Developer ID / notarization / stapling 延期，不能记为通过；不再以缺少 Apple 凭据阻断其余准备。双架构、updater 签名防绕过、保留 quarantine 的真实下载/新账户首启、升级恢复继续验收。公开发布仍需用户审阅具体候选，并决定是否恢复 Apple 签名门。以下“Apple 签名恢复后”一行仅在该决策恢复时强制。
+
 | 验收入口 | 必须执行 | 不足以替代的证据 |
 |---|---|---|
 | Tauri 开发壳 | 启动窗口，实测 tray 数量/图标/标题/菜单/隐藏与恢复、remote IPC | cargo build、JS mock |
@@ -162,7 +164,8 @@ PY
 | 升级/恢复 | N→N+1、迁移失败、空间不足、下载中断、备份恢复、版本不兼容与旧版回退 | 新库安装成功 |
 | 卸载/重装 | 停止并移除自己服务，默认保留历史，重装接回 | 删除 .app 图标 |
 | arm64/x86_64 发行包 | 各自在目标架构原生 runner 冻结 helper；`file`/`otool -L`；两个 DMG/updater tar.gz/`.sig`/checksums 齐全 | arm64 runner 的 Cargo x86 交叉 target、只构建 app 壳 |
-| 公开下载包 | Developer ID 嵌套签名；公证/staple；`codesign --verify --deep --strict`、`spctl --assess`、`stapler validate`；真实下载保留 quarantine 后启动 | 本机未隔离的 unsigned 包、`xattr` 绕过、仅 Tauri updater 签名 |
+| 当前未签名下载候选 | DMG 提前展示未签名说明；记录候选 checksum、下载来源与 quarantine；在干净账户按系统放行流程完成启动与核心路径 | 本机直接复制后启动、移除 quarantine 或关闭 Gatekeeper、只检查背景图在位 |
+| Apple 签名恢复后 | Developer ID 嵌套签名；公证/staple；`codesign --verify --deep --strict`、`spctl --assess`、`stapler validate` | 未签名包、仅 Tauri updater 签名；当前延期不算通过 |
 
 不随意选择生产环境跑这些步骤。没有测试账户/机器/签名凭据时保留未勾项并写 NOT_VERIFIED；其他独立任务照常推进。UI 最小窗口通过不代表手机布局已支持。
 
@@ -172,4 +175,4 @@ PY
 
 纯规划/文档 PR：检查 Markdown 链接、源文件引用、任务编号唯一、依赖无环、READY 条件、路线/任务/设计一致；核对现状语句与代码。不得因为描述了目标就把对应功能标完成。
 
-持续集成入口已由 ISS-031 建立；当前 Actions 额度导致的 `NOT_RUN` 与本地替代门禁见 §1.1，最近一次候选验收见任务卡证据。发布前仍需发行 workflow 对固定 tag 执行 helper 冻结、签名、公证、staple、更新签名和 draft Release 聚合；普通 CI 或本地全量测试通过不能替代这些门禁。
+持续集成入口已由 ISS-031 建立；当前 Actions 额度导致的 `NOT_RUN` 与本地替代门禁见 §1.1，最近一次候选验收见任务卡证据。发布前仍需发行 workflow 对固定 tag 执行双架构 helper 冻结、更新签名和 draft Release 聚合；Apple 签名、公证、staple 按 DEC-022 延期；普通 CI 或本地全量测试通过不能替代这些门禁。

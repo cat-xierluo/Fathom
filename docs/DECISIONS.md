@@ -27,6 +27,10 @@
 
 **影响**：内测接收方首次打开会按预期被 Gatekeeper 拦截一次，需按背景指引放行——这是明示的产品行为而非缺陷；`x86_64` 双架构、应用内更新的签名防绕过等 ISS-040/041 其余范围不变；ROADMAP M2 门槛描述已随本条加注。未签名包不通过公证渠道时的信任边界（来源可校验性仅靠 checksums.txt）由 README 分发说明明示。
 
+---
+
+### [DEC-021] - 2026-09-15 - 账户 Actions 额度耗尽期间停用 CI workflow，以本地同口径门禁为主
+
 **背景**：DEC-018 生效后，`CI` workflow 仍对每个 pull_request 与每次 push main 触发 5 个 macOS runner job（私有仓 macOS 分钟按 10 倍计费），自 2026-09-14T16:58Z 起全部在执行任何步骤前被 billing 拒绝（check-run annotation "The job was not started because recent account payments have failed or your spending limit needs to be increased"），累计 108 个 run 无一执行，另有 1 个 run 长期卡在 queued。用户 2026-09-15 确认账户额度已用光，要求能本地跑的 CI 就本地跑、收回 Actions 消耗。
 
 **决策**：经 REST API 把 workflow `CI`（id `356941919`，`.github/workflows/ci.yml`）置为 `disabled_manually`，**不修改 ci.yml**；此后 push/PR 不再创建 run，也不会在计费恢复的瞬间自动开跑。恢复只需一步：`gh api -X PUT repos/cat-xierluo/fathom/actions/workflows/356941919/enable`，须由用户在额度恢复后确认执行。停用期间合并门禁仍按 DEC-018 四项组合执行，其中"本地全量检查"以 CI 同款 fail-closed 脚本为准（见 [TESTING §1.1](TESTING.md#11-actions-无额度期间的临时本地合并门禁)）：`scripts/ci_pytest.sh`（断言 338）、`scripts/ci_browser_checks.sh`（断言 39）、`scripts/ci_cargo_locked.sh`（arm64 锁定离线构建），并新增 x86_64 交叉检查：`RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" rustup run stable cargo check --target x86_64-apple-darwin --locked --offline --manifest-path apps/desktop/src-tauri/Cargo.toml`（本机 rustup `stable` 恰为 CI 钉定的 Rust 1.88.0；必须显式 `RUSTC`，否则 rustup 的 cargo 会按 PATH 拿到 Homebrew rustc 1.98 而报 `E0463 can't find crate for std`）。

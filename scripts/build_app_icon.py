@@ -11,8 +11,9 @@ frontend/favicon.svg）。
 处理链（纯 Pillow 像素操作，无生成模型调用，可重复）：
   1. 读 assets/brand/fathom-approved-concept.png（1254x1254 展示稿）；
   2. 从四角采样暖灰背景色，BFS flood fill 清除背景（容差 28）；
-  3. 取非透明像素 bbox 居中方形裁剪，缩放到 1024（底板满幅、四角透明，
-     圆角约 17%，接近 macOS 图标网格）；
+  3. 取非透明像素 bbox 居中方形裁剪，底板缩放到 824 居中放入 1024 画布
+     （Apple macOS 11+ 图标网格 80.5%，四周透明；用户 2026-09-19 反馈
+     满幅偏大，参照 Folia 80.3% 调整）；
   4. 清理边缘白雾（alpha<36 → 0）。
 
 依赖：宿主 python3 + Pillow（仅再生成需要；产物 icon.png 入库，日常构建
@@ -33,6 +34,8 @@ SRC = ROOT / "assets/brand/fathom-approved-concept.png"
 OUT = ROOT / "apps/desktop/src-tauri/icons/icon.png"
 
 SIZE = 1024
+BODY = 824           # 底板边长（Apple macOS 11+ 图标网格 824/1024≈80.5%，与 Folia 一致；
+                     # 用户 2026-09-19 反馈满幅偏大，四周留透明边）
 BG_TOL = 28          # 背景 flood fill 容差（欧氏距离平方阈值 = tol²）
 ALPHA_MIN = 36       # 低于此 alpha 的边缘白雾清零
 
@@ -93,8 +96,10 @@ def main() -> int:
     side = max(xe - xs + 1, ye - ys + 1)
     cx, cy = (xs + xe) // 2, (ys + ye) // 2
     half = side // 2
-    icon = src.crop((cx - half, cy - half, cx - half + side, cy - half + side))
-    icon = icon.resize((SIZE, SIZE), Image.LANCZOS)
+    body = src.crop((cx - half, cy - half, cx - half + side, cy - half + side))
+    body = body.resize((BODY, BODY), Image.LANCZOS)
+    icon = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
+    icon.paste(body, ((SIZE - BODY) // 2, (SIZE - BODY) // 2))
 
     # 4. 边缘白雾清理
     p2 = icon.load()

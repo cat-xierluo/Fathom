@@ -142,18 +142,6 @@
 
 字段合同：目标 → 范围 → 实施边界 → 验收 → 证据。优先级/阶段/状态/依赖以索引为唯一来源。验收框仅在取得证据后勾选。
 
-### ISS-073 · 视觉与夹具收尾：扫描中旋转深度环指示、未消费 token 清理、前端检查夹具卫生
-
-- **目标**：清掉 ISS-072/ISS-069 收尾时明确留下的三件小事，不让它们变成永久噪音。
-- **范围**：`frontend/modules/status.js`、`frontend/style.css`、`frontend/index.html`（扫描徽章区）、`scripts/verify_frontend_refresh.cjs`（夹具 defaults）、必要时 `tests/`。
-- **实施边界**：①扫描指示 = 徽章内嵌一个 CSS 旋转的深度环 SVG（复用 brandRing 形态，`prefers-reduced-motion` 时静止），文本更新只改 `textContent` 不重建元素——修复"每 tick 重建打断动画"；②5 个已声明未消费 token（--hairline/--text-2/--focus/--primary-weak/--font-mono）**删除声明**而非强行接线（当前无需要它们的场景，留声明只会继续误导）；③夹具 defaults 去掉真实 API 没有的 `exclude_names: []` 键——先确认前端确实不消费该键（ISS-069 结论），改完跑前端 86 与浏览器 39。
-- **验收**：
-  - [ ] 扫描进行中徽章显示旋转深度环 + 文案；轮询 tick 间 SVG 元素不被替换（断言同一 DOM 节点）；`prefers-reduced-motion` 不旋转
-  - [ ] style.css 中五个 token 的声明删除后，前端 86/浏览器 39 全绿，无 var() 悬空引用
-  - [ ] 夹具 defaults 与真实 `effective_settings_view().defaults` 键集合一致；前端 86/浏览器 39 全绿
-  - [ ] 独立 reviewer ACCEPT
-- **证据/接续**：进行中。
-
 ### ISS-074 · PM 推进审查与权威上下文校正
 
 - **来源/目标**：用户 2026-09-19 要求检查 GLM PM 最近推进是否跑偏，并整理调整任务与上下文。固定审查 `188d447..e033ef6`，另检查开放 PR #118；区分功能交付、证据缺口和流程偏差。

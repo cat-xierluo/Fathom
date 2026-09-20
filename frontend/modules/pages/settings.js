@@ -405,6 +405,8 @@ async function loadSettings() {
   loadScanHistory();
   // 加载"权限与覆盖"小节（ISS-002A；可独立失败，不影响主配置）
   loadPermissions();
+  // 加载"后台自启"开关（ISS-010B；可独立失败，不影响主配置）
+  loadAutostart();
 }
 
 async function loadScanHistory() {
@@ -616,6 +618,247 @@ async function loadPermissions() {
   }
 }
 
+/* ===== 后台自启（ISS-010B）=====
+ * 发行态 launchd 注册桥的设置页接线：开关开启前必须解释并征求同意
+ * （展示将写入的 plist 摘要与 launchctl 命令清单），取消/失败回落原状态；
+ * 关闭开关走注销。状态查询复用 ISS-010A 只读桥（autostart_status）。
+ * - Tauri 桥可用时经 invoke 调 autostart_register_plan / autostart_register /
+ *   autostart_unregister；浏览器模式（无桥）如实降级为只读说明。
+ * - 所有 invoke 结果都做形状校验：桥异常/mock 桥返回 undefined 时按
+ *   「状态未知」渲染，不抛未捕获异常。
+ * - DOM 在本文件内联创建（与权限面板同模式），零 emoji，无构建链。 */
+const AUTOSTART_PANEL_ID = "autostart-panel";
+
+const AUTOSTART_STATE_LABELS = {
+  enabled: "运行中",
+  disabled: "未注册",
+  unknown: "未知",
+};
+
+function tauriInvoke() {
+  const t = window.__TAURI__;
+  if (t && t.core && typeof t.core.invoke === "function") return t.core.invoke;
+  return null;
+}
+
+function _ensureAutostartPanel() {
+  const page = document.getElementById("page-settings");
+  if (!page) return null;
+  let panel = document.getElementById(AUTOSTART_PANEL_ID);
+  if (panel) return panel;
+  panel = document.createElement("div");
+  panel.id = AUTOSTART_PANEL_ID;
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h2>后台自启（launchd）</h2>
+      <p class="hint">开启前会展示将写入的 launchd 配置与命令并请求确认；取消或失败都会回到系统当前状态。</p>
+    </div>
+    <div class="perm-panel" data-test="autostart-panel-body">
+      <p class="hint">后台自启状态加载中…</p>
+    </div>`;
+  // 插在"扫描运行历史"面板之前；找不到则追加到页面末尾
+  const history = document.getElementById("scan-history");
+  const anchor = history ? history.closest(".panel") : null;
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor);
+  else page.appendChild(panel);
+  return panel;
+}
+
+function autostartStateText(record) {
+  const scan = AUTOSTART_STATE_LABELS[record?.scan] || "未知";
+  const web = AUTOSTART_STATE_LABELS[record?.web] || "未知";
+  const login = AUTOSTART_STATE_LABELS[record?.login_item] || "未知";
+  return `定时扫描：${scan} · 常驻服务：${web} · 登录项：${login}（SMAppService 未接，恒未知）`;
+}
+
+/** 开关的呈现态由系统状态推导：两标签 enabled → on；两标签 disabled → off；
+ * 混合/未知 → "part"（不猜测，如实显示）。 */
+function autostartSwitchState(record) {
+  if (!record) return "unknown";
+  if (record.scan === "enabled" && record.web === "enabled") return "on";
+  if (record.scan === "disabled" && record.web === "disabled") return "off";
+  return "part";
+}
+
+function renderAutostartBody(body, record, extraNote) {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    body.innerHTML = `
+      <p class="hint">浏览器模式没有桌面壳桥接：后台自启的查询与注册/注销只在 Fathom 桌面应用的设置页可用。</p>
+      <p class="hint">命令行开发态仍用 <code>main.py install / uninstall</code>。</p>`;
+    return;
+  }
+  const sw = autostartSwitchState(record);
+  const swLabel = sw === "on" ? "已开启" : sw === "off" ? "已关闭" : sw === "part" ? "部分注册（状态不一致）" : "未知";
+  body.innerHTML = `
+    <p class="perm-state">
+      <span class="quality-chip ${sw === "on" ? "ok" : sw === "off" ? "miss" : "warn"}" data-test="autostart-chip">
+        ${icon("activity", 12)} ${escapeHtml(swLabel)}
+      </span>
+    </p>
+    <p class="hint" data-test="autostart-status-text">${escapeHtml(autostartStateText(record))}</p>
+    ${extraNote ? `<p class="hint cfg-error" data-test="autostart-note">${escapeHtml(extraNote)}</p>` : ""}
+    <div class="perm-link-row">
+      <label class="exclude-confirm-label">
+        <input type="checkbox" id="autostart-toggle" data-test="autostart-toggle"
+               ${sw === "on" ? "checked" : ""}>
+        <span>开启后台自启（定时扫描 + 常驻服务开机自动运行）</span>
+      </label>
+    </div>
+    <div id="autostart-confirm" data-test="autostart-confirm" hidden></div>`;
+  const toggle = document.getElementById("autostart-toggle");
+  if (toggle) {
+    // 变更不立即生效：先弹解释+确认层；取消/失败后由真实系统状态回写开关。
+    toggle.addEventListener("change", () => {
+      if (toggle.checked) confirmRegister(body);
+      else confirmUnregister(body);
+    });
+  }
+}
+
+/** 开关打开：解释并征求同意（plist 摘要 + 命令清单），确认后才 invoke 注册。 */
+async function confirmRegister(body) {
+  const toggle = document.getElementById("autostart-toggle");
+  const layer = document.getElementById("autostart-confirm");
+  const invoke = tauriInvoke();
+  if (!layer || !invoke) return;
+  let plan = null;
+  try {
+    plan = await invoke("autostart_register_plan",
+      { scanTime: (lastConfig && lastConfig.scan_time) || null });
+  } catch (e) {
+    renderAutostartBody(body, null, `无法生成注册计划：${e?.message || e}`);
+    return;
+  }
+  if (!plan || !Array.isArray(plan.plist_files) || !Array.isArray(plan.commands)) {
+    renderAutostartBody(body, null, "注册计划返回异常（不是预期的清单结构），已取消。");
+    return;
+  }
+  const plists = plan.plist_files.map((p) => `
+    <li>将写入 <code>${escapeHtml(p.label)}</code> → <code>${escapeHtml(p.path)}</code></li>`).join("");
+  const cmds = plan.commands.map((c) => `<code>${escapeHtml((c || []).join(" "))}</code>`).join("<br>");
+  layer.hidden = false;
+  layer.innerHTML = `
+    <p class="hint">即将在 <code>~/Library/LaunchAgents</code> 写入两份 plist 并执行 launchd 注册：</p>
+    <ul>${plists}</ul>
+    <p class="hint">将执行的命令（uid 以实际值替换）：</p>
+    <p class="hint">${cmds}</p>
+    <p class="hint exclude-warning">开启后：每日定时扫描自动运行，常驻服务开机自动拉起（崩溃自动重启）。写入与注册失败会自动回滚，不留半注册状态。</p>
+    <div class="exclude-actions">
+      <button type="button" id="autostart-confirm-yes" class="btn primary" data-test="autostart-confirm-yes">确认开启</button>
+      <button type="button" id="autostart-confirm-no" class="btn" data-test="autostart-confirm-no">取消</button>
+    </div>`;
+  const yes = document.getElementById("autostart-confirm-yes");
+  const no = document.getElementById("autostart-confirm-no");
+  if (no) no.addEventListener("click", () => { closeConfirmAndResync(body); });
+  if (yes) {
+    yes.addEventListener("click", async () => {
+      yes.disabled = true;
+      try {
+        const outcome = await invoke("autostart_register",
+          { confirmed: true, scanTime: (lastConfig && lastConfig.scan_time) || null });
+        if (outcome && outcome.ok === true) {
+          await refreshAutostart(body, "已开启后台自启。");
+        } else {
+          const why = outcome && outcome.error ? outcome.error : "未知原因";
+          await refreshAutostart(body, `注册未完成：${why}`);
+        }
+      } catch (e) {
+        await refreshAutostart(body, `注册请求失败：${e?.message || e}`);
+      }
+    });
+  }
+  if (toggle) toggle.checked = true; // 计划展示期间保持打开；取消/失败经 resync 回落
+}
+
+/** 开关关闭：确认层（说明注销动作），确认后 invoke 注销。 */
+function confirmUnregister(body) {
+  const layer = document.getElementById("autostart-confirm");
+  const invoke = tauriInvoke();
+  if (!layer || !invoke) return;
+  layer.hidden = false;
+  layer.innerHTML = `
+    <p class="hint">即将停止并注销后台自启：对两个标签执行 <code>launchctl bootout</code>，并删除
+      <code>~/Library/LaunchAgents</code> 下的两份 plist。已入库的扫描数据不会被删除。</p>
+    <div class="exclude-actions">
+      <button type="button" id="autostart-unregister-yes" class="btn primary" data-test="autostart-unregister-yes">确认关闭</button>
+      <button type="button" id="autostart-unregister-no" class="btn" data-test="autostart-unregister-no">取消</button>
+    </div>`;
+  const yes = document.getElementById("autostart-unregister-yes");
+  const no = document.getElementById("autostart-unregister-no");
+  if (no) no.addEventListener("click", () => { closeConfirmAndResync(body); });
+  if (yes) {
+    yes.addEventListener("click", async () => {
+      yes.disabled = true;
+      try {
+        const outcome = await invoke("autostart_unregister", { confirmed: true });
+        if (outcome && outcome.ok === true) {
+          await refreshAutostart(body, "已关闭后台自启。");
+        } else {
+          const why = outcome && outcome.error ? outcome.error : "未知原因";
+          await refreshAutostart(body, `注销未完成：${why}`);
+        }
+      } catch (e) {
+        await refreshAutostart(body, `注销请求失败：${e?.message || e}`);
+      }
+    });
+  }
+}
+
+/** 取消确认或操作结束：重新只读查询系统状态并按其回写开关（UI 与系统一致）。 */
+async function refreshAutostart(body, note) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  let record = null;
+  try {
+    record = await invoke("autostart_status", {});
+  } catch (e) {
+    renderAutostartBody(body, null, `${note || ""}（状态回读失败：${e?.message || e}）`);
+    return;
+  }
+  if (!record || typeof record.scan !== "string" || typeof record.web !== "string") {
+    renderAutostartBody(body, null, `${note || ""}（状态回读异常）`);
+    return;
+  }
+  renderAutostartBody(body, record, note);
+}
+
+function closeConfirmAndResync(body) {
+  const layer = document.getElementById("autostart-confirm");
+  if (layer) { layer.hidden = true; layer.innerHTML = ""; }
+  refreshAutostart(body, "");
+}
+
+async function loadAutostart() {
+  const panel = _ensureAutostartPanel();
+  if (!panel) return;
+  const body = panel.querySelector("[data-test='autostart-panel-body']");
+  if (!body) return;
+  const request = beginRequest("settingsAutostart");
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    if (!request.current()) return;
+    renderAutostartBody(body, null);
+    return;
+  }
+  let record = null;
+  try {
+    record = await invoke("autostart_status", {});
+    if (!request.current()) return;
+  } catch (e) {
+    if (!request.current()) return;
+    renderAutostartBody(body, null, `状态查询失败：${e?.message || e}`);
+    return;
+  }
+  if (!request.current()) return;
+  if (!record || typeof record.scan !== "string" || typeof record.web !== "string") {
+    renderAutostartBody(body, null, "状态返回异常（不是预期的三态结构）。");
+    return;
+  }
+  renderAutostartBody(body, record);
+}
+
 export const settingsPage = {
   id: "settings",
   load() { loadSettings(); },
@@ -625,5 +868,5 @@ export const settingsPage = {
     document.getElementById("btn-config-reset")
       ?.addEventListener("click", resetToDefaults);
   },
-  leave() { ["settings", "scanHistory", "settingsPermissions"].forEach(invalidateRequest); },
+  leave() { ["settings", "scanHistory", "settingsPermissions", "settingsAutostart"].forEach(invalidateRequest); },
 };

@@ -345,6 +345,30 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "允许前端设置页在用户确认（confirmed）后开启自启：写入 LaunchAgents plist 并 bootstrap 拉起。",
+          "type": "string",
+          "const": "allow-autostart-register",
+          "markdownDescription": "允许前端设置页在用户确认（confirmed）后开启自启：写入 LaunchAgents plist 并 bootstrap 拉起。"
+        },
+        {
+          "description": "允许前端设置页获取自启注册计划（plist 内容与命令序列预览，纯展示、零执行），供用户确认前审阅。",
+          "type": "string",
+          "const": "allow-autostart-register-plan",
+          "markdownDescription": "允许前端设置页获取自启注册计划（plist 内容与命令序列预览，纯展示、零执行），供用户确认前审阅。"
+        },
+        {
+          "description": "允许前端设置页读取 launchd 自启状态（只读回读，不触碰系统配置）。",
+          "type": "string",
+          "const": "allow-autostart-status",
+          "markdownDescription": "允许前端设置页读取 launchd 自启状态（只读回读，不触碰系统配置）。"
+        },
+        {
+          "description": "允许前端设置页在用户确认（confirmed）后关闭自启：按 label bootout 并删除 plist。",
+          "type": "string",
+          "const": "allow-autostart-unregister",
+          "markdownDescription": "允许前端设置页在用户确认（confirmed）后关闭自启：按 label bootout 并删除 plist。"
+        },
+        {
           "description": "允许前端心跳推送 tray 标题（剩余 GB）与 tooltip。",
           "type": "string",
           "const": "allow-update-tray-status",

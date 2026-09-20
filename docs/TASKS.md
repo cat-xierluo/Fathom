@@ -125,6 +125,7 @@
 | ISS-003A | 通知语义统一与测试补强（ISS-003 代码切片） | P1 | M1 | DONE | ISS-020 |
 | ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | DONE | ISS-025、ISS-028 |
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | DONE | ISS-020 |
+| ISS-010B | 发行态后台注册桥：用户同意流 + launchd 注册写路径 + fake 环境测试（ISS-010 代码切片） | P1 | M2 | READY | ISS-010A、ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | DONE | ISS-062 |
 | ISS-066 | 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5） | P1 | M1 | DONE | ISS-016A、ISS-065 |
 | ISS-069 | 设置页排除列表编辑器（消费 /api/config，含新数据集确认提示） | P1 | M2 | DONE | ISS-016A、ISS-066、ISS-002A |
@@ -141,7 +142,7 @@
 | ISS-074 | PM 推进审查与权威上下文校正 | P1 | M2 | DONE | — |
 | ISS-075 | 已合并任务验收证据对账与接缝复核 | P1 | M2 | DONE | — |
 | ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | DONE | — |
-| ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | READY | ISS-028 |
+| ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | IN_PROGRESS | ISS-028 |
 
 ## 任务卡
 
@@ -251,7 +252,8 @@
   - [ ] 修复后真实 Tauri 壳内 Esc 关闭目录详情侧栏可用，Tab 焦点链不受影响
   - [ ] 有 fail-closed 断言覆盖（脚本化，可并入 ISS-028 三尺寸脚本或专项）
   - [ ] 不引入壳对页面的宽泛事件/能力授权；改动范围与证据可在 PR diff 复核
-- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-028 卡「三尺寸证据」段结构层发现①；ISS-076 清单 §2 实机步骤的键盘项。
+- **证据/接续**：尚未执行；不得勾选验收项。
+- **证据/接续**（2026-09-20 02:55 派发，IN_PROGRESS）：worker dispatch `ctx_12a48a1e7c24`，Orca run `run_8d477489db15`，task `task_14260b7750e1`，worktree `/Users/maoking/orca/workspaces/fathom/iss-077-esc-keydown`（分支 `iss-077-esc-keydown`），lane minimax-M3（provider lease active）。**spec 约束**：worker 只做脚本 + headless 断言 + 静态源码取证；**严禁抢前台/激活应用/open -a/System Events/CGEvent 等 GUI 实机操作**（用户 2026-09-20 规则），GUI 实机验证由 PM 亲自执行；必须前台才能取证项须标 `NOT_VERIFIED-需前台`。**派发环境**：quota preflight 因缺 `claude-provider-registry.json` 报 `provider_unknown_lane`（工具失灵非额度不足），PM 以 `--quota-preflight-override` 放行，授权来源=route-summary 实测 minimax 47%。**待 worker 交付后由 PM 复核。**关联：ISS-028 卡「三尺寸证据」段结构层发现①；ISS-076 清单 §2 实机步骤的键盘项。
 
 
 
@@ -636,6 +638,25 @@
   - [x] `cargo check/test/clippy` 通过（test 14→23；clippy 仅既有 2 dead_code）；`Cargo.lock/Cargo.toml` 未变；pytest 375→397（在其 base 上）
   - [x] 代码审查确认零系统写入路径：grep 无 bootstrap/bootout/load/enable/kickstart/SMAppService.register；`launchd.py` 新函数体不含 `_write_plist`/`_bootstrap`（有 grep 守护测试）
 - **证据/接续**（2026-09-16 DONE）：worker ctx_a854f9ed473e（**minimax-M3**，iss-010a-autostart-readonly-bridge）交付 `5055332`（autostart.rs + lib.rs 注册：`parse_launchctl_print` 三态纯函数、`autostart_status` 命令以 `id -u` 取 uid、≤2s 超时只 kill 自起子进程；`login_item` 恒 unknown 留父卡）与 `84d25cf`（launchd.py `status()`/`dry_run_plan()` + 22 测试）。PM 独立复跑五条合同命令全绿；reviewer ctx_f8bc8fdd2768（minimax-M3，review-wave22-010a）**ACCEPT**（0 blocking；信息性：真实 launchctl 三态仅 fake 验证、SMAppService 留父卡、设置页消费由 ISS-016A 交付）。`postflight` ok、`pr-audit` adopt。[PR #87](https://github.com/cat-xierluo/fathom/pull/87) squash 合并为 main `4e88b68`。**设置页开关只读展示随 ISS-016A 交付**（本切片有意不含前端）。真实注册、睡眠/重启恢复、去重补扫留父卡 ISS-010。
+
+### ISS-010B · 发行态后台注册桥：用户同意流 + launchd 注册写路径 + fake 环境测试（ISS-010 代码切片）
+
+- **状态**：IN_PROGRESS（P1/M2；2026-09-20 13:1x 派发，凭据见下）；来源：ISS-076 清单 §6 推荐（2026-09-20 PM 审阅后登记，[PR #124](https://github.com/cat-xierluo/fathom/pull/124) 合同要点 + `docs/plans/2026-09-19-release-live-verification-prep.md` §6 四条理由）。关键路径最前：ISS-016/ISS-040 → ISS-041 → ISS-030/033 均排在其后。
+- **派发凭据**（2026-09-20 13:1x，PM wave34）：worker dispatch `ctx_5f1f4e38bcd0`，Orca run `run_f80ce0d67489`，task `task_83235eed08aa`，worktree `/Users/maoking/orca/workspaces/fathom/iss-010b-register-2`（分支 `iss-010b-register`，lane glm-5.3，provider lease active）。合同：`.git/orchestration/wave34-evidence/ISS-010B.prompt.md`（零真实注册、grep 守护先红后绿、GUI 禁操留 PM）。**待 worker 交付后由 PM 复核。**
+- **目标**：让发行包具备真实可用的后台注册路径——设置页开关开启 → 解释并征求同意 → 经唯一命中的命令模块完成 launchd 写路径（plist + bootstrap）→ 失败回滚不留半注册态；状态查询复用 ISS-010A 只读桥。**本切片不在本机真实注册**：全部注册/注销/失败路径用 fake `launchctl`/fake plist 环境注入验证（ISS-010A 夹具模式），真实注册执行与实机验收留 G8 人工门（076 清单 §2/§5-E7）。
+- **范围**：`apps/desktop/src-tauri/src/`（autostart.rs 增加经用户同意的 register/unregister 命令；不新增 crate）、`fathom/launchd.py`（发行态 plist 生成复用 `dry_run_plan` 同源逻辑）、设置页开关接线（`frontend/modules/pages/settings.js` 等，把 ISS-016A 的只读展示升级为可开启）、`tests/` 与 Rust 单测、门禁计数同步。
+- **实施边界**：
+  - **默认不注册**；首次开启必须解释将写入的 plist 内容与命令并经用户明确确认（UI 确认步骤），取消/失败回落原状态且 UI 与系统状态一致
+  - 失败回滚不留半注册态（写文件失败/bootstrap 失败均回退已做部分）
+  - `--locked --offline` 不加 crate（仅 std + 已有 serde_json）；SMAppService 登录项若需 objc 桥超出 std 能力则如实保持 unknown 并在卡内记录，不得为它引入 objc 依赖
+  - **grep 守护改写**：现有「零写入」负向探针升级为「真实写路径（bootstrap/bootout/写 plist/SMAppService.register）仅存在于注册命令模块」；`launchd.py` 的 `dry_run_plan` 展示语义不变（仍只展示不执行）
+  - GUI 实机操作按 2026-09-20 用户规则由 PM 亲自执行；worker 交付代码 + fake 测试 + headless 断言，不抢前台
+- **验收**：
+  - [ ] 反例先行：按新合同改写 grep 守护测试后先红（证明现有探针确实拦新写路径），实现后绿；fake 环境注册/注销/状态一致/失败回滚全覆盖（Rust+Python）
+  - [ ] 用户同意流：开关开启前有解释与确认步骤；取消/失败回落原状态；关闭开关走 unregister 且状态一致
+  - [ ] `bash scripts/ci_cargo_locked.sh` 全绿（cargo test 计数只增不减）；pytest 全绿且计数同步 `scripts/ci_pytest.sh`/`ci.yml`/TESTING/ARCHITECTURE
+  - [ ] grep 守护：真实写路径仅存在于注册命令模块；`dry_run_plan` 纯展示不变量有测试；零真实注册发生（本机 `launchctl print` 对照前后一致可查）
+- **证据/接续**：尚未执行；不得勾选验收项。关联：父卡 ISS-010、ISS-010A（只读桥与夹具先例）、ISS-076 清单 §4.1/§6、G8 人工门。
 
 ### ISS-063 · 微卫生：du_seconds 提示的 isfinite 守卫
 

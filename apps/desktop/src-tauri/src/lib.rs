@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, WINDOW_SUBMENU_ID},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindow, WindowEvent,
 };
@@ -305,6 +305,53 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// ISS-077：把壳认领到的裸 Esc 转发为页面合成 ``keydown``。println 行是
+/// 实机日志锚点——PM 前台按 Esc 时可在壳日志 grep ``[esc-forward]`` 复核
+/// 「菜单认领 + 转发」确实发生（页面侧效果仍需前台实机验证）。
+fn forward_escape_to_page(app: &AppHandle) {
+    let Some(win) = app.get_webview_window("main") else {
+        eprintln!("[esc-forward] 主窗口不存在，本次 Esc 转发跳过");
+        return;
+    };
+    println!("[esc-forward] 菜单认领裸 Esc，转发合成 keydown 到主窗口");
+    if let Err(err) = win.eval(ESC_FORWARD_JS) {
+        eprintln!("[esc-forward] eval 注入失败：{err}");
+    }
+}
+
+/// ISS-077：向默认菜单的 Window 子菜单挂载「关闭详情面板（Esc）」转发项。
+/// 失败不阻塞启动（应用可用性优先于键盘修复），但打 loud 日志；挂载合同由
+/// ``scripts/verify_tauri_esc_delivery.sh`` 静态断言 + PM 实机复核兜底。
+/// 仅 macOS 需要此转发（WebView2/GTK 裸 Esc 正常送达页面）。
+#[cfg(target_os = "macos")]
+fn attach_escape_forward_menu_item(app: &AppHandle) {
+    let item = MenuItem::with_id(
+        app,
+        ESC_FORWARD_MENU_ID,
+        "关闭详情面板",
+        true,
+        Some(ESC_FORWARD_ACCELERATOR),
+    );
+    let item = match item {
+        Ok(item) => item,
+        Err(err) => {
+            eprintln!("[esc-forward] 菜单项构造失败，Esc 转发未挂载（Esc 维持不送达）：{err}");
+            return;
+        }
+    };
+    let Some(menu) = app.menu() else {
+        eprintln!("[esc-forward] 应用菜单不存在（macOS 默认菜单应已初始化），Esc 转发未挂载");
+        return;
+    };
+    let Some(MenuItemKind::Submenu(window_menu)) = menu.get(WINDOW_SUBMENU_ID) else {
+        eprintln!("[esc-forward] 默认菜单缺 Window 子菜单（上游 id 漂移？），Esc 转发未挂载");
+        return;
+    };
+    if let Err(err) = window_menu.append(&item) {
+        eprintln!("[esc-forward] Esc 转发菜单项 append 失败：{err}");
+    }
+}
+
 /// 退出路径统一回收（ISS-057）：take() 取走 ``HelperState`` 里的句柄后调用
 /// ``stop()``，保证幂等——tray 菜单退出、``RunEvent::ExitRequested`` 与
 /// ``RunEvent::Exit`` 可能依次触发，第一次 take 后后续调用拿到 ``None``
@@ -355,6 +402,30 @@ fn quit_with_helper(app: &AppHandle) {
 /// （见该脚本头）；tauri-build 的 ACL 产物**无法**观察 `.plugin()`。
 const REGISTERED_PLUGIN_NAMES: &[&str] = &["opener"];
 
+/// ISS-077：壳层 Esc 转发菜单项 id。AppKit 对裸 Esc（无修饰）走键等价分发
+/// （视图树 ``performKeyEquivalent:`` → 主菜单）且先于 ``keyDown:``；macOS
+/// WKWebView 壳在该路径上不把 Esc 送达页面（ISS-028 实机证据：Tab/Enter/
+/// 方向键均送达、Esc 无 keydown；同页 Web/Playwright 下 Esc 可用）。挂一个
+/// 无修饰 Esc 加速键菜单项让主菜单认领裸 Esc，再转发给页面。
+const ESC_FORWARD_MENU_ID: &str = "esc-forward";
+
+/// ISS-077：加速键字符串。muda 0.19.3 解析 "Escape" 为无修饰 Esc 加速键
+/// （accelerator.rs "ESCAPE" | "ESC"，NSMenuItem keyEquivalent "\\u{1b}" +
+/// 空 modifier mask，只匹配裸 Esc，带修饰键不拦截）。
+const ESC_FORWARD_ACCELERATOR: &str = "Escape";
+
+/// ISS-077：转发载荷——向页面投递合成 ``keydown``（Escape）。投递目标为
+/// ``document.activeElement``（兜底 ``document``），``bubbles`` 使 document 级
+/// 监听收到——复用前端既有全局 Esc 处理（changes.js 关闭目录详情侧栏），
+/// 前端零改动、零双绑定。菜单认领后原生 ``keyDown:`` 不再分发，无双重投递。
+const ESC_FORWARD_JS: &str = r#"(function () {
+  var target = document.activeElement || document.body || document;
+  target.dispatchEvent(new KeyboardEvent("keydown", {
+    key: "Escape", code: "Escape", keyCode: 27, which: 27,
+    bubbles: true, cancelable: true, composed: true
+  }));
+})();"#;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -375,6 +446,13 @@ pub fn run() {
                 // macOS 菜单栏应用惯例：点关闭只隐藏窗口，tray 常驻
                 let _ = window.hide();
                 api.prevent_close();
+            }
+        })
+        // ISS-077：应用菜单栏事件路由（tray 菜单事件走 TrayIconBuilder 自己的
+        // on_menu_event，互不影响）。esc-forward = 裸 Esc 转发项被主菜单认领。
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == ESC_FORWARD_MENU_ID {
+                forward_escape_to_page(app);
             }
         })
         .setup(|app| {
@@ -430,6 +508,11 @@ pub fn run() {
             if let Err(err) = start_helper_internal(handle, &state) {
                 eprintln!("[helper] 启动/握手失败：{} — 握手页会显示诊断", err);
             }
+
+            // ISS-077：默认菜单就绪后挂载裸 Esc 转发项（macOS WKWebView 壳
+            // 不送达 Esc keydown 的壳层修复；机制见 ESC_FORWARD_MENU_ID 注释）
+            #[cfg(target_os = "macos")]
+            attach_escape_forward_menu_item(handle);
 
             Ok(())
         })
@@ -544,5 +627,31 @@ mod tests {
         );
         assert_eq!(json["state"], "error");
         assert_eq!(json["error"], "helper 握手超时（20s）");
+    }
+
+    /// ISS-077：Esc 转发载荷的名字合同——合成事件必须是 keydown + Escape
+    /// （key/code/keyCode），且 bubbles（前端 document 级监听才能收到）。
+    /// 与 REGISTERED_PLUGIN_NAMES 同类限制：本测试钉住载荷常量内容，抓不到
+    /// 菜单项运行时是否真的挂上（那由 scripts/verify_tauri_esc_delivery.sh
+    /// 静态合同 + PM 实机复核兜底）。
+    #[test]
+    fn esc_forward_js_payload_matches_keydown_escape_contract() {
+        for marker in [
+            "new KeyboardEvent(\"keydown\"",
+            "key: \"Escape\"",
+            "code: \"Escape\"",
+            "keyCode: 27",
+            "bubbles: true",
+            "dispatchEvent",
+        ] {
+            assert!(
+                ESC_FORWARD_JS.contains(marker),
+                "Esc 转发载荷缺少合同片段 {marker:?}（当前载荷：{ESC_FORWARD_JS:?}）"
+            );
+        }
+        // 加速键必须是裸 Escape（muda 0.19.3 接受 "Escape"，映射 NSMenuItem
+        // keyEquivalent \\u{1b} + 空 modifier mask，只认领无修饰 Esc）。
+        assert_eq!(ESC_FORWARD_ACCELERATOR, "Escape");
+        assert_eq!(ESC_FORWARD_MENU_ID, "esc-forward");
     }
 }

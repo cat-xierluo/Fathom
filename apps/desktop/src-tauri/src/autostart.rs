@@ -779,6 +779,8 @@ mod tests {
 
     // ----- ISS-010B：发行态注册命令模块（fake runner + 临时目录全覆盖） -----
 
+    use std::cell::RefCell;
+    use std::rc::Rc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// 测试用临时目录（std 实现，不引 crate；Drop 时清理）。
@@ -818,7 +820,16 @@ mod tests {
     }
 
     /// fake runner：记录全部 argv；按匹配器注入失败（bootstrap 失败/无法执行）。
+    ///
+    /// 共享句柄形态（Rc<RefCell<..>>）：core 的 runner 参数经类型别名省略为
+    /// ``dyn FnMut + 'static``，闭包必须拥有所捕获的数据；因此闭包侧克隆句柄
+    /// move 捕获，断言侧经同一句柄读 argv 账本，两侧互不借用（修复 E0373/E0502）。
+    #[derive(Clone)]
     struct FakeRunner {
+        state: Rc<RefCell<FakeRunnerState>>,
+    }
+
+    struct FakeRunnerState {
         calls: Vec<Vec<String>>,
         fail_bootstrap_for: Option<String>, // 命中该路径的 bootstrap 返回 rc=5
         fail_spawn_for: Option<String>,     // 命中该路径的 bootstrap 返回 Err
@@ -827,22 +838,42 @@ mod tests {
     impl FakeRunner {
         fn new() -> Self {
             FakeRunner {
-                calls: Vec::new(),
-                fail_bootstrap_for: None,
-                fail_spawn_for: None,
+                state: Rc::new(RefCell::new(FakeRunnerState {
+                    calls: Vec::new(),
+                    fail_bootstrap_for: None,
+                    fail_spawn_for: None,
+                })),
             }
         }
 
-        fn run(&mut self, argv: &[&str]) -> Result<(i32, String), String> {
+        /// 注入：命中该 plist 路径的 bootstrap 返回 rc=5。
+        fn fail_bootstrap_for(&self, target: String) {
+            self.state.borrow_mut().fail_bootstrap_for = Some(target);
+        }
+
+        /// 注入：命中该 plist 路径的 bootstrap 返回 Err（无法执行）。
+        fn fail_spawn_for(&self, target: String) {
+            self.state.borrow_mut().fail_spawn_for = Some(target);
+        }
+
+        /// 传给 core 的执行闭包：克隆共享句柄并 move 捕获（满足 'static），
+        /// 断言侧继续经原句柄读账，互不冲突。
+        fn closure(&self) -> impl FnMut(&[&str]) -> Result<(i32, String), String> {
+            let runner = self.clone();
+            move |argv| runner.run(argv)
+        }
+
+        fn run(&self, argv: &[&str]) -> Result<(i32, String), String> {
+            let mut state = self.state.borrow_mut();
             let owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
-            self.calls.push(owned.clone());
+            state.calls.push(owned);
             if argv[1] == "bootstrap" {
-                if let Some(target) = &self.fail_spawn_for {
+                if let Some(target) = &state.fail_spawn_for {
                     if argv[3] == target.as_str() {
                         return Err("spawn failed (fake)".to_string());
                     }
                 }
-                if let Some(target) = &self.fail_bootstrap_for {
+                if let Some(target) = &state.fail_bootstrap_for {
                     if argv[3] == target.as_str() {
                         return Ok((5, "Bootstrap failed: 5: Input/output error".to_string()));
                     }
@@ -852,7 +883,7 @@ mod tests {
         }
 
         fn argv_strings(&self) -> Vec<Vec<String>> {
-            self.calls.clone()
+            self.state.borrow().calls.clone()
         }
     }
 
@@ -939,11 +970,11 @@ mod tests {
     fn register_refuses_without_confirmation() {
         let temp = TempDir::new("reg-noconfirm");
         let ctx = test_ctx(&temp);
-        let mut runner = FakeRunner::new();
-        let outcome = register_release_core(&ctx, false, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        let outcome = register_release_core(&ctx, false, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(false));
         assert!(outcome["error"].as_str().unwrap().contains("确认"));
-        assert!(runner.calls.is_empty(), "未确认时零命令");
+        assert!(runner.argv_strings().is_empty(), "未确认时零命令");
         assert!(!ctx.scan_plist_path().exists());
     }
 
@@ -953,10 +984,10 @@ mod tests {
         let temp = TempDir::new("reg-nouid");
         let mut ctx = test_ctx(&temp);
         ctx.uid = String::new();
-        let mut runner = FakeRunner::new();
-        let outcome = register_release_core(&ctx, true, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        let outcome = register_release_core(&ctx, true, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(false));
-        assert!(runner.calls.is_empty());
+        assert!(runner.argv_strings().is_empty());
     }
 
     /// 成功路径：写两份 plist + 每标签 bootout 清理 + bootstrap。
@@ -965,8 +996,8 @@ mod tests {
         let temp = TempDir::new("reg-ok");
         let mut ctx = test_ctx(&temp);
         ctx.scan_hour = 13;
-        let mut runner = FakeRunner::new();
-        let outcome = register_release_core(&ctx, true, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        let outcome = register_release_core(&ctx, true, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(true), "{outcome}");
         assert_ne!(outcome["rolled_back"], serde_json::json!(true));
         let scan_path = ctx.scan_plist_path();
@@ -992,9 +1023,9 @@ mod tests {
     fn register_bootstrap_failure_rolls_back_completely() {
         let temp = TempDir::new("reg-rollback");
         let ctx = test_ctx(&temp);
-        let mut runner = FakeRunner::new();
-        runner.fail_bootstrap_for = Some(ctx.web_plist_path().display().to_string());
-        let outcome = register_release_core(&ctx, true, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        runner.fail_bootstrap_for(ctx.web_plist_path().display().to_string());
+        let outcome = register_release_core(&ctx, true, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(false), "{outcome}");
         assert_eq!(outcome["rolled_back"], serde_json::json!(true));
         let error = outcome["error"].as_str().unwrap();
@@ -1014,9 +1045,9 @@ mod tests {
     fn register_spawn_failure_rolls_back_completely() {
         let temp = TempDir::new("reg-spawnfail");
         let ctx = test_ctx(&temp);
-        let mut runner = FakeRunner::new();
-        runner.fail_spawn_for = Some(ctx.scan_plist_path().display().to_string());
-        let outcome = register_release_core(&ctx, true, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        runner.fail_spawn_for(ctx.scan_plist_path().display().to_string());
+        let outcome = register_release_core(&ctx, true, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(false), "{outcome}");
         assert_eq!(outcome["rolled_back"], serde_json::json!(true));
         assert!(!ctx.scan_plist_path().exists());
@@ -1029,10 +1060,10 @@ mod tests {
         let temp = TempDir::new("reg-dirfail");
         let ctx = test_ctx(&temp);
         std::fs::write(&ctx.launchagents_dir, "不是目录").unwrap();
-        let mut runner = FakeRunner::new();
-        let outcome = register_release_core(&ctx, true, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        let outcome = register_release_core(&ctx, true, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(false));
-        assert!(runner.calls.is_empty(), "写目录失败时零命令：{:?}", runner.calls);
+        assert!(runner.argv_strings().is_empty(), "写目录失败时零命令：{:?}", runner.argv_strings());
     }
 
     /// 第二份 plist 写失败（web 路径被目录占位）：第一份被清理、零 bootstrap。
@@ -1041,10 +1072,10 @@ mod tests {
         let temp = TempDir::new("reg-write2fail");
         let ctx = test_ctx(&temp);
         std::fs::create_dir_all(ctx.launchagents_dir.join(format!("{WEB_LABEL}.plist"))).unwrap();
-        let mut runner = FakeRunner::new();
-        let outcome = register_release_core(&ctx, true, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        let outcome = register_release_core(&ctx, true, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(false), "{outcome}");
-        assert!(runner.calls.is_empty(), "写失败时零 bootstrap：{:?}", runner.calls);
+        assert!(runner.argv_strings().is_empty(), "写失败时零 bootstrap：{:?}", runner.argv_strings());
         assert!(!ctx.scan_plist_path().exists(), "已写的 scan plist 必须被清理");
     }
 
@@ -1053,10 +1084,10 @@ mod tests {
     fn unregister_refuses_without_confirmation() {
         let temp = TempDir::new("unreg-noconfirm");
         let ctx = test_ctx(&temp);
-        let mut runner = FakeRunner::new();
-        let outcome = unregister_release_core(&ctx, false, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        let outcome = unregister_release_core(&ctx, false, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(false));
-        assert!(runner.calls.is_empty());
+        assert!(runner.argv_strings().is_empty());
     }
 
     /// 注销成功：两标签 bootout（按 label）+ 两份 plist 删除。
@@ -1067,8 +1098,8 @@ mod tests {
         std::fs::create_dir_all(&ctx.launchagents_dir).unwrap();
         std::fs::write(ctx.scan_plist_path(), "<plist/>").unwrap();
         std::fs::write(ctx.web_plist_path(), "<plist/>").unwrap();
-        let mut runner = FakeRunner::new();
-        let outcome = unregister_release_core(&ctx, true, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        let outcome = unregister_release_core(&ctx, true, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(true), "{outcome}");
         let calls = runner.argv_strings();
         assert_eq!(calls.len(), 2, "{calls:?}");
@@ -1083,8 +1114,8 @@ mod tests {
     fn unregister_missing_plists_is_idempotent_ok() {
         let temp = TempDir::new("unreg-missing");
         let ctx = test_ctx(&temp);
-        let mut runner = FakeRunner::new();
-        let outcome = unregister_release_core(&ctx, true, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        let outcome = unregister_release_core(&ctx, true, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(true), "{outcome}");
         assert_eq!(runner.argv_strings().len(), 2);
     }
@@ -1116,8 +1147,8 @@ mod tests {
         std::fs::create_dir_all(&ctx.launchagents_dir).unwrap();
         std::fs::write(ctx.scan_plist_path(), "<plist/>").unwrap();
         std::fs::create_dir_all(ctx.web_plist_path()).unwrap();
-        let mut runner = FakeRunner::new();
-        let outcome = unregister_release_core(&ctx, true, &mut |argv| runner.run(argv));
+        let runner = FakeRunner::new();
+        let outcome = unregister_release_core(&ctx, true, &mut runner.closure());
         assert_eq!(outcome["ok"], serde_json::json!(false), "{outcome}");
         assert!(outcome["error"].as_str().unwrap().contains(WEB_LABEL));
         assert!(!ctx.scan_plist_path().exists());

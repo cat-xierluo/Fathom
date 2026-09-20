@@ -35,12 +35,12 @@ concurrency:
 
 env:
   # 已验证基线（2026-09-16，本地 macOS 15 arm64 / Python 3.14.6）：
-  # 578 pytest、39 API/浏览器检查、cargo locked offline build。
+  # 586 pytest、39 API/浏览器检查、cargo locked offline build。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "578"
+  EXPECTED_PYTEST_PASSED: "586"
   EXPECTED_BROWSER_PASSED: "39"
 
 jobs:
@@ -76,7 +76,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r requirements-dev.txt -c constraints.txt
 
-      - name: pytest（断言 578 项通过）
+      - name: pytest（断言 586 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh

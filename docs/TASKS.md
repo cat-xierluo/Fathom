@@ -641,7 +641,8 @@
 
 ### ISS-010B · 发行态后台注册桥：用户同意流 + launchd 注册写路径 + fake 环境测试（ISS-010 代码切片）
 
-- **状态**：READY（P1/M2）；来源：ISS-076 清单 §6 推荐（2026-09-20 PM 审阅后登记，[PR #124](https://github.com/cat-xierluo/fathom/pull/124) 合同要点 + `docs/plans/2026-09-19-release-live-verification-prep.md` §6 四条理由）。关键路径最前：ISS-016/ISS-040 → ISS-041 → ISS-030/033 均排在其后。
+- **状态**：IN_PROGRESS（P1/M2；2026-09-20 13:1x 派发，凭据见下）；来源：ISS-076 清单 §6 推荐（2026-09-20 PM 审阅后登记，[PR #124](https://github.com/cat-xierluo/fathom/pull/124) 合同要点 + `docs/plans/2026-09-19-release-live-verification-prep.md` §6 四条理由）。关键路径最前：ISS-016/ISS-040 → ISS-041 → ISS-030/033 均排在其后。
+- **派发凭据**（2026-09-20 13:1x，PM wave34）：worker dispatch `ctx_5f1f4e38bcd0`，Orca run `run_f80ce0d67489`，task `task_83235eed08aa`，worktree `/Users/maoking/orca/workspaces/fathom/iss-010b-register-2`（分支 `iss-010b-register`，lane glm-5.3，provider lease active）。合同：`.git/orchestration/wave34-evidence/ISS-010B.prompt.md`（零真实注册、grep 守护先红后绿、GUI 禁操留 PM）。**待 worker 交付后由 PM 复核。**
 - **目标**：让发行包具备真实可用的后台注册路径——设置页开关开启 → 解释并征求同意 → 经唯一命中的命令模块完成 launchd 写路径（plist + bootstrap）→ 失败回滚不留半注册态；状态查询复用 ISS-010A 只读桥。**本切片不在本机真实注册**：全部注册/注销/失败路径用 fake `launchctl`/fake plist 环境注入验证（ISS-010A 夹具模式），真实注册执行与实机验收留 G8 人工门（076 清单 §2/§5-E7）。
 - **范围**：`apps/desktop/src-tauri/src/`（autostart.rs 增加经用户同意的 register/unregister 命令；不新增 crate）、`fathom/launchd.py`（发行态 plist 生成复用 `dry_run_plan` 同源逻辑）、设置页开关接线（`frontend/modules/pages/settings.js` 等，把 ISS-016A 的只读展示升级为可开启）、`tests/` 与 Rust 单测、门禁计数同步。
 - **实施边界**：

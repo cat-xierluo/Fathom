@@ -142,7 +142,7 @@
 | ISS-074 | PM 推进审查与权威上下文校正 | P1 | M2 | DONE | — |
 | ISS-075 | 已合并任务验收证据对账与接缝复核 | P1 | M2 | DONE | — |
 | ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | DONE | — |
-| ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | IN_PROGRESS | ISS-028 |
+| ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | REVIEW | ISS-028 |
 
 ## 任务卡
 
@@ -243,16 +243,16 @@
 
 ### ISS-077 · Tauri 壳 WKWebView 疑似不送达 Escape keydown
 
-- **状态**：READY（P2/M1）；来源：ISS-028 三尺寸验证的结构层发现（2026-09-20，[PR #125](https://github.com/cat-xierluo/fathom/pull/125) 证据段登记）。
+- **状态**：REVIEW（P2/M1；2026-09-20 13:3x PM 复核转 REVIEW，框 2 待 PM 前台实测）；来源：ISS-028 三尺寸验证的结构层发现（2026-09-20，[PR #125](https://github.com/cat-xierluo/fathom/pull/125) 证据段登记）。
 - **目标**：查明并修复「目录详情侧栏按 Esc 不关闭」：前台模式 Esc×3 未产生 keydown（侧栏不收起）；同一页面在 Web/Playwright 下 Esc 可用、侧栏「关闭」按钮路径始终可用——怀疑 Tauri/WKWebView 层未把 Escape 送达页面，属壳层事件分发问题而非前端键盘处理缺失。
 - **范围**：`apps/desktop/src-tauri/`（事件监听/注入层）与必要的 frontend 键盘处理；不改扫描/API。
 - **实施边界**：先在真实 Tauri 壳复现（前台 Esc + 键盘事件监听日志/console 捕获），区分「壳吞 Escape」「焦点不在 WebView」「前端 handler 未绑」三种假设并逐一取证；修复优先壳层转发（Tauri onKeyEvent 或 JS 注入兜底），前端不做双绑定；修复后补零打扰可断言的回归检查进 `scripts/verify_tauri_window_sizes.sh` 或专项脚本（先红后绿）。GUI 实机操作按 2026-09-20 用户规则由 PM 亲自执行，worker 交脚本与 headless 断言。
 - **验收**：
-  - [ ] 反例复现与根因结论可复查（三假设有取证实录，不是猜测定论）
-  - [ ] 修复后真实 Tauri 壳内 Esc 关闭目录详情侧栏可用，Tab 焦点链不受影响
-  - [ ] 有 fail-closed 断言覆盖（脚本化，可并入 ISS-028 三尺寸脚本或专项）
-  - [ ] 不引入壳对页面的宽泛事件/能力授权；改动范围与证据可在 PR diff 复核
-- **证据/接续**：尚未执行；不得勾选验收项。
+  - [x] 反例复现与根因结论可复查（三假设有取证实录，不是猜测定论）——worker 三假设逐一取证：(c) 前端未绑被推翻（changes.js:610-615 document 级监听 + Web 端可用）；(b) 焦点不在 WebView 被推翻（ISS-028 前台证据：同会话 Tab/Enter/方向键全工作 + wry makeFirstResponder 源码）；(a) 壳层吞 Esc 收敛为结论——wry 0.55.1 `wry_web_view_parent.rs:29-38` keyDown 只转主菜单 performKeyEquivalent 且不查返回值、不转 WebView、不调 super（上游 tauri#5790/wry#798/#801/#1711 同签名病史链）；「WebKit 内部精确吞点」如实标 NOT_VERIFIED-需前台
+  - [ ] 修复后真实 Tauri 壳内 Esc 关闭目录详情侧栏可用，Tab 焦点链不受影响 —— **NOT_VERIFIED-需前台**：修复的端到端效果与 Tab 链复核按用户规则由 PM 在前台窗口亲自实测（开侧栏→Esc×1→关；壳日志 grep `[esc-forward] 菜单认领裸 Esc`；若日志有该行而侧栏未关转查页面侧，无该行则子情形 i 成立需 WKWebView 子类方案拆卡）
+  - [x] 有 fail-closed 断言覆盖（脚本化，可并入 ISS-028 三尺寸脚本或专项）——`scripts/verify_tauri_esc_delivery.sh` static 16 项（S1a-S1j 源码合同 + S2 capability 基线不放宽）；`tests/test_tauri_esc_delivery.py` 绿侧 + 5 反例漂移（删挂载/短路路由/改 keyCode/放宽 capability/文件缺失 exit 3）；`tests/test_zz_red_demo_prefixed_baseline.py` 对修复前基线 `1537ceb` 钉住先红（15 FAIL）证据
+  - [x] 不引入壳对页面的宽泛事件/能力授权；改动范围与证据可在 PR diff 复核——capabilities/default.json 与基线逐项一致（脚本 S2 断言）；仅转发 Esc 单键；4 文件 +495/-1，前端/扫描/API 零改动
+- **证据/接续**（2026-09-20 13:3x PM 复核，转 REVIEW）：worker（minimax-M3）交付 `010c0e092343169a261a3104e546a5fc5cb8502d`：壳层默认菜单 Window 子菜单挂无修饰 Esc 加速键（`esc-forward`），AppKit 键等价分发主菜单认领后经 `WebviewWindow::eval` 投递合成 keydown（key/code/keyCode/which=27、bubbles/cancelable/composed），目标 activeElement 兜底 document；全部 Rust API 对锁版本源码逐条核实（清单见 RESULT）；`Tauri onKeyEvent` 在锁版本不存在（全源 grep），故走菜单加速键路线。**PM 独立复跑**：定向 pytest 7 passed（含红demo）；`bash scripts/ci_cargo_locked.sh` exit 0；cargo test 26 passed（25→26，新单测 `esc_forward_js_payload_matches_keydown_escape_contract`）；全量 pytest **560 passed**（553→560，worker 未同步计数，PM 已补：ci_pytest.sh/ci.yml/TESTING/ARCHITECTURE 四处 + ARCHITECTURE cargo 25→26；门禁复跑 560=560 绿）。**遗留**：框 2 前台实测（PM）；WebKit 内部吞点判别（子情形 i/ii）随前台日志一并判。原派发登记见下段。
 - **证据/接续**（2026-09-20 02:55 派发，IN_PROGRESS）：worker dispatch `ctx_12a48a1e7c24`，Orca run `run_8d477489db15`，task `task_14260b7750e1`，worktree `/Users/maoking/orca/workspaces/fathom/iss-077-esc-keydown`（分支 `iss-077-esc-keydown`），lane minimax-M3（provider lease active）。**spec 约束**：worker 只做脚本 + headless 断言 + 静态源码取证；**严禁抢前台/激活应用/open -a/System Events/CGEvent 等 GUI 实机操作**（用户 2026-09-20 规则），GUI 实机验证由 PM 亲自执行；必须前台才能取证项须标 `NOT_VERIFIED-需前台`。**派发环境**：quota preflight 因缺 `claude-provider-registry.json` 报 `provider_unknown_lane`（工具失灵非额度不足），PM 以 `--quota-preflight-override` 放行，授权来源=route-summary 实测 minimax 47%。**待 worker 交付后由 PM 复核。**关联：ISS-028 卡「三尺寸证据」段结构层发现①；ISS-076 清单 §2 实机步骤的键盘项。
 
 

@@ -126,7 +126,7 @@
 | ISS-003A | 通知语义统一与测试补强（ISS-003 代码切片） | P1 | M1 | DONE | ISS-020 |
 | ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | DONE | ISS-025、ISS-028 |
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | DONE | ISS-020 |
-| ISS-010B | 发行态后台注册桥：用户同意流 + launchd 注册写路径 + fake 环境测试（ISS-010 代码切片） | P1 | M2 | READY | ISS-010A、ISS-020 |
+| ISS-010B | 发行态后台注册桥：用户同意流 + launchd 注册写路径 + fake 环境测试（ISS-010 代码切片） | P1 | M2 | DONE | ISS-010A、ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | DONE | ISS-062 |
 | ISS-066 | 扫描根排除列表（du -I 名字掩码，配置层 + 数据集身份 v5） | P1 | M1 | DONE | ISS-016A、ISS-065 |
 | ISS-069 | 设置页排除列表编辑器（消费 /api/config，含新数据集确认提示） | P1 | M2 | DONE | ISS-016A、ISS-066、ISS-002A |

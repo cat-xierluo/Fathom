@@ -440,6 +440,9 @@ pub fn run() {
             helper_status,
             helper_retry,
             autostart::autostart_status,
+            autostart::autostart_register_plan,
+            autostart::autostart_register,
+            autostart::autostart_unregister,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

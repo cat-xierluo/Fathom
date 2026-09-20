@@ -1,0 +1,28 @@
+# Fathom 应用级权限：设置页 autostart 桥的四条命令（ISS-010B PM 收口清单③）。
+# 命令定义于 src/autostart.rs、接线于 lib.rs generate_handler；设置页
+# （frontend/modules/pages/settings.js）经 127.0.0.1:7952 远程仪表盘加载，
+# 本次锁定的 tauri 2.11.5 对远程页面调用自定义命令必须经 capability 显式
+# 授权（ISS-008/ISS-068 同型缺口）。register/unregister 是真实写路径
+# （launchd plist 写入 + bootstrap/bootout），命令层强制 confirmed 参数
+# （用户同意闸门），权限只开放命令通道、不绕过「计划展示→确认→执行」
+# 同意流语义；fail-closed 守护见 tests/test_tauri_autostart_acl.py。
+
+[[permission]]
+identifier = "allow-autostart-status"
+description = "允许前端设置页读取 launchd 自启状态（只读回读，不触碰系统配置）。"
+commands.allow = ["autostart_status"]
+
+[[permission]]
+identifier = "allow-autostart-register-plan"
+description = "允许前端设置页获取自启注册计划（plist 内容与命令序列预览，纯展示、零执行），供用户确认前审阅。"
+commands.allow = ["autostart_register_plan"]
+
+[[permission]]
+identifier = "allow-autostart-register"
+description = "允许前端设置页在用户确认（confirmed）后开启自启：写入 LaunchAgents plist 并 bootstrap 拉起。"
+commands.allow = ["autostart_register"]
+
+[[permission]]
+identifier = "allow-autostart-unregister"
+description = "允许前端设置页在用户确认（confirmed）后关闭自启：按 label bootout 并删除 plist。"
+commands.allow = ["autostart_unregister"]

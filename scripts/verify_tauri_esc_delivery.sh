@@ -97,7 +97,11 @@ for marker in 'new KeyboardEvent("keydown"' 'key: "Escape"' 'code: "Escape"' 'ke
   if grep -qF "$marker" "$LIB"; then pass "S1j 载荷合同片段 ${marker}"; else fail "S1j 载荷缺合同片段 ${marker}"; fi
 done
 
-# ---- S2 · capability 不放宽（与修复前基线逐项一致）----
+# ---- S2 · capability 不放宽（与基线逐项一致）----
+# 基线维护说明：ISS-077 修复本身不得放开任何授权；其他任务的合法扩容
+# 须同步本基线并在任务卡说明（脚本文案原文要求）。2026-09-20 起基线纳入
+# ISS-010B-ACL（PM 收口清单③）合法授权的四条 autostart 权限——设置页
+# 经远程仪表盘调用注册桥命令所必需，非 Esc 修复的授权放开。
 py_out="$(python3 - "$CAP" <<'PYEOF'
 import json, sys
 expected = [
@@ -107,6 +111,11 @@ expected = [
     "core:window:allow-set-focus",
     "core:event:default",
     "allow-update-tray-status",
+    # ISS-010B-ACL（2026-09-20）合法授权：autostart 桥四命令
+    "allow-autostart-status",
+    "allow-autostart-register-plan",
+    "allow-autostart-register",
+    "allow-autostart-unregister",
     "opener:allow-open-url",
 ]
 with open(sys.argv[1], encoding="utf-8") as f:

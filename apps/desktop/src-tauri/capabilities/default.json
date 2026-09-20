@@ -13,6 +13,10 @@
     "core:window:allow-set-focus",
     "core:event:default",
     "allow-update-tray-status",
+    "allow-autostart-status",
+    "allow-autostart-register-plan",
+    "allow-autostart-register",
+    "allow-autostart-unregister",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "x-apple.systempreferences:*" }]

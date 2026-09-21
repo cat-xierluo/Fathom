@@ -263,16 +263,16 @@
 
 ### ISS-078 · 发行候选重建登记夹具（076 清单 §6 备选 F2）
 
-- **状态**：READY（P2/M2）；来源：ISS-076 清单 §6 备选 F2（合同已备，PM 2026-09-21 审阅后登记）。价值：把 §1.1 三命令 + 候选三要素（固定 40 位 commit、DMG SHA256、helper SHA256）固化成一个可重复入口，消除「每次实测前手工重建并手工抄录三要素」的漂移面。
+- **状态**：DONE（P2/M2，2026-09-21；pytest 586→593）；来源：ISS-076 清单 §6 备选 F2（合同已备，PM 2026-09-21 审阅后登记）。价值：把 §1.1 三命令 + 候选三要素（固定 40 位 commit、DMG SHA256、helper SHA256）固化成一个可重复入口，消除「每次实测前手工重建并手工抄录三要素」的漂移面。
 - **目标**：一条命令完成「校验工作区干净且 HEAD 即候选 commit → 三步构建 → 汇总三要素 + verify 22 段结果 → 输出可直接粘贴进任务卡的结构化记录（Markdown/JSON 双格式）」；任何一步失败 fail-closed 且不产出记录。
 - **范围**：`scripts/release_candidate_record.sh`（新）、`docs/TESTING.md`（§4 候选清单处加入口指针）、`tests/`（自测：参数校验/脏工作区拒绝/产物缺失拒绝/SHA 不一致拒绝——不跑真实构建，用 fake 产物目录注入）、计数同步。
 - **实施边界**：脚本默认 **不执行** 构建（`--build` 显式触发三命令；无 `--build` 时只登记既有产物的三要素并要求产物与 HEAD 匹配）；`target/` 产物不入 git；记录文件输出到 `verify-results/release-candidates/`（gitignore 内）并打印路径；不触碰生产调度与 PID 6026；构建耗时长，脚本内各步输出重定向日志、只回显尾部。
 - **验收**：
-  - [ ] 三要素采集正确性有自测（fake 产物 + 已知 SHA 断言；checksums.txt 与实际 DMG SHA 不一致必红）
-  - [ ] 脏工作区/HEAD 与记录 commit 不符/产物缺失/verify 非 0 四类 fail-closed 各有反例
-  - [ ] 无 `--build` 只读登记与有 `--build` 全链两模式都有说明与最小验证（构建链不要求本卡实跑，留 G 门使用时验证）
-  - [ ] 计数同步；TESTING 指针在位
-- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-076 清单 §1.1/§6、README 构建链、G1-G13 候选标识。
+  - [x] 三要素采集正确性有自测（fake 产物 + 已知 SHA 断言；checksums.txt 与实际 DMG SHA 不一致必红）
+  - [x] 脏工作区/HEAD 与记录 commit 不符/产物缺失/verify 非 0 四类 fail-closed 各有反例
+  - [x] 无 `--build` 只读登记与有 `--build` 全链两模式都有说明与最小验证（构建链不要求本卡实跑，留 G 门使用时验证）
+  - [x] 计数同步；TESTING 指针在位
+- **证据/接续**（2026-09-21 IN_PROGRESS，PM 复核待办）：worker ctx_0877e130187c（分支 `iss-078-candidate-record`，base `d2831c8`，HEAD `d2831c8`——交付内容未提交，提交由 PM 复核后产出）交付 2 新文件 + 4 修改文件，Session Context `RESULT.md`/`PATCH_SUMMARY.md`/`STATUS.json` 在 worktree `.claude/agent-sessions/iss-078-candidate-record/`。**两轮验证双 0**（合同指定命令）：`bash scripts/release_candidate_record.sh --selftest` 退 0（六类反例全跑：脏工作区 1/1、HEAD 不符 1/1、产物缺失 3/3、SHA 不一致 1/1、verify 非零 2/2、happy 0/0）；`.runtime/bin/python -m pytest tests/test_release_candidate_record.py -q` 退 0（**7 passed** = 5 反例 + 1 happy + 1 selftest）。**实现要点**：bash 3.2 兼容、`set -euo pipefail` fail-closed、`$VAR<中文>` 全部用 `${VAR}` 包裹（bash 把 CJK 字符当作 identifier 续接）；`bundle/build_commit.txt` 是 HEAD-vs-产物 commit 校验的载体（要求构建链 `build_app.sh` 在产物落盘时写入；本卡不改 build_app.sh，留 G 门首次构建时一并写入）；`find -name "$DMG_GLOB"`（不用 `ls $BUNDLE_ROOT/dmg/$DMG_GLOB`，双引号内的 `$VAR` 不被当作 glob 展开）；fake 自测环境用 `FAKE_RELEASE_CANDIDATE=1` 跳过 chicken-and-egg 校验，head_mismatch 反例显式传 `fake_env=False` 真实生效。**计数同步四处**：`scripts/ci_pytest.sh`（593）、`.github/workflows/ci.yml`（3 处 593）、`docs/TESTING.md`（基线 593 + §4 入口指针）、`docs/ARCHITECTURE.md`（593）；TASKS 历史段（ISS-058/067 等）数字保留。**未实跑**：`--build` 模式未实跑（合同「不实跑构建链」）；脚本内各步输出重定向日志、只回显尾部的逻辑由 `--selftest` 全路径覆盖，G 门首次构建触发。**零实跑构建链、零触碰 PID 6026、零派子代理、零用 node**。
 
 
 ### ISS-058 · 版本一致性测试夹具按切片 1 新 bundle 形态定位

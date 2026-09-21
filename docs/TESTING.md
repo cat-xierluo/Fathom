@@ -41,7 +41,7 @@ GitHub CI 设计为在原生 Apple Silicon 与 Intel runner 上分别执行 pyte
 **2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，[DEC-021](DECISIONS.md#dec-021---2026-09-15---账户-actions-额度耗尽期间停用-ci-workflow以本地同口径门禁为主)）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 639
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 647
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)，断言 39
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
@@ -169,7 +169,15 @@ PY
 
 不随意选择生产环境跑这些步骤。没有测试账户/机器/签名凭据时保留未勾项并写 NOT_VERIFIED；其他独立任务照常推进。UI 最小窗口通过不代表手机布局已支持。
 
-剩余发行门的唯一父卡归属、可一次执行的实操步骤、候选三要素标识（固定 40 位 commit、DMG SHA256、helper SHA256）、集中授权与环境缺口清单见 [发行实测准备清单](plans/2026-09-19-release-live-verification-prep.md)（ISS-076，2026-09-19）。矩阵各行的父卡归属：三态权限归 ISS-002；系统通知归 ISS-003；tray 交互归 ISS-008；发行包 tray 手点退出、18pt 可辨性、新账户安装/断网/quarantine 下载首启归 ISS-009；后台注册与睡眠/重启归 ISS-010；设置真实重载归 ISS-016；应用内更新归 ISS-040；双架构与 Release 聚合归 ISS-041（Apple 签名腿按 DEC-022 延期）；升级卸载恢复归 ISS-030；外部内测与公开归 ISS-033。发行态后台注册、设置重载与应用内更新尚未实现，dry-run 与 `latest.json` 生成器不算可用功能；arm64 本地包实测不得外推双架构。
+剩余发行门的唯一父卡归属、可一次执行的实操步骤、候选三要素标识（固定 40 位 commit、DMG SHA256、helper SHA256）、集中授权与环境缺口清单见 [发行实测准备清单](plans/2026-09-19-release-live-verification-prep.md)（ISS-076，2026-09-19）。
+
+候选重建登记夹具入口（ISS-078，把 §1.1 三命令 + 候选三要素固化进一条命令；不实跑时用 `--selftest` 自测）：
+
+```bash
+bash scripts/release_candidate_record.sh --selftest   # PM/CI 验证入口（fake 产物）
+bash scripts/release_candidate_record.sh              # 默认：只读登记既有产物
+bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
+```矩阵各行的父卡归属：三态权限归 ISS-002；系统通知归 ISS-003；tray 交互归 ISS-008；发行包 tray 手点退出、18pt 可辨性、新账户安装/断网/quarantine 下载首启归 ISS-009；后台注册与睡眠/重启归 ISS-010；设置真实重载归 ISS-016；应用内更新归 ISS-040；双架构与 Release 聚合归 ISS-041（Apple 签名腿按 DEC-022 延期）；升级卸载恢复归 ISS-030；外部内测与公开归 ISS-033。发行态后台注册、设置重载与应用内更新尚未实现，dry-run 与 `latest.json` 生成器不算可用功能；arm64 本地包实测不得外推双架构。
 
 ## 5. 证据格式与收口
 

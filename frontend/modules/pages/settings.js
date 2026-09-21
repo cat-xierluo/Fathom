@@ -10,6 +10,9 @@
  *   页面显示原因，当前生效值保持旧值可辨（DESIGN：保存失败必须保持旧值可辨）；
  * - 服务不注册/不重载 launchd：保存成功也如实显示“需重新安装计划才生效”；
  * - 换根形成新数据集（不删旧数据），被环境变量/命令行覆盖的字段如实标注。
+ *
+ * 计划一致性（ISS-016B）：消费 service_reload_state 四态（见下方 reloadStateInfo）；
+ * 服务自身零系统写入口——drift 态的重装只经 010B autostart 确认层执行。
  */
 import { fetchJSON, beginRequest, invalidateRequest, apiPut } from "../request.js";
 import { escapeHtml } from "../format.js";
@@ -257,6 +260,7 @@ async function saveExcludes() {
       lastConfig = fresh;
       renderEffective(fresh);
       renderExcludeEditor(fresh);
+      renderReloadSection();
     } catch { /* 刷新失败不覆盖已成功的保存反馈 */ }
   } catch (e) {
     showFeedback(
@@ -314,6 +318,8 @@ async function saveConfig(event) {
     // PUT 返回完整生效配置：一并刷新排除编辑器的只读锁定，避免保存其它字段
     // 后锁状态与 sources 不一致（例如 exclude_names 被环境变量钉住时）。
     renderExcludeEditor(data.config);
+    // 计划时间保存后漂移态可能变化（ISS-016B）：随嵌套配置刷新一致性小节。
+    renderReloadSection();
     clearInputs();
     showFeedback(`已保存。${data.hint || ""}`, "ok");
   } catch (e) {
@@ -635,6 +641,63 @@ const AUTOSTART_STATE_LABELS = {
   unknown: "未知",
 };
 
+/* ===== 计划一致性（ISS-016B）=====
+ * 消费 GET/PUT /api/config 的 service_reload_state（后端只读漂移检测）：
+ * - 四态文案 in_sync/drift/not_registered/unknown，无 emoji、未知不猜测；
+ * - drift 态出现「重新安装计划」入口，复用 010B autostart 确认层
+ *   （展示计划 → 确认 → 执行 → 状态回读）；取消/失败后开关与状态回读
+ *   系统真值（与 010B 面板同口径）；
+ * - 浏览器模式（无桥）如实降级为只读说明，不渲染假入口；
+ * - 接口未返回该字段（旧后端/mock 桥）时不渲染，不伪造状态。 */
+function reloadStateInfo(sr) {
+  const reg = sr && typeof sr.registered_scan_time === "string" ? sr.registered_scan_time : "未知";
+  const cur = sr && typeof sr.current_scan_time === "string" ? sr.current_scan_time : "未知";
+  switch (sr && sr.state) {
+    case "in_sync":
+      return { text: `计划时间一致：已注册计划 ${reg} 与当前设置相同，无需重装。`, reinstall: false };
+    case "drift":
+      return {
+        text: `计划时间不一致：已注册计划 ${reg}，当前设置 ${cur}；保存后的新计划尚未安装，需重新安装计划才生效。`,
+        reinstall: true,
+      };
+    case "not_registered":
+      return { text: "尚未注册后台计划：可先在下方开启后台自启，再核对计划一致性。", reinstall: false };
+    case "unknown":
+      return { text: "无法读取已注册计划（读取失败或内容异常）：一致性未知，不猜测。", reinstall: false };
+    default:
+      return null;
+  }
+}
+
+function reloadStateSectionHtml() {
+  const info = reloadStateInfo(lastConfig && lastConfig.service_reload_state);
+  if (!info) return "";
+  const invoke = tauriInvoke();
+  const button = info.reinstall && invoke
+    ? `<div class="perm-link-row"><button type="button" id="btn-reinstall-plan" class="btn" data-test="reinstall-plan-btn">${icon("settings", 12)} 重新安装计划</button></div>`
+    : "";
+  const browserNote = info.reinstall && !invoke
+    ? `<p class="hint" data-test="reload-browser-note">计划已漂移，但重新安装入口只在 Fathom 桌面应用的设置页可用；浏览器模式为只读。</p>`
+    : "";
+  return `<p class="hint" data-test="reload-state-text">${escapeHtml(info.text)}</p>${button}${browserNote}`;
+}
+
+/** 把计划一致性小节渲染进 autostart 面板的挂载点（配置变化后可单独刷新）。 */
+function renderReloadSection() {
+  const holder = document.querySelector(`#${AUTOSTART_PANEL_ID} [data-test='reload-section']`);
+  if (!holder) return;
+  holder.innerHTML = reloadStateSectionHtml();
+  const btn = document.getElementById("btn-reinstall-plan");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      const body = document.getElementById(AUTOSTART_PANEL_ID)
+        ?.querySelector("[data-test='autostart-panel-body']");
+      // 复用 010B 确认层：展示计划 → 确认 → 执行 → 状态回读。
+      if (body) confirmRegister(body);
+    });
+  }
+}
+
 function tauriInvoke() {
   const t = window.__TAURI__;
   if (t && t.core && typeof t.core.invoke === "function") return t.core.invoke;
@@ -686,7 +749,9 @@ function renderAutostartBody(body, record, extraNote) {
   if (!invoke) {
     body.innerHTML = `
       <p class="hint">浏览器模式没有桌面壳桥接：后台自启的查询与注册/注销只在 Fathom 桌面应用的设置页可用。</p>
-      <p class="hint">命令行开发态仍用 <code>main.py install / uninstall</code>。</p>`;
+      <p class="hint">命令行开发态仍用 <code>main.py install / uninstall</code>。</p>
+      <div data-test="reload-section"></div>`;
+    renderReloadSection();
     return;
   }
   const sw = autostartSwitchState(record);
@@ -706,7 +771,8 @@ function renderAutostartBody(body, record, extraNote) {
         <span>开启后台自启（定时扫描 + 常驻服务开机自动运行）</span>
       </label>
     </div>
-    <div id="autostart-confirm" data-test="autostart-confirm" hidden></div>`;
+    <div id="autostart-confirm" data-test="autostart-confirm" hidden></div>
+    <div data-test="reload-section"></div>`;
   const toggle = document.getElementById("autostart-toggle");
   if (toggle) {
     // 变更不立即生效：先弹解释+确认层；取消/失败后由真实系统状态回写开关。
@@ -715,6 +781,7 @@ function renderAutostartBody(body, record, extraNote) {
       else confirmUnregister(body);
     });
   }
+  renderReloadSection();
 }
 
 /** 开关打开：解释并征求同意（plist 摘要 + 命令清单），确认后才 invoke 注册。 */
@@ -821,6 +888,13 @@ async function refreshAutostart(body, note) {
     renderAutostartBody(body, null, `${note || ""}（状态回读异常）`);
     return;
   }
+  // 重装/取消后同步刷新计划一致性（重装成功应回到 in_sync）；刷新失败
+  // 不影响系统状态回读（开关与真值一致优先于漂移文案更新）。
+  try {
+    const fresh = await fetchJSON("/api/config");
+    lastConfig = fresh;
+    renderEffective(fresh);
+  } catch { /* 配置刷新失败不影响状态回读 */ }
   renderAutostartBody(body, record, note);
 }
 

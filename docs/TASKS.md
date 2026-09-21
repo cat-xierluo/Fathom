@@ -646,16 +646,16 @@
 
 ### ISS-016B · 服务重载协调代码切片：漂移检测 + 经确认重装（ISS-016 代码切片）
 
-- **状态**：READY（P1/M2）；来源：父卡 ISS-016 的剩余「真实服务重载一致性」+ ISS-010B 已交付注册桥（register/unregister + confirmed 门）+ ISS-016A 遗留的静态 `service_reload: "requires_user_action"` 占位（076 清单 §4.1 重载缺口）。登记：2026-09-21 PM（Wave36）。
+- **状态**：READY（P1/M2；2026-09-21 worker 已交付分支 `iss-016b-reload`（task_fc393828e850 / dispatch ctx_34fbd0664f78，glm-5.3），PM 复核待办）；来源：父卡 ISS-016 的剩余「真实服务重载一致性」+ ISS-010B 已交付注册桥（register/unregister + confirmed 门）+ ISS-016A 遗留的静态 `service_reload: "requires_user_action"` 占位（076 清单 §4.1 重载缺口）。登记：2026-09-21 PM（Wave36）。
 - **目标**：把「保存了新计划时间但已注册服务仍是旧计划」的一致性缺口显式化：PUT /api/config 与 GET 的 `service_reload` 从静态占位升级为真实漂移状态；设置页显示 drift 并提供**经确认的**重装入口（复用 010B 确认流），取消/失败回落且 UI 与系统状态一致。
 - **范围**：`fathom/launchd.py`（只读解析已注册 plist 的计划时间 + 漂移判定纯函数）、`fathom/api.py`（config GET/PUT 响应的 `service_reload` 结构升级，旧字段兼容）、`frontend/modules/pages/settings.js`（drift 展示 + 重装按钮走既有 autostart 确认层）、`tests/`、计数同步。
 - **实施边界**：**零真实注册/重载**（写路径只经 010B 桥的既有 confirmed 流，本切片不新增任何系统写入口）；漂移检测只读（plist 文件不存在=未注册态，读取失败=unknown 态，绝不猜）；已注册时间与当前时间一致=in_sync；PUT 响应保持向后兼容（旧消费方不破坏）；真机效果留 G8。GUI 实机操作按用户规则由 PM 亲自执行。
 - **验收**：
-  - [ ] 漂移三态（in_sync/drift/not_registered + unknown 降级）各有 pytest（fake plist 文件注入，含 plist 缺失/损坏/字段缺失分支）
-  - [ ] PUT 升级不破坏既有合同（旧断言全绿）；`service_reload` 新结构与旧字段并存有兼容测试
-  - [ ] 设置页 drift 文案与重装按钮走 010B 确认层；取消/失败后开关与状态回读一致（前端检查新增断言，先红后绿）
-  - [ ] 零系统写入：grep 守护（本切片不新增 launchctl/bootstrap 调用点）维持；全量计数同步
-- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-016A（占位语义）、ISS-010B（确认流与桥）、ISS-010（父卡真机门）、G8。
+  - [x] 漂移三态（in_sync/drift/not_registered + unknown 降级）各有 pytest（fake plist 文件注入，含 plist 缺失/损坏/字段缺失分支）
+  - [x] PUT 升级不破坏既有合同（旧断言全绿）；`service_reload` 新结构与旧字段并存有兼容测试
+  - [x] 设置页 drift 文案与重装按钮走 010B 确认层；取消/失败后开关与状态回读一致（前端检查新增断言，先红后绿）
+  - [x] 零系统写入：grep 守护（本切片不新增 launchctl/bootstrap 调用点）维持；全量计数同步
+- **证据/接续**（2026-09-21 worker 交付，PM 复核待办）：worker ctx_34fbd0664f78（glm-5.3，分支 `iss-016b-reload`，base main `d2831c8`）交付 4 commit：`a5e08f1`（红：`tests/test_config_service_reload.py` 53 例——四态纯函数/只读解析 fake plist 注入/损坏·缺字段·越界·布尔 Hour·数组形态·读取异常→unknown/API 兼容复刻旧断言/diff grep 守卫）→ `3bf39c9`（绿：`fathom/launchd.py` `read_registered_scan_time()`（plistlib 只读解析，文件缺失=not_registered，读取/解析/校验失败=unknown 绝不猜）+ `service_reload_state()` 纯函数；`fathom/api.py` GET/PUT 附 `service_reload_state` 四态结构、PUT 保留旧 `service_reload="requires_user_action"` 字符串与含「重新安装」的 `hint`（兼容测试钉住））→ `480bf6c`（前端检查红态：`scripts/verify_frontend_refresh.cjs` 夹具 `service_reload_state`（注册恒 12:00、PUT 后按新 scan_time 重算、not_registered/unknown 场景）+ 6 条新断言：drift 文案含双时间与浏览器只读降级、保存注册时间→in_sync、差 1 分钟→drift、not_registered/unknown 文案、mock 桥下重装按钮→确认层（autostart_register_plan 带 scanTime）→取消回读系统真值→确认执行 `confirmed:true`）→ 本 commit（`frontend/modules/pages/settings.js`：autostart 面板内四态文案 + drift 态「重新安装计划」按钮复用既有 `confirmRegister` 确认层（展示计划→确认→执行→状态回读，refreshAutostart 同时刷新 /api/config 使漂移态回真）；计数同步 pytest 586→**639**（ci_pytest.sh/ci.yml/TESTING/ARCHITECTURE 四处）、前端检查 88→**94**（ARCHITECTURE，含修正 ISS-073 后滞后的 86→88 记录）；本卡回写）。**先红后绿实录（pytest）**：合同命令 `.runtime/bin/python -m pytest tests/test_config_service_reload.py -q` 实现前退出码 1（**53 collected → 50 failed / 3 passed**，AttributeError 缺两函数/缺 API 字段；3 绿为 diff 守卫在未改生产代码时的 0 新增行与旧字段既有断言，红证据 Session Context `evidence-red-pytest-run1.txt`）；实现后同命令退出码 0（**53 passed**）。**NOT_RUN-需PM**：①合同第二条 `bash scripts/ci_cargo_locked.sh` 被 worker shell 守卫 fail-closed 拒绝（INSTALL_AUTHORIZATION 的 allowed_shell_commands 仅含合同 pytest 一条）——本切片未改 Rust（diff --stat 无 src-tauri），PM 复核时代跑；②`node scripts/verify_frontend_refresh.cjs` 同因守卫拒绝——6 条新断言的先红后绿未实跑，红态可 checkout commit `480bf6c` 代跑（断言依赖的 `[data-test='reload-state-text']`/`btn-reinstall-plan` 选择器在该 commit 不存在必红）、绿态跑本 commit；③全量 `pytest tests -q` 同因守卫拒绝，**639 = 586+53 算术推导**（其余测试文件未动；`tests/test_api_config.py` 旧断言与新 GET 字段共存不冲突——新字段只增不改旧键，且其夹具未断言全键集）。**零系统写入**：diff grep 守卫断言 fathom/+frontend/ 新增行零 launchctl/bootstrap/bootout/SMAppService 命中（在册 pytest `test_slice_adds_no_new_system_call_sites`）；worker 全程仅执行合同 pytest 与 git 只读/提交命令，未触碰 `~/Library/LaunchAgents`、未运行任何系统注册命令。**共享文档边界**：ARCHITECTURE 仅改门禁计数行；模块表 launchd.py 行与 API 表 GET/PUT /api/config 行（84/85）仍述 ISS-016A 形态，`service_reload_state` 事实由 PM 定稿时统一回写。关联：ISS-016A（占位语义）、ISS-010B（确认流与桥）、ISS-010（父卡真机门）、G8。
 
 
 ### ISS-010A · 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片）

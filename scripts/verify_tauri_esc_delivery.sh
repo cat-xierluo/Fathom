@@ -116,6 +116,10 @@ expected = [
     "allow-autostart-register-plan",
     "allow-autostart-register",
     "allow-autostart-unregister",
+    # ISS-040B（2026-09-22）合法授权：应用内更新包装三命令（PM 代贴同步）
+    "allow-updater-check",
+    "allow-updater-install",
+    "allow-updater-restart",
     "opener:allow-open-url",
 ]
 with open(sys.argv[1], encoding="utf-8") as f:

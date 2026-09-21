@@ -8,7 +8,7 @@
 - **仍未完成**：ISS-002/003/008 权限、系统通知与 tray 实机门；ISS-009 新账户/断网/实际下载安装门；ISS-010/016 真正的后台注册与设置重载；ISS-040/041 更新、双架构和 Release；ISS-030 升级卸载恢复。代码切片 DONE 不等于父卡或 M1/M2 完成。
 - **最新用户取舍**：DEC-022 仅延期 Apple Developer ID 签名/公证，不豁免 updater 签名、双架构、下载 quarantine 实测或公开发布人工门；DEC-023 为深潭 App 图标与深度环小尺寸形态。视觉方向已确认，不再列为待用户选择。
 - **已合并**：ISS-073 的 PR #118 → `a9c7367`（SVG 集中维护与重复文本均在返修后关闭）；ISS-074 的 PR #119 → `9cf401e`；ISS-075 的 PR #121 → `a59702d`（15 张历史卡对账；本轮发现其中 ISS-028/037 两项证据不足，已撤回补勾并重开原卡）；ISS-076 的 PR #124 → `d98dfa6`（另一 PM 会话收口：G1–G13 发行实测准备清单）；ISS-028 三尺寸证据的 PR #125 → `4181fd2`（Wave33：零打扰验证脚本 + 三尺寸几何/总览图表实机 PASS；reviewer ACCEPT、合并后门禁 pytest 553/浏览器 39/品牌几何 OK）。审查开始时无开放 PR；后续新增在途工作以完整卡片与刷新后的远端状态为准。不要重复实施这些项，也不把历史审查报告中的“在途”当当前状态。
-- **当前在途与下一项**（2026-09-22 01:1x Wave36 收口后刷新）：① 本轮合并 **ISS-016B**（#139 → `bce84a9`，漂移四态+经确认重装+前端 94 检查；repair1 修两处夹具等待，实现无缺陷）与 **ISS-078**（#140 → `87f6ea7`，候选登记夹具三模式+自锁修复；REJECT→repair→re_review ACCEPT）。门禁基线刷新：pytest **647** / 前端 **94** / 浏览器 39 / cargo **42**。② **两个 PM 前台实测**仍待用户离线窗口（028 十四项 + 077 框 2 Esc）。③ 发行主链下一步：G8 实机门前的 ISS-010 剩余真机验收，或 ISS-016 剩余（真机重载一致性）；076 清单 F1 夹具随 ISS-040 实现卡走。④ ISS-037 仍 PAUSED。用户在线时段禁止 worker 抢前台。
+- **当前在途与下一项**（2026-09-22 04:0x Wave37 收口后刷新）：① 本轮合并 **ISS-040B**（#143 → `10bcf72`，updater 接线+更新协调+设置页更新区；worker ask 两处扩权走正规通道、PM 代办 TOML/lock；dev keypair 私钥仓库外零接触）。门禁基线：pytest **655** / 前端 **105** / 浏览器 39 / cargo test **49**。② **两个 PM 前台实测**仍待用户离线窗口（028 十四项 + 077 框 2 Esc）。③ 发行主链代码侧已齐（010A/010B/016A/016B/040A/040B 全 DONE），**下一步集中在人工门**：G8（真机注册/重载，ISS-010/016 真机腿）、G10（实机更新，需生产 keypair 与 HTTPS 源——用户决策）、G1-G13 其余实机步骤见 076 清单；发行候选用 `bash scripts/release_candidate_record.sh`（ISS-078）一键登记三要素。④ ISS-037 仍 PAUSED。用户在线时段禁止 worker 抢前台。
 - **后续实施顺序**：①完成 ISS-076 的具体准备，优先补齐 ISS-028 的 Tauri 三尺寸与 ISS-037 的发行声明；②在具备测试账户时执行 ISS-009，并复用同一候选完成 ISS-002/003/008 的原生验收；③主实现优先 ISS-010 的发行后台注册/唯一 owner/退出与睡眠恢复，再接 ISS-016 的设置与服务重载一致性；④其合同稳定后推进 ISS-040 更新、ISS-041 双架构与 draft 产物，最后 ISS-030 升级卸载恢复及 ISS-033 外部验收。仍按索引依赖领取；若实机条件暂缺，可先登记不依赖该条件、输入与失败回退完整的隔离代码切片，经独立审查推进，不能直接把 BLOCKED 父卡改 READY，也不能长期用文档或视觉小修替代主链。
 
 - **扫描观察**：ISS-070 已交付超时进度信息，run 5 性能异常根因仍未定位。09-19 成功只能证明该次完成；若后续再次中断，在原卡补匿名化证据再判断是否另开修复卡。不据此再次全量扫描生产 HOME，不把旧日期指令当自动调度。
@@ -135,7 +135,7 @@
 | ISS-070 | 定时扫描再次超时（4h 墙钟用尽）且磁盘接近满载的可诊断性缺口 | P0 | M1 | DONE | ISS-061、ISS-064 |
 | ISS-071 | `test_timeout_message_carries_last_output_path` 高负载下间歇失败（时序竞态） | P1 | M1 | DONE | ISS-064、ISS-070 |
 | ISS-040A | latest.json 双架构生成与 fail-closed 校验工具（ISS-040 代码切片） | P2 | M2 | DONE | ISS-037 |
-| ISS-040B | updater 插件接线与更新协调切片（ISS-040 代码切片） | P1 | M2 | REVIEW | ISS-040A、ISS-010B |
+| ISS-040B | updater 插件接线与更新协调切片（ISS-040 代码切片） | P1 | M2 | DONE | ISS-040A、ISS-010B |
 | ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | DONE | ISS-028、ISS-065 |
 | ISS-067 | `/api/snapshots` 补齐 vanished_count 与 exclude_names（ISS-002A 接缝） | P1 | M1 | DONE | ISS-066、ISS-002A |
 | ISS-068 | Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝） | P1 | M1 | DONE | ISS-002A |
@@ -1317,7 +1317,7 @@
 
 ### ISS-040B · updater 插件接线与更新协调切片（ISS-040 代码切片）
 
-- **状态**：REVIEW（P1/M2，2026-09-22 worker 实现完成待审；分支 `iss-040b-updater`）；来源：父卡 ISS-040 的「插件/最小 capability、Rust 更新协调模块、设置页更新状态」部分（040A 只交付清单工具；076 清单 §4.2 证实接线零命中）。登记：2026-09-22 PM（Wave37）。代码依赖已满足（040A/010B DONE）；实机更新与 HTTPS 源留 G10 人工门，不因父卡未 DONE 阻塞代码切片。
+- **状态**：DONE（P1/M2，2026-09-22；[PR #143](https://github.com/cat-xierluo/fathom/pull/143) squash 合并为 main `10bcf72`（终 head a9eb3ee）；reviewer ACCEPT 0 blocking/5 NB；合并后四门禁绿 pytest **655**/前端 **105**/浏览器 39/cargo locked；实机更新与 HTTPS 源留 G10）；来源：父卡 ISS-040 的「插件/最小 capability、Rust 更新协调模块、设置页更新状态」部分（040A 只交付清单工具；076 清单 §4.2 证实接线零命中）。登记：2026-09-22 PM（Wave37）。代码依赖已满足（040A/010B DONE）；实机更新与 HTTPS 源留 G10 人工门，不因父卡未 DONE 阻塞代码切片。
 - **目标**：壳内具备「手动/延迟检查更新 → 结构化状态 → 用户确认下载安装 → 明确重启」的完整代码路径，全程不静默；未配置/不可达时给出明确可恢复的失败态，不伪装成功。
 - **范围**：`apps/desktop/src-tauri/Cargo.toml`（+`tauri-plugin-updater`/`tauri-plugin-process`，`--locked`）、`tauri.conf.json`（plugins.updater：dev 公钥 + `https://updates.invalid/...` 占位 endpoint（关闭语义）+ createUpdaterArtifacts）、`src/lib.rs`（插件初始化 + `updater_check`/`updater_install`/`updater_restart` 命令与状态映射）、`capabilities/default.json` + `permissions/updater.toml`（恰 3 条应用级最小权限）、`frontend/modules/pages/settings.js`（更新状态区）、Rust 单测、前端检查断言、`tests/test_tauri_updater_acl.py` 守护、gen/schemas 再生、计数同步。
 - **实施边界**：

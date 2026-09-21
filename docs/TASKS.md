@@ -135,6 +135,7 @@
 | ISS-070 | 定时扫描再次超时（4h 墙钟用尽）且磁盘接近满载的可诊断性缺口 | P0 | M1 | DONE | ISS-061、ISS-064 |
 | ISS-071 | `test_timeout_message_carries_last_output_path` 高负载下间歇失败（时序竞态） | P1 | M1 | DONE | ISS-064、ISS-070 |
 | ISS-040A | latest.json 双架构生成与 fail-closed 校验工具（ISS-040 代码切片） | P2 | M2 | DONE | ISS-037 |
+| ISS-040B | updater 插件接线与更新协调切片（ISS-040 代码切片） | P1 | M2 | READY | ISS-040A、ISS-010B |
 | ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | DONE | ISS-028、ISS-065 |
 | ISS-067 | `/api/snapshots` 补齐 vanished_count 与 exclude_names（ISS-002A 接缝） | P1 | M1 | DONE | ISS-066、ISS-002A |
 | ISS-068 | Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝） | P1 | M1 | DONE | ISS-002A |
@@ -1313,6 +1314,26 @@
   - [x] 贡献/漏洞反馈与匿名诊断说明可供外部用户理解 —— ISS-075 对账补勾（判定 A）：`CONTRIBUTING.md`/`SECURITY.md` 在册（本对账 ls 复核）；卡内证据段记录「验收框 1/2/4 满足」但当时未在验收段落勾，本次据该记录与实地核验补齐
 - **证据/接续**（2026-09-14）：[PR #57](https://github.com/cat-xierluo/fathom/pull/57) head `e23618e` squash 合并为 main `b27404a`（#50 关闭取代）。单一版本源 `fathom.__version__ = 0.3.0`，api.py/Cargo.toml/tauri.conf.json/Cargo.lock 本地包行同源；`scripts/check_version_consistency.sh` fail-closed（一致 0 / 漂移 1 / 缺失 2）覆盖含 Cargo.lock 的全部五处，`tests/test_version_consistency.py` 13 项；依赖来源清单与 THIRD_PARTY_NOTICES（echarts vendored 双版本标识与上游校验和 NOT_VERIFIED 如实登记；Rust 474 条目仅核对主要子集其余 UNKNOWN）；许可证选项方案推荐 Apache-2.0 但 **LICENSE 未创建（待用户选择）**；CONTRIBUTING/SECURITY 草案。首审 REJECT 两条（门禁计数未同步；校验器漏 Cargo.lock——该盲区曾真实发生），修复后 re_review ACCEPT。验收框 1/2/4 满足；框 3 于 2026-09-14 由用户选定 Apache-2.0（与 Folia 一致，DEC-020）后落地 LICENSE；图标来源待 ISS-045。任务 DONE。
 - **原 READY 说明**：2026-09-14 转 READY（ISS-029 DONE、ISS-031 DONE）。**人工门保留**：ISS-045 Logo 方向与最终 LICENSE 选择由用户决定；worker 交付可自动化部分——单一版本源与 fail-closed 校验器、依赖锁与来源/许可证清单（SBOM 或等价）、第三方 notices、许可证选项对比方案（不落 LICENSE）、贡献/漏洞反馈/匿名诊断说明草案。图标资源来源一项待 ISS-045。
+
+### ISS-040B · updater 插件接线与更新协调切片（ISS-040 代码切片）
+
+- **状态**：READY（P1/M2）；来源：父卡 ISS-040 的「插件/最小 capability、Rust 更新协调模块、设置页更新状态」部分（040A 只交付清单工具；076 清单 §4.2 证实接线零命中）。登记：2026-09-22 PM（Wave37）。代码依赖已满足（040A/010B DONE）；实机更新与 HTTPS 源留 G10 人工门，不因父卡未 DONE 阻塞代码切片。
+- **目标**：壳内具备「手动/延迟检查更新 → 结构化状态 → 用户确认下载安装 → 明确重启」的完整代码路径，全程不静默；未配置/不可达时给出明确可恢复的失败态，不伪装成功。
+- **范围**：`apps/desktop/src-tauri/Cargo.toml`（+`tauri-plugin-updater`/`tauri-plugin-process`，本机缓存 2.3.1，`--locked`）、`tauri.conf.json`（plugins.updater：dev 公钥 + `https://updates.invalid/...` 占位 endpoint（关闭语义）+ createUpdaterArtifacts；process 权限）、`src/lib.rs`（插件初始化 + `updater_check`/`updater_install`/`updater_restart` 命令与状态映射）、`capabilities/default.json`（最小 updater/process 权限）、`frontend/modules/pages/settings.js`（更新状态区：检查按钮/状态/版本与 notes/安装确认层/重启确认）、Rust 单测、前端检查断言、`tests/`（如需守护）、gen/schemas 再生、计数同步。
+- **实施边界**：
+  - **keypair**：构建/测试用 dev keypair（`cargo tauri signer generate` 生成于仓库外如 `~/.config/fathom-dev-updater/`），公钥入 `tauri.conf.json`，**私钥与密码绝不入 git/日志/RESULT/产物清单**；生产 keypair 是发行时用户决策（G10），本切片不生成不承诺
+  - **endpoint**：占位 `updates.invalid`（RFC 保留域，永不解析）表「生产更新源关闭」；运行时检查失败 → 「未配置/不可达」明确失败态；测试用 fake updater 响应（Rust 侧注入/mock，不建真实 HTTPS 源）
+  - **不静默**：检查由用户点击或启动后延迟触发（≥10s）；下载安装必须确认层；重启单独确认；取消/失败全部回落可恢复态
+  - ACL 面精确：只加 updater 检查/安装与 process relaunch 所需最小权限（恰 N 条，守护测试同 010B-ACL 风格）
+  - cargo 新增 crate 仅限上述两个（锁版本进 Cargo.lock）；`--locked --offline` 构建门保持
+  - GUI 实机操作按用户规则由 PM 亲自执行；worker 交代码+单测+mock 断言
+- **验收**：
+  - [ ] 状态映射纯函数（未配置/最新/可用/下载中/已就绪/失败）与版本/错误分支有 Rust 单测；未配置与不可达各自明确失败态（非 panic、非伪装成功）
+  - [ ] `cargo build/test --locked --offline` 全绿（含新 crate）；ACL 恰最小面有守护测试；gen/schemas 与配置一致
+  - [ ] 设置页更新区：检查→状态、可用→确认层→安装、重启确认、取消回落（前端检查新增断言，先红后绿）；无 emoji
+  - [ ] dev 私钥零泄漏验证（grep 全 diff/产物清单无私钥内容；RESULT 只记公钥指纹与生成路径类别）；计数同步
+- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-040A（latest.json 工具）、ISS-040（父卡与 G10）、DEC-022（updater 签名仍强制）、076 清单 §4.2/§6-F1。
+
 
 ### ISS-040 · 应用内更新与双架构更新清单
 

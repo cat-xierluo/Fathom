@@ -1118,8 +1118,10 @@ async function main() {
     // 保存为已注册时间 12:00 → PUT 嵌套 config 刷新为 in_sync，降级说明消失。
     await page.fill("#cfg-scan-time", "12:00");
     await page.click("#btn-config-save");
+    // ISS-016B repair1：等待条件必须用完整短语「计划时间一致」——
+    // 「一致」是「计划时间不一致」的子串，会提前命中旧 drift 文案（断言子串陷阱）。
     await page.waitForFunction(() =>
-      (document.querySelector("[data-test='reload-state-text']")?.textContent || "").includes("一致"));
+      (document.querySelector("[data-test='reload-state-text']")?.textContent || "").includes("计划时间一致"));
     const reloadSync = await page.evaluate(() => ({
       text: document.querySelector("[data-test='reload-state-text']")?.textContent || "",
       noteExists: Boolean(document.querySelector("[data-test='reload-browser-note']")),
@@ -1976,6 +1978,10 @@ async function main() {
       .some((c) => c && c.cmd === "autostart_register"));
     const registerInvoke = await tpage3.evaluate(() => (window.__tauriMock3.invokes || [])
       .find((c) => c && c.cmd === "autostart_register"));
+    // ISS-016B repair1：register invoke 发生 ≠ refreshAutostart 走完——其后还有
+    // autostart_status 回读与 /api/config 真实刷新，note 在此之后才渲染「已开启」。
+    await tpage3.waitForFunction(() =>
+      (document.querySelector("[data-test='autostart-note']")?.textContent || "").includes("已开启"));
     const statusCount3 = await tpage3.evaluate(() => (window.__tauriMock3.invokes || [])
       .filter((c) => c && c.cmd === "autostart_status").length);
     const afterRegister = await tpage3.evaluate(() => ({

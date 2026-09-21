@@ -8,6 +8,9 @@
 3. happy path（产物齐 + SHA 一致 + verify 22/22 + 工作区干净 + HEAD 与 git
    head 等价）→ 退出 0 且在 ``verify-results/release-candidates/`` 下产出
    .md + .json 两条记录。
+4. 同一 fake 环境连续两次只读登记，第二次必须同样退 0（ISS-078 repair1 B1：
+   记录目录被仓库根 .gitignore 的 ``verify-results/`` 条目覆盖，首次登记
+   产出不得把工作区弄脏而将下次登记自锁）。
 
 实现要点：
 - 用 ``tempfile.mkdtemp`` 注入 fake git repo 与 fake bundle 产物；
@@ -146,6 +149,7 @@ def _run_script_in(
     commit_copies: bool = True,
     align_build_commit: bool = True,
     fake_env: bool = True,
+    extra_gitignore: str = "",
 ) -> subprocess.CompletedProcess:
     """在临时目录里以默认（read_only）模式跑脚本。
 
@@ -156,6 +160,11 @@ def _run_script_in(
 
     ``fake_env=False`` 时不设 ``FAKE_RELEASE_CANDIDATE=1``，让
     ``check_head_vs_artifacts`` 真实生效（用于 head_mismatch 反例）。
+
+    ``extra_gitignore`` 追加到 ``work/.gitignore`` 的 ``scripts/`` 条目之后，
+    用于在 fake repo 里建立与真实仓库同构的条目（ISS-078 repair1 B1：
+    根级 ``verify-results/``）。仅在 ``commit_copies=True``（会重写
+    .gitignore）时生效。
     """
     work = tmp / "work"
     work.mkdir(parents=True, exist_ok=True)
@@ -171,8 +180,9 @@ def _run_script_in(
     }
 
     if commit_copies and (work / ".git").exists():
-        # 把 scripts/ 加入 .gitignore，避免 untracked 干扰 git status
-        (work / ".gitignore").write_text("scripts/\n", encoding="utf-8")
+        # 把 scripts/ 加入 .gitignore，避免 untracked 干扰 git status；
+        # extra_gitignore 追加与真实仓库同构的条目（ISS-078 repair1 B1）
+        (work / ".gitignore").write_text("scripts/\n" + extra_gitignore, encoding="utf-8")
         _git_commit_all(work, message="ignore scripts")
         if align_build_commit:
             bundle = work / "apps/desktop/src-tauri/target/release/bundle"
@@ -388,6 +398,51 @@ def test_happy_path_records_written(tmp_path: Path) -> None:
     assert js["verify"]["failed"] == 0
     assert len(js["dmg_sha256"]) == 64
     assert len(js["helper_sha256"]) == 64
+
+
+def test_consecutive_registration_no_selflock(tmp_path: Path) -> None:
+    """ISS-078 repair1（B1）回归：同一 fake 环境连续两次只读登记不得自锁。
+
+    自锁机理：脚本把记录写到 ``$ROOT/verify-results/release-candidates/``；
+    若仓库根 ``verify-results/`` 不被 .gitignore 覆盖，第一次登记产出的
+    untracked 记录会让第二次运行死在 ``check_workspace_clean``。本测试在
+    fake repo 的 .gitignore 建立与真实仓库根相同的 ``verify-results/`` 条目，
+    断言连续两次登记都退 0——若脚本输出目录漂移到未忽略位置，第二次运行
+    会在本测试复现自锁。另直接断言真实仓库根 .gitignore 含该条目：条目
+    被删时回归必须变红。
+    """
+    _fake_setup(tmp_path)
+    # 第一次：fake repo 的 .gitignore 与修复后的真实仓库同构（scripts/ +
+    # 根级 verify-results/），登记成功并产出记录
+    result1 = _run_script_in(tmp_path, extra_gitignore="verify-results/\n")
+    assert result1.returncode == 0, (
+        f"第一次登记应退 0；实际={result1.returncode}\n"
+        f"stdout={result1.stdout}\nstderr={result1.stderr}"
+    )
+    out_dir = tmp_path / "work/verify-results/release-candidates"
+    assert list(out_dir.glob("*.md")) and list(out_dir.glob("*.json")), (
+        f"第一次登记应产出 .md/.json 记录，实际目录内容："
+        f"{sorted(p.name for p in out_dir.glob('*')) if out_dir.exists() else '目录不存在'}"
+    )
+    # 第二次：commit_copies=False 复用第一次已就绪的 fake repo（.gitignore
+    # 已含 verify-results/ 条目、HEAD/bundle 对齐），直接再跑只读登记。
+    # 若记录目录未被忽略，此刻 git status 已不干净 → 自锁拒绝
+    result2 = _run_script_in(
+        tmp_path, extra_gitignore="verify-results/\n", commit_copies=False
+    )
+    assert result2.returncode == 0, (
+        f"连续第二次登记被拒——自锁回退：\n"
+        f"stdout={result2.stdout}\nstderr={result2.stderr}"
+    )
+    # 守住真实仓库根 .gitignore 的条目本身（ISS-078 repair1 B1 修复物）
+    gitignore_text = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert any(
+        line.strip() in {"verify-results/", "/verify-results/"}
+        for line in gitignore_text.splitlines()
+    ), (
+        f"仓库根 .gitignore 应含根级 verify-results/ 条目（防二次登记自锁），实际：\n"
+        f"{gitignore_text}"
+    )
 
 
 def test_selftest_exits_zero() -> None:

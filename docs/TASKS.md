@@ -126,6 +126,7 @@
 | ISS-062 | CLI 扫描时长提示基于实测与配置上限；src-tauri clippy 与配置测试矩阵小缺口 | P3 | M1 | DONE | ISS-061 |
 | ISS-003A | 通知语义统一与测试补强（ISS-003 代码切片） | P1 | M1 | DONE | ISS-020 |
 | ISS-016A | 设置持久化代码切片：配置读写 API 与设置页真实值 | P1 | M2 | DONE | ISS-025、ISS-028 |
+| ISS-016B | 服务重载协调代码切片：漂移检测 + 经确认重装（ISS-016 代码切片） | P1 | M2 | READY | ISS-016A、ISS-010B |
 | ISS-010A | 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片） | P1 | M2 | DONE | ISS-020 |
 | ISS-010B | 发行态后台注册桥：用户同意流 + launchd 注册写路径 + fake 环境测试（ISS-010 代码切片） | P1 | M2 | DONE | ISS-010A、ISS-020 |
 | ISS-063 | 微卫生：du_seconds 提示的 isfinite 守卫 | P3 | M1 | DONE | ISS-062 |
@@ -145,6 +146,7 @@
 | ISS-075 | 已合并任务验收证据对账与接缝复核 | P1 | M2 | DONE | — |
 | ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | DONE | — |
 | ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | REVIEW | ISS-028 |
+| ISS-078 | 发行候选重建登记夹具（076 清单 §6 备选 F2） | P2 | M2 | READY | ISS-076 |
 
 ## 任务卡
 
@@ -257,6 +259,20 @@
 - **证据/接续**（2026-09-20 13:3x PM 复核，转 REVIEW）：worker（minimax-M3）交付 `010c0e092343169a261a3104e546a5fc5cb8502d`：壳层默认菜单 Window 子菜单挂无修饰 Esc 加速键（`esc-forward`），AppKit 键等价分发主菜单认领后经 `WebviewWindow::eval` 投递合成 keydown（key/code/keyCode/which=27、bubbles/cancelable/composed），目标 activeElement 兜底 document；全部 Rust API 对锁版本源码逐条核实（清单见 RESULT）；`Tauri onKeyEvent` 在锁版本不存在（全源 grep），故走菜单加速键路线。**PM 独立复跑**：定向 pytest 7 passed（含红demo）；`bash scripts/ci_cargo_locked.sh` exit 0；cargo test 26 passed（25→26，新单测 `esc_forward_js_payload_matches_keydown_escape_contract`）；全量 pytest **560 passed**（553→560，worker 未同步计数，PM 已补：ci_pytest.sh/ci.yml/TESTING/ARCHITECTURE 四处 + ARCHITECTURE cargo 25→26；门禁复跑 560=560 绿）。**遗留**：框 2 前台实测（PM）；WebKit 内部吞点判别（子情形 i/ii）随前台日志一并判。原派发登记见下段。
 - **证据/接续**（2026-09-20 02:55 派发，IN_PROGRESS）：worker dispatch `ctx_12a48a1e7c24`，Orca run `run_8d477489db15`，task `task_14260b7750e1`，worktree `/Users/maoking/orca/workspaces/fathom/iss-077-esc-keydown`（分支 `iss-077-esc-keydown`），lane minimax-M3（provider lease active）。**spec 约束**：worker 只做脚本 + headless 断言 + 静态源码取证；**严禁抢前台/激活应用/open -a/System Events/CGEvent 等 GUI 实机操作**（用户 2026-09-20 规则），GUI 实机验证由 PM 亲自执行；必须前台才能取证项须标 `NOT_VERIFIED-需前台`。**派发环境**：quota preflight 因缺 `claude-provider-registry.json` 报 `provider_unknown_lane`（工具失灵非额度不足），PM 以 `--quota-preflight-override` 放行，授权来源=route-summary 实测 minimax 47%。**待 worker 交付后由 PM 复核。**关联：ISS-028 卡「三尺寸证据」段结构层发现①；ISS-076 清单 §2 实机步骤的键盘项。
 
+
+
+### ISS-078 · 发行候选重建登记夹具（076 清单 §6 备选 F2）
+
+- **状态**：READY（P2/M2）；来源：ISS-076 清单 §6 备选 F2（合同已备，PM 2026-09-21 审阅后登记）。价值：把 §1.1 三命令 + 候选三要素（固定 40 位 commit、DMG SHA256、helper SHA256）固化成一个可重复入口，消除「每次实测前手工重建并手工抄录三要素」的漂移面。
+- **目标**：一条命令完成「校验工作区干净且 HEAD 即候选 commit → 三步构建 → 汇总三要素 + verify 22 段结果 → 输出可直接粘贴进任务卡的结构化记录（Markdown/JSON 双格式）」；任何一步失败 fail-closed 且不产出记录。
+- **范围**：`scripts/release_candidate_record.sh`（新）、`docs/TESTING.md`（§4 候选清单处加入口指针）、`tests/`（自测：参数校验/脏工作区拒绝/产物缺失拒绝/SHA 不一致拒绝——不跑真实构建，用 fake 产物目录注入）、计数同步。
+- **实施边界**：脚本默认 **不执行** 构建（`--build` 显式触发三命令；无 `--build` 时只登记既有产物的三要素并要求产物与 HEAD 匹配）；`target/` 产物不入 git；记录文件输出到 `verify-results/release-candidates/`（gitignore 内）并打印路径；不触碰生产调度与 PID 6026；构建耗时长，脚本内各步输出重定向日志、只回显尾部。
+- **验收**：
+  - [ ] 三要素采集正确性有自测（fake 产物 + 已知 SHA 断言；checksums.txt 与实际 DMG SHA 不一致必红）
+  - [ ] 脏工作区/HEAD 与记录 commit 不符/产物缺失/verify 非 0 四类 fail-closed 各有反例
+  - [ ] 无 `--build` 只读登记与有 `--build` 全链两模式都有说明与最小验证（构建链不要求本卡实跑，留 G 门使用时验证）
+  - [ ] 计数同步；TESTING 指针在位
+- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-076 清单 §1.1/§6、README 构建链、G1-G13 候选标识。
 
 
 ### ISS-058 · 版本一致性测试夹具按切片 1 新 bundle 形态定位
@@ -627,6 +643,20 @@
   - [x] 不注册/不重载任何 launchd 服务（PUT 恒返回 `service_reload=requires_user_action`，grep 负向探针零命中）；`FATHOM_*` 环境变量优先级有测试
 - **证据/接续**（2026-09-16 DONE）：worker ctx_5126daad04b3（**glm-5.3**，iss-016a-settings-persistence）交付 `2870d7b`（12 文件 +1238/−29）：`fathom/config.py` 运行根 `settings.json` 持久化层（`_atomic_write_text` temp+rename、失败保留旧文件、fail-closed 校验拒绝 nan/inf/0/负）、`fathom/api.py` `GET/PUT /api/config`（走既有 Host/Origin/写令牌守卫，恒返回 `service_reload: requires_user_action` 且**零 launchd 调用**）、设置页真实值可编辑并删除硬编码、优先级 **CLI > `FATHOM_*` 环境变量 > `settings.json` > 默认**（有测试钉住）。PM 独立复跑：`pytest tests -q` = **488 passed**、`node scripts/verify_frontend_refresh.cjs` = **65 passed/0 failed**、`ci_browser_checks.sh` = **39 passed/0 failed**；PM 另核验 launchd 边界（`launchd.py` 未被本切片改动、`git diff` 无 launchctl 调用）。reviewer ctx_a4d3ae278857（**minimax-M3**，review-wave24-016a）原文 `accept-with-non-blocking-suggestion`、**0 blocking**、RESULT 明确 "Accept the delivery"；2 条非阻塞：三层优先级测试覆盖可更充分、runtime 探针受沙箱限制。`postflight` ok、`pr-audit` decision=create。[PR #92](https://github.com/cat-xierluo/fathom/pull/92) squash 合并为 main `51f0ce0`。父卡 ISS-016 的"后台计划与显示值一致（真实重载）"留人工/ISS-010 实机。
   **例外登记（共享文档回写）**：本切片的 worker 越权修改了 `CHANGELOG.md` 与 `docs/ARCHITECTURE.md`（按规则共享文档应由 PM 在独立分支统一回写，worker 不修改）。PM 复核后**采纳**该内容——它准确记录了本切片的用户可见行为（设置项可改可校验、原子写、`service_reload=requires_user_action` 边界、环境变量优先级与来源标注），且 AST/ARCH 的表述与实现一致；PM 在合并后另行同步了门禁计数（pytest 488、前端 65）与卡片状态，二份共享文档的最终形态由 PM 定稿。此为策略"共享文档由 PM 统一回写"的已登记例外。
+
+### ISS-016B · 服务重载协调代码切片：漂移检测 + 经确认重装（ISS-016 代码切片）
+
+- **状态**：READY（P1/M2）；来源：父卡 ISS-016 的剩余「真实服务重载一致性」+ ISS-010B 已交付注册桥（register/unregister + confirmed 门）+ ISS-016A 遗留的静态 `service_reload: "requires_user_action"` 占位（076 清单 §4.1 重载缺口）。登记：2026-09-21 PM（Wave36）。
+- **目标**：把「保存了新计划时间但已注册服务仍是旧计划」的一致性缺口显式化：PUT /api/config 与 GET 的 `service_reload` 从静态占位升级为真实漂移状态；设置页显示 drift 并提供**经确认的**重装入口（复用 010B 确认流），取消/失败回落且 UI 与系统状态一致。
+- **范围**：`fathom/launchd.py`（只读解析已注册 plist 的计划时间 + 漂移判定纯函数）、`fathom/api.py`（config GET/PUT 响应的 `service_reload` 结构升级，旧字段兼容）、`frontend/modules/pages/settings.js`（drift 展示 + 重装按钮走既有 autostart 确认层）、`tests/`、计数同步。
+- **实施边界**：**零真实注册/重载**（写路径只经 010B 桥的既有 confirmed 流，本切片不新增任何系统写入口）；漂移检测只读（plist 文件不存在=未注册态，读取失败=unknown 态，绝不猜）；已注册时间与当前时间一致=in_sync；PUT 响应保持向后兼容（旧消费方不破坏）；真机效果留 G8。GUI 实机操作按用户规则由 PM 亲自执行。
+- **验收**：
+  - [ ] 漂移三态（in_sync/drift/not_registered + unknown 降级）各有 pytest（fake plist 文件注入，含 plist 缺失/损坏/字段缺失分支）
+  - [ ] PUT 升级不破坏既有合同（旧断言全绿）；`service_reload` 新结构与旧字段并存有兼容测试
+  - [ ] 设置页 drift 文案与重装按钮走 010B 确认层；取消/失败后开关与状态回读一致（前端检查新增断言，先红后绿）
+  - [ ] 零系统写入：grep 守护（本切片不新增 launchctl/bootstrap 调用点）维持；全量计数同步
+- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-016A（占位语义）、ISS-010B（确认流与桥）、ISS-010（父卡真机门）、G8。
+
 
 ### ISS-010A · 登录项与后台计划的只读状态桥 + dry-run（ISS-010 代码切片）
 

@@ -13,9 +13,13 @@
 //!   Rust 侧不引 HTTP 依赖。
 //! - helper 路径定位：打包态 ``resource_dir()/helper/fathom-helper/fathom-helper``；
 //!   开发态 ``FATHOM_HELPER_BIN`` 覆盖；缺失时握手页显示明确错误而非 panic。
+//! - 应用内更新（ISS-040B）：updater/process 两插件 + 三个协调命令，全程不静默
+//!   ——检查（手动或启动延迟 ≥10s 的状态提示）、下载安装、重启三步各自经
+//!   设置页确认层；未配置/不可达是两个明确的可恢复失败态，不伪装成功。
 //!
-//! 不引入新 crate（--locked --offline 门禁下避免拉不到依赖）；helper 进程
-//! 操作全用 ``std::process::Command`` 与 ``std`` 文件 I/O。
+//! 更新相关新 crate 仅 tauri-plugin-updater / tauri-plugin-process 两个
+//! （ISS-040B 合同边界，版本锁进 Cargo.lock）；helper 进程操作全用
+//! ``std::process::Command`` 与 ``std`` 文件 I/O。
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -389,18 +393,20 @@ fn quit_with_helper(app: &AppHandle) {
     app.exit(0);
 }
 
-/// ISS-068：本壳依赖的 Tauri 插件名清单，供测试断言**名字合同**。
+/// ISS-068 起本壳依赖的 Tauri 插件名清单，供测试断言**名字合同**
+/// （ISS-040B 加入 updater/process 两个）。
 ///
 /// 重要边界（勿高估本常量）：它是**手写**的，与 `run()` 中真实的
-/// `.plugin(tauri_plugin_opener::init())` 调用**没有强制关联**。删掉
-/// `.plugin()` 只改变运行时行为，本常量仍在、测试照过（2026-09-17 实测：
-/// 删注册后 `cargo test opener_plugin_name_matches` 仍 1 passed）。
-/// 因此它**不是**注册护栏，只断言「上游 tauri-plugin-opener 的
-/// `Plugin::name()` == 前端命令前缀 "opener"」这一跨仓库名字合同。
+/// `.plugin(...)` 调用**没有强制关联**。删掉 `.plugin()` 只改变运行时行为，
+/// 本常量仍在、测试照过（2026-09-17 实测：删 opener 注册后
+/// `cargo test opener_plugin_name_matches` 仍 1 passed）。因此它**不是**注册
+/// 护栏，只断言「上游插件的 `Plugin::name()` == 前端命令前缀」这一跨仓库
+/// 名字合同（updater/process 的前端命令前缀 plugin:updater|* /
+/// plugin:process|* 分别对应 "updater" / "process"）。
 ///
-/// 真正的注册护栏是 `scripts/ci_tauri_opener_registered.sh` 的源码正则检查
-/// （见该脚本头）；tauri-build 的 ACL 产物**无法**观察 `.plugin()`。
-const REGISTERED_PLUGIN_NAMES: &[&str] = &["opener"];
+/// 真正的 opener 注册护栏是 `scripts/ci_tauri_opener_registered.sh` 的源码
+/// 正则检查（见该脚本头）；tauri-build 的 ACL 产物**无法**观察 `.plugin()`。
+const REGISTERED_PLUGIN_NAMES: &[&str] = &["opener", "updater", "process"];
 
 /// ISS-077：壳层 Esc 转发菜单项 id。AppKit 对裸 Esc（无修饰）走键等价分发
 /// （视图树 ``performKeyEquivalent:`` → 主菜单）且先于 ``keyDown:``；macOS
@@ -426,6 +432,332 @@ const ESC_FORWARD_JS: &str = r#"(function () {
   }));
 })();"#;
 
+// ===== 应用内更新协调（ISS-040B）=====
+//
+// 边界（ISS-040 父卡 + 040B 合同）：
+// - 全程不静默：检查由用户点击或启动后延迟（≥10s）触发；下载安装必须经设置页
+//   确认层（confirmed=true）；重启是独立确认；启动延迟检查只 emit 状态事件，
+//   不弹窗、不下载、不安装。
+// - 更新动作只在可信 Rust 壳内执行：前端经本壳三个命令（updater_check /
+//   updater_install / updater_restart）协调，不经 plugin:updater|* 直调插件
+//   命令——回环远程页面（127.0.0.1:7952 仪表盘）因此不获得宽泛 updater 权限。
+// - 当前 endpoint 为 RFC 保留域 updates.invalid（永不解析）＝「生产更新源关闭」
+//   语义；运行态检查得到 state=unreachable 的明确可恢复失败态，由发行侧
+//   （ISS-041/G10）替换真实 HTTPS 源后才可能 available。
+// - 验签由 tauri-plugin-updater 强制（minisign，公钥来自 tauri.conf.json
+//   plugins.updater.pubkey，不可关闭）；私钥只在 CI/PM 发行时经
+//   TAURI_SIGNING_PRIVATE_KEY 注入，绝不入仓库/日志/产物。
+// - 失败全部回落可恢复态（JSON 状态或 {ok:false,error}），不 panic。
+
+/// 启动延迟检查的等待秒数。合同 ≥10s；取 15s 避开启动期 helper 握手与
+/// 首屏渲染的资源竞争。期间用户仍可手动检查（互不排队，后到者覆盖状态行）。
+const UPDATER_STARTUP_DELAY_S: u64 = 15;
+
+/// 手动/延迟检查的请求超时上界（秒）：防挂死 endpoint 让确认层永远转圈。
+const UPDATER_CHECK_TIMEOUT_S: u64 = 30;
+
+/// 更新状态事件名：启动延迟检查的结果只经此事件通知前端（设置页状态行），
+/// 不弹窗。手动检查的返回值直接给 invoke 调用方，不走事件。
+const UPDATER_EVENT: &str = "updater-state";
+
+/// 可安装候选暂存：updater_check 发现 available 时写入；updater_install
+/// （经确认层）取出执行；安装成功后清空，失败保留供重试。
+struct UpdaterState(Mutex<Option<tauri_plugin_updater::Update>>);
+
+/// 检查结果状态机的纯枚举。unconfigured 与 unreachable 是两个**各自明确**的
+/// 失败态：前者是「本壳没有更新配置」（部署/构建缺陷），后者是「源不可达」
+/// （当前占位 endpoint 的预期运行态），用户话术与恢复路径不同，不得合并。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdaterCheckState {
+    /// 未配置：无 endpoints（updater 插件未接线或配置被剥离）。
+    Unconfigured,
+    /// 不可达：网络/DNS/HTTP 传输层失败（updates.invalid 的预期态）。
+    Unreachable,
+    /// 已是最新（无更新公告，或公告版本不高于当前）。
+    UpToDate,
+    /// 有可用更新（版本高于当前）。
+    Available,
+    /// 其余失败（清单解析、签名配置、序列化等）。
+    Failed,
+}
+
+impl UpdaterCheckState {
+    /// 前端合同字符串（settings.js 消费同名 state 字段）。
+    fn as_str(self) -> &'static str {
+        match self {
+            UpdaterCheckState::Unconfigured => "unconfigured",
+            UpdaterCheckState::Unreachable => "unreachable",
+            UpdaterCheckState::UpToDate => "up_to_date",
+            UpdaterCheckState::Available => "available",
+            UpdaterCheckState::Failed => "failed",
+        }
+    }
+}
+
+/// 插件错误的粗分类（纯 match 适配层；单测直接构造变体覆盖）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdaterErrorKind {
+    /// 配置缺失（无 endpoints）。
+    Unconfigured,
+    /// 网络/DNS/HTTP 传输层失败。
+    Network,
+    /// 其余（清单解析、签名配置、序列化等）。
+    Other,
+}
+
+fn updater_error_kind(err: &tauri_plugin_updater::Error) -> UpdaterErrorKind {
+    use tauri_plugin_updater::Error;
+    match err {
+        Error::EmptyEndpoints => UpdaterErrorKind::Unconfigured,
+        Error::Reqwest(_) | Error::Network(_) => UpdaterErrorKind::Network,
+        _ => UpdaterErrorKind::Other,
+    }
+}
+
+/// 点分版本比较（std 实现，不引 semver crate）：逐段优先按数字比较，
+/// 非数字段退化为不区分大小写的字典序；段数不等时短者补 "0"。
+/// 0.10.0 > 0.9.0（数字语义，非字典序）。仅作状态映射的防御层——
+/// 「是否有更新」的权威判定在上游 updater 的 semver 比较里。
+fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let a_segs: Vec<&str> = a.split('.').collect();
+    let b_segs: Vec<&str> = b.split('.').collect();
+    let n = a_segs.len().max(b_segs.len());
+    for i in 0..n {
+        let x = a_segs.get(i).copied().unwrap_or("0");
+        let y = b_segs.get(i).copied().unwrap_or("0");
+        match (x.parse::<u64>(), y.parse::<u64>()) {
+            (Ok(nx), Ok(ny)) => match nx.cmp(&ny) {
+                Ordering::Equal => continue,
+                ord => return ord,
+            },
+            _ => {
+                let ord = x.to_lowercase().cmp(&y.to_lowercase());
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
+    Ordering::Equal
+}
+
+/// 纯映射①（版本分支）：远端版本高于当前 → Available；无远端、相等或更低
+/// → UpToDate。上游 check() 已做版本比较（不高于当前时返回 None），本函数是
+/// 状态 JSON 化前的第二道防御，并把「相等/更低」明确归入 up_to_date 而非
+/// failed——公告版本不高于当前不是错误，是无可安装。
+fn updater_state_from_versions(current: &str, remote: Option<&str>) -> UpdaterCheckState {
+    match remote {
+        Some(v) if version_cmp(v, current) == std::cmp::Ordering::Greater => {
+            UpdaterCheckState::Available
+        }
+        _ => UpdaterCheckState::UpToDate,
+    }
+}
+
+/// 纯映射②（错误分支）：unconfigured / unreachable / failed 三分支各自成态
+/// （区分理由见 UpdaterCheckState 文档）。
+fn updater_state_from_error(kind: UpdaterErrorKind) -> UpdaterCheckState {
+    match kind {
+        UpdaterErrorKind::Unconfigured => UpdaterCheckState::Unconfigured,
+        UpdaterErrorKind::Network => UpdaterCheckState::Unreachable,
+        UpdaterErrorKind::Other => UpdaterCheckState::Failed,
+    }
+}
+
+/// 状态机 → 前端合同 JSON（与 helper_status 同风格：结构化、可恢复、
+/// 不伪装成功）。available 携带 available_version/notes；失败态携带 error。
+fn updater_status_json(
+    state: UpdaterCheckState,
+    current_version: &str,
+    available_version: Option<&str>,
+    notes: Option<&str>,
+    error: Option<&str>,
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "state": state.as_str(),
+        "current_version": current_version,
+    });
+    let obj = value.as_object_mut().expect("json! 宏产物必为对象");
+    if let Some(v) = available_version {
+        obj.insert("available_version".to_string(), serde_json::json!(v));
+    }
+    if let Some(n) = notes {
+        if !n.trim().is_empty() {
+            obj.insert("notes".to_string(), serde_json::json!(n));
+        }
+    }
+    if let Some(e) = error {
+        obj.insert("error".to_string(), serde_json::json!(e));
+    }
+    value
+}
+
+/// 执行一次更新检查（手动与启动延迟共用；不弹窗、不安装）。
+/// 所有失败都映射为结构化状态 JSON——unconfigured/unreachable/failed 都是
+/// 可恢复态，绝不 panic、不伪装成功。
+async fn perform_updater_check(
+    app: &AppHandle,
+    store: Option<&UpdaterState>,
+) -> serde_json::Value {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let current = app.package_info().version.to_string();
+    let updater = match app
+        .updater_builder()
+        .timeout(std::time::Duration::from_secs(UPDATER_CHECK_TIMEOUT_S))
+        .build()
+    {
+        Ok(u) => u,
+        Err(err) => {
+            let state = updater_state_from_error(updater_error_kind(&err));
+            return updater_status_json(state, &current, None, None, Some(&err.to_string()));
+        }
+    };
+    match updater.check().await {
+        Ok(Some(update)) => {
+            let state = updater_state_from_versions(&current, Some(&update.version));
+            if state == UpdaterCheckState::Available {
+                // 暂存候选供 updater_install（经确认层）取用；锁中毒时仍返回
+                // available（安装命令会给出「请重新检查」的可恢复错误）。
+                if let Some(store) = store {
+                    if let Ok(mut guard) = store.0.lock() {
+                        *guard = Some(update.clone());
+                    }
+                }
+                return updater_status_json(
+                    state,
+                    &current,
+                    Some(&update.version),
+                    update.body.as_deref(),
+                    None,
+                );
+            }
+            // 上游公告了不高于当前的版本：按 up_to_date 呈现，不暂存候选。
+            updater_status_json(state, &current, None, None, None)
+        }
+        Ok(None) => updater_status_json(UpdaterCheckState::UpToDate, &current, None, None, None),
+        Err(err) => {
+            let state = updater_state_from_error(updater_error_kind(&err));
+            updater_status_json(state, &current, None, None, Some(&err.to_string()))
+        }
+    }
+}
+
+/// 手动检查更新（设置页「检查更新」按钮）。永不返回 Err：所有失败都映射为
+/// 结构化状态 JSON，前端据此渲染可恢复态。
+#[tauri::command]
+async fn updater_check(
+    app: AppHandle,
+    state: State<'_, UpdaterState>,
+) -> Result<serde_json::Value, String> {
+    Ok(perform_updater_check(&app, Some(state.inner())).await)
+}
+
+/// 下载并安装当前候选（仅经设置页确认层调用：confirmed=true 才动手）。
+/// 下载+验签+安装交给 tauri-plugin-updater（minisign 验签不可关闭）；
+/// 失败返回 {ok:false, error} 可恢复错误并保留候选供重试，绝不 panic。
+#[tauri::command]
+async fn updater_install(
+    app: AppHandle,
+    state: State<'_, UpdaterState>,
+    confirmed: bool,
+) -> Result<serde_json::Value, String> {
+    if !confirmed {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "error": "updater_install 需经用户确认（confirmed=true）；本壳不做静默安装",
+        }));
+    }
+    let candidate = state
+        .0
+        .lock()
+        .map_err(|_| "更新候选锁中毒".to_string())?
+        .clone();
+    let Some(update) = candidate else {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "error": "没有已确认的可用更新；请先「检查更新」",
+        }));
+    };
+    // 仅状态提示（前端确认层已展示「下载并安装」文案）；进度回调留空——
+    // 本切片不做进度条，失败路径由返回值与状态事件覆盖。
+    let _ = app.emit(
+        UPDATER_EVENT,
+        serde_json::json!({
+            "state": "downloading",
+            "current_version": update.current_version,
+            "available_version": update.version,
+        }),
+    );
+    match update.download_and_install(|_, _| {}, || {}).await {
+        Ok(()) => {
+            // 安装成功：清空候选；重启是独立确认（updater_restart），不自动重启。
+            if let Ok(mut guard) = state.0.lock() {
+                *guard = None;
+            }
+            let _ = app.emit(
+                UPDATER_EVENT,
+                serde_json::json!({
+                    "state": "installed",
+                    "current_version": update.current_version,
+                    "available_version": update.version,
+                    "hint": "更新已安装；重启应用后生效",
+                }),
+            );
+            Ok(serde_json::json!({
+                "ok": true,
+                "state": "installed",
+                "current_version": update.current_version,
+                "available_version": update.version,
+            }))
+        }
+        Err(err) => Ok(serde_json::json!({
+            "ok": false,
+            "state": "failed",
+            "error": format!("下载/验签/安装失败（候选保留，可重试）：{err}"),
+        })),
+    }
+}
+
+/// 重启应用以完成更新（独立命令，仅经「重启以完成」确认层调用）。
+/// 经 tauri 核心 request_restart()（进程插件的 plugin:process|restart 即同一
+/// 入口）；触发的 RunEvent::ExitRequested/Exit 会走既有幂等 helper 回收，
+/// 不留孤儿进程。返回值可能因进程退出而未被前端收到——确认层以发出为准。
+#[tauri::command]
+fn updater_restart(app: AppHandle, confirmed: bool) -> Result<serde_json::Value, String> {
+    if !confirmed {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "error": "重启需经用户确认（confirmed=true）；未重启前保持当前版本运行",
+        }));
+    }
+    app.request_restart();
+    Ok(serde_json::json!({ "ok": true }))
+}
+
+/// 启动延迟检查（ISS-040B）：std 线程 + async_runtime::block_on（不引 tokio
+/// 直依赖）。只 emit updater-state 状态事件，绝不弹窗/下载/安装；失败也只
+/// 是状态行里的 unreachable/failed 文案，不阻塞启动（setup 即返回）。
+fn spawn_updater_startup_check(app: &AppHandle) {
+    let handle = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("fathom-updater-startup".to_string())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(UPDATER_STARTUP_DELAY_S));
+            let store = handle.state::<UpdaterState>();
+            let status =
+                tauri::async_runtime::block_on(perform_updater_check(&handle, Some(store.inner())));
+            if let Err(err) = handle.emit(UPDATER_EVENT, status) {
+                eprintln!("[updater] 启动延迟检查状态事件发送失败：{err}");
+            }
+        });
+    if let Err(err) = spawned {
+        // 线程起不来不阻塞启动：手动检查入口仍在。
+        eprintln!("[updater] 启动延迟检查线程创建失败（手动检查仍可用）：{err}");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -435,6 +767,12 @@ pub fn run() {
         // 前端调用必被 ACL 拒绝。插件前缀 opener 由前端命令名
         // plugin:opener|open_url 决定，不能改成 fathom。
         .plugin(tauri_plugin_opener::init())
+        // ISS-040B：应用内更新两插件。updater 提供 Rust 侧检查/下载/验签/安装
+        // （经 UpdaterExt，不经前端直调插件命令；2.x 无自由 init()，注册入口是
+        // Builder::new().build()）；process 为发行态前端 relaunch 预留（本壳
+        // 重启走 updater_restart → request_restart 同一入口）。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             update_tray_status,
             helper_status,
@@ -443,6 +781,9 @@ pub fn run() {
             autostart::autostart_register_plan,
             autostart::autostart_register,
             autostart::autostart_unregister,
+            updater_check,
+            updater_install,
+            updater_restart,
         ])
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -465,6 +806,8 @@ pub fn run() {
                 .map(PathBuf::from)
                 .unwrap_or_else(default_runtime_dir);
             app.manage(HelperState(Mutex::new(Some(HelperHandle::new(runtime_dir)))));
+            // ISS-040B：更新候选暂存句柄（启动延迟检查/手动检查写入）。
+            app.manage(UpdaterState(Mutex::new(None)));
 
             let status = MenuItem::with_id(app, "status", "Fathom 启动中…", false, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
@@ -516,6 +859,9 @@ pub fn run() {
             // 不送达 Esc keydown 的壳层修复；机制见 ESC_FORWARD_MENU_ID 注释）
             #[cfg(target_os = "macos")]
             attach_escape_forward_menu_item(handle);
+
+            // ISS-040B：启动延迟检查（≥10s，仅状态提示；见 spawn 函数文档）。
+            spawn_updater_startup_check(handle);
 
             Ok(())
         })
@@ -656,5 +1002,155 @@ mod tests {
         // keyEquivalent \\u{1b} + 空 modifier mask，只认领无修饰 Esc）。
         assert_eq!(ESC_FORWARD_ACCELERATOR, "Escape");
         assert_eq!(ESC_FORWARD_MENU_ID, "esc-forward");
+    }
+
+    /// ISS-040B：updater/process 的名字合同（同 opener 测试的限制：非注册
+    /// 护栏，只钉上游 `Plugin::name()` 与前端命令前缀一致）。绑定真实插件
+    /// 实例，不是字面量自证。
+    #[test]
+    fn updater_and_process_plugin_names_match_registration_prefixes() {
+        let updater = tauri_plugin_updater::Builder::new().build::<tauri::Wry>();
+        assert_eq!(updater.name(), "updater");
+        let process = tauri_plugin_process::init::<tauri::Wry>();
+        assert_eq!(process.name(), "process");
+        for name in ["updater", "process"] {
+            assert!(
+                REGISTERED_PLUGIN_NAMES.contains(&name),
+                "名字合同漂移：上游插件名 {name:?} 不在本壳清单 {REGISTERED_PLUGIN_NAMES:?}"
+            );
+        }
+    }
+
+    /// ISS-040B：版本比较分支——相等/更高/更低/数字语义（0.10 > 0.9，
+    /// 非字典序）/段数补零。
+    #[test]
+    fn updater_version_cmp_branches() {
+        use std::cmp::Ordering;
+        assert_eq!(version_cmp("0.3.0", "0.3.0"), Ordering::Equal);
+        assert_eq!(version_cmp("0.4.0", "0.3.0"), Ordering::Greater);
+        assert_eq!(version_cmp("0.3.0", "0.4.0"), Ordering::Less);
+        assert_eq!(version_cmp("0.10.0", "0.9.9"), Ordering::Greater);
+        assert_eq!(version_cmp("1.0.0", "1.0"), Ordering::Equal); // 段数补零
+        assert_eq!(version_cmp("0.3.1", "0.3"), Ordering::Greater);
+    }
+
+    /// ISS-040B：状态映射①（版本分支）——无远端/相等/更低都归 up_to_date
+    /// （公告不高于当前不是错误），更高才是 available。
+    #[test]
+    fn updater_state_from_versions_maps_equal_and_lower_to_up_to_date() {
+        assert_eq!(
+            updater_state_from_versions("0.3.0", None),
+            UpdaterCheckState::UpToDate
+        );
+        assert_eq!(
+            updater_state_from_versions("0.3.0", Some("0.3.0")),
+            UpdaterCheckState::UpToDate
+        );
+        assert_eq!(
+            updater_state_from_versions("0.3.0", Some("0.2.9")),
+            UpdaterCheckState::UpToDate
+        );
+        assert_eq!(
+            updater_state_from_versions("0.3.0", Some("0.4.0")),
+            UpdaterCheckState::Available
+        );
+    }
+
+    /// ISS-040B：状态映射②（错误分支）——unconfigured 与 unreachable 必须
+    /// 各自成态（验收项），failed 是其余错误的兜底，三者互不相同。
+    #[test]
+    fn updater_state_from_error_distinguishes_unconfigured_and_unreachable() {
+        let unconfigured = updater_state_from_error(UpdaterErrorKind::Unconfigured);
+        let unreachable = updater_state_from_error(UpdaterErrorKind::Network);
+        let failed = updater_state_from_error(UpdaterErrorKind::Other);
+        assert_eq!(unconfigured, UpdaterCheckState::Unconfigured);
+        assert_eq!(unreachable, UpdaterCheckState::Unreachable);
+        assert_eq!(failed, UpdaterCheckState::Failed);
+        assert_ne!(unconfigured, unreachable);
+        assert_ne!(unconfigured.as_str(), unreachable.as_str());
+    }
+
+    /// ISS-040B：错误适配层——EmptyEndpoints（无 endpoints）归 Unconfigured，
+    /// 网络/传输层错误归 Network，其余（如日期格式化失败）归 Other。
+    /// 构造真实插件错误变体，不是自证枚举。
+    #[test]
+    fn updater_error_kind_adapter_maps_known_variants() {
+        use tauri_plugin_updater::Error;
+        assert_eq!(
+            updater_error_kind(&Error::EmptyEndpoints),
+            UpdaterErrorKind::Unconfigured
+        );
+        assert_eq!(
+            updater_error_kind(&Error::Network("dns lookup failed".to_string())),
+            UpdaterErrorKind::Network
+        );
+        assert_eq!(
+            updater_error_kind(&Error::FormatDate),
+            UpdaterErrorKind::Other
+        );
+    }
+
+    /// ISS-040B：状态 JSON 的字段合同——available 携带 available_version 与
+    /// 非空 notes、无 error；unreachable 携带 error、无 available_version；
+    /// 未配置与不可达的 state 字符串不同（前端按此分流文案）。
+    #[test]
+    fn updater_status_json_carries_contract_fields() {
+        let available = updater_status_json(
+            UpdaterCheckState::Available,
+            "0.3.0",
+            Some("0.4.0"),
+            Some("修复若干问题"),
+            None,
+        );
+        assert_eq!(available["state"], "available");
+        assert_eq!(available["current_version"], "0.3.0");
+        assert_eq!(available["available_version"], "0.4.0");
+        assert_eq!(available["notes"], "修复若干问题");
+        assert!(available.get("error").is_none(), "available 态不应携带 error");
+
+        let unreachable = updater_status_json(
+            UpdaterCheckState::Unreachable,
+            "0.3.0",
+            None,
+            None,
+            Some("error sending request"),
+        );
+        assert_eq!(unreachable["state"], "unreachable");
+        assert_eq!(unreachable["error"], "error sending request");
+        assert!(unreachable.get("available_version").is_none());
+
+        let unconfigured = updater_status_json(
+            UpdaterCheckState::Unconfigured,
+            "0.3.0",
+            None,
+            None,
+            Some("Updater does not have any endpoints set."),
+        );
+        assert_eq!(unconfigured["state"], "unconfigured");
+        assert_ne!(
+            unconfigured["state"].as_str().unwrap(),
+            unreachable["state"].as_str().unwrap()
+        );
+
+        // 空 notes 不落键：前端不需要分辨 null 与缺失。
+        let bare = updater_status_json(
+            UpdaterCheckState::Available,
+            "0.3.0",
+            Some("0.4.0"),
+            Some("   "),
+            None,
+        );
+        assert!(bare.get("notes").is_none());
+    }
+
+    /// ISS-040B：启动延迟合同——常量必须 ≥10s（不静默原则的「延迟」半边），
+    /// 事件名与前端 settings.js 监听名一致。
+    #[test]
+    fn updater_startup_delay_meets_contract_and_event_name_stable() {
+        assert!(
+            UPDATER_STARTUP_DELAY_S >= 10,
+            "启动延迟检查必须 ≥10s（合同），当前 {UPDATER_STARTUP_DELAY_S}s"
+        );
+        assert_eq!(UPDATER_EVENT, "updater-state");
     }
 }

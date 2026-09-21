@@ -13,6 +13,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
+# ISS-040B：应用内更新接线。仅这两个新 crate（合同边界，锁版本进 Cargo.lock）。
+# - updater：检查/下载/验签/安装（minisign，公钥在 tauri.conf.json plugins.updater；
+#   私钥由 CI/PM 发行时经 TAURI_SIGNING_PRIVATE_KEY 注入，绝不入仓库）。
+# - process：relaunch（updater_restart 经 request_restart 协调退出与重启）。
+# 本机缓存实际解析：updater 2.10.1 / process 2.3.1（合同预估 2.3.1 为旧信息，
+# 同属 "2" 线，--locked --offline 门禁不受影响）。
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

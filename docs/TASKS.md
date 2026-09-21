@@ -135,7 +135,7 @@
 | ISS-070 | 定时扫描再次超时（4h 墙钟用尽）且磁盘接近满载的可诊断性缺口 | P0 | M1 | DONE | ISS-061、ISS-064 |
 | ISS-071 | `test_timeout_message_carries_last_output_path` 高负载下间歇失败（时序竞态） | P1 | M1 | DONE | ISS-064、ISS-070 |
 | ISS-040A | latest.json 双架构生成与 fail-closed 校验工具（ISS-040 代码切片） | P2 | M2 | DONE | ISS-037 |
-| ISS-040B | updater 插件接线与更新协调切片（ISS-040 代码切片） | P1 | M2 | READY | ISS-040A、ISS-010B |
+| ISS-040B | updater 插件接线与更新协调切片（ISS-040 代码切片） | P1 | M2 | REVIEW | ISS-040A、ISS-010B |
 | ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | DONE | ISS-028、ISS-065 |
 | ISS-067 | `/api/snapshots` 补齐 vanished_count 与 exclude_names（ISS-002A 接缝） | P1 | M1 | DONE | ISS-066、ISS-002A |
 | ISS-068 | Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝） | P1 | M1 | DONE | ISS-002A |
@@ -1317,22 +1317,22 @@
 
 ### ISS-040B · updater 插件接线与更新协调切片（ISS-040 代码切片）
 
-- **状态**：READY（P1/M2）；来源：父卡 ISS-040 的「插件/最小 capability、Rust 更新协调模块、设置页更新状态」部分（040A 只交付清单工具；076 清单 §4.2 证实接线零命中）。登记：2026-09-22 PM（Wave37）。代码依赖已满足（040A/010B DONE）；实机更新与 HTTPS 源留 G10 人工门，不因父卡未 DONE 阻塞代码切片。
+- **状态**：REVIEW（P1/M2，2026-09-22 worker 实现完成待审；分支 `iss-040b-updater`）；来源：父卡 ISS-040 的「插件/最小 capability、Rust 更新协调模块、设置页更新状态」部分（040A 只交付清单工具；076 清单 §4.2 证实接线零命中）。登记：2026-09-22 PM（Wave37）。代码依赖已满足（040A/010B DONE）；实机更新与 HTTPS 源留 G10 人工门，不因父卡未 DONE 阻塞代码切片。
 - **目标**：壳内具备「手动/延迟检查更新 → 结构化状态 → 用户确认下载安装 → 明确重启」的完整代码路径，全程不静默；未配置/不可达时给出明确可恢复的失败态，不伪装成功。
-- **范围**：`apps/desktop/src-tauri/Cargo.toml`（+`tauri-plugin-updater`/`tauri-plugin-process`，本机缓存 2.3.1，`--locked`）、`tauri.conf.json`（plugins.updater：dev 公钥 + `https://updates.invalid/...` 占位 endpoint（关闭语义）+ createUpdaterArtifacts；process 权限）、`src/lib.rs`（插件初始化 + `updater_check`/`updater_install`/`updater_restart` 命令与状态映射）、`capabilities/default.json`（最小 updater/process 权限）、`frontend/modules/pages/settings.js`（更新状态区：检查按钮/状态/版本与 notes/安装确认层/重启确认）、Rust 单测、前端检查断言、`tests/`（如需守护）、gen/schemas 再生、计数同步。
+- **范围**：`apps/desktop/src-tauri/Cargo.toml`（+`tauri-plugin-updater`/`tauri-plugin-process`，`--locked`）、`tauri.conf.json`（plugins.updater：dev 公钥 + `https://updates.invalid/...` 占位 endpoint（关闭语义）+ createUpdaterArtifacts）、`src/lib.rs`（插件初始化 + `updater_check`/`updater_install`/`updater_restart` 命令与状态映射）、`capabilities/default.json` + `permissions/updater.toml`（恰 3 条应用级最小权限）、`frontend/modules/pages/settings.js`（更新状态区）、Rust 单测、前端检查断言、`tests/test_tauri_updater_acl.py` 守护、gen/schemas 再生、计数同步。
 - **实施边界**：
-  - **keypair**：构建/测试用 dev keypair（`cargo tauri signer generate` 生成于仓库外如 `~/.config/fathom-dev-updater/`），公钥入 `tauri.conf.json`，**私钥与密码绝不入 git/日志/RESULT/产物清单**；生产 keypair 是发行时用户决策（G10），本切片不生成不承诺
-  - **endpoint**：占位 `updates.invalid`（RFC 保留域，永不解析）表「生产更新源关闭」；运行时检查失败 → 「未配置/不可达」明确失败态；测试用 fake updater 响应（Rust 侧注入/mock，不建真实 HTTPS 源）
-  - **不静默**：检查由用户点击或启动后延迟触发（≥10s）；下载安装必须确认层；重启单独确认；取消/失败全部回落可恢复态
-  - ACL 面精确：只加 updater 检查/安装与 process relaunch 所需最小权限（恰 N 条，守护测试同 010B-ACL 风格）
-  - cargo 新增 crate 仅限上述两个（锁版本进 Cargo.lock）；`--locked --offline` 构建门保持
+  - **keypair**：构建/测试用 dev keypair（PM 生成于仓库外），公钥入 `tauri.conf.json`，**私钥与密码绝不入 git/日志/RESULT/产物清单**；生产 keypair 是发行时用户决策（G10），本切片不生成不承诺
+  - **endpoint**：占位 `updates.invalid`（RFC 保留域，永不解析）表「生产更新源关闭」；运行时检查失败 → 「未配置/不可达」明确失败态；测试用 mock 桥断言（不建真实 HTTPS 源）
+  - **不静默**：检查由用户点击或启动后延迟触发（15s，≥10s 合同）；下载安装必须确认层（confirmed=true）；重启单独确认；取消/失败全部回落可恢复态
+  - ACL 面精确：恰 3 条应用级权限 `allow-updater-check/-install/-restart`（010B-ACL 同型）；**不授**插件级 `updater:*`/`process:*` 权限——更新动作只在可信 Rust 壳内执行，回环远程页面不获得宽泛 updater 权限（ISS-040 父卡边界，守护测试钉住）
+  - cargo 新增 crate 仅限上述两个（锁版本：updater 2.10.1 / process 2.3.1，Cargo.lock 收录）；`--locked --offline` 构建门保持
   - GUI 实机操作按用户规则由 PM 亲自执行；worker 交代码+单测+mock 断言
 - **验收**：
-  - [ ] 状态映射纯函数（未配置/最新/可用/下载中/已就绪/失败）与版本/错误分支有 Rust 单测；未配置与不可达各自明确失败态（非 panic、非伪装成功）
-  - [ ] `cargo build/test --locked --offline` 全绿（含新 crate）；ACL 恰最小面有守护测试；gen/schemas 与配置一致
-  - [ ] 设置页更新区：检查→状态、可用→确认层→安装、重启确认、取消回落（前端检查新增断言，先红后绿）；无 emoji
-  - [ ] dev 私钥零泄漏验证（grep 全 diff/产物清单无私钥内容；RESULT 只记公钥指纹与生成路径类别）；计数同步
-- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-040A（latest.json 工具）、ISS-040（父卡与 G10）、DEC-022（updater 签名仍强制）、076 清单 §4.2/§6-F1。
+  - [x] 状态映射纯函数与版本/错误分支有 Rust 单测；未配置与不可达各自明确失败态（非 panic、非伪装成功）。证据：lib.rs `updater_state_from_versions`/`updater_state_from_error`/`updater_error_kind`/`version_cmp` 纯函数 + 7 项单测（版本相等/更高/更低/数字语义、EmptyEndpoints→unconfigured、Network→unreachable、FormatDate→failed、状态 JSON 字段合同、启动延迟 ≥10s 与事件名合同、updater/process 插件名合同）；检查态 `unconfigured/unreachable/up_to_date/available/failed` 结构化 JSON，`downloading/installed` 为安装命令与状态事件的补充态（卡内六态在前端 UPDATER_STATE_LABELS 全覆盖）。
+  - [x] `cargo build/test --locked --offline` 全绿（含新 crate）；ACL 恰最小面有守护测试；gen/schemas 与配置一致。证据：`bash scripts/ci_cargo_locked.sh` exit 0；`cargo test --locked --offline` exit 0 **49 passed**（基线 42+7）；`tests/test_tauri_updater_acl.py` 8 例（恰 3 条、TOML↔generate_handler↔合同三方一致、无插件级 updater/process 权限、既有权限与 remote urls 基线不回退）；pytest 全量 **655 passed = 647+8**（PM 代跑：worker 白名单无 ci_pytest.sh，如实标注）；gen/schemas 四文件随 tauri-build 再生入库。写域例外（ask msg_5446bfa53e74 授权，PM 代办通道）：`permissions/updater.toml` 由 PM 代写落盘；Cargo.lock 收录经 PM 代跑 `cargo build --offline`（exit 0）；ISS-077 esc 脚本 S2 冻结基线同步由 PM 代贴（Wave35 同型先例，esc exit 0）。
+  - [x] 设置页更新区：检查→状态（含当前版本）、可用→版本+notes+「下载并安装」确认层→安装后「重启以完成」独立确认、取消回落、无桥浏览器只读降级；无 emoji。证据：`node scripts/verify_frontend_refresh.cjs` **105 passed / 0 failed**（既有 97 实测 +8 应用更新断言：浏览器降级、unconfigured 态、available 版本+notes、确认层、取消不发 updater_install、updater_install {confirmed:true}、重启取消、updater_restart {confirmed:true}）；**先红后绿**：临时摘除 loadUpdater 接线实测新断言红（updater-panel 缺失超时）后恢复转绿。
+  - [x] dev 私钥零泄漏验证；计数同步。证据：grep 全部产物无私钥内容（唯一命中是 lib.rs 注释里的环境变量名 `TAURI_SIGNING_PRIVATE_KEY`；公钥 base64 仅出现于 tauri.conf.json）；RESULT 只记公钥指纹（minisign key id `45C93B13AC02857A`）与「仓库外 PM 保管、worker 零接触」类别。计数：pytest 647→**655** 四处同步（ci_pytest.sh、ci.yml env+步骤名、TESTING.md、ARCHITECTURE.md）；前端 94→**105**（既有账面 94 与实测 97 的 3 项口径差已在 ARCHITECTURE 注明）；cargo 42→**49**。
+- **证据/接续**：三验证命令 exit 0（ci_cargo_locked / cargo test 49 / node 105）；ci_pytest 655 与 esc S2 基线由 PM 代跑（白名单外，如实标注）。**能证明**：状态映射与 ACL 面的代码合同、mock 桥下的前端协调流、离线锁定构建含新 crate。**不能证明**：真实 HTTPS 更新源可达、真实下载/验签/安装/重启（G10 实机门，留父卡 ISS-040）；启动延迟检查的实机事件送达（代码路径+合同单测在，GUI 由 PM 实机）。关联：ISS-040A（latest.json 工具）、ISS-040（父卡与 G10）、DEC-022（updater 签名仍强制）、076 清单 §4.2/§6-F1。
 
 
 ### ISS-040 · 应用内更新与双架构更新清单

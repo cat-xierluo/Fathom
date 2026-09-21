@@ -9,6 +9,7 @@ venv 绑定 homebrew Python 3.14，brew 大版本升级后需重建 venv 并重�
 
 from __future__ import annotations
 
+import plistlib
 import subprocess
 import sys
 from pathlib import Path
@@ -548,6 +549,105 @@ def unregister_release(
     return outcome
 
 
+# ---------------------------------------------------------------------------
+# ISS-016B：服务重载一致性（只读漂移检测）。
+#
+# 硬边界（与切片合同一致）：
+# - 本节**只读**：解析已注册 scan plist 的计划时间、比较生效值；绝不写
+#   文件、绝不执行任何命令（tests/test_config_service_reload.py 的静态
+#   探针与 monkeypatch 守卫钉住）。
+# - 不确定就报 unknown，绝不猜：plist 缺失 = not_registered（确定态）；
+#   读取/解析失败、缺 StartCalendarInterval、Hour/Minute 缺失或越界 =
+#   unknown。真实重装只经 010B 桥的既有 confirmed 流，本节不新增任何
+#   系统写入口。
+# ---------------------------------------------------------------------------
+
+
+def read_registered_scan_time(launchagents_dir=None) -> dict:
+    """只读解析已注册 scan plist 的计划时间（HH:MM）。
+
+    返回 ``{"read": "ok"|"not_registered"|"unknown", "scan_time": "HH:MM"|None,
+    "plist_path": str}``：
+
+    - plist 文件不存在 → ``read="not_registered"``（未注册是确定状态）；
+    - 读取失败 / XML 解析失败 / 缺 StartCalendarInterval / Hour、Minute
+      缺失、类型异常或越界 / StartCalendarInterval 为数组形态（launchd
+      允许但本切片不猜语义）→ ``read="unknown"``，``scan_time=None``。
+
+    目录默认 ``config.LAUNCHAGENTS_DIR``（dev 与发行态同一路径约定）；
+    可注入目录供测试隔离。任何异常都被吞掉并降级为 unknown——本函数
+    绝不向调用方抛错，也绝不产生任何写入。
+    """
+    agents = Path(launchagents_dir) if launchagents_dir is not None else config.LAUNCHAGENTS_DIR
+    path = agents / f"{config.SCAN_LABEL}.plist"
+    result: dict = {"read": "unknown", "scan_time": None, "plist_path": str(path)}
+    if not path.exists():
+        result["read"] = "not_registered"
+        return result
+    try:
+        parsed = plistlib.loads(path.read_bytes())
+    except Exception:
+        # 损坏 plist / 权限受限 / 编码异常 → unknown（绝不猜）。
+        return result
+    if not isinstance(parsed, dict):
+        return result
+    interval = parsed.get("StartCalendarInterval")
+    if not isinstance(interval, dict):
+        return result
+    hour = interval.get("Hour")
+    minute = interval.get("Minute")
+    # bool 是 int 的子类（plistlib 会把 <true/> 解析成 True），必须显式拒。
+    if isinstance(hour, bool) or isinstance(minute, bool):
+        return result
+    if not isinstance(hour, int) or not isinstance(minute, int):
+        return result
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return result
+    result["read"] = "ok"
+    result["scan_time"] = f"{hour:02d}:{minute:02d}"
+    return result
+
+
+def service_reload_state(current_scan_time, registered) -> dict:
+    """纯函数：当前生效计划时间 vs 已注册计划时间的一致性判定。
+
+    ``registered`` 是 ``read_registered_scan_time`` 的返回值（或同形
+    dict）。返回 ``{"state", "registered_scan_time", "current_scan_time"}``，
+    state ∈ ``in_sync`` / ``drift`` / ``not_registered`` / ``unknown``：
+
+    - ``read="not_registered"`` → not_registered；
+    - ``read!="ok"`` 或 registered 形状异常 → unknown；
+    - ``current_scan_time`` 不是合法 HH:MM（config 校验链的同一模式，
+      见 ``config._SCAN_TIME_PATTERN``）→ unknown（绝不猜）；
+    - 两者时分完全一致 → in_sync；任何不一致（含差 1 分钟）→ drift。
+    """
+    result: dict = {
+        "state": "unknown",
+        "registered_scan_time": None,
+        "current_scan_time": current_scan_time if isinstance(current_scan_time, str) else None,
+    }
+    read = registered.get("read") if isinstance(registered, dict) else None
+    if read == "not_registered":
+        result["state"] = "not_registered"
+        return result
+    if read != "ok":
+        return result  # unknown（含形状异常）：绝不猜
+    registered_time = registered.get("scan_time")
+    if not isinstance(registered_time, str):
+        return result
+    if config._SCAN_TIME_PATTERN.fullmatch(registered_time) is None:
+        return result  # 注册时间本身不合法 → unknown（绝不猜）
+    result["registered_scan_time"] = registered_time
+    if not isinstance(current_scan_time, str):
+        return result  # 生效值不是字符串（None/数值等）→ unknown
+    match = config._SCAN_TIME_PATTERN.fullmatch(current_scan_time)
+    if match is None:
+        return result  # 生效值非法 → unknown（正常路径不会发生，边界防御）
+    normalized_current = f"{int(match.group(1)):02d}:{int(match.group(2)):02d}"
+    result["state"] = "in_sync" if normalized_current == registered_time else "drift"
+    return result
+
+
 __all__ = [
     "_scan_plist",
     "_web_plist",
@@ -558,4 +658,6 @@ __all__ = [
     "release_plan",
     "register_release",
     "unregister_release",
+    "read_registered_scan_time",
+    "service_reload_state",
 ]

@@ -25,9 +25,16 @@
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:7952 http://localhost:7952; script-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ1QzkzQjEzQUMwMjg1N0YKUldSL2hRS3NFenZKUlg3QTNhaWJ3Zk9JenZtRTN6QUNxdmZPaHJwY2FUWkNlRjY4NHNaanBHTHQK",
+      "endpoints": ["https://updates.invalid/fathom/latest.json"]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "createUpdaterArtifacts": true,
     "resources": {
       "resources/helper/fathom-helper/": "helper/"
     },

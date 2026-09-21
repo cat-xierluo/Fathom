@@ -1997,10 +1997,172 @@ async function main() {
       JSON.stringify({ registerArgs: registerInvoke?.args, statusCount3, afterRegister }).slice(0, 200));
     await tpage3.close();
 
+    /* ---------- ISS-040B 应用更新：浏览器降级 + mock 桥全流程 ----------
+     * 浏览器模式（无桥）：只读降级说明，不渲染检查按钮/假入口。
+     * mock 桥：unconfigured 态状态行（含当前版本、无安装入口）；available 态
+     * 版本+notes+确认层；取消回落（不发 updater_install）；确认后
+     * updater_install 携 confirmed:true；安装成功进入「重启以完成」独立确认，
+     * 取消不发 updater_restart、再确认才携带 confirmed:true 调用。 */
+    await setMode("dual");
+    await openPage("#/settings");
+    await page.waitForSelector("#updater-panel");
+    const updaterBrowser = await page.evaluate(() => ({
+      note: document.querySelector("[data-test='updater-browser-note']")?.textContent || "",
+      hasCheckBtn: Boolean(document.getElementById("btn-updater-check")),
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+    }));
+    record("updater-browser-mode-readonly-degrade",
+      updaterBrowser.note.includes("桌面应用的设置页") &&
+        !updaterBrowser.hasCheckBtn && !updaterBrowser.hasInstallBtn,
+      JSON.stringify(updaterBrowser).slice(0, 160));
+
+    const tpage4 = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const tpage4Errors = [];
+    tpage4.on("pageerror", (e) => tpage4Errors.push(e.message));
+    await tpage4.addInitScript(`
+      window.__tauriMock4 = { invokes: [] };
+      Object.defineProperty(window, "__TAURI__", { value: {
+        core: { invoke: (cmd, args) => {
+          window.__tauriMock4.invokes.push({ cmd, args });
+          if (cmd === "updater_check") {
+            return Promise.resolve(window.__updaterCheck ||
+              { state: "unconfigured", current_version: "0.3.0" });
+          }
+          if (cmd === "updater_install") {
+            return Promise.resolve({ ok: true, state: "installed",
+              current_version: "0.3.0", available_version: "0.4.0" });
+          }
+          if (cmd === "updater_restart") {
+            return Promise.resolve({ ok: true });
+          }
+          if (cmd === "autostart_status") {
+            return Promise.resolve({ scan: "disabled", web: "disabled", login_item: "unknown" });
+          }
+          return Promise.resolve();
+        } },
+        event: { listen: (name, handler) => {
+          (window.__tauriListeners = window.__tauriListeners || {})[name] = handler;
+          return Promise.resolve(0);
+        } },
+      }, configurable: true });
+    `);
+    await tpage4.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    await tpage4.waitForSelector("[data-test='updater-check-btn']");
+
+    // 1) unconfigured：状态行含当前版本与未配置文案，且不出现安装入口。
+    await tpage4.click("[data-test='updater-check-btn']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("未配置"));
+    const updUnconf = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      hasInstall: Boolean(document.getElementById("btn-updater-install")),
+      checkArgs: (window.__tauriMock4.invokes || [])
+        .filter((c) => c && c.cmd === "updater_check").slice(-1)[0]?.args,
+    }));
+    record("updater-unconfigured-state-shown",
+      updUnconf.status.includes("未配置") && updUnconf.status.includes("0.3.0") &&
+        !updUnconf.hasInstall && JSON.stringify(updUnconf.checkArgs) === "{}",
+      JSON.stringify(updUnconf).slice(0, 200));
+
+    // 2) available：版本 + notes + 「下载并安装」入口。
+    await tpage4.evaluate(() => {
+      window.__updaterCheck = { state: "available", current_version: "0.3.0",
+        available_version: "0.4.0", notes: "演示版本说明" };
+    });
+    await tpage4.click("[data-test='updater-check-btn']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("有可用更新"));
+    const updAvail = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      available: document.querySelector("[data-test='updater-available']")?.textContent || "",
+      notes: document.querySelector("[data-test='updater-notes']")?.textContent || "",
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+    }));
+    record("updater-available-shows-version-and-notes",
+      updAvail.status.includes("0.3.0") && updAvail.available.includes("0.4.0") &&
+        updAvail.notes.includes("演示版本说明") && updAvail.hasInstallBtn,
+      JSON.stringify(updAvail).slice(0, 200));
+
+    // 3) 确认层：版本可审，确认/取消都在。
+    await tpage4.click("[data-test='updater-install-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    const updLayer = await tpage4.evaluate(() => ({
+      text: document.querySelector("[data-test='updater-confirm']")?.textContent || "",
+      hasYes: Boolean(document.getElementById("updater-confirm-yes")),
+      hasNo: Boolean(document.getElementById("updater-confirm-no")),
+    }));
+    record("updater-install-opens-confirm-layer",
+      updLayer.text.includes("0.4.0") && updLayer.text.includes("验签") &&
+        updLayer.hasYes && updLayer.hasNo,
+      JSON.stringify(updLayer).slice(0, 200));
+
+    // 4) 取消回落：确认层收起，不发 updater_install，available 信息保留。
+    await tpage4.click("[data-test='updater-confirm-no']");
+    await tpage4.waitForFunction(() =>
+      document.querySelector("[data-test='updater-confirm']")?.hidden === true);
+    const updCancel = await tpage4.evaluate(() => ({
+      layerHidden: document.querySelector("[data-test='updater-confirm']")?.hidden === true,
+      installInvokes: (window.__tauriMock4.invokes || [])
+        .filter((c) => c && c.cmd === "updater_install").length,
+      stillAvailable: (document.querySelector("[data-test='updater-available']")?.textContent || "").includes("0.4.0"),
+    }));
+    record("updater-install-cancel-falls-back",
+      updCancel.layerHidden && updCancel.installInvokes === 0 && updCancel.stillAvailable,
+      JSON.stringify(updCancel).slice(0, 160));
+
+    // 5) 确认执行：updater_install 必须携带 confirmed:true；成功后进入已安装态。
+    await tpage4.click("[data-test='updater-install-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-confirm-yes']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("重启后生效"));
+    const updInstall = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      installed: document.querySelector("[data-test='updater-installed']")?.textContent || "",
+      hasRestartBtn: Boolean(document.getElementById("btn-updater-restart")),
+      installInvoke: (window.__tauriMock4.invokes || [])
+        .find((c) => c && c.cmd === "updater_install"),
+    }));
+    record("updater-install-invoked-with-confirmed",
+      updInstall.installInvoke?.args?.confirmed === true &&
+        updInstall.status.includes("重启后生效") &&
+        updInstall.installed.includes("0.4.0") && updInstall.hasRestartBtn,
+      JSON.stringify(updInstall).slice(0, 200));
+
+    // 6) 重启确认：取消不发 updater_restart、保持已安装态。
+    await tpage4.click("[data-test='updater-restart-btn']");
+    await tpage4.waitForSelector("[data-test='updater-restart-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-restart-no']");
+    await tpage4.waitForFunction(() =>
+      document.querySelector("[data-test='updater-restart-confirm']")?.hidden === true);
+    const updRestartCancel = await tpage4.evaluate(() => ({
+      layerHidden: document.querySelector("[data-test='updater-restart-confirm']")?.hidden === true,
+      restartInvokes: (window.__tauriMock4.invokes || [])
+        .filter((c) => c && c.cmd === "updater_restart").length,
+      stillInstalled: (document.querySelector("[data-test='updater-installed']")?.textContent || "").length > 0,
+    }));
+    record("updater-restart-cancel-keeps-installed",
+      updRestartCancel.layerHidden && updRestartCancel.restartInvokes === 0 &&
+        updRestartCancel.stillInstalled,
+      JSON.stringify(updRestartCancel).slice(0, 160));
+
+    // 7) 再确认：updater_restart 携带 confirmed:true。
+    await tpage4.click("[data-test='updater-restart-btn']");
+    await tpage4.waitForSelector("[data-test='updater-restart-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-restart-yes']");
+    await tpage4.waitForFunction(() => (window.__tauriMock4.invokes || [])
+      .some((c) => c && c.cmd === "updater_restart"));
+    const restartInvoke = await tpage4.evaluate(() => (window.__tauriMock4.invokes || [])
+      .find((c) => c && c.cmd === "updater_restart"));
+    record("updater-restart-confirmed-invoke",
+      restartInvoke?.args?.confirmed === true && tpage4Errors.length === 0,
+      JSON.stringify(restartInvoke));
+    await tpage4.close();
+
     /* ---------- 汇总 ---------- */
     record("no-unhandled-page-errors",
-      pageErrors.length === 0 && tauriErrors.length === 0,
-      [...pageErrors, ...tauriErrors].join("; "));
+      pageErrors.length === 0 && tauriErrors.length === 0 && tpage4Errors.length === 0,
+      [...pageErrors, ...tauriErrors, ...tpage4Errors].join("; "));
     const failed = checks.filter((c) => !c.ok);
     process.stdout.write(JSON.stringify({
       ok: failed.length === 0,

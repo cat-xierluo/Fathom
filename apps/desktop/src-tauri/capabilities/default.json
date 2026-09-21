@@ -17,6 +17,9 @@
     "allow-autostart-register-plan",
     "allow-autostart-register",
     "allow-autostart-unregister",
+    "allow-updater-check",
+    "allow-updater-install",
+    "allow-updater-restart",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "x-apple.systempreferences:*" }]

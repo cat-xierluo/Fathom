@@ -1,0 +1,20 @@
+# Fathom 应用级权限：应用内更新的自定义包装命令（ISS-040B）。
+# tauri 2.11.5 对自定义命令必须在本目录定义权限并在 capability 引用，
+# tauri-build 编译期校验；插件内置权限（updater:allow-check 等）属于
+# plugin:updater|* 命令，不覆盖本壳的包装命令。设计由 worker 在
+# ask msg_5446bfa53e74 中提出，PM 代写落盘（写域扩展走 PM 代办通道）。
+
+[[permission]]
+identifier = "allow-updater-check"
+description = "允许前端触发检查更新（经壳侧协调模块返回结构化状态，不静默）。"
+commands.allow = ["updater_check"]
+
+[[permission]]
+identifier = "allow-updater-install"
+description = "允许前端在用户确认后执行下载并安装更新（含签名校验，失败可恢复）。"
+commands.allow = ["updater_install"]
+
+[[permission]]
+identifier = "allow-updater-restart"
+description = "允许前端在用户单独确认后重启应用以完成更新。"
+commands.allow = ["updater_restart"]

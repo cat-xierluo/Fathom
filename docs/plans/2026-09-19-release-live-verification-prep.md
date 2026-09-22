@@ -2,14 +2,14 @@
 
 本文件是可交接、可一次执行的发行实测准备清单：每个剩余发行门给出唯一父卡、前置条件、候选/产物标识、操作步骤、预期结果、失败处理与清理办法，并区分可自动验证与必须人工执行的部分。任务状态、依赖与可领取判断仍以 [TASKS](../TASKS.md) 索引为唯一来源，本文件不复制状态队列。
 
-基线：main `a59702d82f5e664675409c70a1946d671b17142a`（2026-09-19）。生效范围按 [DEC-022](../DECISIONS.md)：**Apple Developer ID 签名/公证/stapling 延期**（不作为当前候选阻断项，也不能勾为通过）；**updater 签名防绕过、双架构、保留 quarantine 的下载首启、升级恢复、用户批准公开仍强制**。arm64 本地包与双架构发行分别列出（§1.2 与 G11）。
+初版基线：main `a59702d82f5e664675409c70a1946d671b17142a`（2026-09-19）；2026-09-22 按 `82b0616c557a42961c07cd9344bd0e64e2a9c6ab` 刷新实现前置与接续指针。原始准备证据保留在 ISS-076 卡，本清单不替代当前任务状态。生效范围按 [DEC-022](../DECISIONS.md)：**Apple Developer ID 签名/公证/stapling 延期**（不作为当前候选阻断项，也不能勾为通过）；**updater 签名防绕过、双架构、保留 quarantine 的下载首启、升级恢复、用户批准公开仍强制**。arm64 本地包与双架构发行分别列出（§1.2 与 G11）。
 
 ## 0. 执行顺序（交接给下一个执行者）
 
 1. 按 §1 在固定 commit 重建发行候选并复跑 22 段 verify——这是所有实机门（G1–G7）的共同前置；没有新候选不得拿旧指纹对外实测。
 2. 自动可验部分（§3.1）随候选重建一次性全跑，证据写入对应父卡。
-3. 人工门按 §2 逐门执行；每门需要的用户授权集中在 §3.2，执行前一次性向用户申请，不逐门重复询问。
-4. 实现侧缺口（§4：后台注册/重载、应用内更新、双架构）不得被误认为已具备；对应实现任务见 §6。
+3. 人工门按 §2 逐门执行；先核对 §3.2 与当前会话的既有授权，只对缺失的具体环境/动作集中询问，已授权的不重复确认。用户在线期间 worker 不抢前台。
+4. 先检查 §4 的产品接线缺口；已交付入口不重做，未接入的升级安全协议不得转为单纯人工门。接续只见 TASKS，§6 仅保留承接指针。
 5. 环境缺口（§5）是各门 WAITING 的唯一依据；环境不具备时保留未勾项并记 `NOT_VERIFIED`，不降低验收。
 
 ## 1. 发行候选与产物标识
@@ -24,9 +24,9 @@
 | 2 打包壳 | `bash scripts/build_app.sh` | `apps/desktop/src-tauri/target/release/bundle/macos/Fathom.app` 与 `dmg/Fathom_0.3.0_aarch64.dmg` |
 | 3 校验 | `bash scripts/verify_app_bundle.sh` | 22 段断言全 PASS；`bundle/checksums.txt`（SHA256） |
 
-候选标识三要素（缺一不可，写入父卡证据）：**固定 40 位 commit**、**DMG 的 SHA256**（与 `checksums.txt` 一致）、**helper SHA256**（`build_helper.sh` 打印）。`target/` 产物不入 git，故每次实测前必须重建，不得引用他机旧产物。
+候选标识三要素（缺一不可，写入父卡证据）：**固定 40 位 commit**、**DMG 的 SHA256**（与 `checksums.txt` 一致）、**helper SHA256**（`build_helper.sh` 打印）。`target/` 产物不入 git，新建或源码变化的候选须重建；同一候选可复用已校验且指纹匹配的产物，不得引用无绑定的旧包。候选登记入口为 `scripts/release_candidate_record.sh`（默认登记既有产物，`--build` 显式重建），详见 TESTING §4。
 
-候选时间线（截至基线）：最后两次记录的全量 verify 22/22 分别在 DMG 提示合并 `c307040d4e3d0d7c4309552851d2caff991c254e`（09-18，[TASKS.md:1161](../TASKS.md)）与图标尺寸修订 `55d6c3fe5072311fdc2693866136ba5e9e6409b1`（09-19，[TASKS.md:823](../TASKS.md)）。此后 `a9c736745e296c3b2da7ddf49a34ad581eb8ebd5`（#118，ISS-073 前端视觉收尾）改动了会进包的前端资产而未记录 verify 复跑；`a59702d`（#119-121）仅改文档。**因此实测候选应在所选固定 commit（不低于 `a9c7367`）重建并复跑 22 段后再携带**，verify 结果与三要素一并登记。
+历史包验证记录见 ISS-009/045/028，均只支持各自固定产物。010B/016B/040B 已改变进入包的代码和依赖；本次未重建或验证这些变化后的发行包。下一轮须绑定包含所验功能的候选 commit 及 DMG/helper SHA256，并记录真实 verify 结果；不能把旧 22/22 自动继承为新候选通过。
 
 ### 1.2 双架构发行（未实现，仅规划态）
 
@@ -34,7 +34,7 @@
 
 ## 2. 剩余发行门逐门清单
 
-通用失败处理原则（各门不再重复）：验证失败时保留现场（截图、`helper.log`、运行根下 `logs/`）、在父卡登记匿名摘要、恢复现场用各门「清理」列；**任何门都不删除生产数据、不触碰生产库 `data/fathom.db` 与生产 PID 6026、不改本机已有权限/调度**（生产常驻服务为合并前进程，重启属生产操作，需用户授权）。所有实机门共用 §1.1 候选。
+通用失败处理原则（各门不再重复）：验证失败时保留现场（截图、`helper.log`、运行根下 `logs/`）、在父卡登记匿名摘要、恢复现场用各门「清理」列；**任何门都不删除生产数据、不触碰生产库或现有生产服务（历史 PID 6026 不是永久身份，执行前只读核对）、不改本机已有权限/调度**（生产常驻服务为合并前进程，重启属生产操作，需用户授权）。所有实机门共用 §1.1 候选。
 
 ### G1 · 三态权限（未授权/授权/撤回）——唯一父卡 ISS-002
 
@@ -110,7 +110,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 前置条件 | **实现前置未满足**：发行态真实注册桥尚未实现（§4.1；ISS-010A 只交付只读状态桥 + dry-run，`apps/desktop/src-tauri/src/autostart.rs:6` 明令该切片禁止注册调用）。先完成 §6 推荐的实现切片，本门才可执行 |
+| 前置条件 | ISS-010B 的发行注册桥与 ACL 已合并。先在隔离测试账户核对运行根/服务身份和计划合同；非默认运行根的 plist 未传递环境变量、SMAppService 登录项仍 unknown，不能按已完成处理（§4.1）。取得真实注册、睡眠/重启窗口后执行；不得在现有生产账户用同名服务做试验 |
 | 操作步骤（实现后） | ①应用内首次启动向用户解释并征求同意后注册登录项/计划（默认不擅自注册，[TASKS.md:1176](../TASKS.md)）；②核对开关与系统注册状态一致；③让机器睡眠跨过计划时间，唤醒观察不重复补扫；④重启中断一次扫描再恢复；⑤拒绝/撤销授权路径再走一遍 |
 | 预期结果 | 开关三态与系统一致，失败绝不显示「已开启」；去重补扫语义符合说明；重启有记录（[TASKS.md:1178-1180](../TASKS.md)） |
 | 失败处理与清理 | 注销所注册的登录项与 launchd 标签（`launchctl bootout` 目标标签或应用内卸载入口），确认无残留后结束 |
@@ -120,7 +120,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 前置条件 | **实现前置未满足**：`PUT /api/config` 目前恒返回 `service_reload: "requires_user_action"`（`fathom/api.py:588`），真实重载链未实现；依赖 G8 的注册桥 |
+| 前置条件 | ISS-016B 已新增 `service_reload_state` 四态并复用 ISS-010B 经确认重装；兼容字段 `service_reload` 保留旧值，不代表未实现。依赖 G8 的隔离注册环境与候选；本门验证设置值、注册计划和重启后结果一致 |
 | 操作步骤（实现后） | ①改计划时间/阈值保存，核对已注册计划真实重载；②重启应用后设置保留且与系统状态一致；③构造无效值与保存失败，验证旧值可用与回退；④换根后新旧数据集按 ISS-021 口径区分 |
 | 预期结果 | 保存生效且后台计划与显示值一致；失败不伪装原子成功（[TASKS.md:1188](../TASKS.md)）；换根不混历史 |
 | 失败处理与清理 | 恢复测试前配置；若产生测试数据集，保留在测试运行根内一并清理 |
@@ -130,7 +130,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 前置条件 | **实现前置未满足**：updater 插件/协调模块/设置页状态全部未接线（§4.2）；ISS-040A 的 `generate_update_manifest.py`/`verify_update_manifest.py` 只是清单工具（`95dd3edd4e0e90b528deb149907920196159da69`），不构成更新功能。另需：独立 updater keypair（公钥入 `tauri.conf.json`、私钥仅 Secrets + 仓库外加密备份，[2026-09-13-v0.3-release-design.md:69-72](2026-09-13-v0.3-release-design.md)）；测试 v0.3.1 候选；**HTTPS 匿名可读的生产更新源在仓库私有期间保持关闭**，真实升级测试走仅隔离测试机可达的本机/私网 HTTPS（同文件 107-109 行） |
+| 前置条件 | ISS-040B 已接入插件、最小权限与设置页确认流，配置为开发公钥和占位源。**安装部分仍缺生产协调前置**：先按 ISS-040/030 接入停写、旧 helper 退出、一致备份、失败恢复及进度/取消；ISS-030A 的 fake 流程不能替代。另需测试 v0.3.1 候选、专用测试签名与受控 HTTPS 源；生产密钥/备份及公开更新源按发行方案落实。检查/离线状态可按条件先验，不因此解锁安装升级 |
 | 操作步骤（实现后） | ①隔离夹具自动验：检查/进度/取消/失败重试，helper 停写退出、一致备份、替换、重启、版本握手协议（ISS-040 验收框 3）；②篡改包/公钥不匹配/离线/超时各造一次，确认明确可恢复结果且**签名校验不可关闭**（框 1）；③实机：已安装 v0.3.0 经测试源更新到 v0.3.1，验证进度、重启与新旧版本握手 |
 | 预期结果 | 自动检查失败不阻塞启动/浏览/手动扫描（框 4）；失败不影响本地数据；`latest.json` 双平台齐全否则 fail closed（框 2，工具已支持 `--require-both-platforms`） |
 | 失败处理与清理 | 测试后关闭本机/私网测试源并记录资源终态；不留半升级状态（回退演练属 G12） |
@@ -140,7 +140,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 前置条件 | x86_64 原生构建环境（E3）；Actions 额度恢复（E4）或经用户批准的等价本地聚合流程；`release.yml` 尚未创建（仓库现有 CI 已停用，[DECISIONS.md:32-42](../DECISIONS.md)）；Apple 凭据**不需要**（延期；当前仓库 Secrets 为 0、本机无有效 codesigning 身份，[TASKS.md:1249](../TASKS.md)——此非缺口，不得据此把 Apple 材料之外的事项挂起） |
+| 前置条件 | x86_64 原生构建环境（E3）；Actions 额度恢复（E4）或经用户批准的等价本地聚合流程；`release.yml` 尚未创建（仓库现有 CI 已停用，[DECISIONS.md:32-42](../DECISIONS.md)）；Apple 凭据**不需要**（延期；当前仓库 09-19 记录 Secrets 为 0、本机无有效 codesigning 身份（历史观察，不是本次复查），[TASKS.md:1249](../TASKS.md)——此非缺口，不得据此把 Apple 材料之外的事项挂起） |
 | 操作步骤（实现后） | ①建 release workflow：arm64 与 x86_64 原生 runner 各自冻结 helper、构建 thin DMG/updater tar.gz/`.sig`，tag 与单一版本源一致；②聚合 job 双平台齐全才生成 `latest.json`；③创建 private draft Release；④从 GitHub 实际下载复核 checksum（承接 G7 的下载腿） |
 | 预期结果 | 两架构产物/updater 签名/checksum/manifest 交叉核对齐全；任一缺失保持 draft/失败（fail closed）；**不执行** codesign/spctl/stapler 三验（DEC-022 延期，恢复时另按 [TESTING.md:168](../TESTING.md) 执行） |
 | 失败处理与清理 | draft 保持 draft；删除失败 run 的残缺资产；不公开 |
@@ -176,13 +176,13 @@
 | 版本一致性 | `bash scripts/check_version_consistency.sh` | 五处版本单一源 fail-closed | ISS-037 既有 |
 | 品牌几何 | `bash scripts/ci_brand_geometry.sh` | 深度环四处几何同步 + 深潭资产链 | ISS-045 既有 |
 | 更新清单工具 | `python3 scripts/generate_update_manifest.py` + `verify_update_manifest.py`（`--require-both-platforms`） | 清单生成/校验 fail-closed 矩阵 | ISS-040A 既有 |
-| 后台状态/dry-run | 壳内 `autostart_status` + `fathom.launchd.status()/dry_run_plan()`（fake launchctl 注入） | 三态映射、plist 同源、零写路径 | ISS-010 既有测试 |
+| 后台状态/注册合同 | `tests/test_launchd_autostart.py` 与 `tests/test_tauri_autostart_acl.py`（定向 pytest，fake launchctl 注入） | 状态、注册/注销、失败回退与权限接线；不执行系统注册 | ISS-010A/010B 既有测试 |
 | 设置合同 | `.venv/bin/python -m pytest tests/test_api_config.py -q` | 默认值/校验拒绝/原子写/重启保留/换根 | ISS-016 既有 |
-| 前端/浏览器/API | `node scripts/verify_frontend_refresh.cjs`、`/bin/bash scripts/ci_browser_checks.sh` | 88 / 39 基线 | 全局门禁 |
+| 前端/浏览器/API | `node scripts/verify_frontend_refresh.cjs`、`/bin/bash scripts/ci_browser_checks.sh` | 105 / 39 历史记录（040B 基线，当前验证须绑定 commit） | 全局门禁 |
 
 以上命令不得替代 §2 任何人工门（[TESTING.md:26](../TESTING.md)：脚本不能替代 Tauri GUI、系统权限或签名包实测）。
 
-### 3.2 集中授权清单（执行前一次性申请；已授权项不再重复询问）
+### 3.2 环境与授权核对（只补缺失项）
 
 **已获授权（直接执行，不再问）**：
 
@@ -195,7 +195,9 @@
 | P5 | Apache-2.0 许可证、双形态品牌体系 | DEC-020、DEC-023 |
 | P6 | 生产只读观察（`launchctl list`、日志尾部、`scan_runs` 只读查询） | ISS-001 口径（[TASKS.md:1103](../TASKS.md)）；**不含**生产扫描触发、进程清理、权限变更 |
 
-**需用户新授权/亲自动作（每项对应到门，一次申请）**：
+**需核对的具体环境/动作（沿用已授权部分，只问缺失项）**：
+
+TASKS 的 PM 交付规则已允许隔离环境中的私有 draft Release、Fathom 专用 updater 密钥配置和签名工作流准备。下表 A6/A7 不是重新索取该授权；实际账户、候选、备份归属或外部访问范围尚缺时才补齐输入。生产服务注册、公开发布与对外发送仍按既有边界执行。
 
 | 编号 | 动作 | 服务于 | 备注 |
 |---|---|---|---|
@@ -204,58 +206,50 @@
 | A3 | 测试账户内系统通知权限授权/拒绝切换 | G2 | E6 |
 | A4 | 首次真实注册登录项/launchd 计划（发行态，经应用内同意流） | G8/G9 | E7；实现完成后才发生 |
 | A5 | 睡眠跨计划点、一次重启中断、18pt 菜单栏切换的实测窗口 | G8、G4③ | E7 |
-| A6 | 建立下载渠道：private draft Release 上传（PM 以仓库身份）或本机/私网 HTTPS 测试源（资产、URL、失效时间报批） | G7/G10/G11/G12 | E2/E5；外部 staging 未批不得建 |
-| A7 | updater keypair 生成 + 私钥仓库外加密备份的知情确认 | G10 | E5；未验证备份前不交付已安装用户 |
+| A6 | 按既有授权准备 private draft Release 或隔离本机/私网 HTTPS；记录具体资产、URL、访问范围与清理时间，外部 staging 才另报批 | G7/G10/G11/G12 | E2/E5；外部 staging 未批不得建 |
+| A7 | 核对测试/生产 updater 密钥归属与仓库外加密备份；开发公钥配置已存在，不重复生成同用途密钥 | G10 | E5；生产密钥安排仍按发行决定落实，未验证备份前不交付已安装用户 |
 | A8 | x86_64 原生环境（Intel 机器或 Actions 额度恢复） | G11 | E3/E4；额度恢复后先 enable CI（DEC-021 恢复步骤） |
 | A9 | 审阅具体候选并批准公开/邀请测试者 | G13 | 最终人工门，不自动执行 |
 
 **明确未授权（不得做）**：购买账户或签名服务；把候选/资产设为公开；向测试者发送任何材料；自动注册任何线上服务；移除 quarantine、关闭 Gatekeeper、`xattr` 绕过（[2026-09-13-v0.3-release-design.md:116](2026-09-13-v0.3-release-design.md)）。
 
-## 4. 尚未实现的发行功能（不得当作已具备）
+## 4. 已有入口与尚缺的产品接线
 
-### 4.1 后台注册与设置重载——未实现
+### 4.1 后台注册与设置重载
 
-- 设置保存后服务重载**恒为提示用户行动**：`fathom/api.py:588` `"service_reload": "requires_user_action"`（ISS-016A 有意边界，[TASKS.md:590](../TASKS.md)）。
-- 壳侧登录项注册**被切片明令禁止**：`apps/desktop/src-tauri/src/autostart.rs:6` 禁止 `SMAppService.register/unregister` 与 `launchctl bootstrap/load/enable/kickstart`；`autostart.rs:153` `login_item` 恒 `unknown` 留父卡 ISS-010。
-- `fathom/launchd.py:95` `install()` / `:109` `uninstall()` 是**开发态** `main.py install` 入口（[main.py:2](../../main.py)），写的是开发路径 plist，不是发行 app 的自注册；发行验收要求「不要求 main.py install」（[TASKS.md:1158](../TASKS.md)）。
-- 因此 **dry-run（ISS-010A）与只读状态桥不是注册功能**；任何「后台计划已可安装」的表述都是错的。
+- 已实现：`autostart.rs` 注册/注销命令、Python `register_release/unregister_release`、设置页同意流与 ACL（ISS-010B）；`service_reload_state` 四态和经确认重新安装计划（ISS-016B）。`PUT /api/config` 的 `service_reload` 是旧客户端兼容字段，不能只凭其值判断功能缺失。
+- 尚待收口：SMAppService 登录项仍 unknown；发行 plist 未钉 `FATHOM_RUNTIME_DIR`，非默认运行根可能与 UI 分叉。先由 ISS-010/016 明确路径、唯一 owner 与失败回退，再在隔离账户验证注册、关闭窗口/退出、睡眠/重启及重装一致性。fake launchctl 全绿不证明这些系统行为。
+- `main.py install/uninstall` 仍是开发版命令，不能充当发行应用内注册验收。保留既有已合并成果，不从 ISS-010A 重新实施。
 
-### 4.2 应用内更新——未实现
+### 4.2 应用内更新
 
-- updater 插件零接线：`apps/desktop/src-tauri/Cargo.toml`、`tauri.conf.json`、`src/lib.rs` 中 `updater` 零命中（本卡基线 grep，rc=1）；`tauri.conf.json:45` 仅 `"signingIdentity": null`。
-- ISS-040A 交付的 `scripts/generate_update_manifest.py` / `verify_update_manifest.py` 是**清单生成/校验工具**（`.sig` 由调用方提供，无签名实现，[TASKS.md:386](../TASKS.md)），把 latest.json 生成器算作「可用更新功能」违反 ISS-040 验收框 1/3 的原义。
-- keypair、更新协调模块、设置页更新状态、测试 HTTPS 源均未开始（G10 前置）。
+- 已实现：ISS-040A 清单工具；ISS-040B 的 updater/process 插件、三条应用级权限、延迟检查/确认安装/确认重启、设置状态区。配置中已有开发公钥，endpoint 为 `https://updates.invalid/fathom/latest.json` 占位源；这不等于生产源启用。
+- 尚缺产品协调：`src/lib.rs::updater_install` 直接执行 `download_and_install`，其进度/完成回调为空，安装前没有接入 Fathom 停写、旧 helper 退出、一致备份和失败恢复；`updater_restart` 只请求重启。归 ISS-040 的接线与集成合同、ISS-030 的恢复/实包证据。
+- ISS-030A 的测试夹具只能证明被实际复用的模块和模拟协议。G10 安装前须验证产品入口调用同一安全协议；准备测试源、取得签名或运行更多 fake 断言都不能代替这项实现。
 
-### 4.3 x86_64 双架构——未实现
+### 4.3 双架构与 Release
 
-见 §1.2；arm64 本地包的可用性不得外推到双架构发行。
+原生 Intel helper 冻结、双架构签名更新产物、`release.yml` 聚合仍未完成，归 ISS-041；依赖声明缺项归 ISS-037。环境缺口与代码/声明工作分别核对。Apple 签名延期不豁免其余工作，arm64 结果不外推双架构。
 
 ## 5. 环境缺口清单（WAITING 的唯一依据）
 
 | 编号 | 缺口 | 阻塞的门 | 解除条件 | 需要谁 |
 |---|---|---|---|---|
 | E1 | 无开发工具的测试账户/测试机 | G5/G6/G7、G13 | A1 完成账户创建 | 用户 |
-| E2 | 保留 quarantine 的私有下载渠道 | G7（及 G13 下载腿） | A6 建立 draft Release 或批准的测试源 | 用户批准 + PM 上传 |
+| E2 | 保留 quarantine 的私有下载渠道 | G7（及 G13 下载腿） | A6 建立 draft Release 或批准的测试源 | PM 按既有授权准备；外部 staging 另批 |
 | E3 | x86_64 原生构建环境 | G11、双架构全部条目 | A8 提供机器或额度 | 用户 |
 | E4 | GitHub Actions 额度（CI 现停用） | G11 的云端执行、x86_64 pytest（持续 `NOT_RUN`） | 额度恢复 + 用户确认 enable（DEC-021 恢复命令） | 用户 |
-| E5 | updater keypair 与测试更新源 | G10/G12 | A7+A6 | 用户知情/批准 |
+| E5 | updater keypair 与测试更新源 | G10/G12 | A7+A6 | PM 准备测试材料；生产安排按发行决定 |
 | E6 | 实机 TCC/通知权限可操作窗口 | G1/G2 | A2/A3 | 用户 |
-| E7 | 真实睡眠/重启、发行态注册与小菜单栏窗口 | G4③/G8/G9/G10 实机腿 | A4/A5；G8 另需 §6 实现先行 | 用户 |
+| E7 | 真实睡眠/重启、发行态注册与小菜单栏窗口 | G4③/G8/G9/G10 实机腿 | A4/A5；G8 先核对 §4.1 路径/身份 | 用户 |
 
-**不是环境缺口、不得据此 WAITING**：Apple Developer ID/公证材料（DEC-022 延期，非阻断）；各父卡未 DONE 本身（本清单 §2 已把准备与实测步骤从父卡状态解耦）；ISS-074 REVIEW 状态（其文档已合并 `9cf401e`，建议由 ISS-075/076 承接）。
+**不是环境缺口、不得据此 WAITING**：Apple Developer ID/公证材料（DEC-022 延期，非阻断）；各父卡未 DONE 本身（本清单 §2 已把准备与实测步骤从父卡状态解耦）；历史报告中的旧任务状态（当前只读 TASKS 索引）。
 
-## 6. 下一条真正可领取的任务及阻塞证据
+## 6. 接续合同的归属（不维护当前队列）
 
-**推荐：新登记聚焦卡「ISS-010B · 发行态后台注册桥实现（用户同意流 + launchd/登录项写路径 + fake 环境测试）」**，父卡 ISS-010 的实现切片。理由与证据：
+初版推荐的 ISS-010B、F2/ISS-078 已有交付，后续 ISS-016B/040B 也已接线；F1 已登记为 ISS-030A。不要从本清单再次创建相同任务，当前在途、状态和顺序只见 [TASKS 当前接手摘要](../TASKS.md#当前接手摘要)。
 
-1. **关键路径最前**：ISS-016（重载）、ISS-040（更新，索引依赖含 ISS-010，[TASKS.md:98](../TASKS.md)）、经 ISS-041 到 ISS-030/033 全部排在它后面；推进审查调整方向第 5 条明确「优先解决发行注册/重载……的真实阻塞」（[2026-09-19-pm-progression-audit.md:74](2026-09-19-pm-progression-audit.md)）。
-2. **代码依赖已满足，不被父卡状态阻塞**：ISS-010 依赖表的 ISS-020 DONE；ISS-009 的**代码**交付（切片 1 `a158889d980e8131919f44dcb1a0d58b86516c30`、切片 2 `f349b780bac0cb266e7d7e1f8dbfc086ec62090a`）已合并，剩余是人工门（[TASKS.md:1167](../TASKS.md)），按本卡边界「不因父卡未 DONE 阻塞」不构成实现阻塞。
-3. **可在无新环境下完整交付与验证**：注册代码路径用 fake launchctl/SMAppService 注入测试（ISS-010A 已有该夹具模式，Rust 9 + Python 22 例先例），真实注册执行留在 G8 人工门；不在本机真实注册即不违反「默认不擅自注册」边界（[TASKS.md:1176](../TASKS.md)）。
-4. **现状缺口明确**：§4.1 三条锚点（`api.py:588`、`autostart.rs:6/153`、`launchd.py:95` 为开发态）即阻塞证据——发行包现在没有任何自有注册路径。
-
-**ISS-010B 合同要点**（按本卡范围只列合同，不实现）：范围 = `apps/desktop/src-tauri/src/`（在 autostart.rs 增加经用户同意的注册/注销命令）+ `fathom/launchd.py`（发行态 plist 生成复用 `dry_run_plan` 同源逻辑）+ 设置页开关接线；边界 = 默认不注册、首次启动解释并征求同意、失败回滚不留半注册态、`--locked --offline` 不加 crate、真实系统写路径只经明确命中的命令（保持 grep 守护测试风格）；验收 = fake 环境注册/注销/状态一致/失败回滚全覆盖 + 现有 grep 负向探针改写为「写路径仅存在于新命令模块」+ `ci_cargo_locked.sh`/pytest 全绿。
-
-**备选并行（同为合同登记，不在本卡实现）**：隔离夹具合同 F1「升级协调协议夹具」（G10 验收框 3 的 helper 停写/备份/替换/握手自动验）与 F2「发行候选重建登记夹具」（把 §1.1 三命令 + 三要素登记固化为一个脚本入口）。F1 在 ISS-040 实现卡内做更顺，不建议单独先领。
+下一轮技术收敛围绕 §4 的产品缺口：ISS-040 定义更新入口的安全协调、进度/取消及集成验证；ISS-030 保留恢复/真实产物验收；ISS-010/016 保留注册身份、运行根和系统生命周期。未决输入先在原父卡补合同，再拆有明确输出和失败回退的实现切片。环境齐备的原生验证可继续，但不能把尚缺实现写成只等用户。
 
 ## 7. 本清单的限制
 

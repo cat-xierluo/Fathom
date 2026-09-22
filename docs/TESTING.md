@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本次审查基线（ISS-016B 后）的 pytest 门禁是 **639**（ISS-010B-ACL 后 586 + 53；计数以 `scripts/ci_pytest.sh` 与 CI 配置为准），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；2026-09-22 核对基线 `31396a0` 的本地 pytest 配置门禁为 **671**（本次仅核对配置，未复跑；当前 CI 配置仍 655，差异归 ISS-080；执行前核对所选候选的两处配置），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -185,7 +185,9 @@ bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
 .runtime/bin/python -m pytest tests/test_upgrade_coordination.py -q   # 16 项
 ```
 
-矩阵各行的父卡归属：三态权限归 ISS-002；系统通知归 ISS-003；tray 交互归 ISS-008；发行包 tray 手点退出、18pt 可辨性、新账户安装/断网/quarantine 下载首启归 ISS-009；后台注册与睡眠/重启归 ISS-010；设置真实重载归 ISS-016；应用内更新归 ISS-040；双架构与 Release 聚合归 ISS-041（Apple 签名腿按 DEC-022 延期）；升级卸载恢复归 ISS-030；外部内测与公开归 ISS-033。发行态后台注册、设置重载与应用内更新尚未实现，dry-run 与 `latest.json` 生成器不算可用功能；arm64 本地包实测不得外推双架构。
+矩阵各行的父卡归属：三态权限归 ISS-002；系统通知归 ISS-003；tray 交互归 ISS-008；发行包 tray 手点退出、18pt 可辨性、新账户安装/断网/quarantine 下载首启归 ISS-009；后台注册与睡眠/重启归 ISS-010；设置真实重载归 ISS-016；应用内更新归 ISS-040；双架构与 Release 聚合归 ISS-041（Apple 签名腿按 DEC-022 延期）；升级卸载恢复归 ISS-030；外部内测与公开归 ISS-033。
+
+**代码与实测边界（2026-09-22，`31396a0`）**：ISS-010B/016B/040B 已提供注册、计划漂移与经确认重装、更新插件和确认流；这些入口不再属于“尚未实现”。但安装前停写/旧 helper 退出/一致备份/失败恢复尚未接入生产更新入口，进度回调为空。G10 的安装部分先解决 ISS-040/030 的产品接线，再用隔离候选验证；ISS-030A 的 fake 协议不能替代生产入口集成验证。原生 G8/G9 与双架构仍未验收，arm64 本地包实测不得外推。
 
 ## 5. 证据格式与收口
 

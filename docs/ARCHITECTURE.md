@@ -1,6 +1,6 @@
 # Fathom 当前架构
 
-**事实基线：main `e033ef659bc838dc69ca003f160d58e4569c9c71`，2026-09-19 代码与任务证据交叉核对。** 本次为静态合同核对，未重跑业务测试或实机验收。历史验证边界见文末与 [TASKS](TASKS.md)；目标方案不代表已实现能力。
+**事实基线：main `31396a08ed90a37f787614d6f32024e30836c3aa`，2026-09-22 代码与任务证据交叉核对。** 本次为静态合同核对，未重跑业务测试或实机验收。历史验证边界见文末与 [TASKS](TASKS.md)；目标方案不代表已实现能力。
 
 ## 入口与边界
 
@@ -22,7 +22,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 
 | 模块 | 实现 | 已确认局限 |
 |---|---|---|
-| config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口；运行根下 `settings.json` 用户设置持久化（ISS-016A：原子写、校验 fail-closed、优先级 CLI > `FATHOM_*` 环境变量 > settings.json > 默认，覆盖项经 `/api/config` 读写并发布回 `MIN_DIR_KB`/`FREE_ALERT_GB`/`SCAN_HOUR`/`SCAN_MINUTE` 常量） | 计划时间的 launchd plist 写入（含分钟级）与真实服务重载留父卡 ISS-016；release 模式只定义路径合同，不证明 `.app` 已自包含 |
+| config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口；运行根下 `settings.json` 用户设置持久化（ISS-016A：原子写、校验 fail-closed、优先级 CLI > `FATHOM_*` 环境变量 > settings.json > 默认，覆盖项经 `/api/config` 读写并发布回 `MIN_DIR_KB`/`FREE_ALERT_GB`/`SCAN_HOUR`/`SCAN_MINUTE` 常量） | 分钟级 plist 写入与经确认重装已有 ISS-010B/016B 接线；发行账户中的真实计划/运行根一致性仍待 ISS-016 验收 |
 | db.py | sqlite3、WAL、外键、schema v5；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 支持旧版 v0–v4→v5；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
 | scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 承载采集结果、退出码、耗时、权限/瞬时/其他错误分类计数与样例；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同数据集同日快照 | 无法无歧义映射/解码时拒绝采集；瞬时系统错误（Interrupted system call/Resource temporarily unavailable，按行尾 errno 段精确匹配）单独计数且使采集归 partial、永不 full，与真实致命错误并存仍整体拒绝；快照持久化 min_kb 与 collection_status（full/partial），v3 之前旧行为 NULL；瞬时计数尚未入库 |
 | reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown；按传入 sid 查找同数据集（同根同 `min_kb` 同 `exclude_names`）前驱，报头带 a/b 快照 ID 与记录口径说明 | 单条目仍无法区分低于阈值与移除，措辞如实表达为未记录/首次记录；报告状态由协调器单独记录 |
@@ -34,6 +34,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 | launchd.py | 开发版 XML/plist 安装；只读 `status()`/`dry_run_plan()`；ISS-010B 发行态写路径 `release_plan/register_release/unregister_release`（confirmed 门+失败回滚，fake 全覆盖）；ISS-016B 只读 `read_registered_scan_time()` + `service_reload_state()` 纯函数；Rust `autostart.rs` 提供状态/注册/注销桥（ISS-010B，恰四权限） | 真实注册/重载/睡眠恢复留 G8 实机门；SMAppService 登录项恒 unknown（不引 objc）；发行 plist 未钉 EnvironmentVariables（G8 核对项） |
 | frontend/ | 无构建链原生 ES modules：modules/ 下 request（世代号+pageScoped 防倒序覆盖、apiPost/apiPut 写令牌）、format、charts（隐藏 stale/重显 resume）、polling（幂等单实例）、tauri（浏览器降级）、router（hash 路由+单一刷新入口）、status 与五页 enter/leave 模块；设置页读 `/api/config`+`/api/status` 渲染真实值并可编辑保存（ISS-016A，校验以服务端为准、失败保持旧值可辨）；R3 测深视觉签名已实装（ISS-072：海沟蓝 token、深度环字标、等深线纹理、tabular-nums）；`favicon.svg` 使用深度环、`apple-touch-icon.png` 使用深潭位图（DEC-023 双形态，与 App 深潭图标分别维护）；ECharts 本地 vendor | 打包态真实 WebView 下页面渲染已于 2026-09-18 实机验证（ISS-009 切片 2）；移动布局未支持 |
 | apps/desktop/ | Tauri 2；显式授权 update_tray_status；单一 sentinel tray 绑定图标/菜单/事件并更新状态行；打包态 `helper.rs` 负责冻结 helper 的 locate/spawn/握手（陈旧 `helper-instance.json` 经 `/health` 探活 + 只读 pid 判定后跳过，`d53a7af` 起）/让位/幂等回收，端口耗尽经 `helper_status` 以 `state=exhausted`+`recovery` 交握手页渲染并可 `helper_retry`；`bundle.resources` 深键 map 把 helper 落到 `Contents/Resources/helper/`；`scripts/build_helper.sh`/`build_app.sh`/`verify_app_bundle.sh` 产出并校验未签名 .app/.dmg（22 项）；图标为 ISS-045/DEC-023 双形态体系（App 图标=层叠深潭位图系：`assets/brand/` 原稿 + `scripts/build_app_icon.py` 抠图 1024 + `build_icons.sh` 全尺寸；界面小尺寸=深度环矢量系：tray 为 `make_tray_icon.py` 单色 template `icon_as_template(true)`，几何由 `ci_brand_geometry.sh` 门禁同步） | 未签名、未公证、仅 arm64；新账户首启、含空格/中文路径、tray 菜单实机退出未验（握手页 exhausted 已于 2026-09-18 实机验证）；图标 18pt 小菜单栏下 tray 可辨性未实测（Launchpad/Spotlight 与深浅色模式已于 2026-09-19 实测通过） |
+| src-tauri/src/lib.rs 更新入口 + settings.js 更新区 | ISS-040B 注册 updater/process 插件；应用级三命令与最小 ACL；延迟检查、确认安装、独立确认重启；安装委托插件 | 配置仍为开发公钥 + `updates.invalid` 占位源；`updater_install` 尚无安装前停写/旧 helper 退出/数据库备份/失败恢复接线，下载进度回调为空；重启回收不等于安装前协调。归 ISS-040/030，不能只记为实机待验 |
 | apps/desktop/experiments/iss029/ | PyInstaller onedir 与 helper 生命周期合同原型；只写指定数据根，结果被版本化规则忽略 | 生产 `build_helper.sh` 默认复用其 `.venv-build`（PyInstaller 6.22.3）冻结 helper 并打进 `.app`（`a158889` 起）；x86_64 未冻结（ISS-041） |
 
 ## SQLite 与保留事实
@@ -97,7 +98,7 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 
 ## 当前验证覆盖
 
-当前 main 的精确门禁为 **647 pytest**（ISS-016B 起 +53、ISS-078 +7、ISS-078 repair1 +1，截至该基线的任务记录，非本次复跑）与 94 项前端检查（ISS-069 +10、ISS-002A +11、ISS-016A +4、ISS-073 +2、ISS-016B +6）与 `cargo test` 42 项（ISS-068 +2、ISS-010A +9、ISS-077 +1、ISS-010B +16）；另通过 39 项 Chromium/API 检查、94 项前端检查（模块生命周期、大文件五态、三条旅程、全状态矩阵、键盘/复制/视口、设置持久化）与版本一致性校验器。ISS-040B（updater 接线切片）后门禁为 **655 pytest**（+8 updater ACL 守护）、**105 项前端检查**（+8 应用更新断言；此前账面 94 与脚本实测 97 项存在 3 项口径差，本次按实测 105=97+8 修正记录）与 `cargo test` **49 项**（+7 updater 状态映射/名字合同/延迟合同单测）；ISS-030A（升级协调协议夹具切片）后 pytest 门禁为 **671**（+16：tests/upgrade_fixture.py 假环境/六步协议/失败注入与 tests/test_upgrade_coordination.py 的 happy path、四类失败回滚、schema 拒绝自动验，真实 flock 与 WAL checkpoint/backup API、零生产触碰；真实 N→N+1 与发行产物验证留父卡 ISS-030）。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0–v4→v5 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收（含超时进度条数线索）、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
+固定基线 `31396a0` 的本地 pytest 配置门禁为 **671**（ISS-030A 新增 16 项夹具测试）；ISS-040B 任务记录的前端检查为 **105**、浏览器/API **39**、`cargo test` **49**。本次仅核对代码与既有记录，未复跑这些入口；后续精确 pytest 数以受测候选的门禁配置为准，运行结果必须绑定受测 commit。当前 CI 配置仍 655，与本地 671 的同步缺口已归 ISS-080；不能称两者一致。030A 的 fake 升级协议复用真实 flock 与 SQLite checkpoint/backup，但未接入生产更新命令。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0–v4→v5 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收（含超时进度条数线索）、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
 
 已有历史实测记录：ISS-009 切片 2 的打包态主界面/端口耗尽页、ISS-045 图标入口、ISS-001 的两个有效定时日期与日报。仍 `NOT_VERIFIED`：系统通知实际展示、完整 tray 菜单与发行生命周期、新账户/断网/实际下载首启、原生 x86_64 冻结及真实更新。Developer ID 签名/公证/stapling 按 DEC-022 延期，未通过，不可与 updater 签名混同。
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。

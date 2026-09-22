@@ -41,7 +41,7 @@ GitHub CI 设计为在原生 Apple Silicon 与 Intel runner 上分别执行 pyte
 **2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，[DEC-021](DECISIONS.md#dec-021---2026-09-15---账户-actions-额度耗尽期间停用-ci-workflow以本地同口径门禁为主)）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 655
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 671
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)，断言 39
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
@@ -177,7 +177,15 @@ PY
 bash scripts/release_candidate_record.sh --selftest   # PM/CI 验证入口（fake 产物）
 bash scripts/release_candidate_record.sh              # 默认：只读登记既有产物
 bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
-```矩阵各行的父卡归属：三态权限归 ISS-002；系统通知归 ISS-003；tray 交互归 ISS-008；发行包 tray 手点退出、18pt 可辨性、新账户安装/断网/quarantine 下载首启归 ISS-009；后台注册与睡眠/重启归 ISS-010；设置真实重载归 ISS-016；应用内更新归 ISS-040；双架构与 Release 聚合归 ISS-041（Apple 签名腿按 DEC-022 延期）；升级卸载恢复归 ISS-030；外部内测与公开归 ISS-033。发行态后台注册、设置重载与应用内更新尚未实现，dry-run 与 `latest.json` 生成器不算可用功能；arm64 本地包实测不得外推双架构。
+```
+
+升级协调协议夹具（ISS-030A，把「升级/恢复」行的 N→N+1 停写→旧 helper 退出→SQLite 一致备份→替换→新 helper 启动→版本握手六步与备份失败/握手失败/中途退出/磁盘不足四类回滚、较新与不可识别旧 schema 拒绝固化为隔离自动验；真实 `flock` 与 WAL checkpoint/backup API，fake app/helper 形态，零生产触碰；夹具模块 `tests/upgrade_fixture.py`）：
+
+```bash
+.runtime/bin/python -m pytest tests/test_upgrade_coordination.py -q   # 16 项
+```
+
+矩阵各行的父卡归属：三态权限归 ISS-002；系统通知归 ISS-003；tray 交互归 ISS-008；发行包 tray 手点退出、18pt 可辨性、新账户安装/断网/quarantine 下载首启归 ISS-009；后台注册与睡眠/重启归 ISS-010；设置真实重载归 ISS-016；应用内更新归 ISS-040；双架构与 Release 聚合归 ISS-041（Apple 签名腿按 DEC-022 延期）；升级卸载恢复归 ISS-030；外部内测与公开归 ISS-033。发行态后台注册、设置重载与应用内更新尚未实现，dry-run 与 `latest.json` 生成器不算可用功能；arm64 本地包实测不得外推双架构。
 
 ## 5. 证据格式与收口
 

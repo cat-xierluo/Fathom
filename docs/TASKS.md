@@ -136,6 +136,7 @@
 | ISS-071 | `test_timeout_message_carries_last_output_path` 高负载下间歇失败（时序竞态） | P1 | M1 | DONE | ISS-064、ISS-070 |
 | ISS-040A | latest.json 双架构生成与 fail-closed 校验工具（ISS-040 代码切片） | P2 | M2 | DONE | ISS-037 |
 | ISS-040B | updater 插件接线与更新协调切片（ISS-040 代码切片） | P1 | M2 | DONE | ISS-040A、ISS-010B |
+| ISS-030A | 升级协调协议夹具：N→N+1 停写/备份/替换/握手自动验（ISS-030 代码切片，076 清单 F1） | P1 | M2 | READY | ISS-025、ISS-040B |
 | ISS-002A | 权限/覆盖可解释说明与系统设置深链（ISS-002 代码切片，前端） | P2 | M1 | DONE | ISS-028、ISS-065 |
 | ISS-067 | `/api/snapshots` 补齐 vanished_count 与 exclude_names（ISS-002A 接缝） | P1 | M1 | DONE | ISS-066、ISS-002A |
 | ISS-068 | Tauri opener 插件注册与能力声明缺失（ISS-002A 深链接缝） | P1 | M1 | DONE | ISS-002A |
@@ -1297,6 +1298,20 @@
   - [ ] 测试 HTTPS 源只含签名发行资产，无源码、凭据或用户数据；本机/私网源测试后关闭并记录资源终态，外部 staging 未获用户批准不得创建
   - [ ] 不把删除数据库或关闭系统安全保护作为解决方案
 - **证据/接续**：尚未执行；不得勾选验收项。
+
+### ISS-030A · 升级协调协议夹具：N→N+1 停写/备份/替换/握手自动验（ISS-030 代码切片，076 清单 F1）
+
+- **状态**：READY（P1/M2）；来源：076 清单 §6 备选 F1 合同（PM 2026-09-22 审阅后登记；F1 原建议随 ISS-040 实现卡，040B 已合并不含此项，单独立切片）。代码依赖已满足（025 DONE、040A/B DONE、010B 注册桥就绪）；真实 N→N+1 与 ISS-041 draft 产物验证留父卡真机门（验收框 4）。
+- **目标**：把父卡验收框 1/2 的「更新前停写→旧 helper 退出→SQLite 一致备份→替换→新版本握手→失败回滚」协议固化为**可重复的隔离自动验**：fake 文件系统环境模拟 N→N+1 全链与四类失败（迁移失败/磁盘不足/中途退出/新 helper 握手失败），每种失败都必须回到可运行旧版与旧数据，不留半升级状态。
+- **范围**：`scripts/upgrade_coordination_fixture.py`（或 tests 内夹具模块，worker 定）、`tests/test_upgrade_coordination.py`、`docs/TESTING.md`（§4 加入口指针）、计数同步。**不写壳/助手生产代码**（协议缺陷若实测暴露，登记给父卡，不在本切片硬修）。
+- **实施边界**：全程 fake 注入（tmp 目录造 N 版与 N+1 版的 app/helper 形态、假 DB 含 WAL、假 helper-instance.json）；SQLite 一致备份用真实 sqlite3 连接（WAL checkpoint + backup API，非文件拷贝）；「停写」以扫描协调器的既有 flock/生命周期语义为准（引用 ISS-020 合同，不重实现）；不触碰生产库/生产 PID/真实 `~/Library`；ISS-041 的真实下载/签名验证不在本切片（无网络无产物）。
+- **验收**：
+  - [ ] happy path：N→N+1 六步（停写→旧 helper 退出→checkpoint 备份→替换→新 helper 启动→版本握手一致）全过且记录每步断言
+  - [ ] 四类失败反例：备份失败/新 helper 握手失败/中途退出/磁盘不足——全部回滚到可运行旧版与旧数据（旧 DB 可打开、旧 helper 可重启），不留半升级态
+  - [ ] 未知旧 schema/较新 schema 拒绝危险操作（父卡验收框 3 的夹具部分）
+  - [ ] 计数同步四处；TESTING 指针在位；零生产触碰
+- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-030（父卡）、076 清单 §6-F1/§2-G10 框 3、ISS-020（flock 合同）、ISS-025（运行根）。
+
 
 ### ISS-037 · 版本、依赖来源与开源准备
 

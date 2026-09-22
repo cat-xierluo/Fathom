@@ -84,3 +84,5 @@
 本次只修正既有文档和 ISS-079 记录，不改产品行为、不恢复自动化、不代替在途 030A 的独立审查。文档验证结果及本次 PR 状态回写 ISS-079；不会把本文当作第二份任务队列。
 
 最终文档复核：独立 reviewer 对 `7ce3d73795716b5b2811877cc83caf59ec0b3ef6`（base `31396a0`）给出 ACCEPT、0 blocking；10 份 Markdown、84 个相对链接/锚点、89 组任务索引/完整卡、依赖与围栏检查通过，Git 差异无空白错误。其后只补本验收记录与 TASKS 的 REVIEW/PR 指针；完整修订见 [PR #148](https://github.com/cat-xierluo/fathom/pull/148)。业务、实机与发行验证仍为 NOT_VERIFIED。
+
+合并复核补记（2026-09-22）：用户明确授权 review 合并后，再次核对固定 head `9ca94d8be20c66ae5b66d0bc1618118633c76ad6`、最新主干及文档检查，未发现 blocking；PR #148 已 squash 合并为 `f8a64b18d82386f6dc0ba9cf92b111dfc674c148`，合并树与验收候选无差异。任务终态回写 ISS-079；本次没有执行 ISS-080、产品实现或发行实测。

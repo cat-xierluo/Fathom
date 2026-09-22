@@ -82,3 +82,5 @@
 ## 修订与验证边界
 
 本次只修正既有文档和 ISS-079 记录，不改产品行为、不恢复自动化、不代替在途 030A 的独立审查。文档验证结果及本次 PR 状态回写 ISS-079；不会把本文当作第二份任务队列。
+
+最终文档复核：独立 reviewer 对 `7ce3d73795716b5b2811877cc83caf59ec0b3ef6`（base `31396a0`）给出 ACCEPT、0 blocking；10 份 Markdown、84 个相对链接/锚点、89 组任务索引/完整卡、依赖与围栏检查通过，Git 差异无空白错误。其后只补本验收记录与 TASKS 的 REVIEW/PR 指针；完整修订见 [PR #148](https://github.com/cat-xierluo/fathom/pull/148)。业务、实机与发行验证仍为 NOT_VERIFIED。

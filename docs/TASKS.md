@@ -147,7 +147,7 @@
 | ISS-076 | 剩余发行实测准备与环境缺口清单 | P1 | M2 | DONE | — |
 | ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | WAITING | ISS-028 |
 | ISS-078 | 发行候选重建登记夹具（076 清单 §6 备选 F2） | P2 | M2 | DONE | ISS-076 |
-| ISS-079 | 近期方向复审与接手上下文收敛 | P1 | M2 | IN_PROGRESS | — |
+| ISS-079 | 近期方向复审与接手上下文收敛 | P1 | M2 | REVIEW | — |
 | ISS-080 | 同步 ISS-030A 后本地与云端 pytest 计数 | P1 | M0 | READY | ISS-030A |
 
 ## 任务卡
@@ -163,8 +163,8 @@
   - [x] 固定远端主干、近期提交与全部 worktree，区分已合并、在途和历史记录
   - [x] 当前入口与代码事实一致，既不重复派发已完成接线，也不把代码切片/夹具当作完整发行能力
   - [x] 每个剩余缺口有原父卡承接；当前队列唯一，历史记录不再发出当前指令
-  - [ ] 文档差异、链接/锚点、编号/依赖与独立复核完成，未执行的业务/实机验证明确标注
-- **证据**：独立 worktree `/private/tmp/fathom-context-20260922`，分支 `iss-079-context-convergence`，基线 `82b0616c557a42961c07cd9344bd0e64e2a9c6ab`。审查期间主干前进至 `31396a08ed90a37f787614d6f32024e30836c3aa`，已保留 #146/#147 的夹具、验收和命令入口并重放本次修订；新增 CI 数字分叉已登记 ISS-080。原始文档体检限制见本次审查报告；初始候选独立语义复核 ACCEPT，最终同步候选待复核。业务全量、GUI、打包、生产观察均 `NOT_VERIFIED`，没有复用为本次实跑。
+  - [x] 文档差异、链接/锚点、编号/依赖与独立复核完成，未执行的业务/实机验证明确标注
+- **证据**：独立 worktree `/private/tmp/fathom-context-20260922`，分支 `iss-079-context-convergence`，基线 `82b0616c557a42961c07cd9344bd0e64e2a9c6ab`。审查期间主干前进至 `31396a08ed90a37f787614d6f32024e30836c3aa`，已保留 #146/#147 的夹具、验收和命令入口并重放本次修订；新增 CI 数字分叉已登记 ISS-080。原始文档体检限制见本次审查报告；独立 reviewer `/root/context_scan` 对最终同步候选 `7ce3d73795716b5b2811877cc83caf59ec0b3ef6`（base `31396a0`）复核 **ACCEPT、0 blocking**：030A 成果保留、生产接线缺口准确、未新增授权/降低验收。10 份 Markdown、84 个相对链接/锚点、89 组索引/卡片配对、依赖无环与围栏检查通过，`git diff --check origin/main...HEAD` 通过；后续仅追加本验收记录与 PR 指针。修订见 [PR #148](https://github.com/cat-xierluo/fathom/pull/148)，待合并；本卡不代替 ISS-080 或各发行父卡的实施/验收。业务全量、GUI、打包、生产观察均 `NOT_VERIFIED`，没有复用为本次实跑。
 
 ### ISS-080 · 同步 ISS-030A 后本地与云端 pytest 计数
 

@@ -1301,16 +1301,16 @@
 
 ### ISS-030A · 升级协调协议夹具：N→N+1 停写/备份/替换/握手自动验（ISS-030 代码切片，076 清单 F1）
 
-- **状态**：READY（P1/M2）；来源：076 清单 §6 备选 F1 合同（PM 2026-09-22 审阅后登记；F1 原建议随 ISS-040 实现卡，040B 已合并不含此项，单独立切片）。代码依赖已满足（025 DONE、040A/B DONE、010B 注册桥就绪）；真实 N→N+1 与 ISS-041 draft 产物验证留父卡真机门（验收框 4）。
+- **状态**：DONE（P1/M2，2026-09-22 代码切片交付于分支 `iss-030a-upgrade-fixture`；scoped 门禁 `.runtime/bin/python -m pytest tests/test_upgrade_coordination.py -q` 16/16 exit 0；全量 `bash scripts/ci_pytest.sh` 因 worker 白名单拦截记 NOT_RUN 由 PM 代跑核对 671；PR 由 PM 代开，合并终态以 PM 收口记录为准）；来源：076 清单 §6 备选 F1 合同（PM 2026-09-22 审阅后登记；F1 原建议随 ISS-040 实现卡，040B 已合并不含此项，单独立切片）。代码依赖已满足（025 DONE、040A/B DONE、010B 注册桥就绪）；真实 N→N+1 与 ISS-041 draft 产物验证留父卡真机门（验收框 4）。
 - **目标**：把父卡验收框 1/2 的「更新前停写→旧 helper 退出→SQLite 一致备份→替换→新版本握手→失败回滚」协议固化为**可重复的隔离自动验**：fake 文件系统环境模拟 N→N+1 全链与四类失败（迁移失败/磁盘不足/中途退出/新 helper 握手失败），每种失败都必须回到可运行旧版与旧数据，不留半升级状态。
 - **范围**：`scripts/upgrade_coordination_fixture.py`（或 tests 内夹具模块，worker 定）、`tests/test_upgrade_coordination.py`、`docs/TESTING.md`（§4 加入口指针）、计数同步。**不写壳/助手生产代码**（协议缺陷若实测暴露，登记给父卡，不在本切片硬修）。
 - **实施边界**：全程 fake 注入（tmp 目录造 N 版与 N+1 版的 app/helper 形态、假 DB 含 WAL、假 helper-instance.json）；SQLite 一致备份用真实 sqlite3 连接（WAL checkpoint + backup API，非文件拷贝）；「停写」以扫描协调器的既有 flock/生命周期语义为准（引用 ISS-020 合同，不重实现）；不触碰生产库/生产 PID/真实 `~/Library`；ISS-041 的真实下载/签名验证不在本切片（无网络无产物）。
 - **验收**：
-  - [ ] happy path：N→N+1 六步（停写→旧 helper 退出→checkpoint 备份→替换→新 helper 启动→版本握手一致）全过且记录每步断言
-  - [ ] 四类失败反例：备份失败/新 helper 握手失败/中途退出/磁盘不足——全部回滚到可运行旧版与旧数据（旧 DB 可打开、旧 helper 可重启），不留半升级态
-  - [ ] 未知旧 schema/较新 schema 拒绝危险操作（父卡验收框 3 的夹具部分）
-  - [ ] 计数同步四处；TESTING 指针在位；零生产触碰
-- **证据/接续**：尚未执行；不得勾选验收项。关联：ISS-030（父卡）、076 清单 §6-F1/§2-G10 框 3、ISS-020（flock 合同）、ISS-025（运行根）。
+  - [x] happy path：N→N+1 六步（停写→旧 helper 退出→checkpoint 备份→替换→新 helper 启动→版本握手一致）全过且记录每步断言 —— `test_fake_env_matches_release_layout_and_versions` + 步骤①–⑥各一测试（`steps_done` 逐步断言）+ `test_full_happy_path_completes_six_steps_with_clean_finalize`（六标签按序、journal 清除、锁释放、N 备份保留）
+  - [x] 四类失败反例：备份失败/新 helper 握手失败/中途退出/磁盘不足——全部回滚到可运行旧版与旧数据（旧 DB 可打开、旧 helper 可重启），不留半升级态 —— `test_backup_checkpoint_failure_leaves_old_version_runnable`（checkpoint 异常注入）、`test_handshake_mismatch_rolls_back_to_n_with_intact_history`、`test_mid_upgrade_abort_is_detectable_and_recoverable[2|3|4]`（journal 可检测 + `recover_from_abort` 真实恢复）、`test_disk_full_injection_fails_without_losing_old_data`（ENOSPC 注入）；四例均断言旧 DB 行完整、旧 helper 以 N 版存活、journal 清除、扫描租约可重新取得
+  - [x] 未知旧 schema/较新 schema 拒绝危险操作（父卡验收框 3 的夹具部分）—— `test_newer_schema_rejected_before_any_dangerous_operation`（`db.UnsupportedSchemaVersion`）、`test_unrecognized_old_schema_rejected_before_any_dangerous_operation`（`DatabaseOpenError` 未知未版本化表）；两例均断言协调器零步骤零副作用、原库 SHA256 字节不变、无迁移备份生成
+  - [x] 计数同步四处；TESTING 指针在位；零生产触碰 —— 计数 655→**671** 同步于 `scripts/ci_pytest.sh`（默认值+注释）、`docs/TESTING.md` §1.1、`docs/ARCHITECTURE.md` 门禁段与本卡（四处）；TESTING §4 新增夹具入口指针；全程 tmp 目录 fake 注入，无生产库/PID/`~/Library` 读写
+- **证据/接续**（2026-09-22，implementer）：夹具 `tests/upgrade_fixture.py`（fake 运行根 ISS-025 形态 + `FakeUpgradeEnv`/`UpgradeCoordinator` 六步协议 + 四类失败注入 + `detect_upgrade_state`/`recover_from_abort` + 两个坏 schema 建库器；停写复用 `scan_coordinator.ScanLease` 真实 flock，备份用 `PRAGMA wal_checkpoint(TRUNCATE)` + backup API 且以"驻留 WAL 行只拷主文件会丢"作非文件拷贝反证）；`tests/test_upgrade_coordination.py` 16 项（14 函数，中途退出参数化 3 例）。作用域验证：`.runtime/bin/python -m pytest tests/test_upgrade_coordination.py -q` → 16 passed，exit 0（2026-09-22，`.runtime/bin/python`）。全量门禁 `bash scripts/ci_pytest.sh` 与其文档等价命令 `.runtime/bin/python -m pytest tests -q` 均被本次 worker 白名单 fail-closed 拦截，记 **NOT_RUN**，由 PM 代跑核对 671 后收口。未发现需登记父卡的协议缺陷（六步与回滚在夹具口径下自洽）。真实 N→N+1、下载中断/签名拒绝与 ISS-041 draft 产物验证留父卡 ISS-030 真机门。关联：ISS-030（父卡）、076 清单 §6-F1/§2-G10 框 3、ISS-020（flock 合同）、ISS-025（运行根）。
 
 
 ### ISS-037 · 版本、依赖来源与开源准备

@@ -174,6 +174,10 @@ jobs:
           }
           EOF
           export FATHOM_TAURI_BUILD_ARGS="--config $RUNNER_TEMP/tauri-updater-off.json"
+          # ISS-041A repair1：build_app.sh 内部会再次调用 build_helper.sh，
+          # 无参时退回本机 iss029 缺省 venv（不在 git，干净 runner 上必
+          # BLOCKED exit 3）。透传前置「冻结 helper」步骤已就绪的同一 venv。
+          export FATHOM_BUILD_VENV="$RUNNER_TEMP/fathom-venv"
           bash scripts/build_app.sh
 
       - name: 定位 DMG 并生成 Release checksums.txt
@@ -245,7 +249,7 @@ jobs:
               --draft \
               --title "Fathom $RELEASE_TAG" \
               --notes-file "$NOTES" \
-              --target "$GITHUB_SHA" \
+              --target "$RELEASE_TAG" \
               "$STAGE/$DMG_NAME" "$STAGE/checksums.txt"
           fi
           # 收尾断言：release 必须仍是 draft（防上游 gh 行为变化悄悄发布）。

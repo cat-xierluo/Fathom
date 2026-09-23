@@ -7,10 +7,10 @@
 - **当前目标**：收敛 M2 的 v0.3.0 可安装候选，补齐 M1 剩余原生体验门。M0 已有验收记录；M1/M2 仍未整体完成。已确认的五页 UI、R3 视觉及双形态图标继续使用；M4 智能解释、清理、扫描器重写不进入本轮。
 - **已合并能力**：扫描/数据集/设置持久化、正式 UI 和 arm64 未签名包已有实现；近期新增 ISS-010B 后台注册桥（#131/#133）、ISS-016B 计划漂移检测与经确认重装（#139）、ISS-040B 更新插件/确认流/状态（#143）、ISS-078 候选登记工具（#140）、ISS-030A 隔离升级协议夹具（#146）、ISS-080 云端 pytest 计数同步（#150）、ISS-040C updater_install 生产升级协调接线（#152）。这些接线不再重新实施。ISS-001 已有两个有效定时日期与首份真实对比日报；扫描观察见原卡，不在摘要重复流水。
 - **生产更新协调接线已并入主干**：ISS-040C（#152）把 `updater_install` 接入六步生产协调（停写/退出/一致备份/journal/进度取消/回滚），进度回调与取消边界兑现；reviewer 七条非阻断观察（journal 自动清除文案、租约释放窗口、旧 bundle 恢复缺位文案、子进程无超时、无重入门、计数同步〔已收口〕、pid TOCTOU）已登记，其中涉实机的留 ISS-040/030 的 G10 关注项。剩余为实测与真机门：安装升级实测（G10）、ISS-010 的非默认运行根/唯一 owner/睡眠重启合同、ISS-037 声明缺项、ISS-041 双架构。
-- **最新合并与在途**：ISS-080 由 #150、Wave39 回写 #151、ISS-040C 由 [PR #152](https://github.com/cat-xierluo/fathom/pull/152) 合并为 `696f3b3`（合并后 main 全量：pytest 685/cargo test 57/版本一致 ok，前端零改动故浏览器检查未复跑）。2026-09-23 两轮手动 PM 会话（用户直接指令）完成派发与收口；期间 Orca runtime 中途重启一次（a85a023e→be2406ff），040C reviewer 的 worker_done 送达通道断裂（ORCA_COMPLETION_AUTHORITY_INVALID，worker 按协议停止留档），PM 以产物验收并披露；该事件也解释了 cron 心跳 20 轮零动作（coordinator 绑定随重启失效）。PM 心跳已随本轮收口恢复（当前为待命只读 cron，每 20 分钟零副作用简报）。**2026-09-23 21:45 前后 Wave41 手动 PM 会话接管**（用户直接指令：确认 Actions 额度恢复、要求尽快推进 GitHub Actions 发版、license/开源声明参照 Folia 项目）：CI workflow 曾按 DEC-021 恢复命令重新启用（state=active），但 PR #154/#155 触发的 4 个 run 全部 job 在执行任何步骤前被拒、无日志——**额度实测未恢复（NOT_RUN）**，CI 已再次停用止损（详见 DEC-024 验证段）；ISS-037 经用户授权解除暂停、按 DEC-024 Folia 基线重派 repair3；登记并派发 ISS-041A（arm64 未签名 draft Release CI，额度恢复即可用，实现不受阻断）。#154 已登记 ISS-081（通知语义测试隔离，满盘机器门禁假红修复，READY）。
-- **当前接续顺序（Wave41 修订，融合 #154 的 ISS-081 登记）**：①ISS-037 repair3（已派发：修 certifi/pluggy 许可证值互换并补校验器值级核对，按 DEC-024 Folia 基线收口）；②ISS-041A arm64 未签名 draft Release CI（已派发：release.yml 与候选校验脚本）；③ISS-081 通知语义测试隔离（READY，与①②文件域不冲突，按 worker 空位领取）；④上述合并后由 PM 在 `v*` tag 首跑 draft Release 实证（额度与产物实测一并覆盖）；⑤G10 安装升级实测与生产 updater keypair 决策（用户门，PM 亲自执行不自动）；⑥按条件补 ISS-028/077 前台验证与 ISS-002/003/008/009 的同候选实测，ISS-010/016 的 G8/G9 在隔离测试账户完成；⑦ISS-041 父卡余项（Intel 双架构、updater 产物与 latest.json、publish 人工门），最后 ISS-030 实包恢复、ISS-033 外部验收。未备齐实现合同不自动派业务代码；没有合法 READY 时报告具体缺口，不以重复文档/夹具或视觉小修维持派发。
+- **最新合并与在途**：ISS-080 由 #150、Wave39 回写 #151、ISS-040C 由 [PR #152](https://github.com/cat-xierluo/fathom/pull/152) 合并为 `696f3b3`（合并后 main 全量：pytest 685/cargo test 57/版本一致 ok，前端零改动故浏览器检查未复跑）。2026-09-23 两轮手动 PM 会话（用户直接指令）完成派发与收口；期间 Orca runtime 中途重启一次（a85a023e→be2406ff），040C reviewer 的 worker_done 送达通道断裂（ORCA_COMPLETION_AUTHORITY_INVALID，worker 按协议停止留档），PM 以产物验收并披露；该事件也解释了 cron 心跳 20 轮零动作（coordinator 绑定随重启失效）。PM 心跳已随本轮收口恢复（当前为待命只读 cron，每 20 分钟零副作用简报）。**2026-09-23 21:45 前后 Wave41 手动 PM 会话接管**（用户直接指令：确认 Actions 额度恢复、要求尽快推进 GitHub Actions 发版、license/开源声明参照 Folia 项目）：CI workflow 曾按 DEC-021 恢复命令重新启用（state=active），但 PR #154/#155 触发的 4 个 run 全部 job 在执行任何步骤前被拒、无日志——**额度实测未恢复（NOT_RUN）**，CI 已再次停用止损（详见 DEC-024 验证段）；ISS-037 经用户授权解除暂停、按 DEC-024 Folia 基线重派 repair3；登记并派发 ISS-041A（arm64 未签名 draft Release CI，额度恢复即可用，实现不受阻断）。#154 已登记 ISS-081。**2026-09-23 22:0x 第二轮手动 PM 会话按用户「合并这些 PR」指令收口**：#156（ISS-037 repair3，`2b70686`）/#157（ISS-041A 代码，`bb6ac2c`）/#158（ISS-081，经 PM rebase 解计数冲突后合并，`a7cc984`）三 PR 均经 PM 核验（037 audit+METADATA 复验、041A 静态安全核验、081 满盘全量复跑）合并，合并例外（无独立 reviewer，用户指令+PM 复验）已在各卡登记；main 终态门禁 **697 passed** + 版本一致；七个已合并远端分支与六个 worktree 清理完毕（远端只剩 main），iss-074 分支独有 8 行补记存档 `.git/orchestration/cleanup-20260923/`。
+- **当前接续顺序（2026-09-23 22:1x 更新）**：①ISS-041A 首跑（WAITING：Actions 额度恢复 + 用户定 tag 后由 PM 在 `v*` 执行 draft Release 实证并回勾；Wave41 会话 `iss-041a-repair1` 在途，按新 head 验收）；②G10 安装升级实测与生产 updater keypair 决策（用户门，PM 亲自执行不自动）；③按条件补 ISS-028/077 前台验证与 ISS-002/003/008/009 的同候选实测，ISS-010/016 的 G8/G9 在隔离测试账户完成；④ISS-041 父卡余项（Intel 双架构、updater 产物与 latest.json、publish 人工门），最后 ISS-030 实包恢复、ISS-033 外部验收。ISS-037/081 已 DONE、代码队列无 READY；没有合法 READY 时报告具体缺口，不以重复文档/夹具或视觉小修维持派发。
 - **原生与发行边界**：ISS-028 余 14 项、ISS-077 Esc/Tab 端到端等待已允许的前台窗口；用户在线期间 worker 不抢前台。G1–G13 操作步骤见 [实测清单](plans/2026-09-19-release-live-verification-prep.md)，候选按 ISS-078 绑定 commit/DMG/helper 指纹；切片 DONE 和脚本 `PASS_WITH_NOT_VERIFIED` 都不能关闭父卡。
-- **已确认取舍与证据**：DEC-022 仅延期 Apple 签名/公证；updater 签名、双架构、保留 quarantine 的真实下载及公开发布人工门保留。开发公钥/占位更新地址已入配置，生产更新源未启用。DEC-024（2026-09-23）：Actions 额度实测未恢复（4 run 步骤前被拒记 NOT_RUN，CI 已再停用止损）；开源声明按 Folia 基线（单 Apache-2.0 LICENSE + 无已知事实错误，UNKNOWN 不阻断）；首轮发行切片=ISS-041A arm64 未签名 draft。本地与云端 pytest 配置已同步 **685**（ISS-040C 后；#152 合并 main 全量复跑 685 passed），cargo test **57**，既有记录前端 105、浏览器 39。扫描超时根因仍未定位，成功次数不能证明资源竞争是原因。
+- **已确认取舍与证据**：DEC-022 仅延期 Apple 签名/公证；updater 签名、双架构、保留 quarantine 的真实下载及公开发布人工门保留。开发公钥/占位更新地址已入配置，生产更新源未启用。DEC-024（2026-09-23）：Actions 额度实测未恢复（4 run 步骤前被拒记 NOT_RUN，CI 已再停用止损）；开源声明按 Folia 基线（单 Apache-2.0 LICENSE + 无已知事实错误，UNKNOWN 不阻断）；首轮发行切片=ISS-041A arm64 未签名 draft。本地与云端 pytest 配置已同步 **697**（ISS-037 +11、ISS-081 +1；#158 合并后 main 全量复跑 697 passed），cargo test **57**，既有记录前端 105、浏览器 39。扫描超时根因仍未定位，成功次数不能证明资源竞争是原因。
 
 ## 领取与完成规则
 
@@ -96,12 +96,12 @@
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
 | ISS-036 | 目录打标与智能变化解读 | P2 | M4 | DEFERRED | ISS-028、ISS-035 |
-| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | IN_PROGRESS | ISS-029、ISS-031、ISS-045 |
+| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | DONE | ISS-029、ISS-031、ISS-045 |
 | ISS-038 | PM 自动推进与监督接续 | P1 | M0 | DONE | — |
 | ISS-039 | 扫描结果合同与安全浏览器夹具兼容 | P0 | M0 | DONE | ISS-018、ISS-022 |
 | ISS-040 | 应用内更新与双架构更新清单 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-028、ISS-031 |
 | ISS-041 | 双架构签名、公证与 Release CI | P1 | M2 | BLOCKED | ISS-037、ISS-040 |
-| ISS-041A | arm64 未签名 draft Release 工作流与候选校验（ISS-041 首轮切片） | P1 | M2 | IN_PROGRESS | ISS-031 |
+| ISS-041A | arm64 未签名 draft Release 工作流与候选校验（ISS-041 首轮切片） | P1 | M2 | WAITING | ISS-031 |
 | ISS-042 | 修复父子变化折叠的 topn 提前截断 | P0 | M0 | DONE | — |
 | ISS-043 | 同步 pytest 精确数量门禁 | P0 | M0 | DONE | — |
 | ISS-044 | 同步扫描协调后的 pytest 精确门禁 | P0 | M0 | DONE | ISS-020 |
@@ -151,7 +151,7 @@
 | ISS-079 | 近期方向复审与接手上下文收敛 | P1 | M2 | DONE | — |
 | ISS-080 | 同步 ISS-030A 后本地与云端 pytest 计数 | P1 | M0 | DONE | ISS-030A |
 | ISS-040C | 生产更新协调接线：updater_install 六步协议与进度回调（ISS-040 代码切片） | P1 | M2 | DONE | ISS-040B、ISS-030A |
-| ISS-081 | 通知语义测试隔离：固定空间告警输入，满盘机器门禁不假红 | P1 | M0 | READY | — |
+| ISS-081 | 通知语义测试隔离：固定空间告警输入，满盘机器门禁不假红 | P1 | M0 | DONE | — |
 
 ## 任务卡
 
@@ -159,13 +159,14 @@
 
 ### ISS-081 · 通知语义测试隔离：固定空间告警输入，满盘机器门禁不假红
 
-- **状态**：READY（P1/M0）；登记：2026-09-23 PM（Wave40 收口实测发现）。
+- **状态**：DONE（P1/M0，2026-09-23；[PR #158](https://github.com/cat-xierluo/fathom/pull/158) squash 合并为 `a7cc984`，worker head 经 PM rebase 收敛后为 `44bb80b`——原 head 基于 #155 时代基线，与 #156 计数行冲突，PM 按职责 rebase 解冲突（686 语义并入 696 → **697**）并以 --force-with-lease 更新）。
 - **来源/目标**：`c46084d` 上 `bash scripts/ci_pytest.sh` 出现 683 passed + 2 failed——`tests/test_scan_coordination.py::TestISS003ANotificationSemantics::test_first_scan_notifies_first_snapshot_not_done` 与 `test_partial_scan_notification_notes_coverage_gap`，断言显示首条通知为「Fathom 剩余空间告警」。根因（PM 已核实）：数据卷 100% 满、剩 9.9 GiB < `FREE_ALERT_GB` 默认 10 GiB，真实空间告警通知先于首扫通知注入录制器；同测试集 40 分钟前（剩余 ≥10 GiB）全量 685 全绿。**环境干扰、非代码回归**；但满盘机器正是本产品目标场景，门禁不应随宿主磁盘状态假红。
 - **范围**：`tests/test_scan_coordination.py`（通知语义类用例的隔离改造；方式 worker 定：monkeypatch statvfs/注入 free_bytes/显式关闭空间告警），可新增一条显式空间告警路径用例保住真实覆盖；计数若变同步四处。
 - **验收**：
-  - [ ] 在剩余空间 <10 GiB 的机器上 `bash scripts/ci_pytest.sh` 全绿（本机当前即复现环境，可直接用作反例基线）
-  - [ ] 空间告警的真实路径仍有显式用例覆盖（不因隔离丢覆盖）；不改 `notify.py`/`scan_coordinator.py` 生产语义（确需 test seam 按 ISS-071 先例登记偏离）
-  - [ ] 先红后绿证据；计数同步
+  - [x] 满盘机器全绿 —— worker 在宿主剩 9 GiB（低于阈值）时全量 686 passed（其基线口径）；PM rebase 后满盘本机全量 **697 passed**、`ci_pytest.sh` exit 0（697=expected 697）
+  - [x] 隔离承重证明（结构性红绿）—— worker 负向探针：conftest 模拟 statvfs 剩 9.5GiB，隔离在位类内 4 passed；临时移除隔离固定 → 原两用例 2 failed（断言原文复现）→ 恢复。新增 `test_low_free_volume_swaps_title_to_alert_with_sound` 显式覆盖低剩余→TITLE_ALERT+声音+「剩余 5.0 GB」正文真实链路，未丢覆盖
+  - [x] 生产代码零改动（diff 无 fathom/ 变更，无需 test seam）；计数同步四处（697）；TASKS 未被 worker 触碰
+- **证据/接续（2026-09-23 收口）**：修复方式=类级 fixture `monkeypatch scanner._volume_stat` 受控充裕输入（500/400 GiB），statvfs→volume_stats→notify 生产链路照常运行；未采用关闭告警或改 FREE_ALERT_GB（会掩盖真实行为）。PM 验收：rebase 解冲突四处计数行（697）、满盘全量 697/门禁绿/patch-id PASS、合并 #158、main 终态门禁 697+版本一致。合并例外登记：本 head 无独立 reviewer（交付来自 Wave41 会话 worker，用户明确指令合并；负向探针证据+PM 复验承担审查责任）。
 - **证据/接续**：2026-09-23 21:4x PM 复现：`df` 数据卷 Avail 9.9GiB/100%；单测断言原文 `assert 'Fathom 剩余空间告警' == 'Fathom 首次快照已建立'`；`fathom/config.py` `_DEFAULT_FREE_ALERT_GB = 10`；21:0x 同集 685 全绿对照。尚未派发。
 
 ### ISS-040C · 生产更新协调接线：updater_install 六步协议与进度回调（ISS-040 代码切片）
@@ -1394,13 +1395,15 @@
 > **2026-09-20 暂停登记（Wave33 验收链，PM）**：本轮对框 2 派发三轮（初版 `f6d6bf6` → repair1 `a889a2e` → repair2 `66c7d6c`，分支均在远端、**均未合并**）。每轮交付各有真实价值但 PM 复核各发现一项缺陷：① notices 把 `icon.png` 误记为脚手架占位（与 #117/e033ef6 后的 main 现实相反，repair1 已修）；② 17 条 Python UNKNOWN 指向不存在的 §6 且校验器漏解析 PEP 639 `License-Expression`（repair2 已修，含三级许可证解析与章节引用存在性校验）；③ repair2 引入 certifi/pluggy 许可证值互换（本地 METADATA 实为 certifi=MPL-2.0、pluggy=MIT，表内相反），且校验器无许可证值级交叉核对故仍退出 0——此缺陷**未修**。修复 episode 预算（2）耗尽，按失败策略暂停本卡：框 2 维持未勾、状态 PAUSED；最终 head `66c7d6cfa9248fd5f2e270fe560cc85eb8db3c7f` 保留在 `origin/iss-037-repair2-licenseexpr`（含前两轮全部成果，可续用）。解除路径：PM 重派第 3 轮（超出默认预算，需明确授权）修复③并给校验器补值级核对，或以候选构建实机核对口径另立收口切片。
 >
 > **2026-09-23 解除暂停（Wave41，用户授权）**：用户指令 license/开源声明部分「直接参照 Folia 项目」——Folia 公开仓库仅单个 Apache-2.0 LICENSE，无逐项第三方声明文件（DEC-024）。据此修订框 2 收口口径为「**无已知事实错误**」（许可证值与本地包 METADATA 一致等事实核对通过）；UNKNOWN 项保留并说明、不作为阻断项，不以逐项消除 UNKNOWN 为验收。第 3 轮 repair3（超出默认预算，经用户明确授权）基于 repair2 head `66c7d6c` 修 certifi/pluggy 值互换并补校验器值级交叉核对，分支 `iss-037-repair3-license-valuecheck`，2026-09-23 已派发。
+>
+> **2026-09-23 合并收口（用户指令合并）**：repair3 已由 [PR #156](https://github.com/cat-xierluo/fathom/pull/156) squash 合并为 `2b70686`（worker head `dae2d83`，patch-id 三重验证）。修正确认：certifi=MPL-2.0 / pluggy=MIT 与本地 METADATA 实测一致（PM 独立复验），另修 idna/pygments/typing-extensions/uvicorn 四处值错（「无已知事实错误」口径达成）；校验器 `audit_python` 补值级交叉核对（负向探针：uvicorn 临时回错值 → exit 1 精确报两侧值 → 恢复 exit 0）；UNKNOWN 按 DEC-024 保留内联说明不阻断。PM 复核：`--audit` exit 0（Python 值级 21/21、SKIP 0、Rust 516/516）、`pytest tests/test_third_party_notices.py` 11 passed、计数 685→696 四处同步、TASKS 未被 worker 触碰。合并例外登记：本 head 无独立 reviewer（交付来自 Wave41 会话 worker 流程，用户明确指令合并；037 缺陷①②③历经 Wave33 三轮独立审查链，缺陷③修复带负向探针证据，PM 按上述复验承担审查责任）。框 2 按修订口径勾选，本卡 DONE；repair2/repair3 分支已清理（repair2 内容经祖先链包含于 #156）。
 
 - **目标**：建立分发组件的单一版本源与来源清单，为 release 构建和用户选择开源许可准备具体方案。
 - **范围**：版本定义、依赖/资源清单、拟新增 LICENSE/NOTICE/贡献与安全说明。
 - **实施边界**：为 v0.3.0 建立单一版本源和 fail-closed 校验，消除 API 0.2/包 0.1/Cargo 0.2/Tauri 0.3 漂移；锁定 Python/Rust/前端 vendored 依赖并保留许可证/来源，生成可复查的 SBOM 或等价依赖清单及第三方 notices。先做兼容性清单和可评审的许可证选项，再请用户选；本任务不自动转公开或购买签名服务。
 - **验收**：
   - [x] Python/API/UI/Tauri/Cargo 从单一版本源或等价生成/校验规则得到一致版本；任一代码或预发行配置漂移时校验器必红 —— ISS-075 对账补勾（判定 A）：单一版本源 `fathom/__init__.py:10`（`__version__ = "0.3.0"`，本对账 grep 复核）；`scripts/check_version_consistency.sh` fail-closed 五处（含 Cargo.lock 盲区——首审 REJECT 修复项）；13 项测试；re_review ACCEPT；PR #57 → main `b27404aee20b568deb494344c85a5cd1cb5140d0`
-  - [ ] 依赖与图标等资源来源及必要 notice 齐全 —— 2026-09-19 复审撤回 #121 补勾：THIRD_PARTY_NOTICES 仍有 UNKNOWN/待补充及旧占位图标描述；深潭 App 来源是 image_gen 原稿，线条深度环才是自绘几何。声明在册不等于齐全，剩余收口由本卡承担。
+  - [x] 依赖与图标等资源来源及必要 notice 齐全 —— 按 DEC-024 修订口径（2026-09-23 用户授权「参照 Folia」）收口为「无已知事实错误」：#156 全表值级核对修正 6 处许可证值错（certifi/pluggy 互换 + idna/pygments/typing-extensions/uvicorn），UNKNOWN 项内联「来源待核」说明不阻断，深潭图标=image_gen 原稿+处理链已在册；`check_third_party_notices.py --audit` 值级核对 21/21 + Rust 516/516 + 章节引用全命中，负向探针 exit 1 反证校验器承重。历史复审撤回记录保留于上。
   - [x] 用户选定许可证后才落入 LICENSE；未选择则保持任务未完成
   - [x] 贡献/漏洞反馈与匿名诊断说明可供外部用户理解 —— ISS-075 对账补勾（判定 A）：`CONTRIBUTING.md`/`SECURITY.md` 在册（本对账 ls 复核）；卡内证据段记录「验收框 1/2/4 满足」但当时未在验收段落勾，本次据该记录与实地核验补齐
 - **证据/接续**（2026-09-14）：[PR #57](https://github.com/cat-xierluo/fathom/pull/57) head `e23618e` squash 合并为 main `b27404a`（#50 关闭取代）。单一版本源 `fathom.__version__ = 0.3.0`，api.py/Cargo.toml/tauri.conf.json/Cargo.lock 本地包行同源；`scripts/check_version_consistency.sh` fail-closed（一致 0 / 漂移 1 / 缺失 2）覆盖含 Cargo.lock 的全部五处，`tests/test_version_consistency.py` 13 项；依赖来源清单与 THIRD_PARTY_NOTICES（echarts vendored 双版本标识与上游校验和 NOT_VERIFIED 如实登记；Rust 474 条目仅核对主要子集其余 UNKNOWN）；许可证选项方案推荐 Apache-2.0 但 **LICENSE 未创建（待用户选择）**；CONTRIBUTING/SECURITY 草案。首审 REJECT 两条（门禁计数未同步；校验器漏 Cargo.lock——该盲区曾真实发生），修复后 re_review ACCEPT。验收框 1/2/4 满足；框 3 于 2026-09-14 由用户选定 Apache-2.0（与 Folia 一致，DEC-020）后落地 LICENSE；图标来源待 ISS-045。任务 DONE。
@@ -1476,7 +1479,7 @@
   - [ ] 版本门负向探针：tag 与版本源不一致时构建/上传失败
   - [ ] `verify_release_candidate.sh` 对候选跑通（sha256、DMG 结构、版本一致）
   - [ ] workflow 端到端首跑由 PM 在 tag 上执行并记录；worker 静态验证+本地分段之外的 NOT_VERIFIED 如实标注
-- **证据/接续**：2026-09-23 已派发（分支 `iss-041a-release-ci-arm64`）；首跑 tag 候选与实测记录由 PM 收口时回写本卡。
+- **证据/接续（2026-09-23 PM 合并收口）**：代码已由 [PR #157](https://github.com/cat-xierluo/fathom/pull/157) squash 合并为 `bb6ac2c`（worker head `2aa340d`，patch-id 三重验证）。PM 静态核验：YAML 合法（单 job build-arm64-draft，tag 触发+workflow_dispatch）；**零 `secrets.*` 引用**（上传用 runner 临时 `github.token`）；两处第三方 `uses:` 均固定完整 commit SHA；**无 publish 路径**（全 workflow 无 --draft=false/release edit，收尾断言 isDraft=true）；`createUpdaterArtifacts=false` 覆盖有双重依据（Tauri v2 文档 + 本机 tauri-cli 2.6.2 探针）；`bash -n` 两脚本语法通过；build_app.sh 三处改动（FATHOM_TAURI_BUILD_ARGS 透传默认零行为变化/版本源动态 DMG glob/bash3.2 全角逗号修复）。**状态转 WAITING**：验收框 1–3 需真实 runner（Actions 额度 NOT_RUN，DEC-024）与 tag 首跑，均未执行记 NOT_VERIFIED；额度恢复后由 PM 在 `v*` tag 首跑并回勾。合并例外登记：本 head 无独立 reviewer（用户明确指令合并，PM 静态核验承担）。后续：Wave41 会话已开 `iss-041a-repair1` worktree（2026-09-23 22:1x，基于 a7cc984，疑为构建 venv 相关修复），其交付按新 head 重新验收。
 
 ### ISS-033 · 外部内测与开放发布验收
 

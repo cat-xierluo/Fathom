@@ -9,8 +9,16 @@
 #
 # 输出：
 #   apps/desktop/src-tauri/target/release/bundle/macos/Fathom.app
-#   apps/desktop/src-tauri/target/release/bundle/dmg/Fathom_0.3.0_*.dmg（可能失败）
+#   apps/desktop/src-tauri/target/release/bundle/dmg/Fathom_<version>_*.dmg（可能失败）
 #   apps/desktop/src-tauri/target/release/bundle/checksums.txt
+#
+# 可选环境变量（ISS-041A，默认 unset 时行为与历史版本完全一致）：
+#   FATHOM_TAURI_BUILD_ARGS : 追加到 `cargo tauri build` 的额外参数
+#     （空格分隔）。发行 CI 用它传 `--config <json>` 把
+#     bundle.createUpdaterArtifacts 覆盖为 false——首轮 draft Release
+#     无 updater 签名私钥（DEC-022 + G10 用户决策门未过），保留 true 会让
+#     tauri build 在生成 .sig 时因缺 TAURI_SIGNING_PRIVATE_KEY 失败。
+#     恢复 updater 产物时移除该覆盖（见 .github/workflows/release.yml）。
 #
 # 失败语义：
 #   - helper 冻结失败 → 整体退出 1
@@ -56,12 +64,20 @@ cd "$ROOT/apps/desktop/src-tauri"
 # 并使 build script 失败。构建前清掉两个 profile 的资源拷贝目录（tauri-build
 # 会按当前 tauri.conf.json 重新生成，仅删副本，安全）。
 rm -rf target/release/helper target/debug/helper
-cargo tauri build --bundles app,dmg 2>&1 | tee "$LOG_DIR/tauri-build.log" || OVERALL_RC=$?
+# ISS-041A：FATHOM_TAURI_BUILD_ARGS 不做引号展开以外的任何解析——上层
+# 调用方（release workflow / 本地复跑）自行保证参数合法；默认空。
+# shellcheck disable=SC2086
+cargo tauri build --bundles app,dmg ${FATHOM_TAURI_BUILD_ARGS:-} 2>&1 | tee "$LOG_DIR/tauri-build.log" || OVERALL_RC=$?
 cd "$ROOT"
 
 # 即便 tauri build 整体失败，app 子产物可能已生成；分别检查
 APP_BUNDLE="$BUNDLE_DIR/macos/Fathom.app"
-DMG_BUNDLE_GLOB="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name 'Fathom_0.3.0*.dmg' 2>/dev/null | head -1 || true)"
+# ISS-041A：DMG 文件名含发行版本（Fathom_0.3.0_aarch64.dmg 形态）。原先
+# 硬编码 0.3.0 会在版本 bump 后 glob 落空、脚本恒报 dmg 失败；改为从单一
+# 版本源 fathom/__init__.py 读取（与 check_version_consistency.sh 同源）。
+APP_VERSION="$(grep -E '^__version__[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' "$ROOT/fathom/__init__.py" | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1')"
+[ -n "$APP_VERSION" ] || { echo "[build_app] FAIL：读不出 fathom/__init__.py 的 __version__" >&2; exit 1; }
+DMG_BUNDLE_GLOB="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "Fathom_${APP_VERSION}*.dmg" 2>/dev/null | head -1 || true)"
 
 if [ -d "$APP_BUNDLE" ]; then
   APP_RC=0
@@ -114,7 +130,7 @@ echo "=========================================="
 # ISS-055：cargo tauri build 自身失败时必须 exit 1（头注合同语义），否则
 # target/ 里残留的旧 .app/.dmg 会让本脚本假报成功（曾掩盖 EISDIR 失败）。
 if [ "$OVERALL_RC" -ne 0 ]; then
-  echo "[build_app] FAIL：cargo tauri build 退出码 $OVERALL_RC，残留产物不可作为成功证据" >&2
+  echo "[build_app] FAIL：cargo tauri build 退出码 ${OVERALL_RC}，残留产物不可作为成功证据" >&2
   exit 1
 fi
 if [ "$APP_RC" -ne 0 ]; then

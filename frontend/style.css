@@ -1,7 +1,21 @@
 /* Fathom v0.3 · R3 测深视觉签名（视觉合同见 docs/DESIGN.md「原型第三轮」，ISS-072）
  * 品牌色：低饱和「海沟蓝—矿物青」，仅用于主动作/当前选择/深度环；
  * 等深线与短深度刻度只出现在侧栏品牌区、总览主结论背景与选中态的少量位置；
- * 语义色（成功/警告/错误/增减）不与品牌色混用；禁 emoji 与写实海洋元素。 */
+ * 禁 emoji 与写实海洋元素。
+ *
+ * 语义色（ISS-084）：全部从 DEC-023 深潭色彩体系派生，低饱和仪器风，
+ * 不再使用游离于体系外的鲜红/鲜绿：
+ *  - 增长 --grow   沉积赭 #7c563c：海沟蓝(210°)的暖对位(≈25°)，饱和度/
+ *                  明度对齐矿物青；「需关注但克制」。
+ *  - 缩减/成功 --ok 深矿物青 #35716f：矿物青加深一档的文本安全档；
+ *                  「释放/确认」同属矿物青族。
+ *  - 已用 --used   深潭墨 #244864：海沟蓝向午夜蓝(#0f2a3d)方向加深 40%；
+ *                  「数据事实，不警示」。
+ *  - 告警 --alert  赭红 #9a4f3b：沉积赭同族偏红一档；磁盘低空间/将满时才出现。
+ *  - 警告 --warn   深琥珀 #7a5c2e：部分覆盖/未记录等中间态。
+ *  - 错误 --danger 铁锈红 #85453a：告警族再加深；失败/受限/表单错误。
+ * 磁盘剩余正常态 = 矿物青文本档（见 #card-free）；仅低于阈值切换 --alert。
+ * 文本语义色对白底对比度均 ≥4.5:1（见 PR 对照表）；图形/圆点用途另注。 */
 
 :root {
   --bg: #f5f6f8;
@@ -11,13 +25,19 @@
   --text: #1a2233;
   --muted: #6b7486;
   /* 品牌强调（低饱和）：海沟蓝承担主动作/当前选择/深度环主体，
-   * 矿物青只作深度环的探针与刻度点缀；不进入语义色 */
+   * 矿物青只作深度环的探针与刻度点缀 */
   --trench: #345d7f;
   --trench-weak: #e8edf2;
   --mineral: #3e7e7c;
   --primary: #345d7f;
-  --danger: #d64545;
-  --ok: #2e9e5b;
+  /* 语义色（ISS-084 派生说明见文件头注释） */
+  --grow: #7c563c;           /* 增长：沉积赭（海沟蓝暖对位） */
+  --ok: #35716f;             /* 成功/缩减：深矿物青（mineral 文本档） */
+  --used: #244864;           /* 磁盘已用：深潭墨（trench→午夜蓝 40%） */
+  --alert: #9a4f3b;          /* 低空间告警：赭红 */
+  --warn: #7a5c2e;           /* 中间态警告：深琥珀 */
+  --warn-dot: #b08a3e;       /* 警告圆点：琥珀亮档（非文本） */
+  --danger: #85453a;         /* 错误：铁锈红 */
   --sel: #e8edf2;
   --shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
   --sidenav-w: 72px;
@@ -153,7 +173,12 @@ tr:hover .btn-mini { opacity: 1; }
 .card-label { margin: 0; color: var(--muted); font-size: 12px; }
 .card-value { margin: 6px 0 0; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .card-value.small { font-size: 15px; }
-.card-value.warn { color: var(--danger); }
+/* 磁盘状态（ISS-084）：已用=深潭墨（数据事实，不警示）；剩余正常态=
+ * 深矿物青（体系蓝青）；两者仅在越阈时由 status.js 叠加 .warn 切赭红告警。
+ * id 选择器优先级高于 .card-value.warn，故告警覆盖也按 id 写足特异性 */
+#card-used { color: var(--used); }
+#card-free { color: var(--ok); }
+#card-free.warn, #card-used.warn, .card-value.warn { color: var(--alert); }
 
 .panel {
   background: var(--card); border: 1px solid var(--border); border-radius: 12px;
@@ -180,7 +205,8 @@ tr:hover .btn-mini { opacity: 1; }
 .chart-lg { height: 340px; }
 .chart-sm { height: 180px; }
 .diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.grow { color: var(--danger); }
+/* 增长/缩减（ISS-084）：沉积赭 / 矿物青族——方向是数据事实，不是对错 */
+.grow { color: var(--grow); }
 .shrink { color: var(--ok); }
 .diff-tables { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px; }
 
@@ -200,8 +226,8 @@ tr:hover .btn-mini { opacity: 1; }
   padding: 2px 10px; background: var(--bg); color: var(--muted);
   line-height: 18px; white-space: nowrap;
 }
-.quality-chip.ok { color: var(--ok); border-color: rgba(46, 158, 91, 0.4); background: #f1f9f3; }
-.quality-chip.warn { color: #8a5d00; border-color: #ecd9a0; background: #fdf6e3; }
+.quality-chip.ok { color: var(--ok); border-color: rgba(53, 113, 111, 0.35); background: #eff6f5; }
+.quality-chip.warn { color: var(--warn); border-color: #e5d6a8; background: #faf3e3; }
 .quality-chip.miss { color: var(--muted); }
 .quality-chip .icon { color: inherit; }
 
@@ -290,7 +316,7 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
 }
 .st { display: inline-flex; align-items: center; gap: 0; font-size: 12px; white-space: nowrap; }
 .st.st-measured { color: var(--muted); } .st.st-measured .st-dot { background: #9aa0ac; }
-.st.st-unrecorded { color: #8a5d00; } .st.st-unrecorded .st-dot { background: #c99a2e; }
+.st.st-unrecorded { color: var(--warn); } .st.st-unrecorded .st-dot { background: var(--warn-dot); }
 .st.st-restricted { color: var(--danger); } .st.st-restricted .st-dot { background: var(--danger); }
 .st.st-ok { color: var(--ok); } .st.st-ok .st-dot { background: var(--ok); }
 .st.st-fail { color: var(--danger); } .st.st-fail .st-dot { background: var(--danger); }
@@ -305,7 +331,7 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
 
 /* 行内小标签：变化方向标记，避免只用颜色 */
 .delta-sign { display: inline-block; min-width: 1.6em; font-weight: 600; }
-.delta-grow .delta-sign { color: var(--danger); }
+.delta-grow .delta-sign { color: var(--grow); }
 .delta-shrink .delta-sign { color: var(--ok); }
 .delta-none { color: var(--muted); }
 
@@ -329,7 +355,7 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
 }
 .tbl tr:hover { background: #fafbfc; }
 .tbl .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.delta-grow { color: var(--danger); }
+.delta-grow { color: var(--grow); }
 .delta-shrink { color: var(--ok); }
 
 /* ===== 目录浏览器 ===== */

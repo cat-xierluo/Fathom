@@ -18,6 +18,10 @@ import { fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, hasChart, clearChart } from "../charts.js";
 import { icon } from "../../icons.js";
 
+/* ISS-084：图表色与 style.css :root 语义 token 同源（单一色源，不硬编码）。
+ * 脚本为 module（defer），执行时 CSSOM 已就绪。 */
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
 let snapshotSelectionRevision = 0;  // 用户改选计数：晚到的快照列表不得覆盖改选结果
 let currentSort = { key: "delta", dir: -1 };
 let currentRows = [];
@@ -330,8 +334,8 @@ async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
     const d = await fetchJSON(`/api/diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
     if (!request.current()) return;
     lastDiff = d;
-    renderDeltaBars("chart-grown", d.grown, "#d64545");
-    renderDeltaBars("chart-shrunk", d.shrunk, "#2e9e5b");
+    renderDeltaBars("chart-grown", d.grown, cssVar("--grow"));
+    renderDeltaBars("chart-shrunk", d.shrunk, cssVar("--mineral"));
     fillTwoColTable("tbl-added", d.added, (r) => [r.path, fmtKB(r.new_kb)]);
     fillTwoColTable("tbl-removed", d.removed, (r) => [r.path, fmtKB(r.old_kb)]);
     currentRows = synthesizeRows(d);
@@ -498,7 +502,7 @@ async function loadDetailTrend(path) {
       xAxis: { type: "category", data: xs, axisLabel: { fontSize: 10 } },
       yAxis: { type: "value", axisLabel: { formatter: (v) => fmtKB(v), fontSize: 10 }, scale: true },
       series: [{ type: "line", smooth: true, symbol: "circle", symbolSize: 5,
-        data: ys, itemStyle: { color: "#345d7f" }, lineStyle: { width: 2 } }],
+        data: ys, itemStyle: { color: cssVar("--trench") }, lineStyle: { width: 2 } }],
     }, true);
     // 当侧栏关闭或被复用时回收实例
     request.current();

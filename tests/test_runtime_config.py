@@ -292,7 +292,7 @@ class TestDuTimeoutConfig:
 
     def test_default_when_env_unset(self):
         """未设 FATHOM_DU_TIMEOUT_S 时使用文档化的 14400s 默认值。
-        反例：原硬编码 3600 在生产 /Users/maoking（~11M 文件）上无解释地
+        反例：原硬编码 3600 在生产根（~11M 文件）上无解释地
         截断扫描；现默认 4 小时为兼容基线，运维可显式覆盖。"""
         proc = self._load_config_probe(None)
         assert proc.returncode == 0, proc.stderr

@@ -51,9 +51,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 NOTICES = REPO_ROOT / "THIRD_PARTY_NOTICES.md"
 CARGO_LOCK = REPO_ROOT / "apps" / "desktop" / "src-tauri" / "Cargo.lock"
 CONSTRAINTS = REPO_ROOT / "constraints.txt"
-VENV_SITE = Path(
-    "/Users/maoking/Library/Application Support/maoscripts/fathom/.venv/lib/python3.14/site-packages"
-)
+VENV_SITE = REPO_ROOT / ".venv" / "lib" / "python3.14" / "site-packages"
 REGISTRY_ROOT = Path.home() / ".cargo" / "registry" / "src"
 ECHARTS_FILE = REPO_ROOT / "frontend" / "vendor" / "echarts.min.js"
 ICONS_FILE = REPO_ROOT / "frontend" / "icons.js"

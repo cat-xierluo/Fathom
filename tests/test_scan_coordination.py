@@ -456,7 +456,7 @@ class TestScanTimeoutConfigurable:
 
     生产证据（PM 只读实测）：run 1/2 状态=interrupted、message="du 超过
     3600 秒安全时限"，快照停在 2026-09-12；硬编码 3600 在 ~11M 文件 /
-    937k 目录的 /Users/maoking 上无解释地截断每日扫描。新合同：超时上限
+    937k 目录的生产根上无解释地截断每日扫描。新合同：超时上限
     由 config.DU_TIMEOUT_S（默认 14400s；FATHOM_DU_TIMEOUT_S 覆盖）提供，
     触发后 ScanInterruptedError 冒到外层，scan_runs 落 status=interrupted
     + 含秒数与单位的消息，**不写新快照**，旧有效快照原样保留。

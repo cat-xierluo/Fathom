@@ -1,7 +1,7 @@
 # 贡献指南（草案）
 
 > 本文件是 ISS-037 交付的外部贡献者说明草案；维护者可按需调整措辞。
-> 项目协作细节以仓库内 [AGENTS.md](AGENTS.md) 与 [docs/TESTING.md](docs/TESTING.md)
+> 验证协议见 [docs/TESTING.md](docs/TESTING.md)
 > 为准，两者与本文冲突时以它们为准。
 
 ## 项目是什么

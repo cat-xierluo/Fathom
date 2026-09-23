@@ -290,7 +290,7 @@ record "env-system-events" pass "辅助功能可用（窗口控制；frontmost=$
 # ---------------------------------------------------------------- .app 自举构建（缺失时）
 if [ ! -d "$APP_PATH" ]; then
   log "=== .app 缺失，按现有链自举构建（rustup run 1.88.0；日志 ${EVIDIR}/build-*.log）==="
-  VENV_CAND="/Users/maoking/Library/Application Support/maoscripts/fathom/apps/desktop/experiments/iss029/.venv-build"
+  VENV_CAND="$HOME/Library/Application Support/maoscripts/fathom/apps/desktop/experiments/iss029/.venv-build"
   if [ ! -x "$VENV_CAND/bin/pyinstaller" ]; then
     log "[verify] BLOCKED：PyInstaller venv 不在（${VENV_CAND}），且 install 被合同禁止" >&2
     exit 3

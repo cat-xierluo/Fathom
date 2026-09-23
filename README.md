@@ -2,7 +2,7 @@
 
 macOS 本机的目录容量历史追踪工具：记录哪些目录在增长，把最近变化与历史证据放在一起，帮助理解空间去向。
 
-目前是 **v0.3.0 开发线**，已有扫描内核、SQLite 快照、Markdown 日报、正式五页界面，以及可在 Apple Silicon 上构建的未签名自包含 `.app`/`.dmg`。尚未完成新账户安装、发行后台计划、双架构和应用内更新验收，不能据此称为已可公开发布。Apple 签名/公证按 [DEC-022](docs/DECISIONS.md) 延期；其余发行目标见 [路线图](docs/ROADMAP.md)、[任务](docs/TASKS.md) 与 [发行方案](docs/plans/2026-09-13-v0.3-release-design.md)。
+目前是 **v0.3.0 开发线**，已有扫描内核、SQLite 快照、Markdown 日报、正式五页界面，以及可在 Apple Silicon 上构建的未签名自包含 `.app`/`.dmg`。尚未完成新账户安装、发行后台计划、双架构和应用内更新验收，不能据此称为已可公开发布。Apple 签名/公证延期（改为未签名分发 + DMG 内首次打开放行指引）；其余发行目标见 [路线图](docs/ROADMAP.md)。
 
 近期目标是让其他 Mac 用户无需开发工具即可安装使用，并整体提升 UX/UI；远期增加依赖来源/用途识别、扫描结果的可选 Agent 解释与目录标签。**这些智能功能尚未实现。** 源码采用 Apache-2.0 许可证（见 LICENSE），当前仍私有托管，公开发布时机另行确认。
 
@@ -33,7 +33,7 @@ python3.14 -m venv .venv
 /bin/bash scripts/ci_cargo_locked.sh
 ```
 
-仓库目前私有，clone 需要访问权限。锁定的本地脚本会运行 pytest、Cargo 和隔离 Chromium/API 检查；GitHub Actions 因账户额度仍不可用（2026-09-23 实测 job 在步骤执行前被拒，见 docs/DECISIONS.md DEC-021/024），额度恢复后重新启用。完整复跑命令与临时本地合并门禁见 [TESTING](docs/TESTING.md)。开发 UI 首选其中的隔离夹具服务，可安全查看两天数据及重扫交互，不扫描 HOME。
+仓库目前私有，clone 需要访问权限。锁定的本地脚本会运行 pytest、Cargo 和隔离 Chromium/API 检查；GitHub Actions 因账户额度问题暂不可用（2026-09-23 实测 job 在步骤执行前被拒），额度恢复后重新启用。完整复跑命令与临时本地合并门禁见 [TESTING](docs/TESTING.md)。开发 UI 首选其中的隔离夹具服务，可安全查看两天数据及重扫交互，不扫描 HOME。
 
 已了解当前限制并准备监控本机时：
 
@@ -69,7 +69,7 @@ cargo run
 - 单次 `du` 采集的安全时限由 `FATHOM_DU_TIMEOUT_S` 控制（默认 14400 秒即 4 小时）；超过时限的扫描记为「已中断」并保留上一次有效快照，不会留下半写的数据。该值必须是正的有限数，非法值会让程序在启动时报错而不是静默关闭时限。大目录（如百万级目录的用户主目录）实测可能超过 1 小时，若日报连续显示中断可适当调大。
 - `FATHOM_DB` 保留兼容：未指定运行根时，其父目录成为完整运行根，避免只隔离数据库。迁移备份使用 SQLite backup API 包含已提交 WAL；仍不能在普通备份中只拷贝活跃主 DB。
 - 未授权的目录可能无法读取；权限错误行数不等于覆盖比例，也不能说明被跳过的数据不重要。发行 helper 的授权主体待实机验证。
-- 失败扫描保护、特殊路径解析、首扫成功语义和选择器刷新已修复并有真实入口回归；开发版跨日定时和打包态主界面已有验收记录，系统通知实际展示与其余发行路径仍按 [任务](docs/TASKS.md) 单独验收。
+- 失败扫描保护、特殊路径解析、首扫成功语义和选择器刷新已修复并有真实入口回归；开发版跨日定时和打包态主界面已有验收记录，系统通知实际展示与其余发行路径仍须单独验收。
 - 目录 du 累计大小、文件逻辑大小和整卷可用空间有不同口径；父子行不能直接相加，目录体积不等于可回收空间。
 - 保留策略实际总跨度约从今天向前 12 周，其中近 35 天保留每日快照；报告/日志已按可解析日期与各自保留天数在扫描收尾清理。
 
@@ -85,11 +85,11 @@ cargo run
 
 ## 继续开发
 
-新模型从 [AGENTS](AGENTS.md) 和 [TASKS](docs/TASKS.md) 接手；产品目标见 [ROADMAP](docs/ROADMAP.md)，体验合同见 [DESIGN](docs/DESIGN.md)，当前实现见 [ARCHITECTURE](docs/ARCHITECTURE.md)。本地历史数据与客户路径不得进入测试 fixture、截图或 PR。
+贡献者请读 [CONTRIBUTING](CONTRIBUTING.md)；产品目标见 [ROADMAP](docs/ROADMAP.md)，体验合同见 [DESIGN](docs/DESIGN.md)，当前实现见 [ARCHITECTURE](docs/ARCHITECTURE.md)。本地历史数据与客户路径不得进入测试 fixture、截图或 PR。
 
 ### 构建未签名的桌面包（开发者，ISS-009 切片 1/2）
 
-当前可在 Apple Silicon 开发机上产出**未签名、未公证**的 `.app` 与 `.dmg`，仅供本机/内部试用。DMG 安装窗口自带安装引导与「首次打开提示」（本应用未经 Apple 签名与公证，首次打开可能被 macOS 阻止；右键点按 Fathom 选「打开」，或前往 系统设置 → 隐私与安全性 点「仍要打开」）——签名/公证延后出 v0.3.0（[DEC-022](docs/DECISIONS.md)）：
+当前可在 Apple Silicon 开发机上产出**未签名、未公证**的 `.app` 与 `.dmg`，仅供本机/内部试用。DMG 安装窗口自带安装引导与「首次打开提示」（本应用未经 Apple 签名与公证，首次打开可能被 macOS 阻止；右键点按 Fathom 选「打开」，或前往 系统设置 → 隐私与安全性 点「仍要打开」）——签名/公证延后出 v0.3.0：
 
 ```bash
 # 1. 冻结 helper（需 apps/desktop/experiments/iss029/.venv-build：PyInstaller 6.22.3 + fastapi/uvicorn 钉定版本）
@@ -106,4 +106,4 @@ bash scripts/verify_app_bundle.sh
 
 ## 许可证状态
 
-本项目采用 **Apache License 2.0**（仓库根 `LICENSE`，Copyright 2026 maoking，与 Folia 一致），第三方组件声明见 `THIRD_PARTY_NOTICES.md`，依赖来源清单见 `docs/plans/2026-09-14-dependency-inventory.md`。许可证已授予不等于已公开发布：仓库保持 private 时只准备内部 RC/draft Release，普通客户端不能把 private GitHub Release 当作匿名自动更新源；公开时机由用户决定。
+本项目采用 **Apache License 2.0**（仓库根 `LICENSE`，Copyright 2026 maoking，与 Folia 一致），第三方组件声明见 `THIRD_PARTY_NOTICES.md`，依赖来源清单见 `docs/plans/2026-09-14-dependency-inventory.md`。发行与更新源的启用状态以 [CHANGELOG](CHANGELOG.md) 为准。

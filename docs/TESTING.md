@@ -1,6 +1,6 @@
 # 验证与交付方法
 
-本文件提供可重复的验证入口。具体任务结果只写 [TASKS](TASKS.md)，已知基线反例见 [审查证据](plans/2026-09-12-project-review.md)。本文件是验证协议；列出的反例与验收项不代表已修复或已通过。
+本文件提供可重复的验证入口。具体任务结果与已知基线反例记录在内部任务跟踪。本文件是验证协议；列出的反例与验收项不代表已修复或已通过。
 
 ## 1. 环境与隔离
 
@@ -36,7 +36,7 @@ GitHub CI 设计为在原生 Apple Silicon 与 Intel runner 上分别执行 pyte
 3. 由实施者之外的 reviewer 对同一 fixed head 独立审查并给出 ACCEPT；
 4. PM 合并前再次核对候选 head、diff 范围和证据，合并后核对主干树。
 
-云端 job 在步骤前被 billing 拒绝时只记 `NOT_RUN`。本地 arm64 通过不能替代原生 x86_64；普通测试不能替代下文的 Tauri GUI、隔离安装、签名、公证、stapling 或真实更新门禁。额度恢复后重新启用普通 CI，详见 [DEC-018](DECISIONS.md#dec-018---2026-09-13---github-actions-无额度期间采用固定候选本地门禁)。
+云端 job 在步骤前被 billing 拒绝时只记 `NOT_RUN`。本地 arm64 通过不能替代原生 x86_64；普通测试不能替代下文的 Tauri GUI、隔离安装、签名、公证、stapling 或真实更新门禁。额度恢复后重新启用普通 CI。
 
 **2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，[DEC-021](DECISIONS.md#dec-021---2026-09-15---账户-actions-额度耗尽期间停用-ci-workflow以本地同口径门禁为主)）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
 

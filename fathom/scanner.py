@@ -126,7 +126,7 @@ def du_process_context(
 
     ``timeout_seconds=None``（默认值）时按 ``config.DU_TIMEOUT_S`` 取
     （ISS-061：FATHOM_DU_TIMEOUT_S，默认 14400s）。原 3600s 硬编码已
-    删除——生产 /Users/maoking 一次扫描远超 1 小时，硬编码会无解释地
+    删除——生产根一次扫描远超 1 小时，硬编码会无解释地
     截断并把当日快照丢失为 status=interrupted。调用方（scan_coordinator）
     总是显式传入，故此默认只影响把扫描器当库直接调用的场景。
     """

@@ -27,7 +27,7 @@ use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem, WINDOW_SUBMENU_ID},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, RunEvent, State, Url, WebviewWindow, WindowEvent,
+    AppHandle, Emitter, Listener, Manager, RunEvent, State, Url, WebviewWindow, WindowEvent,
 };
 
 mod autostart;
@@ -655,12 +655,21 @@ async fn updater_check(
 }
 
 /// 下载并安装当前候选（仅经设置页确认层调用：confirmed=true 才动手）。
-/// 下载+验签+安装交给 tauri-plugin-updater（minisign 验签不可关闭）；
-/// 失败返回 {ok:false, error} 可恢复错误并保留候选供重试，绝不 panic。
+/// ISS-040C 六步接线（协议状态在冻结 helper 的 upgrade-* 子命令，见上方
+/// 模块段）：确认后先 upgrade-prepare（①停写→②旧 helper 退出→③一致备份
+/// →④journal；在途扫描→明确拒绝、绝不终止），再⑤download_and_install——
+/// 拆为 download（进度映射 UPDATER_EVENT downloading 含 downloaded/total、
+/// 下载阶段可取消）与 install（不可取消且文案明确），下载与验签都由
+/// tauri-plugin-updater 完成（minisign 验签不可关闭）；随后新 helper 身份
+/// 核验，⑥成功经 upgrade-finalize 清 journal、清空候选——重启仍走
+/// updater_restart 独立确认（不静默、不自动重启）。任一步失败经
+/// upgrade-rollback 回滚（旧 helper 恢复运行、旧数据不动、候选保留、
+/// journal 清除）并返回 {ok:false,...} 可恢复错误，绝不 panic。
 #[tauri::command]
 async fn updater_install(
     app: AppHandle,
     state: State<'_, UpdaterState>,
+    ctl: State<'_, UpdaterInstallCtl>,
     confirmed: bool,
 ) -> Result<serde_json::Value, String> {
     if !confirmed {
@@ -680,44 +689,255 @@ async fn updater_install(
             "error": "没有已确认的可用更新；请先「检查更新」",
         }));
     };
-    // 仅状态提示（前端确认层已展示「下载并安装」文案）；进度回调留空——
-    // 本切片不做进度条，失败路径由返回值与状态事件覆盖。
+
+    // 协议①-④的 Python 侧入口 = 同一冻结 helper（生产 CLI main.py）。
+    let runtime_dir = {
+        let helper_state = app.state::<HelperState>();
+        let resolved = match helper_state.0.lock() {
+            Ok(guard) => match guard.as_ref() {
+                Some(handle) => handle.runtime_dir.clone(),
+                None => helper::default_runtime_dir(),
+            },
+            Err(_) => helper::default_runtime_dir(),
+        };
+        resolved
+    };
+    let helper_bin = match locate_helper(&app) {
+        Ok(bin) => bin,
+        Err(err) => {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "state": "failed",
+                "error": format!("无法定位冻结 helper，升级未开始：{err}"),
+            }));
+        }
+    };
+
+    ctl.begin(UpdaterInstallPhase::Preparing);
     let _ = app.emit(
         UPDATER_EVENT,
         serde_json::json!({
-            "state": "downloading",
+            "state": "preparing",
             "current_version": update.current_version,
             "available_version": update.version,
         }),
     );
-    match update.download_and_install(|_, _| {}, || {}).await {
-        Ok(()) => {
-            // 安装成功：清空候选；重启是独立确认（updater_restart），不自动重启。
-            if let Ok(mut guard) = state.0.lock() {
-                *guard = None;
+
+    // ①-④ prepare（经冻结 helper 子命令；协议失败已在 Python 侧回滚）。
+    let prepare = match run_upgrade_phase(
+        &helper_bin,
+        &runtime_dir,
+        &[
+            "upgrade-prepare",
+            "--from",
+            &update.current_version,
+            "--to",
+            &update.version,
+        ],
+    ) {
+        Ok(payload) => payload,
+        Err(err) => serde_json::json!({ "ok": false, "kind": "internal", "error": err }),
+    };
+    if !prepare.get("ok").and_then(|value| value.as_bool()).unwrap_or(false) {
+        let kind = prepare
+            .get("kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or("internal")
+            .to_string();
+        let error = prepare
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("未知失败")
+            .to_string();
+        // prepare 已自回滚；壳侧（进程属主）补齐旧 helper 重启。
+        rollback_upgrade_and_restart_helper(&app, &helper_bin, &runtime_dir, "prepare 失败");
+        let hint = prepare_failure_hint(&kind);
+        let _ = app.emit(
+            UPDATER_EVENT,
+            serde_json::json!({
+                "state": "failed",
+                "kind": kind,
+                "error": error,
+                "hint": hint,
+            }),
+        );
+        return Ok(serde_json::json!({
+            "ok": false,
+            "state": "failed",
+            "kind": kind,
+            "error": format!("{error}（{hint}）"),
+        }));
+    }
+
+    // ⑤ download_and_install 前半（download 内完成下载+minisign 验签）：
+    // 进度映射 UPDATER_EVENT（downloading 含 downloaded/total，节流）；取消
+    // 请求在 poll 边界受理——中止即回滚，候选保留。
+    ctl.begin(UpdaterInstallPhase::Downloading);
+    let mut downloaded: u64 = 0;
+    let mut last_emitted: u64 = 0;
+    let emit_app = app.clone();
+    let current_version = update.current_version.clone();
+    let target_version = update.version.clone();
+    let ctl_ref = ctl.inner();
+    let mut download = std::pin::pin!(update.download(
+        move |chunk, total| {
+            downloaded = downloaded.saturating_add(chunk as u64);
+            if progress_should_emit(last_emitted, downloaded, total) {
+                last_emitted = downloaded;
+                let _ = emit_app.emit(
+                    UPDATER_EVENT,
+                    updater_download_progress_json(
+                        &current_version,
+                        &target_version,
+                        downloaded,
+                        total,
+                    ),
+                );
             }
+        },
+        || {},
+    ));
+    enum DownloadOutcome {
+        Completed(Vec<u8>),
+        Cancelled,
+        Failed(String),
+    }
+    use std::future::Future as _;
+    let outcome = std::future::poll_fn(|cx| {
+        if ctl_ref.is_cancel_requested() {
+            return std::task::Poll::Ready(DownloadOutcome::Cancelled);
+        }
+        match download.as_mut().poll(cx) {
+            std::task::Poll::Ready(Ok(bytes)) => {
+                std::task::Poll::Ready(DownloadOutcome::Completed(bytes))
+            }
+            std::task::Poll::Ready(Err(err)) => {
+                std::task::Poll::Ready(DownloadOutcome::Failed(err.to_string()))
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    })
+    .await;
+
+    let bytes = match outcome {
+        DownloadOutcome::Cancelled => {
+            rollback_upgrade_and_restart_helper(&app, &helper_bin, &runtime_dir, "下载取消");
             let _ = app.emit(
                 UPDATER_EVENT,
                 serde_json::json!({
-                    "state": "installed",
+                    "state": "cancelled",
                     "current_version": update.current_version,
                     "available_version": update.version,
-                    "hint": "更新已安装；重启应用后生效",
+                    "hint": "下载已取消；旧版本保持运行，可再次安装",
                 }),
             );
-            Ok(serde_json::json!({
-                "ok": true,
-                "state": "installed",
-                "current_version": update.current_version,
-                "available_version": update.version,
-            }))
+            return Ok(serde_json::json!({
+                "ok": false,
+                "state": "cancelled",
+                "error": "下载已取消（旧版本保持运行，候选保留）",
+            }));
         }
-        Err(err) => Ok(serde_json::json!({
+        DownloadOutcome::Failed(err) => {
+            rollback_upgrade_and_restart_helper(&app, &helper_bin, &runtime_dir, "下载失败");
+            let error = format!("下载/验签失败（已回滚，候选保留，可重试）：{err}");
+            let _ = app.emit(
+                UPDATER_EVENT,
+                serde_json::json!({ "state": "failed", "error": error }),
+            );
+            return Ok(serde_json::json!({
+                "ok": false,
+                "state": "failed",
+                "error": error,
+            }));
+        }
+        DownloadOutcome::Completed(bytes) => bytes,
+    };
+
+    // 进入安装（download_and_install 后半）：不可取消，文案明确（合同⑤）。
+    ctl.begin(UpdaterInstallPhase::Installing);
+    let _ = app.emit(
+        UPDATER_EVENT,
+        serde_json::json!({
+            "state": "installing",
+            "current_version": update.current_version,
+            "available_version": update.version,
+            "cancellable": false,
+            "hint": UPDATER_INSTALL_NOT_CANCELLABLE_HINT,
+        }),
+    );
+    if let Err(err) = update.install(&bytes) {
+        rollback_upgrade_and_restart_helper(&app, &helper_bin, &runtime_dir, "安装失败");
+        let error = format!("安装失败（已回滚到旧版本，候选保留，可重试）：{err}");
+        let _ = app.emit(
+            UPDATER_EVENT,
+            serde_json::json!({ "state": "failed", "error": error }),
+        );
+        return Ok(serde_json::json!({
             "ok": false,
             "state": "failed",
-            "error": format!("下载/验签/安装失败（候选保留，可重试）：{err}"),
-        })),
+            "error": error,
+        }));
     }
+
+    // 新 helper 身份核验（030A step6 握手语义的壳侧生产化）：安装后 bundle
+    // 已是 N+1，运行其 --version 与候选版本核对；失败→journal 判定路径回滚。
+    ctl.begin(UpdaterInstallPhase::Verifying);
+    let verify = match locate_helper(&app) {
+        Ok(new_bin) => verify_new_helper(&new_bin, &update.version),
+        Err(err) => Err(format!("无法定位新 helper（身份核验失败）：{err}")),
+    };
+    if let Err(err) = verify {
+        rollback_upgrade_and_restart_helper(
+            &app,
+            &helper_bin,
+            &runtime_dir,
+            "新 helper 握手失败",
+        );
+        let error = format!("{err}（已回滚到可运行旧版，旧数据不动）");
+        let _ = app.emit(
+            UPDATER_EVENT,
+            serde_json::json!({
+                "state": "failed",
+                "kind": "handshake",
+                "error": error,
+            }),
+        );
+        return Ok(serde_json::json!({
+            "ok": false,
+            "state": "failed",
+            "kind": "handshake",
+            "error": error,
+        }));
+    }
+
+    // ⑥成功收尾：清 journal（候选清空；重启仍走 updater_restart 独立确认，
+    // 不静默、不自动重启）。
+    ctl.begin(UpdaterInstallPhase::Finalizing);
+    if let Err(err) = run_upgrade_phase(&helper_bin, &runtime_dir, &["upgrade-finalize"]) {
+        // 安装已成功：finalize 失败不回滚安装；半升级态可检测（upgrade-detect
+        // / upgrade-rollback 可恢复），如实落日志不伪装成功收尾。
+        eprintln!(
+            "[updater] upgrade-finalize 失败（journal 可能残留，可经 upgrade-detect 检测恢复）：{err}"
+        );
+    }
+    if let Ok(mut guard) = state.0.lock() {
+        *guard = None;
+    }
+    let _ = app.emit(
+        UPDATER_EVENT,
+        serde_json::json!({
+            "state": "installed",
+            "current_version": update.current_version,
+            "available_version": update.version,
+            "hint": "更新已安装；重启应用后生效",
+        }),
+    );
+    Ok(serde_json::json!({
+        "ok": true,
+        "state": "installed",
+        "current_version": update.current_version,
+        "available_version": update.version,
+    }))
 }
 
 /// 重启应用以完成更新（独立命令，仅经「重启以完成」确认层调用）。
@@ -734,6 +954,320 @@ fn updater_restart(app: AppHandle, confirmed: bool) -> Result<serde_json::Value,
     }
     app.request_restart();
     Ok(serde_json::json!({ "ok": true }))
+}
+
+// ===== 生产升级协调接线（ISS-040C）=====
+//
+// 六步合同（Python 侧协议状态见 fathom/upgrade.py，与本壳分工）：
+// ①非阻塞停写（ScanLease）——被在途扫描持有→明确拒绝，绝不终止在途扫描；
+// ②旧 helper 优雅退出（helper-instance pid + 端口释放确认，超时→中止→回滚）；
+// ③SQLite 一致备份（checkpoint + backup API + 完整性校验，禁止文件拷贝）；
+// ④journal 落盘（半升级态可检测）；⑤download_and_install（本壳：进度映射
+// UPDATER_EVENT downloading 含 downloaded/total；下载阶段可取消、进入安装
+// 后不可取消且文案明确）；⑥成功清 journal/候选，重启仍走 updater_restart
+// 独立确认；任一步失败回滚（旧 helper 恢复运行、旧数据不动、候选保留、
+// journal 清除）。
+//
+// ①-④与⑥的协议状态经**同一冻结 helper**（生产 CLI main.py）的
+// upgrade-prepare / upgrade-finalize / upgrade-rollback 子命令执行——子命令
+// 随打包自然携带，不经 030A 夹具。进程重启单属主：旧 helper 的「恢复运行」
+// 由本壳（进程属主）在回滚后执行，Python 侧不 spawn 进程。
+
+/// ISS-040C：升级取消请求事件名。复用**已授权**的 ``core:event:default``
+/// 通道受理前端取消（本切片不动 frontend/，按钮留后续）；不新增 updater
+/// 命令/ACL 权限——恰 3 权限合同不回退。
+const UPDATER_CANCEL_EVENT: &str = "updater-cancel-requested";
+
+/// ISS-040C：进入安装后不可取消的明确文案（合同⑤）。
+const UPDATER_INSTALL_NOT_CANCELLABLE_HINT: &str =
+    "已进入安装阶段，不可取消；若安装失败将自动回滚到当前版本";
+
+/// ISS-040C：取消请求到达但已过下载阶段时的拒绝文案（同样明确）。
+const UPDATER_CANCEL_REFUSED_HINT: &str =
+    "下载已完成、安装进行中，取消请求被拒绝；失败路径将自动回滚到当前版本";
+
+/// 进度事件节流步长：每累计 128 KiB（或到达终点）发一次 UPDATER_EVENT，
+/// 避免大包下载按 chunk 刷事件。
+const UPDATER_PROGRESS_EMIT_STEP_BYTES: u64 = 128 * 1024;
+
+/// ISS-040C：updater_install 阶段机。取消边界：准备/下载阶段可取消，
+/// 进入安装（含身份核验与收尾）后不可取消。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdaterInstallPhase {
+    Preparing,
+    Downloading,
+    Installing,
+    Verifying,
+    Finalizing,
+}
+
+impl UpdaterInstallPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Downloading => "downloading",
+            Self::Installing => "installing",
+            Self::Verifying => "verifying",
+            Self::Finalizing => "finalizing",
+        }
+    }
+
+    /// 取消边界（合同⑤）：仅准备/下载阶段受理取消。
+    fn allows_cancel(self) -> bool {
+        matches!(self, Self::Preparing | Self::Downloading)
+    }
+}
+
+/// ISS-040C：一次 updater_install 的控制面（当前阶段 + 取消请求）。
+/// 取消经 UPDATER_CANCEL_EVENT（core:event:default）受理，不新增 ACL 权限。
+struct UpdaterInstallCtl {
+    phase: Mutex<UpdaterInstallPhase>,
+    cancel_requested: std::sync::atomic::AtomicBool,
+}
+
+impl UpdaterInstallCtl {
+    fn new() -> Self {
+        Self {
+            phase: Mutex::new(UpdaterInstallPhase::Preparing),
+            cancel_requested: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// 进入新阶段；回到 Preparing 时复位取消标志（新一轮安装）。
+    fn begin(&self, phase: UpdaterInstallPhase) {
+        if let Ok(mut guard) = self.phase.lock() {
+            *guard = phase;
+        }
+        if phase == UpdaterInstallPhase::Preparing {
+            self.cancel_requested
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn current(&self) -> UpdaterInstallPhase {
+        self.phase
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or(UpdaterInstallPhase::Preparing)
+    }
+
+    fn request_cancel(&self) {
+        self.cancel_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn is_cancel_requested(&self) -> bool {
+        self.cancel_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// ISS-040C：下载进度事件载荷（合同：downloading 态含 downloaded/total；
+/// total 未知时为 null，downloaded 为累计字节数）。
+fn updater_download_progress_json(
+    current_version: &str,
+    available_version: &str,
+    downloaded: u64,
+    total: Option<u64>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "state": "downloading",
+        "current_version": current_version,
+        "available_version": available_version,
+        "downloaded": downloaded,
+        "total": total,
+        "cancellable": true,
+    })
+}
+
+/// 进度节流（纯函数）：累计满 128 KiB 或已完成（total 已知且到位）时发事件。
+fn progress_should_emit(last_emitted: u64, downloaded: u64, total: Option<u64>) -> bool {
+    if downloaded.saturating_sub(last_emitted) >= UPDATER_PROGRESS_EMIT_STEP_BYTES {
+        return true;
+    }
+    matches!(total, Some(total) if downloaded >= total)
+}
+
+/// ISS-040C：构建冻结 helper 的升级协调子命令。argv 合同：全局
+/// ``--runtime-dir`` 位于子命令之前（argparse 布局，与 main.py 一致）；
+/// env 与 spawn_helper 同源（FATHOM_RUNTIME_DIR / FATHOM_RUNTIME_MODE）。
+fn upgrade_helper_command(
+    bin: &Path,
+    runtime_dir: &Path,
+    extra_args: &[&str],
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new(bin);
+    cmd.arg("--runtime-dir").arg(runtime_dir);
+    for arg in extra_args {
+        cmd.arg(arg);
+    }
+    cmd.env("FATHOM_RUNTIME_DIR", runtime_dir)
+        .env("FATHOM_RUNTIME_MODE", "release")
+        .stdin(std::process::Stdio::null());
+    cmd
+}
+
+/// stdout 最后一个非空行解析为 JSON（容忍诊断行；子命令合同：结果 JSON
+/// 恒为末行，诊断走 stderr）。
+fn parse_json_last_line(stdout: &str) -> Option<serde_json::Value> {
+    stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .and_then(|line| serde_json::from_str(line).ok())
+}
+
+/// 执行冻结 helper 协调子命令并解析其单行 JSON 结果。
+fn run_upgrade_phase(
+    bin: &Path,
+    runtime_dir: &Path,
+    extra_args: &[&str],
+) -> Result<serde_json::Value, String> {
+    let output = upgrade_helper_command(bin, runtime_dir, extra_args)
+        .output()
+        .map_err(|err| format!("启动升级协调子命令失败（{}）：{err}", bin.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    parse_json_last_line(&stdout).ok_or_else(|| {
+        format!(
+            "升级协调子命令未输出可解析 JSON（exit={:?}，stdout 尾部：{:?}，stderr 尾部：{:?}）",
+            output.status.code(),
+            stdout.lines().last().unwrap_or(""),
+            stderr.lines().last().unwrap_or(""),
+        )
+    })
+}
+
+/// 运行 helper 的 ``--version``（ISS-029 单行 JSON 身份面；静态、无运行时
+/// 副作用）并解析。
+fn probe_helper_identity(bin: &Path) -> Result<serde_json::Value, String> {
+    let output = std::process::Command::new(bin)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|err| format!("运行 helper --version 失败（{}）：{err}", bin.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_json_last_line(&stdout).ok_or_else(|| {
+        format!(
+            "helper --version 输出不可解析（exit={:?}，stdout 尾部：{:?}）",
+            output.status.code(),
+            stdout.lines().last().unwrap_or(""),
+        )
+    })
+}
+
+/// ISS-040C：新 helper 身份核验（030A step6 握手语义的壳侧生产化）——
+/// service/protocol/version 三方一致才算握手通过。
+fn verify_new_helper_identity(
+    version_json: &serde_json::Value,
+    expected_version: &str,
+) -> Result<(), String> {
+    let mut problems: Vec<String> = Vec::new();
+    let service = version_json
+        .get("service")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if service != helper::SERVICE_IDENTITY {
+        problems.push(format!("service={service:?}"));
+    }
+    let protocol = version_json
+        .get("protocol_version")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    if protocol != helper::PROTOCOL_VERSION {
+        problems.push(format!("protocol={protocol}"));
+    }
+    let version = version_json
+        .get("version")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if version != expected_version {
+        problems.push(format!("version={version:?} != {expected_version:?}"));
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("新 helper 握手失败：{}", problems.join("; ")))
+    }
+}
+
+/// 定位 + 运行 + 核验新 helper 身份（安装后 bundle 已是 N+1）。
+fn verify_new_helper(bin: &Path, expected_version: &str) -> Result<(), String> {
+    let identity = probe_helper_identity(bin)?;
+    verify_new_helper_identity(&identity, expected_version)
+}
+
+/// prepare 失败的用户话术（kind → 明确可读的恢复提示；scan_busy 必须带
+/// 「稍后重试」，对应合同①的可读失败态）。
+fn prepare_failure_hint(kind: &str) -> &'static str {
+    match kind {
+        "scan_busy" => "有扫描正在进行；升级未开始、未终止扫描。请等扫描完成后重试",
+        "helper_exit_timeout" => "旧后台服务未在时限内退出；已回滚，稍后可重试",
+        "schema_refused" => "数据库版本不可信，升级被拒绝；请先处理数据文件",
+        "backup" | "disk_full" => "备份失败；旧版本与旧数据未受影响，清理空间后可重试",
+        "half_upgraded_state" => "存在未收口的半升级态；请先恢复（upgrade-rollback）后重试",
+        _ => "升级准备失败；旧版本与旧数据未受影响，可重试",
+    }
+}
+
+/// 受理取消请求（UPDATER_CANCEL_EVENT 回调）：准备/下载阶段置取消标志
+/// （下载在 poll 边界中止并回滚）；已进入安装则拒绝并回明确文案。
+fn handle_cancel_request(app: &AppHandle) {
+    let ctl = app.state::<UpdaterInstallCtl>();
+    let phase = ctl.current();
+    if phase.allows_cancel() {
+        ctl.request_cancel();
+        println!(
+            "[updater] 收到取消请求（阶段 {}）：下载将在当前位置中止并回滚",
+            phase.as_str()
+        );
+    } else {
+        eprintln!(
+            "[updater] 取消请求被拒绝（阶段 {}）：{UPDATER_CANCEL_REFUSED_HINT}",
+            phase.as_str()
+        );
+        let _ = app.emit(
+            UPDATER_EVENT,
+            serde_json::json!({
+                "state": phase.as_str(),
+                "cancellable": false,
+                "hint": UPDATER_CANCEL_REFUSED_HINT,
+            }),
+        );
+    }
+}
+
+/// 失败回滚（合同⑥）：先经冻结 helper ``upgrade-rollback`` 清理协议状态
+/// （journal 清除、旧数据不动、候选/备份保留），再由本壳（进程属主）重启
+/// 旧 helper。重启在独立线程执行，不阻塞命令 future。
+fn rollback_upgrade_and_restart_helper(
+    app: &AppHandle,
+    bin: &Path,
+    runtime_dir: &Path,
+    reason: &str,
+) {
+    match run_upgrade_phase(bin, runtime_dir, &["upgrade-rollback"]) {
+        Ok(payload) => println!("[updater] 回滚完成（{reason}）：{payload}"),
+        Err(err) => eprintln!(
+            "[updater] 回滚子命令失败（{reason}）：{err}（journal 可能残留；\
+             启动时经 upgrade-detect 可检测并恢复）"
+        ),
+    }
+    let handle = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("fathom-updater-helper-restart".to_string())
+        .spawn(move || {
+            // 复用既有启动+握手+导航流程（start_helper_internal）恢复服务；
+            // 失败不 panic：握手页「重试握手」仍是既有恢复入口。
+            let state = handle.state::<HelperState>();
+            if let Err(err) = start_helper_internal(&handle, &state) {
+                eprintln!("[updater] 回滚后重启 helper 失败：{err}（握手页「重试握手」可手动恢复）");
+            }
+        });
+    if let Err(err) = spawned {
+        eprintln!("[updater] 回滚后重启线程创建失败：{err}（握手页「重试握手」可手动恢复）");
+    }
 }
 
 /// 启动延迟检查（ISS-040B）：std 线程 + async_runtime::block_on（不引 tokio
@@ -808,6 +1342,13 @@ pub fn run() {
             app.manage(HelperState(Mutex::new(Some(HelperHandle::new(runtime_dir)))));
             // ISS-040B：更新候选暂存句柄（启动延迟检查/手动检查写入）。
             app.manage(UpdaterState(Mutex::new(None)));
+            // ISS-040C：升级安装控制面 + 取消请求事件通道（core:event:default
+            // 已授权，不新增 updater 命令/ACL 权限——恰 3 权限合同不回退）。
+            app.manage(UpdaterInstallCtl::new());
+            let cancel_app = app.handle().clone();
+            app.listen(UPDATER_CANCEL_EVENT, move |_| {
+                handle_cancel_request(&cancel_app);
+            });
 
             let status = MenuItem::with_id(app, "status", "Fathom 启动中…", false, None::<&str>)?;
             let open = MenuItem::with_id(app, "open", "打开主界面", true, None::<&str>)?;
@@ -1152,5 +1693,206 @@ mod tests {
             "启动延迟检查必须 ≥10s（合同），当前 {UPDATER_STARTUP_DELAY_S}s"
         );
         assert_eq!(UPDATER_EVENT, "updater-state");
+    }
+
+    /// ISS-040C：下载进度事件载荷合同——downloading 态含 downloaded/total
+    ///（total 未知时为 null）、cancellable=true（下载阶段可取消的声明面）。
+    #[test]
+    fn updater_download_progress_json_carries_downloaded_and_total() {
+        let known = updater_download_progress_json("0.3.0", "0.3.1", 2048, Some(4096));
+        assert_eq!(known["state"], "downloading");
+        assert_eq!(known["current_version"], "0.3.0");
+        assert_eq!(known["available_version"], "0.3.1");
+        assert_eq!(known["downloaded"], 2048);
+        assert_eq!(known["total"], 4096);
+        assert_eq!(known["cancellable"], true);
+
+        let unknown = updater_download_progress_json("0.3.0", "0.3.1", 8, None);
+        assert!(unknown["total"].is_null(), "未知总长必须是显式 null");
+        assert_eq!(unknown["downloaded"], 8);
+    }
+
+    /// ISS-040C：进度节流——累计满 128 KiB 或已完成时发事件；未满且未完成不发。
+    #[test]
+    fn updater_progress_emit_throttle_boundaries() {
+        assert!(
+            !progress_should_emit(0, 1024, Some(65536)),
+            "未满步长且未完成：不发"
+        );
+        assert!(
+            progress_should_emit(0, UPDATER_PROGRESS_EMIT_STEP_BYTES, Some(1 << 20)),
+            "满 128 KiB：发"
+        );
+        assert!(progress_should_emit(0, 65536, Some(65536)), "已完成：发");
+        assert!(
+            !progress_should_emit(0, 65535, Some(65536)),
+            "差一字节未完成：不发"
+        );
+        assert!(
+            !progress_should_emit(0, 4096, None),
+            "总长未知且未满步长：不发"
+        );
+    }
+
+    /// ISS-040C：取消边界——准备/下载阶段可取消；安装/核验/收尾不可取消；
+    /// 两条不可取消文案与取消事件名钉死（合同⑤：文案明确）。
+    #[test]
+    fn updater_phase_cancel_boundary_contract() {
+        for cancellable in [
+            UpdaterInstallPhase::Preparing,
+            UpdaterInstallPhase::Downloading,
+        ] {
+            assert!(cancellable.allows_cancel(), "{cancellable:?} 应可取消");
+        }
+        for fixed in [
+            UpdaterInstallPhase::Installing,
+            UpdaterInstallPhase::Verifying,
+            UpdaterInstallPhase::Finalizing,
+        ] {
+            assert!(!fixed.allows_cancel(), "{fixed:?} 不可取消");
+        }
+        assert_eq!(UpdaterInstallPhase::Downloading.as_str(), "downloading");
+        assert_eq!(UpdaterInstallPhase::Installing.as_str(), "installing");
+        assert!(
+            UPDATER_INSTALL_NOT_CANCELLABLE_HINT.contains("不可取消")
+                && UPDATER_INSTALL_NOT_CANCELLABLE_HINT.contains("回滚"),
+            "安装阶段文案必须明确「不可取消」与回滚去向"
+        );
+        assert!(
+            !UPDATER_CANCEL_REFUSED_HINT.is_empty()
+                && UPDATER_CANCEL_REFUSED_HINT.contains("拒绝"),
+            "取消拒绝文案必须明确"
+        );
+        assert_eq!(UPDATER_CANCEL_EVENT, "updater-cancel-requested");
+    }
+
+    /// ISS-040C：升级子命令 argv 合同——全局 ``--runtime-dir`` 在子命令之前
+    ///（argparse 布局），upgrade-prepare 携带 --from/--to；env 与
+    /// spawn_helper 同源（FATHOM_RUNTIME_DIR / FATHOM_RUNTIME_MODE）。
+    /// 这是「冻结 helper 侧子命令被生产入口真实调用」的壳侧钉子（与
+    /// pytest 侧 grep 断言互为证据链）。
+    #[test]
+    fn upgrade_helper_command_argv_contract() {
+        let bin = Path::new("/tmp/fathom-helper");
+        let runtime = Path::new("/tmp/fathom-rt");
+        let prepare = upgrade_helper_command(
+            bin,
+            runtime,
+            &["upgrade-prepare", "--from", "0.3.0", "--to", "0.3.1"],
+        );
+        assert_eq!(prepare.get_program().to_string_lossy(), "/tmp/fathom-helper");
+        let argv: Vec<String> = prepare
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            argv,
+            [
+                "--runtime-dir",
+                "/tmp/fathom-rt",
+                "upgrade-prepare",
+                "--from",
+                "0.3.0",
+                "--to",
+                "0.3.1",
+            ]
+        );
+        let mut runtime_env: Option<String> = None;
+        let mut mode_env: Option<String> = None;
+        for (key, value) in prepare.get_envs() {
+            if key == "FATHOM_RUNTIME_DIR" {
+                runtime_env = value.map(|v| v.to_string_lossy().into_owned());
+            }
+            if key == "FATHOM_RUNTIME_MODE" {
+                mode_env = value.map(|v| v.to_string_lossy().into_owned());
+            }
+        }
+        assert_eq!(runtime_env.as_deref(), Some("/tmp/fathom-rt"));
+        assert_eq!(mode_env.as_deref(), Some("release"));
+
+        let rollback = upgrade_helper_command(bin, runtime, &["upgrade-rollback"]);
+        assert!(
+            rollback
+                .get_args()
+                .any(|arg| arg == "upgrade-rollback")
+        );
+        let finalize = upgrade_helper_command(bin, runtime, &["upgrade-finalize"]);
+        assert!(
+            finalize.get_args().any(|arg| arg == "upgrade-finalize")
+        );
+    }
+
+    /// ISS-040C：子命令输出解析——取最后一个非空行且必须合法 JSON；
+    /// 诊断行/空行/非 JSON 均不误读。
+    #[test]
+    fn parse_json_last_line_tolerates_diagnostic_lines() {
+        let parsed = parse_json_last_line("诊断行\n{\"ok\": true, \"kind\": \"prepared\"}\n");
+        assert_eq!(parsed.expect("末行 JSON 必须可解析")["kind"], "prepared");
+        assert!(parse_json_last_line("").is_none());
+        assert!(parse_json_last_line("not json at all").is_none());
+        assert!(parse_json_last_line("前置日志\n仍然不是 JSON").is_none());
+    }
+
+    /// ISS-040C：新 helper 身份核验——service/protocol/version 三方一致才
+    /// 通过；任一不符给出可读问题清单（030A step6 握手语义）。
+    #[test]
+    fn verify_new_helper_identity_requires_all_three_fields() {
+        let good = serde_json::json!({
+            "service": "fathom",
+            "protocol_version": 1,
+            "version": "0.3.1",
+        });
+        assert!(verify_new_helper_identity(&good, "0.3.1").is_ok());
+        for bad in [
+            serde_json::json!({"service": "other", "protocol_version": 1, "version": "0.3.1"}),
+            serde_json::json!({"service": "fathom", "protocol_version": 2, "version": "0.3.1"}),
+            serde_json::json!({"service": "fathom", "protocol_version": 1, "version": "0.3.0"}),
+            serde_json::json!({}),
+        ] {
+            let err = verify_new_helper_identity(&bad, "0.3.1")
+                .expect_err("身份不符必须拒绝");
+            assert!(
+                err.contains("新 helper 握手失败"),
+                "错误必须点名握手失败：{err}"
+            );
+        }
+    }
+
+    /// ISS-040C：prepare 失败话术映射——scan_busy 带扫描与重试提示（合同①
+    /// 的可读失败态），各 kind 都有非空恢复提示。
+    #[test]
+    fn prepare_failure_hint_maps_kinds_to_recovery_copy() {
+        let busy = prepare_failure_hint("scan_busy");
+        assert!(busy.contains("扫描") && busy.contains("重试"));
+        for kind in [
+            "helper_exit_timeout",
+            "schema_refused",
+            "backup",
+            "disk_full",
+            "half_upgraded_state",
+            "unknown-kind",
+        ] {
+            assert!(
+                !prepare_failure_hint(kind).is_empty(),
+                "{kind} 必须有恢复提示"
+            );
+        }
+    }
+
+    /// ISS-040C：控制面阶段机——begin 复位/推进取消语义（下载中受理、安装
+    /// 中请求被拒并保持阶段）。
+    #[test]
+    fn updater_install_ctl_phase_and_cancel_flags() {
+        let ctl = UpdaterInstallCtl::new();
+        assert_eq!(ctl.current(), UpdaterInstallPhase::Preparing);
+        ctl.begin(UpdaterInstallPhase::Downloading);
+        assert!(ctl.current().allows_cancel());
+        ctl.request_cancel();
+        assert!(ctl.is_cancel_requested());
+        // 新一轮安装回到 Preparing：取消标志复位。
+        ctl.begin(UpdaterInstallPhase::Preparing);
+        assert!(!ctl.is_cancel_requested());
+        ctl.begin(UpdaterInstallPhase::Installing);
+        assert!(!ctl.current().allows_cancel());
     }
 }

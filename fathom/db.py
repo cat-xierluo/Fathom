@@ -438,6 +438,25 @@ def _consistent_backup(conn: sqlite3.Connection, path: Path, version: int) -> Pa
     return target
 
 
+def consistent_backup(db_path: Path | None = None) -> Path:
+    """公共一致备份入口（ISS-040C）：checkpoint + backup API + 完整性校验。
+
+    供生产升级协调器（``fathom.upgrade``）在停写与旧 helper 退出之后调用：
+    独立连接上先 ``PRAGMA wal_checkpoint(TRUNCATE)`` 把已提交 WAL 落进主
+    文件，再复用 ``_consistent_backup``（SQLite backup API 捕获主库与 WAL
+    的同一一致视图 + ``PRAGMA integrity_check`` 校验；禁止文件拷贝语义）。
+    返回备份文件路径（0600，与库同目录）；失败时临时文件已被清理并向上
+    抛出，原库不受影响。
+    """
+    path = Path(db_path or config.DB_PATH).expanduser().resolve(strict=False)
+    conn = sqlite3.connect(path, timeout=10)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return _consistent_backup(conn, path, schema_version(conn))
+    finally:
+        conn.close()
+
+
 def _prepare_database(path: Path) -> sqlite3.Connection:
     # timeout applies while another legitimate process holds a short SQLite write lock.
     conn = sqlite3.connect(path, timeout=10)

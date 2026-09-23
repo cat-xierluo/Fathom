@@ -8,6 +8,11 @@
   serve      启动 Web 服务（launchd 常驻）
   install    安装 launchd 定时任务与常驻 Web 服务
   uninstall  卸载 launchd 任务
+  upgrade-prepare   升级协调①-④：停写→旧 helper 退出→一致备份→journal（ISS-040C，
+                    由桌面壳 updater_install 经冻结 helper 调用）
+  upgrade-rollback  失败回滚：journal 清除、旧 helper 状态恢复（进程重启归壳）
+  upgrade-finalize  成功收尾：清除升级 journal（候选清空由壳完成）
+  upgrade-detect    半升级态检测（030A detect_upgrade_state 语义生产化）
 
 版本与身份（ISS-029 G3）：``--version`` 输出单行 JSON 含 service/version/
 protocol_version/python/machine/exe，应用壳以此做启动前握手。
@@ -41,6 +46,7 @@ from . import (
     launchd,
     reports,
     scan_coordinator,
+    upgrade,
 )
 # G1：对象导入位于 cmd_serve 内部（延迟导入），原因有二：
 #  1. PyInstaller 静态分析仍可跟踪 from . import api；
@@ -458,6 +464,57 @@ def cmd_version(_: argparse.Namespace) -> int:
     return 0
 
 
+# --------------------------------------------- 升级协调子命令（ISS-040C）
+# 与桌面壳 updater_install 的合同：壳经冻结 helper（本入口 main.py）以
+# ``--runtime-dir <rt> upgrade-prepare --from N --to N+1`` 等 argv 调用，
+# 结果以 stdout 最后一个非空行的单行 JSON 返回（诊断走 stderr），退出码
+# 0=ok:true、1=ok:false。协议语义见 fathom/upgrade.py 模块说明。
+
+
+def cmd_upgrade_prepare(args: argparse.Namespace) -> int:
+    """升级协调①-④：停写→旧 helper 退出→一致备份→journal（协议失败自动
+    回滚，结果 JSON 的 kind 区分 scan_busy/helper_exit_timeout/backup 等）。"""
+    paths = upgrade.UpgradePaths.from_config()
+    coord = upgrade.UpgradeCoordinator(
+        paths, from_version=args.from_version, to_version=args.to_version
+    )
+    result = coord.run_prepare()
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result.get("ok") else 1
+
+
+def cmd_upgrade_rollback(_: argparse.Namespace) -> int:
+    """失败回滚：journal 清除、旧 helper 状态恢复（进程重启归壳——
+    本子进程不 spawn serve，见 fathom/upgrade.py 分工合同）。"""
+    paths = upgrade.UpgradePaths.from_config()
+    coord = upgrade.UpgradeCoordinator(paths)
+    result = coord.rollback(reason="cli upgrade-rollback")
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result.get("ok") else 1
+
+
+def cmd_upgrade_finalize(_: argparse.Namespace) -> int:
+    """成功收尾：清除升级 journal（幂等）；候选清空由壳侧 UpdaterState 完成。"""
+    paths = upgrade.UpgradePaths.from_config()
+    coord = upgrade.UpgradeCoordinator(paths)
+    result = coord.finalize()
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result.get("ok") else 1
+
+
+def cmd_upgrade_detect(args: argparse.Namespace) -> int:
+    """半升级态检测（030A detect_upgrade_state 语义生产化）。"""
+    paths = upgrade.UpgradePaths.from_config()
+    app_path = Path(args.app_path).expanduser() if args.app_path else None
+    state = upgrade.detect_upgrade_state(paths, app_path=app_path)
+    print(json.dumps({
+        "ok": True,
+        "state": state,
+        "journal_path": str(paths.journal_path),
+    }, ensure_ascii=False))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fathom", description="Fathom ：目录大小历史追踪")
     parser.add_argument("--version", action="store_true",
@@ -502,12 +559,45 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("uninstall", help="卸载 launchd 任务")
     p.set_defaults(func=lambda a: (launchd.uninstall(), 0)[1])
 
+    # ISS-040C：升级协调子命令（由桌面壳 updater_install 经冻结 helper 调用；
+    # --runtime-dir 全局参数在子命令之前，argv 合同见 lib.rs
+    # upgrade_helper_command 的内联单测）。
+    p = sub.add_parser(
+        "upgrade-prepare",
+        help="升级协调①-④：停写→旧 helper 退出→一致备份→journal",
+    )
+    p.add_argument("--from", dest="from_version", required=True,
+                   help="当前版本 N（journal 记录）")
+    p.add_argument("--to", dest="to_version", required=True,
+                   help="目标版本 N+1（journal 记录）")
+    p.set_defaults(func=cmd_upgrade_prepare)
+
+    p = sub.add_parser(
+        "upgrade-rollback",
+        help="失败回滚：journal 清除、旧 helper 状态恢复（进程重启归壳）",
+    )
+    p.set_defaults(func=cmd_upgrade_rollback)
+
+    p = sub.add_parser(
+        "upgrade-finalize",
+        help="成功收尾：清除升级 journal（候选清空由壳完成）",
+    )
+    p.set_defaults(func=cmd_upgrade_finalize)
+
+    p = sub.add_parser(
+        "upgrade-detect",
+        help="半升级态检测（journal 在位 → half_upgraded）",
+    )
+    p.add_argument("--app", dest="app_path", default=None,
+                   help="可选的安装目录路径；缺失时视为半升级态")
+    p.set_defaults(func=cmd_upgrade_detect)
+
     args = parser.parse_args(argv)
     if args.version:
         # --version 不需要先 configure 任何运行时：单一静态身份面
         return cmd_version(args)
     if not getattr(args, "cmd", None):
-        parser.error("需要子命令（scan/report/bigfiles/status/serve/install/uninstall）或 --version")
+        parser.error("需要子命令（scan/report/bigfiles/status/serve/install/uninstall/upgrade-*）或 --version")
     config.configure(
         runtime_dir=args.runtime_dir,
         scan_root=args.scan_root,

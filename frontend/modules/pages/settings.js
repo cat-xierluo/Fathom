@@ -10,6 +10,9 @@
  *   页面显示原因，当前生效值保持旧值可辨（DESIGN：保存失败必须保持旧值可辨）；
  * - 服务不注册/不重载 launchd：保存成功也如实显示“需重新安装计划才生效”；
  * - 换根形成新数据集（不删旧数据），被环境变量/命令行覆盖的字段如实标注。
+ *
+ * 计划一致性（ISS-016B）：消费 service_reload_state 四态（见下方 reloadStateInfo）；
+ * 服务自身零系统写入口——drift 态的重装只经 010B autostart 确认层执行。
  */
 import { fetchJSON, beginRequest, invalidateRequest, apiPut } from "../request.js";
 import { escapeHtml } from "../format.js";
@@ -257,6 +260,7 @@ async function saveExcludes() {
       lastConfig = fresh;
       renderEffective(fresh);
       renderExcludeEditor(fresh);
+      renderReloadSection();
     } catch { /* 刷新失败不覆盖已成功的保存反馈 */ }
   } catch (e) {
     showFeedback(
@@ -314,6 +318,8 @@ async function saveConfig(event) {
     // PUT 返回完整生效配置：一并刷新排除编辑器的只读锁定，避免保存其它字段
     // 后锁状态与 sources 不一致（例如 exclude_names 被环境变量钉住时）。
     renderExcludeEditor(data.config);
+    // 计划时间保存后漂移态可能变化（ISS-016B）：随嵌套配置刷新一致性小节。
+    renderReloadSection();
     clearInputs();
     showFeedback(`已保存。${data.hint || ""}`, "ok");
   } catch (e) {
@@ -405,6 +411,10 @@ async function loadSettings() {
   loadScanHistory();
   // 加载"权限与覆盖"小节（ISS-002A；可独立失败，不影响主配置）
   loadPermissions();
+  // 加载"后台自启"开关（ISS-010B；可独立失败，不影响主配置）
+  loadAutostart();
+  // 加载"应用更新"区（ISS-040B；可独立失败，不影响主配置）
+  loadUpdater();
 }
 
 async function loadScanHistory() {
@@ -616,6 +626,553 @@ async function loadPermissions() {
   }
 }
 
+/* ===== 后台自启（ISS-010B）=====
+ * 发行态 launchd 注册桥的设置页接线：开关开启前必须解释并征求同意
+ * （展示将写入的 plist 摘要与 launchctl 命令清单），取消/失败回落原状态；
+ * 关闭开关走注销。状态查询复用 ISS-010A 只读桥（autostart_status）。
+ * - Tauri 桥可用时经 invoke 调 autostart_register_plan / autostart_register /
+ *   autostart_unregister；浏览器模式（无桥）如实降级为只读说明。
+ * - 所有 invoke 结果都做形状校验：桥异常/mock 桥返回 undefined 时按
+ *   「状态未知」渲染，不抛未捕获异常。
+ * - DOM 在本文件内联创建（与权限面板同模式），零 emoji，无构建链。 */
+const AUTOSTART_PANEL_ID = "autostart-panel";
+
+const AUTOSTART_STATE_LABELS = {
+  enabled: "运行中",
+  disabled: "未注册",
+  unknown: "未知",
+};
+
+/* ===== 计划一致性（ISS-016B）=====
+ * 消费 GET/PUT /api/config 的 service_reload_state（后端只读漂移检测）：
+ * - 四态文案 in_sync/drift/not_registered/unknown，无 emoji、未知不猜测；
+ * - drift 态出现「重新安装计划」入口，复用 010B autostart 确认层
+ *   （展示计划 → 确认 → 执行 → 状态回读）；取消/失败后开关与状态回读
+ *   系统真值（与 010B 面板同口径）；
+ * - 浏览器模式（无桥）如实降级为只读说明，不渲染假入口；
+ * - 接口未返回该字段（旧后端/mock 桥）时不渲染，不伪造状态。 */
+function reloadStateInfo(sr) {
+  const reg = sr && typeof sr.registered_scan_time === "string" ? sr.registered_scan_time : "未知";
+  const cur = sr && typeof sr.current_scan_time === "string" ? sr.current_scan_time : "未知";
+  switch (sr && sr.state) {
+    case "in_sync":
+      return { text: `计划时间一致：已注册计划 ${reg} 与当前设置相同，无需重装。`, reinstall: false };
+    case "drift":
+      return {
+        text: `计划时间不一致：已注册计划 ${reg}，当前设置 ${cur}；保存后的新计划尚未安装，需重新安装计划才生效。`,
+        reinstall: true,
+      };
+    case "not_registered":
+      return { text: "尚未注册后台计划：可先在下方开启后台自启，再核对计划一致性。", reinstall: false };
+    case "unknown":
+      return { text: "无法读取已注册计划（读取失败或内容异常）：一致性未知，不猜测。", reinstall: false };
+    default:
+      return null;
+  }
+}
+
+function reloadStateSectionHtml() {
+  const info = reloadStateInfo(lastConfig && lastConfig.service_reload_state);
+  if (!info) return "";
+  const invoke = tauriInvoke();
+  const button = info.reinstall && invoke
+    ? `<div class="perm-link-row"><button type="button" id="btn-reinstall-plan" class="btn" data-test="reinstall-plan-btn">${icon("settings", 12)} 重新安装计划</button></div>`
+    : "";
+  const browserNote = info.reinstall && !invoke
+    ? `<p class="hint" data-test="reload-browser-note">计划已漂移，但重新安装入口只在 Fathom 桌面应用的设置页可用；浏览器模式为只读。</p>`
+    : "";
+  return `<p class="hint" data-test="reload-state-text">${escapeHtml(info.text)}</p>${button}${browserNote}`;
+}
+
+/** 把计划一致性小节渲染进 autostart 面板的挂载点（配置变化后可单独刷新）。 */
+function renderReloadSection() {
+  const holder = document.querySelector(`#${AUTOSTART_PANEL_ID} [data-test='reload-section']`);
+  if (!holder) return;
+  holder.innerHTML = reloadStateSectionHtml();
+  const btn = document.getElementById("btn-reinstall-plan");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      const body = document.getElementById(AUTOSTART_PANEL_ID)
+        ?.querySelector("[data-test='autostart-panel-body']");
+      // 复用 010B 确认层：展示计划 → 确认 → 执行 → 状态回读。
+      if (body) confirmRegister(body);
+    });
+  }
+}
+
+function tauriInvoke() {
+  const t = window.__TAURI__;
+  if (t && t.core && typeof t.core.invoke === "function") return t.core.invoke;
+  return null;
+}
+
+function _ensureAutostartPanel() {
+  const page = document.getElementById("page-settings");
+  if (!page) return null;
+  let panel = document.getElementById(AUTOSTART_PANEL_ID);
+  if (panel) return panel;
+  panel = document.createElement("div");
+  panel.id = AUTOSTART_PANEL_ID;
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h2>后台自启（launchd）</h2>
+      <p class="hint">开启前会展示将写入的 launchd 配置与命令并请求确认；取消或失败都会回到系统当前状态。</p>
+    </div>
+    <div class="perm-panel" data-test="autostart-panel-body">
+      <p class="hint">后台自启状态加载中…</p>
+    </div>`;
+  // 插在"扫描运行历史"面板之前；找不到则追加到页面末尾
+  const history = document.getElementById("scan-history");
+  const anchor = history ? history.closest(".panel") : null;
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor);
+  else page.appendChild(panel);
+  return panel;
+}
+
+function autostartStateText(record) {
+  const scan = AUTOSTART_STATE_LABELS[record?.scan] || "未知";
+  const web = AUTOSTART_STATE_LABELS[record?.web] || "未知";
+  const login = AUTOSTART_STATE_LABELS[record?.login_item] || "未知";
+  return `定时扫描：${scan} · 常驻服务：${web} · 登录项：${login}（SMAppService 未接，恒未知）`;
+}
+
+/** 开关的呈现态由系统状态推导：两标签 enabled → on；两标签 disabled → off；
+ * 混合/未知 → "part"（不猜测，如实显示）。 */
+function autostartSwitchState(record) {
+  if (!record) return "unknown";
+  if (record.scan === "enabled" && record.web === "enabled") return "on";
+  if (record.scan === "disabled" && record.web === "disabled") return "off";
+  return "part";
+}
+
+function renderAutostartBody(body, record, extraNote) {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    body.innerHTML = `
+      <p class="hint">浏览器模式没有桌面壳桥接：后台自启的查询与注册/注销只在 Fathom 桌面应用的设置页可用。</p>
+      <p class="hint">命令行开发态仍用 <code>main.py install / uninstall</code>。</p>
+      <div data-test="reload-section"></div>`;
+    renderReloadSection();
+    return;
+  }
+  const sw = autostartSwitchState(record);
+  const swLabel = sw === "on" ? "已开启" : sw === "off" ? "已关闭" : sw === "part" ? "部分注册（状态不一致）" : "未知";
+  body.innerHTML = `
+    <p class="perm-state">
+      <span class="quality-chip ${sw === "on" ? "ok" : sw === "off" ? "miss" : "warn"}" data-test="autostart-chip">
+        ${icon("activity", 12)} ${escapeHtml(swLabel)}
+      </span>
+    </p>
+    <p class="hint" data-test="autostart-status-text">${escapeHtml(autostartStateText(record))}</p>
+    ${extraNote ? `<p class="hint cfg-error" data-test="autostart-note">${escapeHtml(extraNote)}</p>` : ""}
+    <div class="perm-link-row">
+      <label class="exclude-confirm-label">
+        <input type="checkbox" id="autostart-toggle" data-test="autostart-toggle"
+               ${sw === "on" ? "checked" : ""}>
+        <span>开启后台自启（定时扫描 + 常驻服务开机自动运行）</span>
+      </label>
+    </div>
+    <div id="autostart-confirm" data-test="autostart-confirm" hidden></div>
+    <div data-test="reload-section"></div>`;
+  const toggle = document.getElementById("autostart-toggle");
+  if (toggle) {
+    // 变更不立即生效：先弹解释+确认层；取消/失败后由真实系统状态回写开关。
+    toggle.addEventListener("change", () => {
+      if (toggle.checked) confirmRegister(body);
+      else confirmUnregister(body);
+    });
+  }
+  renderReloadSection();
+}
+
+/** 开关打开：解释并征求同意（plist 摘要 + 命令清单），确认后才 invoke 注册。 */
+async function confirmRegister(body) {
+  const toggle = document.getElementById("autostart-toggle");
+  const layer = document.getElementById("autostart-confirm");
+  const invoke = tauriInvoke();
+  if (!layer || !invoke) return;
+  let plan = null;
+  try {
+    plan = await invoke("autostart_register_plan",
+      { scanTime: (lastConfig && lastConfig.scan_time) || null });
+  } catch (e) {
+    renderAutostartBody(body, null, `无法生成注册计划：${e?.message || e}`);
+    return;
+  }
+  if (!plan || !Array.isArray(plan.plist_files) || !Array.isArray(plan.commands)) {
+    renderAutostartBody(body, null, "注册计划返回异常（不是预期的清单结构），已取消。");
+    return;
+  }
+  const plists = plan.plist_files.map((p) => `
+    <li>将写入 <code>${escapeHtml(p.label)}</code> → <code>${escapeHtml(p.path)}</code></li>`).join("");
+  const cmds = plan.commands.map((c) => `<code>${escapeHtml((c || []).join(" "))}</code>`).join("<br>");
+  layer.hidden = false;
+  layer.innerHTML = `
+    <p class="hint">即将在 <code>~/Library/LaunchAgents</code> 写入两份 plist 并执行 launchd 注册：</p>
+    <ul>${plists}</ul>
+    <p class="hint">将执行的命令（uid 以实际值替换）：</p>
+    <p class="hint">${cmds}</p>
+    <p class="hint exclude-warning">开启后：每日定时扫描自动运行，常驻服务开机自动拉起（崩溃自动重启）。写入与注册失败会自动回滚，不留半注册状态。</p>
+    <div class="exclude-actions">
+      <button type="button" id="autostart-confirm-yes" class="btn primary" data-test="autostart-confirm-yes">确认开启</button>
+      <button type="button" id="autostart-confirm-no" class="btn" data-test="autostart-confirm-no">取消</button>
+    </div>`;
+  const yes = document.getElementById("autostart-confirm-yes");
+  const no = document.getElementById("autostart-confirm-no");
+  if (no) no.addEventListener("click", () => { closeConfirmAndResync(body); });
+  if (yes) {
+    yes.addEventListener("click", async () => {
+      yes.disabled = true;
+      try {
+        const outcome = await invoke("autostart_register",
+          { confirmed: true, scanTime: (lastConfig && lastConfig.scan_time) || null });
+        if (outcome && outcome.ok === true) {
+          await refreshAutostart(body, "已开启后台自启。");
+        } else {
+          const why = outcome && outcome.error ? outcome.error : "未知原因";
+          await refreshAutostart(body, `注册未完成：${why}`);
+        }
+      } catch (e) {
+        await refreshAutostart(body, `注册请求失败：${e?.message || e}`);
+      }
+    });
+  }
+  if (toggle) toggle.checked = true; // 计划展示期间保持打开；取消/失败经 resync 回落
+}
+
+/** 开关关闭：确认层（说明注销动作），确认后 invoke 注销。 */
+function confirmUnregister(body) {
+  const layer = document.getElementById("autostart-confirm");
+  const invoke = tauriInvoke();
+  if (!layer || !invoke) return;
+  layer.hidden = false;
+  layer.innerHTML = `
+    <p class="hint">即将停止并注销后台自启：对两个标签执行 <code>launchctl bootout</code>，并删除
+      <code>~/Library/LaunchAgents</code> 下的两份 plist。已入库的扫描数据不会被删除。</p>
+    <div class="exclude-actions">
+      <button type="button" id="autostart-unregister-yes" class="btn primary" data-test="autostart-unregister-yes">确认关闭</button>
+      <button type="button" id="autostart-unregister-no" class="btn" data-test="autostart-unregister-no">取消</button>
+    </div>`;
+  const yes = document.getElementById("autostart-unregister-yes");
+  const no = document.getElementById("autostart-unregister-no");
+  if (no) no.addEventListener("click", () => { closeConfirmAndResync(body); });
+  if (yes) {
+    yes.addEventListener("click", async () => {
+      yes.disabled = true;
+      try {
+        const outcome = await invoke("autostart_unregister", { confirmed: true });
+        if (outcome && outcome.ok === true) {
+          await refreshAutostart(body, "已关闭后台自启。");
+        } else {
+          const why = outcome && outcome.error ? outcome.error : "未知原因";
+          await refreshAutostart(body, `注销未完成：${why}`);
+        }
+      } catch (e) {
+        await refreshAutostart(body, `注销请求失败：${e?.message || e}`);
+      }
+    });
+  }
+}
+
+/** 取消确认或操作结束：重新只读查询系统状态并按其回写开关（UI 与系统一致）。 */
+async function refreshAutostart(body, note) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  let record = null;
+  try {
+    record = await invoke("autostart_status", {});
+  } catch (e) {
+    renderAutostartBody(body, null, `${note || ""}（状态回读失败：${e?.message || e}）`);
+    return;
+  }
+  if (!record || typeof record.scan !== "string" || typeof record.web !== "string") {
+    renderAutostartBody(body, null, `${note || ""}（状态回读异常）`);
+    return;
+  }
+  // 重装/取消后同步刷新计划一致性（重装成功应回到 in_sync）；刷新失败
+  // 不影响系统状态回读（开关与真值一致优先于漂移文案更新）。
+  try {
+    const fresh = await fetchJSON("/api/config");
+    lastConfig = fresh;
+    renderEffective(fresh);
+  } catch { /* 配置刷新失败不影响状态回读 */ }
+  renderAutostartBody(body, record, note);
+}
+
+function closeConfirmAndResync(body) {
+  const layer = document.getElementById("autostart-confirm");
+  if (layer) { layer.hidden = true; layer.innerHTML = ""; }
+  refreshAutostart(body, "");
+}
+
+async function loadAutostart() {
+  const panel = _ensureAutostartPanel();
+  if (!panel) return;
+  const body = panel.querySelector("[data-test='autostart-panel-body']");
+  if (!body) return;
+  const request = beginRequest("settingsAutostart");
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    if (!request.current()) return;
+    renderAutostartBody(body, null);
+    return;
+  }
+  let record = null;
+  try {
+    record = await invoke("autostart_status", {});
+    if (!request.current()) return;
+  } catch (e) {
+    if (!request.current()) return;
+    renderAutostartBody(body, null, `状态查询失败：${e?.message || e}`);
+    return;
+  }
+  if (!request.current()) return;
+  if (!record || typeof record.scan !== "string" || typeof record.web !== "string") {
+    renderAutostartBody(body, null, "状态返回异常（不是预期的三态结构）。");
+    return;
+  }
+  renderAutostartBody(body, record);
+}
+
+/* ===== 应用更新（ISS-040B）=====
+ * 壳内更新协调的前端接线：检查按钮 → 状态行（含当前版本）；available →
+ * 版本 + notes + 「下载并安装」确认层（复用 010B autostart 确认层模式）→
+ * 安装成功后「重启以完成」独立确认；取消/失败全部回落可恢复态。
+ * - 不静默：下载安装与重启都需显式确认（confirmed=true 才会在壳内执行）；
+ *   启动延迟检查（≥10s）只经 updater-state 事件更新状态行，不弹窗不安装。
+ * - Tauri 桥可用时经 invoke 调 updater_check/updater_install/updater_restart；
+ *   浏览器模式（无桥）如实降级为只读说明，不渲染假入口。
+ * - invoke 结果做形状校验：桥异常/mock 桥返回异常结构时按「状态异常」
+ *   渲染，不抛未捕获异常。
+ * - DOM 在本文件内联创建（与 autostart 面板同模式），零 emoji，无构建链。 */
+const UPDATER_PANEL_ID = "updater-panel";
+
+const UPDATER_STATE_LABELS = {
+  unconfigured: "未配置更新源：应用内更新不可用",
+  unreachable: "更新源不可达：当前更新源处于关闭状态，可稍后重试",
+  up_to_date: "已是最新版本",
+  available: "有可用更新",
+  downloading: "正在下载并安装…",
+  installed: "更新已安装，重启后生效",
+  failed: "更新检查失败",
+};
+
+let lastUpdaterStatus = null;  // 最近一次检查/安装状态（确认层取消后的回落源）
+
+function _ensureUpdaterPanel() {
+  const page = document.getElementById("page-settings");
+  if (!page) return null;
+  let panel = document.getElementById(UPDATER_PANEL_ID);
+  if (panel) return panel;
+  panel = document.createElement("div");
+  panel.id = UPDATER_PANEL_ID;
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h2>应用更新</h2>
+      <p class="hint">检查、下载与安装均需手动确认；启动后也会延迟自动检查一次（仅提示，不安装）。</p>
+    </div>
+    <div class="perm-panel" data-test="updater-panel-body">
+      <p class="hint">应用更新状态加载中…</p>
+    </div>`;
+  // 插在"扫描运行历史"面板之前；找不到则追加到页面末尾（与 autostart 面板同锚点，
+  // 本面板后创建，渲染在 autostart 面板之后）
+  const history = document.getElementById("scan-history");
+  const anchor = history ? history.closest(".panel") : null;
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor);
+  else page.appendChild(panel);
+  return panel;
+}
+
+/** 状态行文案：标签 + 失败态的壳侧错误详情（不吞错）。 */
+function updaterStatusLine(status) {
+  const label = UPDATER_STATE_LABELS[status?.state] || "状态未知";
+  const version = status && typeof status.current_version === "string"
+    ? status.current_version : "未知";
+  const error = status?.state === "unreachable" || status?.state === "failed"
+    ? (status?.error ? `（${status.error}）` : "")
+    : "";
+  return `当前版本 ${version} · ${label}${error}`;
+}
+
+function renderUpdaterBody(body, status, extraNote) {
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    body.innerHTML = `
+      <p class="hint" data-test="updater-browser-note">浏览器模式没有桌面壳桥接：应用更新的检查与安装只在 Fathom 桌面应用的设置页可用。</p>
+      <p class="hint">版本以安装的应用为准；命令行开发态的版本见 <code>fathom --version</code>。</p>`;
+    return;
+  }
+  const line = status
+    ? updaterStatusLine(status)
+    : "尚未检查更新；点击「检查更新」获取当前版本与可用更新。";
+  const available = status?.state === "available"
+    ? `
+    <p class="hint" data-test="updater-available">
+      可更新到 <code>${escapeHtml(String(status.available_version || "未知"))}</code>；
+      下载与安装需要你确认，安装完成后需重启应用。
+    </p>
+    ${status.notes ? `<p class="hint" data-test="updater-notes">更新说明：${escapeHtml(status.notes)}</p>` : ""}`
+    : "";
+  const installed = status?.state === "installed"
+    ? `
+    <p class="hint" data-test="updater-installed">已安装 <code>${escapeHtml(String(status.available_version || "新版本"))}</code>；重启前保持当前版本运行。</p>`
+    : "";
+  const installBtn = status?.state === "available"
+    ? `<button type="button" id="btn-updater-install" class="btn primary" data-test="updater-install-btn">下载并安装</button>`
+    : "";
+  const restartBtn = status?.state === "installed"
+    ? `<button type="button" id="btn-updater-restart" class="btn primary" data-test="updater-restart-btn">重启以完成</button>`
+    : "";
+  body.innerHTML = `
+    <p class="hint" data-test="updater-status-text">${escapeHtml(line)}</p>
+    ${available}
+    ${installed}
+    ${extraNote ? `<p class="hint cfg-error" data-test="updater-note">${escapeHtml(extraNote)}</p>` : ""}
+    <div class="perm-link-row">
+      <button type="button" id="btn-updater-check" class="btn" data-test="updater-check-btn">检查更新</button>
+      ${installBtn}
+      ${restartBtn}
+    </div>
+    <div id="updater-confirm" data-test="updater-confirm" hidden></div>
+    <div id="updater-restart-confirm" data-test="updater-restart-confirm" hidden></div>`;
+  const checkBtn = document.getElementById("btn-updater-check");
+  if (checkBtn) checkBtn.addEventListener("click", () => checkUpdater(body));
+  const installBtnNode = document.getElementById("btn-updater-install");
+  if (installBtnNode) installBtnNode.addEventListener("click", () => confirmUpdaterInstall(body));
+  const restartBtnNode = document.getElementById("btn-updater-restart");
+  if (restartBtnNode) restartBtnNode.addEventListener("click", () => confirmUpdaterRestart(body));
+}
+
+/** 手动检查：按钮防重入；结果做形状校验后渲染（失败也是可恢复状态行）。 */
+async function checkUpdater(body) {
+  const invoke = tauriInvoke();
+  const checkBtn = document.getElementById("btn-updater-check");
+  if (!invoke || !checkBtn) return;
+  checkBtn.disabled = true;
+  let status = null;
+  try {
+    status = await invoke("updater_check", {});
+  } catch (e) {
+    renderUpdaterBody(body, lastUpdaterStatus, `检查请求失败：${e?.message || e}`);
+    return;
+  } finally {
+    checkBtn.disabled = false;
+  }
+  if (!status || typeof status.state !== "string" || !UPDATER_STATE_LABELS[status.state]) {
+    renderUpdaterBody(body, lastUpdaterStatus, "状态返回异常（不是预期的更新状态结构）。");
+    return;
+  }
+  lastUpdaterStatus = status;
+  renderUpdaterBody(body, status);
+}
+
+/** 「下载并安装」确认层：展示版本与后果，确认后才 invoke（confirmed=true）；
+ * 取消/失败回落 available 状态，可再次尝试。 */
+async function confirmUpdaterInstall(body) {
+  const layer = document.getElementById("updater-confirm");
+  const invoke = tauriInvoke();
+  if (!layer || !invoke) return;
+  const status = lastUpdaterStatus;
+  const version = status?.available_version || "未知";
+  layer.hidden = false;
+  layer.innerHTML = `
+    <p class="hint">即将下载并安装 <code>${escapeHtml(String(version))}</code>：安装包会经内置公钥验签（不可关闭），
+      安装完成后需重启应用才切换到新版本；安装失败会保持当前版本可继续使用。</p>
+    ${status?.notes ? `<p class="hint">更新说明：${escapeHtml(status.notes)}</p>` : ""}
+    <div class="exclude-actions">
+      <button type="button" id="updater-confirm-yes" class="btn primary" data-test="updater-confirm-yes">确认下载并安装</button>
+      <button type="button" id="updater-confirm-no" class="btn" data-test="updater-confirm-no">取消</button>
+    </div>`;
+  const no = document.getElementById("updater-confirm-no");
+  if (no) no.addEventListener("click", () => {
+    // 取消回落：确认层收起，available 状态与入口保持可再次尝试
+    layer.hidden = true;
+    layer.innerHTML = "";
+  });
+  const yes = document.getElementById("updater-confirm-yes");
+  if (yes) {
+    yes.addEventListener("click", async () => {
+      yes.disabled = true;
+      let outcome = null;
+      try {
+        outcome = await invoke("updater_install", { confirmed: true });
+      } catch (e) {
+        renderUpdaterBody(body, lastUpdaterStatus, `安装请求失败：${e?.message || e}`);
+        return;
+      }
+      if (outcome && outcome.ok === true) {
+        lastUpdaterStatus = {
+          state: "installed",
+          current_version: outcome.current_version || status?.current_version,
+          available_version: outcome.available_version || version,
+        };
+        renderUpdaterBody(body, lastUpdaterStatus);
+      } else {
+        const why = outcome && outcome.error ? outcome.error : "未知原因";
+        renderUpdaterBody(body, lastUpdaterStatus, `安装未完成：${why}`);
+      }
+    });
+  }
+}
+
+/** 「重启以完成」确认层：重启是独立确认；取消则保持已安装待重启状态。 */
+function confirmUpdaterRestart(body) {
+  const layer = document.getElementById("updater-restart-confirm");
+  const invoke = tauriInvoke();
+  if (!layer || !invoke) return;
+  layer.hidden = false;
+  layer.innerHTML = `
+    <p class="hint">重启应用以完成更新：当前窗口会关闭，后台计划与常驻服务随退出流程
+      一并回收，重启后按新版本运行。已入库的扫描数据不受影响。</p>
+    <div class="exclude-actions">
+      <button type="button" id="updater-restart-yes" class="btn primary" data-test="updater-restart-yes">确认重启</button>
+      <button type="button" id="updater-restart-no" class="btn" data-test="updater-restart-no">取消</button>
+    </div>`;
+  const no = document.getElementById("updater-restart-no");
+  if (no) no.addEventListener("click", () => {
+    layer.hidden = true;
+    layer.innerHTML = "";
+  });
+  const yes = document.getElementById("updater-restart-yes");
+  if (yes) {
+    yes.addEventListener("click", async () => {
+      yes.disabled = true;
+      try {
+        // 进程可能随重启退出而收不到返回值；失败路径回落后可再次尝试
+        await invoke("updater_restart", { confirmed: true });
+      } catch (e) {
+        renderUpdaterBody(body, lastUpdaterStatus, `重启请求失败：${e?.message || e}`);
+      }
+    });
+  }
+}
+
+function loadUpdater() {
+  const panel = _ensureUpdaterPanel();
+  if (!panel) return;
+  const body = panel.querySelector("[data-test='updater-panel-body']");
+  if (!body) return;
+  const invoke = tauriInvoke();
+  if (!invoke) {
+    renderUpdaterBody(body, null);
+    return;
+  }
+  renderUpdaterBody(body, lastUpdaterStatus);
+  // 启动延迟检查（壳内 ≥10s 后 emit）只更新状态行：不弹窗、不安装。
+  const tauri = window.__TAURI__;
+  if (tauri && tauri.event && typeof tauri.event.listen === "function") {
+    tauri.event.listen("updater-state", (event) => {
+      const payload = event && event.payload;
+      if (payload && typeof payload.state === "string" && UPDATER_STATE_LABELS[payload.state]) {
+        lastUpdaterStatus = payload;
+        renderUpdaterBody(body, payload);
+      }
+    });
+  }
+}
+
 export const settingsPage = {
   id: "settings",
   load() { loadSettings(); },
@@ -625,5 +1182,5 @@ export const settingsPage = {
     document.getElementById("btn-config-reset")
       ?.addEventListener("click", resetToDefaults);
   },
-  leave() { ["settings", "scanHistory", "settingsPermissions"].forEach(invalidateRequest); },
+  leave() { ["settings", "scanHistory", "settingsPermissions", "settingsAutostart", "settingsUpdater"].forEach(invalidateRequest); },
 };

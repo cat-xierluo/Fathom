@@ -52,7 +52,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import SERVICE_IDENTITY, __version__, __protocol_version__, bigfiles, config, db, reports, scan_coordinator
+from . import SERVICE_IDENTITY, __version__, __protocol_version__, bigfiles, config, db, launchd, reports, scan_coordinator
 
 # version 只从单一版本源 fathom.__version__ 读取（ISS-037）；本文件内
 # 禁止再出现硬编码语义化版本字面量，校验器会拦截。
@@ -551,15 +551,56 @@ def api_bootstrap():
     return {"token": _WRITE_TOKEN}
 
 
+def _config_view_with_reload_state() -> dict:
+    """effective_settings_view + 只读漂移检测（ISS-016B）。
+
+    解析已注册 scan plist 的计划时间并与生效 scan_time 比对，结果挂在
+    ``service_reload_state`` 键上。读取异常一律降级 ``state="unknown"``
+    （绝不猜、绝不让 /api/config 因漂移检测而 5xx）；全程零写入零命令
+    执行。
+    """
+    view = config.effective_settings_view()
+    try:
+        registered = launchd.read_registered_scan_time()
+    except Exception:  # noqa: BLE001 - 漂移检测失败只降级，不影响配置读取
+        registered = {"read": "unknown", "scan_time": None}
+    view["service_reload_state"] = launchd.service_reload_state(
+        view.get("scan_time"), registered
+    )
+    return view
+
+
+def _service_reload_hint(reload_state: dict) -> str:
+    """PUT 反馈文案：保留 ISS-016A 的基础提示（兼容旧消费方），按四态追加说明。"""
+    base = ("已保存到 settings.json 并在当前服务进程生效；已安装的 "
+            "launchd 后台计划不受影响，需重新安装（main.py install）后"
+            "才按新计划时间运行。")
+    state = reload_state.get("state") if isinstance(reload_state, dict) else None
+    if state == "in_sync":
+        return base + "当前已注册计划时间与生效设置一致，无需重装。"
+    if state == "drift":
+        return base + (
+            f"检测到计划时间不一致（已注册 "
+            f"{reload_state.get('registered_scan_time')}，当前设置 "
+            f"{reload_state.get('current_scan_time')}）；请在设置页经确认后"
+            "重新安装计划。"
+        )
+    if state == "not_registered":
+        return base + "当前尚未注册后台计划。"
+    return base + "无法读取已注册计划（一致性未知）。"
+
+
 @app.get("/api/config")
 def api_config_get():
-    """当前生效的用户设置（ISS-016A）。
+    """当前生效的用户设置（ISS-016A）+ 计划一致性（ISS-016B）。
 
     返回四个可设置项的生效值、逐项来源（env/settings/default/cli，环境
     变量优先的依据见 fathom/config.py 模块 docstring）、恢复默认用的默认
-    值，以及不入设置文件的只读策略（保留/超时/大文件默认）。只读无副作用。
+    值、不入设置文件的只读策略（保留/超时/大文件默认），以及
+    ``service_reload_state``（只读漂移检测：in_sync/drift/not_registered/
+    unknown，见 fathom/launchd.py）。只读无副作用。
     """
-    return config.effective_settings_view()
+    return _config_view_with_reload_state()
 
 
 @app.put("/api/config")
@@ -568,8 +609,10 @@ async def api_config_put(request: Request):
 
     - 守卫与既有写方法一致（Host/Origin/写令牌，见 local_boundary_guard）；
     - 校验失败 400 + 中文 detail，旧值不动（文件与进程内生效值都不变）；
-    - 本切片不注册/不重载任何 launchd 服务：``service_reload`` 恒为
-      ``requires_user_action``，前端如实展示“需重新安装计划才生效”。
+    - 服务自身仍不注册/不重载任何 launchd 服务：``service_reload`` 恒为
+      ``requires_user_action``（ISS-016A 字符串合同，向后兼容保留）；
+      ISS-016B 起新增 ``service_reload_state`` 四态结构与按态说明的
+      ``hint``——重装本身只经设置页确认层（010B 桥）执行。
     """
     try:
         body = await request.json()
@@ -583,13 +626,13 @@ async def api_config_put(request: Request):
         raise HTTPException(400, str(exc))
     except OSError as exc:
         raise HTTPException(500, f"settings.json 写入失败（旧文件未改动）：{exc}")
+    config_view = _config_view_with_reload_state()
     return {
         "applied": True,
         "service_reload": "requires_user_action",
-        "hint": ("已保存到 settings.json 并在当前服务进程生效；已安装的 "
-                 "launchd 后台计划不受影响，需重新安装（main.py install）后"
-                 "才按新计划时间运行。"),
-        "config": config.effective_settings_view(),
+        "service_reload_state": config_view["service_reload_state"],
+        "hint": _service_reload_hint(config_view["service_reload_state"]),
+        "config": config_view,
     }
 
 

@@ -61,6 +61,9 @@ function createFixture() {
     defaults: { scan_root: "/fixture/home", scan_time: "12:00", min_kb: 10240, free_alert_gb: 10 },  // ISS-073 夹具卫生：真实 effective_settings_view().defaults 无 exclude_names 键（ISS-069 曾多写），前端 resetToDefaults 也只消费这 4 键
     policies: { keep_daily_days: 21, keep_weekly_weeks: 8, du_timeout_s: 14400, bigfile_default_days: 7, bigfile_default_mb: 100 },
     settings_path: "/fixture/runtime/settings.json",
+    // ISS-016B：夹具注册计划恒 12:00；初始 scan_time 13:30 → drift。
+    // PUT 后按新 scan_time 重算（见 PUT 处理器）；场景可覆盖 not_registered/unknown。
+    service_reload_state: { state: "drift", registered_scan_time: "12:00", current_scan_time: "13:30" },
   });
   const state = {
     mode: "dual", version: 2, scanning: false, lastDiff: null,
@@ -502,9 +505,17 @@ function createFixture() {
             state.config[key] = body[key];
           }
         }
+        // ISS-016B：镜像后端——注册时间夹具恒 12:00，按保存后的 scan_time
+        // 重算漂移态（差 1 分钟也是 drift），随嵌套 config 与顶层字段一起返回。
+        state.config.service_reload_state = {
+          state: state.config.scan_time === "12:00" ? "in_sync" : "drift",
+          registered_scan_time: "12:00",
+          current_scan_time: state.config.scan_time,
+        };
         return json(res, 200, {
           applied: true,
           service_reload: "requires_user_action",
+          service_reload_state: state.config.service_reload_state,
           hint: "已保存到 settings.json 并在当前服务进程生效；已安装的 launchd 后台计划不受影响，需重新安装（main.py install）后才按新计划时间运行。",
           config: { ...state.config },
         });
@@ -521,6 +532,19 @@ function createFixture() {
           exclude_names: ["env_pinned"],
           sources: { ...state.config.sources, exclude_names: "env" },
         });
+      }
+      // ISS-016B：计划一致性另两态场景（默认 drift / PUT 联动 in_sync 已覆盖）
+      if (state.scenario === "reload-not-registered") {
+        return json(res, 200, { ...state.config, service_reload_state: {
+          state: "not_registered", registered_scan_time: null,
+          current_scan_time: state.config.scan_time,
+        } });
+      }
+      if (state.scenario === "reload-unknown") {
+        return json(res, 200, { ...state.config, service_reload_state: {
+          state: "unknown", registered_scan_time: null,
+          current_scan_time: state.config.scan_time,
+        } });
       }
       return json(res, 200, { ...state.config });
     }
@@ -1072,6 +1096,72 @@ async function main() {
         capState.feedback.includes("50"),
       JSON.stringify({ capPutBefore, capPutAfter: fixture.state.counts.configPut || 0,
         capState }).slice(0, 260));
+
+    /* ---------- ISS-016B 计划一致性：漂移展示 + 只读降级（浏览器页） ---------- */
+    // setMode 重置 config 为初始（13:30 / 已注册 12:00 → drift）。
+    await setMode("dual");
+    await openPage("#/settings");
+    await page.waitForSelector("[data-test='reload-state-text']");
+    const reloadDrift = await page.evaluate(() => ({
+      text: document.querySelector("[data-test='reload-state-text']")?.textContent || "",
+      note: document.querySelector("[data-test='reload-browser-note']")?.textContent || "",
+      noteHidden: document.querySelector("[data-test='reload-browser-note']")?.hidden,
+      hasButton: Boolean(document.getElementById("btn-reinstall-plan")),
+    }));
+    record("reload-drift-shown-with-times-and-readonly-degrade",
+      reloadDrift.text.includes("计划时间不一致") &&
+        reloadDrift.text.includes("12:00") && reloadDrift.text.includes("13:30") &&
+        reloadDrift.note.includes("桌面应用") && reloadDrift.noteHidden === false &&
+        reloadDrift.hasButton === false,  // 浏览器模式无重装按钮（只读降级）
+      JSON.stringify(reloadDrift).slice(0, 200));
+
+    // 保存为已注册时间 12:00 → PUT 嵌套 config 刷新为 in_sync，降级说明消失。
+    await page.fill("#cfg-scan-time", "12:00");
+    await page.click("#btn-config-save");
+    // ISS-016B repair1：等待条件必须用完整短语「计划时间一致」——
+    // 「一致」是「计划时间不一致」的子串，会提前命中旧 drift 文案（断言子串陷阱）。
+    await page.waitForFunction(() =>
+      (document.querySelector("[data-test='reload-state-text']")?.textContent || "").includes("计划时间一致"));
+    const reloadSync = await page.evaluate(() => ({
+      text: document.querySelector("[data-test='reload-state-text']")?.textContent || "",
+      noteExists: Boolean(document.querySelector("[data-test='reload-browser-note']")),
+    }));
+    record("reload-in-sync-after-saving-registered-time",
+      reloadSync.text.includes("计划时间一致") && reloadSync.text.includes("12:00") &&
+        reloadSync.noteExists === false &&
+        fixture.state.config.scan_time === "12:00" &&
+        fixture.state.config.service_reload_state?.state === "in_sync",
+      JSON.stringify(reloadSync).slice(0, 160));
+
+    // 差 1 分钟也是 drift（前端文案回到不一致）。
+    await page.fill("#cfg-scan-time", "12:01");
+    await page.click("#btn-config-save");
+    await page.waitForFunction(() =>
+      (document.querySelector("[data-test='reload-state-text']")?.textContent || "").includes("不一致"));
+    record("reload-one-minute-drift-after-save",
+      fixture.state.config.service_reload_state?.state === "drift" &&
+        fixture.state.config.service_reload_state?.registered_scan_time === "12:00" &&
+        fixture.state.config.service_reload_state?.current_scan_time === "12:01",
+      JSON.stringify(fixture.state.config.service_reload_state));
+
+    // not_registered / unknown 两态（场景注入 GET）。
+    await setScenario("reload-not-registered");
+    await openPage("#/settings");
+    await waitForText(page, "[data-test='reload-state-text']", "尚未注册");
+    const reloadNotReg = await page.evaluate(() =>
+      document.querySelector("[data-test='reload-state-text']")?.textContent || "");
+    record("reload-not-registered-state-shown",
+      reloadNotReg.includes("尚未注册") && !reloadNotReg.includes("不一致"),
+      reloadNotReg.slice(0, 80));
+    await setScenario("reload-unknown");
+    await openPage("#/settings");
+    await waitForText(page, "[data-test='reload-state-text']", "无法读取");
+    const reloadUnknown = await page.evaluate(() =>
+      document.querySelector("[data-test='reload-state-text']")?.textContent || "");
+    record("reload-unknown-state-shown",
+      reloadUnknown.includes("无法读取") && reloadUnknown.includes("未知"),
+      reloadUnknown.slice(0, 80));
+    await setScenario(null);
 
     /* ---------- 状态语义矩阵 ---------- */
     await setMode("onlyadded");
@@ -1796,10 +1886,283 @@ async function main() {
       JSON.stringify(deeplinkInvoke));
     await tpage2.close();
 
+    /* ---------- ISS-016B mock 桥：drift 重装入 口复用 010B 确认层 ----------
+     * 形状化 mock：autostart_status 返回三态真值（两标签 enabled）、
+     * autostart_register_plan 返回可审清单、autostart_register 返回 ok。
+     * 验证：drift 态出现「重新安装计划」按钮 → 点击展开确认层（计划清单 +
+     * 确认/取消）→ 取消后回读系统真值 → 再确认则经 confirmed=true 执行注册
+     * 并回读状态。桥数据中的命令字符串是 mock 数据，不代表真实系统调用。 */
+    const tpage3 = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const tpage3Errors = [];
+    tpage3.on("pageerror", (e) => tpage3Errors.push(e.message));
+    await tpage3.addInitScript(`
+      window.__tauriMock3 = { invokes: [] };
+      Object.defineProperty(window, "__TAURI__", { value: {
+        core: { invoke: (cmd, args) => {
+          window.__tauriMock3.invokes.push({ cmd, args });
+          if (cmd === "autostart_status") {
+            return Promise.resolve({ scan: "enabled", web: "enabled", login_item: "unknown" });
+          }
+          if (cmd === "autostart_register_plan") {
+            return Promise.resolve({
+              plist_files: [
+                { label: "com.maoscripts.fathom-scan",
+                  path: "/fixture/LaunchAgents/com.maoscripts.fathom-scan.plist" },
+                { label: "com.maoscripts.fathom-web",
+                  path: "/fixture/LaunchAgents/com.maoscripts.fathom-web.plist" },
+              ],
+              commands: [
+                ["id", "-u"],
+                ["launchctl", "bootout", "gui/<uid>", "/fixture/LaunchAgents/com.maoscripts.fathom-scan.plist"],
+                ["launchctl", "bootstrap", "gui/<uid>", "/fixture/LaunchAgents/com.maoscripts.fathom-scan.plist"],
+              ],
+            });
+          }
+          if (cmd === "autostart_register") return Promise.resolve({ ok: true });
+          return Promise.resolve();
+        } },
+        event: { listen: () => Promise.resolve(0) },
+      }, configurable: true });
+    `);
+    await setMode("dual");  // 重置 config：13:30 vs 已注册 12:00 → drift
+    await tpage3.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    await tpage3.waitForSelector("[data-test='autostart-toggle']");
+    const currentScanTime = (await fixtureState()).config.scan_time;
+    const reloadTauri = await tpage3.evaluate(() => ({
+      text: document.querySelector("[data-test='reload-state-text']")?.textContent || "",
+      hasButton: Boolean(document.getElementById("btn-reinstall-plan")),
+      toggleChecked: !!document.getElementById("autostart-toggle")?.checked,
+    }));
+    record("reload-reinstall-entry-visible-on-drift-with-bridge",
+      reloadTauri.text.includes("计划时间不一致") && reloadTauri.hasButton &&
+        reloadTauri.toggleChecked === true,  // 系统真值（两标签 enabled）回写开关
+      JSON.stringify(reloadTauri).slice(0, 160));
+
+    // 点击重装 → 确认层展开：计划清单可审，注册计划请求带当前 scanTime。
+    await tpage3.click("#btn-reinstall-plan");
+    await tpage3.waitForSelector("#autostart-confirm:not([hidden])");
+    const confirmLayer = await tpage3.evaluate(() => ({
+      text: document.getElementById("autostart-confirm").textContent,
+      hasYes: Boolean(document.getElementById("autostart-confirm-yes")),
+      hasNo: Boolean(document.getElementById("autostart-confirm-no")),
+    }));
+    const planInvoke = await tpage3.evaluate(() => (window.__tauriMock3.invokes || [])
+      .find((c) => c && c.cmd === "autostart_register_plan"));
+    record("reload-reinstall-opens-confirm-layer-with-plan",
+      confirmLayer.text.includes("com.maoscripts.fathom-scan") &&
+        confirmLayer.hasYes && confirmLayer.hasNo &&
+        planInvoke?.args?.scanTime === currentScanTime,
+      JSON.stringify({ planArgs: planInvoke?.args, layer: confirmLayer.text.slice(0, 60) }).slice(0, 200));
+
+    // 取消：确认层收起，回读系统真值（开关仍按系统态勾选），drift 文案保留。
+    await tpage3.click("#autostart-confirm-no");
+    await tpage3.waitForFunction(() => document.getElementById("autostart-confirm").hidden);
+    await tpage3.waitForFunction(() => (window.__tauriMock3.invokes || [])
+      .filter((c) => c && c.cmd === "autostart_status").length >= 2);
+    const afterCancel = await tpage3.evaluate(() => ({
+      layerHidden: document.getElementById("autostart-confirm").hidden,
+      toggleChecked: !!document.getElementById("autostart-toggle")?.checked,
+      text: document.querySelector("[data-test='reload-state-text']")?.textContent || "",
+    }));
+    record("reload-reinstall-cancel-resyncs-system-truth",
+      afterCancel.layerHidden && afterCancel.toggleChecked === true &&
+        afterCancel.text.includes("计划时间不一致"),
+      JSON.stringify(afterCancel).slice(0, 160));
+
+    // 再次展开并确认执行：autostart_register(confirmed=true, scanTime=当前)，
+    // 注册后回读系统状态并给出结果反馈。
+    await tpage3.click("#btn-reinstall-plan");
+    await tpage3.waitForSelector("#autostart-confirm:not([hidden])");
+    await tpage3.click("#autostart-confirm-yes");
+    await tpage3.waitForFunction(() => (window.__tauriMock3.invokes || [])
+      .some((c) => c && c.cmd === "autostart_register"));
+    const registerInvoke = await tpage3.evaluate(() => (window.__tauriMock3.invokes || [])
+      .find((c) => c && c.cmd === "autostart_register"));
+    // ISS-016B repair1：register invoke 发生 ≠ refreshAutostart 走完——其后还有
+    // autostart_status 回读与 /api/config 真实刷新，note 在此之后才渲染「已开启」。
+    await tpage3.waitForFunction(() =>
+      (document.querySelector("[data-test='autostart-note']")?.textContent || "").includes("已开启"));
+    const statusCount3 = await tpage3.evaluate(() => (window.__tauriMock3.invokes || [])
+      .filter((c) => c && c.cmd === "autostart_status").length);
+    const afterRegister = await tpage3.evaluate(() => ({
+      note: document.querySelector("[data-test='autostart-note']")?.textContent || "",
+      toggleChecked: !!document.getElementById("autostart-toggle")?.checked,
+    }));
+    record("reload-reinstall-confirm-executes-confirmed-register",
+      registerInvoke?.args?.confirmed === true &&
+        registerInvoke?.args?.scanTime === currentScanTime &&
+        statusCount3 >= 3 &&  // 初始加载 + 取消回读 + 注册后回读
+        afterRegister.note.includes("已开启") && afterRegister.toggleChecked === true &&
+        tpage3Errors.length === 0,
+      JSON.stringify({ registerArgs: registerInvoke?.args, statusCount3, afterRegister }).slice(0, 200));
+    await tpage3.close();
+
+    /* ---------- ISS-040B 应用更新：浏览器降级 + mock 桥全流程 ----------
+     * 浏览器模式（无桥）：只读降级说明，不渲染检查按钮/假入口。
+     * mock 桥：unconfigured 态状态行（含当前版本、无安装入口）；available 态
+     * 版本+notes+确认层；取消回落（不发 updater_install）；确认后
+     * updater_install 携 confirmed:true；安装成功进入「重启以完成」独立确认，
+     * 取消不发 updater_restart、再确认才携带 confirmed:true 调用。 */
+    await setMode("dual");
+    await openPage("#/settings");
+    await page.waitForSelector("#updater-panel");
+    const updaterBrowser = await page.evaluate(() => ({
+      note: document.querySelector("[data-test='updater-browser-note']")?.textContent || "",
+      hasCheckBtn: Boolean(document.getElementById("btn-updater-check")),
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+    }));
+    record("updater-browser-mode-readonly-degrade",
+      updaterBrowser.note.includes("桌面应用的设置页") &&
+        !updaterBrowser.hasCheckBtn && !updaterBrowser.hasInstallBtn,
+      JSON.stringify(updaterBrowser).slice(0, 160));
+
+    const tpage4 = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const tpage4Errors = [];
+    tpage4.on("pageerror", (e) => tpage4Errors.push(e.message));
+    await tpage4.addInitScript(`
+      window.__tauriMock4 = { invokes: [] };
+      Object.defineProperty(window, "__TAURI__", { value: {
+        core: { invoke: (cmd, args) => {
+          window.__tauriMock4.invokes.push({ cmd, args });
+          if (cmd === "updater_check") {
+            return Promise.resolve(window.__updaterCheck ||
+              { state: "unconfigured", current_version: "0.3.0" });
+          }
+          if (cmd === "updater_install") {
+            return Promise.resolve({ ok: true, state: "installed",
+              current_version: "0.3.0", available_version: "0.4.0" });
+          }
+          if (cmd === "updater_restart") {
+            return Promise.resolve({ ok: true });
+          }
+          if (cmd === "autostart_status") {
+            return Promise.resolve({ scan: "disabled", web: "disabled", login_item: "unknown" });
+          }
+          return Promise.resolve();
+        } },
+        event: { listen: (name, handler) => {
+          (window.__tauriListeners = window.__tauriListeners || {})[name] = handler;
+          return Promise.resolve(0);
+        } },
+      }, configurable: true });
+    `);
+    await tpage4.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    await tpage4.waitForSelector("[data-test='updater-check-btn']");
+
+    // 1) unconfigured：状态行含当前版本与未配置文案，且不出现安装入口。
+    await tpage4.click("[data-test='updater-check-btn']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("未配置"));
+    const updUnconf = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      hasInstall: Boolean(document.getElementById("btn-updater-install")),
+      checkArgs: (window.__tauriMock4.invokes || [])
+        .filter((c) => c && c.cmd === "updater_check").slice(-1)[0]?.args,
+    }));
+    record("updater-unconfigured-state-shown",
+      updUnconf.status.includes("未配置") && updUnconf.status.includes("0.3.0") &&
+        !updUnconf.hasInstall && JSON.stringify(updUnconf.checkArgs) === "{}",
+      JSON.stringify(updUnconf).slice(0, 200));
+
+    // 2) available：版本 + notes + 「下载并安装」入口。
+    await tpage4.evaluate(() => {
+      window.__updaterCheck = { state: "available", current_version: "0.3.0",
+        available_version: "0.4.0", notes: "演示版本说明" };
+    });
+    await tpage4.click("[data-test='updater-check-btn']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("有可用更新"));
+    const updAvail = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      available: document.querySelector("[data-test='updater-available']")?.textContent || "",
+      notes: document.querySelector("[data-test='updater-notes']")?.textContent || "",
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+    }));
+    record("updater-available-shows-version-and-notes",
+      updAvail.status.includes("0.3.0") && updAvail.available.includes("0.4.0") &&
+        updAvail.notes.includes("演示版本说明") && updAvail.hasInstallBtn,
+      JSON.stringify(updAvail).slice(0, 200));
+
+    // 3) 确认层：版本可审，确认/取消都在。
+    await tpage4.click("[data-test='updater-install-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    const updLayer = await tpage4.evaluate(() => ({
+      text: document.querySelector("[data-test='updater-confirm']")?.textContent || "",
+      hasYes: Boolean(document.getElementById("updater-confirm-yes")),
+      hasNo: Boolean(document.getElementById("updater-confirm-no")),
+    }));
+    record("updater-install-opens-confirm-layer",
+      updLayer.text.includes("0.4.0") && updLayer.text.includes("验签") &&
+        updLayer.hasYes && updLayer.hasNo,
+      JSON.stringify(updLayer).slice(0, 200));
+
+    // 4) 取消回落：确认层收起，不发 updater_install，available 信息保留。
+    await tpage4.click("[data-test='updater-confirm-no']");
+    await tpage4.waitForFunction(() =>
+      document.querySelector("[data-test='updater-confirm']")?.hidden === true);
+    const updCancel = await tpage4.evaluate(() => ({
+      layerHidden: document.querySelector("[data-test='updater-confirm']")?.hidden === true,
+      installInvokes: (window.__tauriMock4.invokes || [])
+        .filter((c) => c && c.cmd === "updater_install").length,
+      stillAvailable: (document.querySelector("[data-test='updater-available']")?.textContent || "").includes("0.4.0"),
+    }));
+    record("updater-install-cancel-falls-back",
+      updCancel.layerHidden && updCancel.installInvokes === 0 && updCancel.stillAvailable,
+      JSON.stringify(updCancel).slice(0, 160));
+
+    // 5) 确认执行：updater_install 必须携带 confirmed:true；成功后进入已安装态。
+    await tpage4.click("[data-test='updater-install-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-confirm-yes']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("重启后生效"));
+    const updInstall = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      installed: document.querySelector("[data-test='updater-installed']")?.textContent || "",
+      hasRestartBtn: Boolean(document.getElementById("btn-updater-restart")),
+      installInvoke: (window.__tauriMock4.invokes || [])
+        .find((c) => c && c.cmd === "updater_install"),
+    }));
+    record("updater-install-invoked-with-confirmed",
+      updInstall.installInvoke?.args?.confirmed === true &&
+        updInstall.status.includes("重启后生效") &&
+        updInstall.installed.includes("0.4.0") && updInstall.hasRestartBtn,
+      JSON.stringify(updInstall).slice(0, 200));
+
+    // 6) 重启确认：取消不发 updater_restart、保持已安装态。
+    await tpage4.click("[data-test='updater-restart-btn']");
+    await tpage4.waitForSelector("[data-test='updater-restart-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-restart-no']");
+    await tpage4.waitForFunction(() =>
+      document.querySelector("[data-test='updater-restart-confirm']")?.hidden === true);
+    const updRestartCancel = await tpage4.evaluate(() => ({
+      layerHidden: document.querySelector("[data-test='updater-restart-confirm']")?.hidden === true,
+      restartInvokes: (window.__tauriMock4.invokes || [])
+        .filter((c) => c && c.cmd === "updater_restart").length,
+      stillInstalled: (document.querySelector("[data-test='updater-installed']")?.textContent || "").length > 0,
+    }));
+    record("updater-restart-cancel-keeps-installed",
+      updRestartCancel.layerHidden && updRestartCancel.restartInvokes === 0 &&
+        updRestartCancel.stillInstalled,
+      JSON.stringify(updRestartCancel).slice(0, 160));
+
+    // 7) 再确认：updater_restart 携带 confirmed:true。
+    await tpage4.click("[data-test='updater-restart-btn']");
+    await tpage4.waitForSelector("[data-test='updater-restart-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-restart-yes']");
+    await tpage4.waitForFunction(() => (window.__tauriMock4.invokes || [])
+      .some((c) => c && c.cmd === "updater_restart"));
+    const restartInvoke = await tpage4.evaluate(() => (window.__tauriMock4.invokes || [])
+      .find((c) => c && c.cmd === "updater_restart"));
+    record("updater-restart-confirmed-invoke",
+      restartInvoke?.args?.confirmed === true && tpage4Errors.length === 0,
+      JSON.stringify(restartInvoke));
+    await tpage4.close();
+
     /* ---------- 汇总 ---------- */
     record("no-unhandled-page-errors",
-      pageErrors.length === 0 && tauriErrors.length === 0,
-      [...pageErrors, ...tauriErrors].join("; "));
+      pageErrors.length === 0 && tauriErrors.length === 0 && tpage4Errors.length === 0,
+      [...pageErrors, ...tauriErrors, ...tpage4Errors].join("; "));
     const failed = checks.filter((c) => !c.ok);
     process.stdout.write(JSON.stringify({
       ok: failed.length === 0,

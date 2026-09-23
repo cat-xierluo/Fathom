@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # ISS-031 可复现 pytest 入口（CI 与本地同一断言口径）。
 #
-# 本地等价命令（已验证 553 passed）：
+# 本地等价命令（ISS-040C 后 685 passed = 671 + 14(040C 生产更新协调接线)；671 已含 030A +16）：
 #   .runtime/bin/python -m pytest tests -q
 # CI：FATHOM_PYTHON 指向 setup-python 锁定版本创建的 venv 解释器。
 #
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 553）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 685）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-expected="${EXPECTED_PYTEST_PASSED:-553}"
+expected="${EXPECTED_PYTEST_PASSED:-685}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本次审查基线 `e033ef6` 的 pytest 门禁是 **553**（计数以 `scripts/ci_pytest.sh` 与 CI 配置为准），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **685**（ISS-030A +16、ISS-040C +14：`tests/test_upgrade_production_wiring.py`；#152 合并后 PM 在 main `696f3b3` 全量复跑 685 passed），CI 与 `scripts/ci_pytest.sh` 已同步为 **685**（2026-09-23 Wave40 收口），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -41,7 +41,7 @@ GitHub CI 设计为在原生 Apple Silicon 与 Intel runner 上分别执行 pyte
 **2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，[DEC-021](DECISIONS.md#dec-021---2026-09-15---账户-actions-额度耗尽期间停用-ci-workflow以本地同口径门禁为主)）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 553
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 685（Wave40 收口同步）
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)，断言 39
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
@@ -146,7 +146,7 @@ PY
 | API | 非法 ID/日期/limit/根、外站 Origin/Host、越界路径、非对象 JSON | 正确 4xx；被拒绝请求无系统副作用；500 不伪装空结果 |
 | 查询资源 | 超 limit 历史、超过树预算、并发大文件查询、超时/取消 | 最新窗口、明确截断、可控 IO/内存/线程数 |
 | 浏览器 | 空/单/双快照、只有新增、缺失点、重扫、切页/乱序、HTML 外观路径 | 无注入/旧值/未处理异常；正确状态与按钮反馈 |
-| UX | 980×640、1220×820、1440×900；长路径；键盘导航 | 不溢出、图表非零尺寸、焦点可见/返回、三步定位 |
+| UX | 980×640、1220×820、1440×900；长路径；键盘导航 | 不溢出、图表非零尺寸、焦点可见/返回、三步定位；Tauri 三尺寸实机入口 `bash scripts/verify_tauri_window_sizes.sh`（ISS-028，零打扰模式：几何/总览图表机器断言 + 交互类 NOT_VERIFIED-需前台单列，证据在 apps/desktop/src-tauri/verify-results/window-sizes/，gitignore 内） |
 
 修复首先补能失败的反例测试；禁止 `or True`、只断言执行未抛错、全路径 mock 后称端到端。改变一个纯文案/间距不必堆单元测试，DOM/截图核对即可。核心行为改变必须测试失败路径。
 
@@ -168,6 +168,26 @@ PY
 | Apple 签名恢复后 | Developer ID 嵌套签名；公证/staple；`codesign --verify --deep --strict`、`spctl --assess`、`stapler validate` | 未签名包、仅 Tauri updater 签名；当前延期不算通过 |
 
 不随意选择生产环境跑这些步骤。没有测试账户/机器/签名凭据时保留未勾项并写 NOT_VERIFIED；其他独立任务照常推进。UI 最小窗口通过不代表手机布局已支持。
+
+剩余发行门的唯一父卡归属、可一次执行的实操步骤、候选三要素标识（固定 40 位 commit、DMG SHA256、helper SHA256）、集中授权与环境缺口清单见 [发行实测准备清单](plans/2026-09-19-release-live-verification-prep.md)（ISS-076，2026-09-19）。
+
+候选重建登记夹具入口（ISS-078，把 §1.1 三命令 + 候选三要素固化进一条命令；不实跑时用 `--selftest` 自测）：
+
+```bash
+bash scripts/release_candidate_record.sh --selftest   # PM/CI 验证入口（fake 产物）
+bash scripts/release_candidate_record.sh              # 默认：只读登记既有产物
+bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
+```
+
+升级协调协议夹具（ISS-030A，把「升级/恢复」行的 N→N+1 停写→旧 helper 退出→SQLite 一致备份→替换→新 helper 启动→版本握手六步与备份失败/握手失败/中途退出/磁盘不足四类回滚、较新与不可识别旧 schema 拒绝固化为隔离自动验；真实 `flock` 与 WAL checkpoint/backup API，fake app/helper 形态，零生产触碰；夹具模块 `tests/upgrade_fixture.py`）：
+
+```bash
+.runtime/bin/python -m pytest tests/test_upgrade_coordination.py -q   # 16 项
+```
+
+矩阵各行的父卡归属：三态权限归 ISS-002；系统通知归 ISS-003；tray 交互归 ISS-008；发行包 tray 手点退出、18pt 可辨性、新账户安装/断网/quarantine 下载首启归 ISS-009；后台注册与睡眠/重启归 ISS-010；设置真实重载归 ISS-016；应用内更新归 ISS-040；双架构与 Release 聚合归 ISS-041（Apple 签名腿按 DEC-022 延期）；升级卸载恢复归 ISS-030；外部内测与公开归 ISS-033。
+
+**代码与实测边界（2026-09-22，`31396a0`）**：ISS-010B/016B/040B 已提供注册、计划漂移与经确认重装、更新插件和确认流；这些入口不再属于“尚未实现”。但安装前停写/旧 helper 退出/一致备份/失败恢复尚未接入生产更新入口，进度回调为空。G10 的安装部分先解决 ISS-040/030 的产品接线，再用隔离候选验证；ISS-030A 的 fake 协议不能替代生产入口集成验证。原生 G8/G9 与双架构仍未验收，arm64 本地包实测不得外推。
 
 ## 5. 证据格式与收口
 

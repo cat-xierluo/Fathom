@@ -11,7 +11,7 @@
 
 **决策**：①按 DEC-021 预留恢复命令经 API 将 `CI` workflow（id 356941919）重新启用；②ISS-037 验收框 2 口径修订为「无已知事实错误」：许可证值等须与本地包元数据一致，UNKNOWN 项保留说明、不作为阻断项（超出默认修复预算的第 3 轮经用户明确授权重派，续用 repair2 分支成果）；③ISS-041 拆出首轮切片 ISS-041A：仅 arm64、未签名（DEC-022 延续）、tag 触发、draft Release（DMG+checksums.txt）；updater 产物/latest.json、x86_64 双架构、publish 与仓库转公开仍留父卡及人工门——生产 updater keypair（G10）未决策前 workflow 不得引用任何 TAURI_SIGNING_* secret。转公开时机仍由用户另行决定，本决策不改变该人工门。
 
-**验证**：enable 执行后 API 返回 `state=active`（2026-09-23 实测）；额度恢复以恢复后首个真实 CI run（本决策的登记 PR 触发）为准，若在步骤前被 billing 拒绝仍按 DEC-018 记 `NOT_RUN` 并修正本条表述；Folia 基线以该仓库实地核对（LICENSE 单文件、无 NOTICE/THIRD_PARTY 文件、README 一行许可声明、Release 公开未签名分发）。
+**验证**：enable 执行后 API 返回 `state=active`（2026-09-23 实测）。**额度实测结论（同日晚间）：未恢复**——恢复后 PR #154/#155 触发的 4 个 run 全部 job 在执行任何步骤前失败、无任何步骤记录与日志，与 DEC-021 记录的 billing 拒绝模式一致，按 DEC-018 记 `NOT_RUN`。CI 已再次停用止损（同命令可逆）；用户侧确认额度真实生效后重执行 enable 命令即可，发行工作流（ISS-041A）实现不受影响、额度恢复即可用。Folia 基线以该仓库实地核对（LICENSE 单文件、无 NOTICE/THIRD_PARTY 文件、README 一行许可声明、Release 公开未签名分发）。
 
 **影响**：ISS-037 转 IN_PROGRESS（repair3 在途）；新增 ISS-041A 并派发（在途）；README/TESTING 的「Actions 停用」表述更新；ISS-041/030/033 父卡验收矩阵不变，切片 DONE 不关闭父卡。
 

@@ -50,7 +50,7 @@ RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
 # pytest (x86_64)：本机无 x86_64 Python，无法本地覆盖，记 NOT_RUN
 ```
 
-x86_64 行必须显式 `RUSTC`：rustup 的 cargo 会按 PATH 找到 Homebrew 的 rustc 1.98（无 x86_64 std）而报 `E0463`；`rustup run stable` 的 rustc 恰为 CI 钉定的 1.88.0。恢复云端 CI：`gh api -X PUT repos/cat-xierluo/fathom/actions/workflows/356941919/enable`（已于 2026-09-23 经用户确认额度恢复后执行，state=active；额度实证以恢复后首个 CI run 为准，本节本地链保留为 PM 验收工具，见 DEC-024）。
+x86_64 行必须显式 `RUSTC`：rustup 的 cargo 会按 PATH 找到 Homebrew 的 rustc 1.98（无 x86_64 std）而报 `E0463`；`rustup run stable` 的 rustc 恰为 CI 钉定的 1.88.0。恢复云端 CI：`gh api -X PUT repos/cat-xierluo/fathom/actions/workflows/356941919/enable`（2026-09-23 曾执行恢复，但随后 PR #154/#155 触发的 4 个 run 全部 job 在步骤执行前被拒、无日志——billing 拒绝模式，额度实测未恢复记 `NOT_RUN`，已再次停用止损；额度真实恢复后重执行同一命令，见 DEC-024）。
 
 不复制生产库到仓库，不在报告贴私人路径。数据量测试用合成目录或经用户选择的测试范围。故障测试 mock `open`、通知、launchctl 等系统动作，检查“有没有被调用”，不实际动生产服务。
 

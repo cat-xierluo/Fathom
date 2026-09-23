@@ -482,6 +482,28 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
 #exclude-inline-error.cfg-error { color: var(--danger); }
 
 .settings-actions p { margin: 6px 0; }
+
+/* ===== 高级与诊断折叠区（ISS-083 · 打包态收敛技术细节）=====
+ * 原生 details/summary（与 overview 卷趋势 .tbl-toggle 同模式）：键盘可达
+ * （Enter/Space 原生支持），展开状态零 JS 维护。 */
+.adv-toggle summary {
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; color: var(--primary); user-select: none;
+  font-size: 14px; font-weight: 600;
+}
+.adv-toggle summary .icon { flex: none; }
+.adv-toggle[open] summary { margin-bottom: 10px; }
+/* .adv-body 的 flex 布局（作者样式）会覆盖 UA 对未展开 details 子内容的
+ * 隐藏，须显式恢复折叠语义；展开态由上一条 .adv-body 规则接管。 */
+.adv-toggle:not([open]) .adv-body { display: none; }
+.adv-body { display: flex; flex-direction: column; gap: 10px; }
+.adv-body .tbl { font-size: 12px; }
+.adv-body .panel-head h2 { font-size: 13px; }
+.adv-body > .panel {
+  margin: 0; border: 1px dashed var(--border); background: transparent;
+  box-shadow: none;
+}
+
 code {
   background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
   padding: 1px 6px; font-size: 12px;

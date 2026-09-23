@@ -2159,10 +2159,138 @@ async function main() {
       JSON.stringify(restartInvoke));
     await tpage4.close();
 
+    /* ---------- ISS-083 设置页信息架构收敛：打包态隐藏技术细节 ----------
+     * 三组口径：
+     *  - 无桥（浏览器/开发态）不回退：运行信息 8 行全量渲染、无高级折叠区、
+     *    服务管理面板保持原位（#page-settings 直接子节点）；
+     *  - mock 桥（打包态）默认视图：#settings-table 只含用户必要行（监控根/
+     *    快照保留/大文件默认范围），技术行（服务地址/运行根/数据库/du 时限/
+     *    桌面壳）与静态「服务管理」面板收进默认折叠的「高级与诊断」区且
+     *    不可见；后台自启面板措辞收敛（不再出现 launchd/SMAppService 术语）；
+     *  - 展开 summary 后技术区块全部可见（能力不删除）。
+     * 真实 Tauri 壳内运行属 GUI 实机验证，不在本脚本范围（RESULT 如实标注）。 */
+    const tpage5b = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const tpage5bErrors = [];
+    tpage5b.on("pageerror", (e) => tpage5bErrors.push(e.message));
+    await tpage5b.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    await tpage5b.waitForSelector("#settings-table tbody tr");
+    const browserModeRunInfo = await tpage5b.evaluate(() => ({
+      tableText: document.querySelector("#settings-table")?.textContent || "",
+      hasAdvancedPanel: Boolean(document.getElementById("advanced-panel")),
+      serviceIsDirectChild: [...document.querySelectorAll("#page-settings > .panel")]
+        .some((p) => p.querySelector(".panel-head h2")?.textContent === "服务管理"),
+    }));
+    record("settings-browser-mode-keeps-full-runinfo",
+      browserModeRunInfo.tableText.includes("服务地址") &&
+        browserModeRunInfo.tableText.includes("运行根") &&
+        browserModeRunInfo.tableText.includes("数据库") &&
+        browserModeRunInfo.tableText.includes("du 安全时限") &&
+        browserModeRunInfo.tableText.includes("桌面壳") &&
+        browserModeRunInfo.tableText.includes("监控根目录") &&
+        !browserModeRunInfo.hasAdvancedPanel && browserModeRunInfo.serviceIsDirectChild &&
+        tpage5bErrors.length === 0,
+      JSON.stringify(browserModeRunInfo).slice(0, 200));
+    await tpage5b.close();
+
+    const tpage5 = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const tpage5Errors = [];
+    tpage5.on("pageerror", (e) => tpage5Errors.push(e.message));
+    await tpage5.addInitScript(`
+      window.__tauriMock5 = { invokes: [] };
+      Object.defineProperty(window, "__TAURI__", { value: {
+        core: { invoke: (cmd, args) => {
+          window.__tauriMock5.invokes.push({ cmd, args });
+          if (cmd === "autostart_status") {
+            return Promise.resolve({ scan: "enabled", web: "enabled", login_item: "disabled" });
+          }
+          if (cmd === "updater_check") {
+            return Promise.resolve({ state: "up_to_date", current_version: "0.3.0" });
+          }
+          return Promise.resolve();
+        } },
+        event: { listen: () => Promise.resolve(0) },
+      }, configurable: true });
+    `);
+    await tpage5.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    await tpage5.waitForSelector("#settings-table tbody tr");
+    const packagedDefault = await tpage5.evaluate(() => {
+      const table = document.querySelector("#settings-table")?.textContent || "";
+      const details = document.querySelector("#advanced-panel details[data-test='advanced-toggle']");
+      // 经 h2 反查最近面板祖先：服务管理面板移入折叠区后，正向 .panel
+      // 遍历会先命中外层 advanced 容器（其子树含「服务管理」h2）。
+      const service = [...document.querySelectorAll("#page-settings .panel-head h2")]
+        .find((node) => node.textContent === "服务管理")?.closest(".panel") || null;
+      const advancedBody = document.querySelector("[data-test='advanced-body']");
+      const visible = (el) => el && el.getClientRects().length > 0;
+      const autostartTitle = document.querySelector("#autostart-panel .panel-head h2")?.textContent || "";
+      const autostartText = document.querySelector("#autostart-panel")?.textContent || "";
+      return {
+        table,
+        hasDetails: Boolean(details),
+        detailsOpen: details ? details.open : null,
+        serviceInsideAdvanced: Boolean(service && advancedBody && advancedBody.contains(service)),
+        serviceVisible: visible(service),
+        techTableRows: document.querySelectorAll("#settings-table-tech tbody tr").length,
+        autostartTitle,
+        autostartHasLaunchdTerm: autostartText.includes("launchd") || autostartText.includes("SMAppService"),
+      };
+    });
+    record("settings-packaged-default-keeps-user-rows",
+      packagedDefault.table.includes("监控根目录") &&
+        packagedDefault.table.includes("快照保留") &&
+        packagedDefault.table.includes("大文件默认范围") &&
+        !packagedDefault.table.includes("服务地址") &&
+        !packagedDefault.table.includes("运行根") &&
+        !packagedDefault.table.includes("数据库") &&
+        !packagedDefault.table.includes("du 安全时限") &&
+        !packagedDefault.table.includes("桌面壳"),
+      packagedDefault.table.slice(0, 160));
+    record("settings-packaged-default-collapses-tech-blocks",
+      packagedDefault.hasDetails && packagedDefault.detailsOpen === false &&
+        packagedDefault.serviceInsideAdvanced && !packagedDefault.serviceVisible &&
+        packagedDefault.techTableRows === 5,
+      JSON.stringify(packagedDefault).slice(0, 200));
+    record("settings-packaged-autostart-copy-simplified",
+      packagedDefault.autostartTitle === "后台自启" &&
+        !packagedDefault.autostartHasLaunchdTerm,
+      JSON.stringify({
+        title: packagedDefault.autostartTitle,
+        hasLaunchdTerm: packagedDefault.autostartHasLaunchdTerm,
+      }));
+    const packagedDefaultShot = path.join(evidenceDir, "settings-packaged-default-1220x820.png");
+    await tpage5.screenshot({ path: packagedDefaultShot });
+
+    // 展开 summary：技术行与服务管理面板全部可见（能力不删除）。
+    await tpage5.click("#advanced-panel details[data-test='advanced-toggle'] summary");
+    await tpage5.waitForFunction(() => {
+      const d = document.querySelector("#advanced-panel details[data-test='advanced-toggle']");
+      const service = [...document.querySelectorAll("#page-settings .panel-head h2")]
+        .find((node) => node.textContent === "服务管理")?.closest(".panel");
+      return d && d.open === true && service && service.getClientRects().length > 0;
+    });
+    const packagedOpen = await tpage5.evaluate(() => ({
+      techTableText: document.querySelector("#settings-table-tech")?.textContent || "",
+      serviceVisibleText: ([...document.querySelectorAll("#page-settings .panel-head h2")]
+        .find((node) => node.textContent === "服务管理")?.closest(".panel") || {})
+        .textContent || "",
+    }));
+    record("settings-packaged-expanding-reveals-tech",
+      packagedOpen.techTableText.includes("服务地址") &&
+        packagedOpen.techTableText.includes("运行根") &&
+        packagedOpen.techTableText.includes("数据库") &&
+        packagedOpen.techTableText.includes("du 安全时限") &&
+        packagedOpen.techTableText.includes("桌面壳") &&
+        packagedOpen.serviceVisibleText.includes("main.py uninstall"),
+      JSON.stringify(packagedOpen).slice(0, 200));
+    const packagedOpenShot = path.join(evidenceDir, "settings-packaged-advanced-open-1220x820.png");
+    await tpage5.screenshot({ path: packagedOpenShot, fullPage: true });
+    await tpage5.close();
+
     /* ---------- 汇总 ---------- */
     record("no-unhandled-page-errors",
-      pageErrors.length === 0 && tauriErrors.length === 0 && tpage4Errors.length === 0,
-      [...pageErrors, ...tauriErrors, ...tpage4Errors].join("; "));
+      pageErrors.length === 0 && tauriErrors.length === 0 && tpage4Errors.length === 0 &&
+        tpage5Errors.length === 0 && tpage5bErrors.length === 0,
+      [...pageErrors, ...tauriErrors, ...tpage4Errors, ...tpage5Errors, ...tpage5bErrors].join("; "));
     const failed = checks.filter((c) => !c.ok);
     process.stdout.write(JSON.stringify({
       ok: failed.length === 0,
@@ -2170,7 +2298,8 @@ async function main() {
       failed: failed.length,
       evidence: [overviewShot, changesShot, browseShot, bigfilesShot, settingsShot,
         bigfilesTruncatedShot, bigfilesExpiredShot, bigfilesFailedShot,
-        bigfilesPermShot, bigfilesNoMatchShot, ...viewportScreens],
+        bigfilesPermShot, bigfilesNoMatchShot, packagedDefaultShot, packagedOpenShot,
+        ...viewportScreens],
       checks,
     }, null, 2) + "\n");
     if (failed.length) process.exitCode = 1;

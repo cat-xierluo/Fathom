@@ -25,6 +25,14 @@
 
 * { box-sizing: border-box; }
 
+/* ISS-082：应用壳固定布局。文档级滚动归零（html/body 不可滚），
+ * 只有 .page-container 内容区独立滚动——消除两类实机反例：
+ *  1) app-shell(100vh) 之外还有页脚，文档恒比视口高一截，
+ *     短内容页也能滚出内容范围出现空白（含 WebView 橡皮筋放大）；
+ *  2) 侧栏原先 sticky 的约束底边是 app-shell 底边，滚动进入页脚段
+ *     时被顶出视口，按钮随滚动位移。壳内元素天然固定后零位移。 */
+html, body { height: 100%; overflow: hidden; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -49,9 +57,9 @@ body {
 .brand-mark .dr-probe, .brand-mark .dr-tick { stroke: var(--mineral); }
 .nav-icon { display: flex; align-items: center; justify-content: center; height: 20px; }
 
-/* ===== 应用壳：侧导航 + 主区 ===== */
+/* ===== 应用壳：侧导航 + 主区（ISS-082：固定壳，内容区独立滚动） ===== */
 
-.app-shell { display: flex; min-height: 100vh; }
+.app-shell { display: flex; height: 100%; }
 
 .sidenav {
   width: var(--sidenav-w);
@@ -59,7 +67,9 @@ body {
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column; align-items: center;
   padding: 14px 0 18px; gap: 6px;
-  position: sticky; top: 0; height: 100vh;
+  /* ISS-082：不再依赖 sticky 补偿——壳不可滚，侧栏在任何内容高度与
+   * 滚动位置下零位移 */
+  height: 100%; flex: none;
 }
 .sidenav-spacer { flex: 1; }
 .nav-item {
@@ -72,14 +82,16 @@ body {
 .nav-item[aria-current] { background: var(--trench-weak); color: var(--trench); }
 .nav-icon { font-size: 18px; }
 
-.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column;
+  height: 100%; overflow: hidden; }
 
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 26px;
   background: var(--card);
   border-bottom: 1px solid var(--border);
-  position: sticky; top: 0; z-index: 10;
+  /* ISS-082：壳内天然固定，去掉 sticky */
+  flex: none;
 }
 .topbar h1 { margin: 0; font-size: 17px; }
 .topbar-right { display: flex; align-items: center; gap: 12px; }
@@ -108,7 +120,13 @@ body {
 }
 @keyframes badge-spin { to { transform: rotate(360deg); } }
 
-.page-container { padding: 20px 26px 40px; max-width: 1280px; width: 100%; margin: 0 auto; }
+/* ISS-082：唯一滚动容器——内容区独立滚动；min-height:0 使 flex 子项
+ * 允许收缩，否则 overflow 不生效。overscroll-behavior 阻止滚动链
+ * 传出内容区（WebView 中防整页橡皮筋） */
+.page-container {
+  padding: 20px 26px 40px; max-width: 1280px; width: 100%; margin: 0 auto;
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+}
 .page.hidden { display: none; }
 
 /* ===== 按钮 ===== */
@@ -158,6 +176,11 @@ tr:hover .btn-mini { opacity: 1; }
 .panel {
   background: var(--card); border: 1px solid var(--border); border-radius: 12px;
   padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow);
+  /* ISS-082：封死面板内宽表格等内容的布局溢出向文档级上串
+   * （否则窄视口下宽表格会把 html 撑出可编程横移的溢出）。
+   * panel 有 padding，无外边距坍塌依赖；面板内无 absolute/fixed
+   * 定位后代，containment 劫持 containing block 无副作用 */
+  contain: layout;
 }
 .panel-head {
   display: flex; align-items: baseline; justify-content: space-between;
@@ -319,6 +342,10 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
 .copy-path.copied { color: var(--ok); border-color: var(--ok); }
 
 /* ===== 表格 ===== */
+
+/* 表格容器：窄视口下宽表格（固有 min-content 宽）在容器内局部横滚，
+ * 不撑破面板也不把布局溢出传到文档级（ISS-082） */
+.tbl-wrap { overflow-x: auto; }
 
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl th, .tbl td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
@@ -509,11 +536,12 @@ code {
   padding: 1px 6px; font-size: 12px;
 }
 
-/* ===== 页脚 ===== */
+/* ===== 页脚（ISS-082：移入 main-area，固定在内容区下方，不再叠出视口） ===== */
 
 .app-footer {
   display: flex; justify-content: space-between; align-items: center;
   padding: 12px 26px 28px; color: var(--muted); font-size: 12px;
+  flex: none;
 }
 .app-footer a { color: var(--primary); text-decoration: none; }
 

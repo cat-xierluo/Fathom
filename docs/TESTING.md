@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **685**（ISS-030A +16，ISS-040C +14：`tests/test_upgrade_production_wiring.py` 新增 14 项，本切片 scoped 实测 14 passed；全量 685=671+14 未在本会话复跑），CI 与 `scripts/ci_pytest.sh` 仍是 ISS-080 的 **671**、待 PM 按同口径任务同步（2026-09-23 核对配置，未复跑；执行前核对所选候选的两处配置），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **685**（ISS-030A +16、ISS-040C +14：`tests/test_upgrade_production_wiring.py`；#152 合并后 PM 在 main `696f3b3` 全量复跑 685 passed），CI 与 `scripts/ci_pytest.sh` 已同步为 **685**（2026-09-23 Wave40 收口），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -41,7 +41,7 @@ GitHub CI 设计为在原生 Apple Silicon 与 Intel runner 上分别执行 pyte
 **2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，[DEC-021](DECISIONS.md#dec-021---2026-09-15---账户-actions-额度耗尽期间停用-ci-workflow以本地同口径门禁为主)）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 671（ISS-040C 后本地口径 685，脚本待 PM 同步）
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 685（Wave40 收口同步）
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)，断言 39
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \

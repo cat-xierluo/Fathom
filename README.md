@@ -85,7 +85,7 @@ cargo run
 
 ## 继续开发
 
-贡献者请读 [CONTRIBUTING](CONTRIBUTING.md)；产品目标见 [ROADMAP](docs/ROADMAP.md)，体验合同见 [DESIGN](docs/DESIGN.md)，当前实现见 [ARCHITECTURE](docs/ARCHITECTURE.md)。本地历史数据与客户路径不得进入测试 fixture、截图或 PR。
+贡献者请读 [CONTRIBUTING](.github/CONTRIBUTING.md)；产品目标见 [ROADMAP](docs/ROADMAP.md)，体验合同见 [DESIGN](docs/DESIGN.md)，当前实现见 [ARCHITECTURE](docs/ARCHITECTURE.md)。本地历史数据与客户路径不得进入测试 fixture、截图或 PR。
 
 ### 构建未签名的桌面包（开发者，ISS-009 切片 1/2）
 
@@ -106,4 +106,4 @@ bash scripts/verify_app_bundle.sh
 
 ## 许可证状态
 
-本项目采用 **Apache License 2.0**（仓库根 `LICENSE`，Copyright 2026 maoking，与 Folia 一致），第三方组件声明见 `THIRD_PARTY_NOTICES.md`，依赖来源清单见 `docs/plans/2026-09-14-dependency-inventory.md`。发行与更新源的启用状态以 [CHANGELOG](CHANGELOG.md) 为准。
+本项目采用 **Apache License 2.0**（仓库根 `LICENSE`，Copyright 2026 maoking，与 Folia 一致），第三方组件声明见 `docs/THIRD_PARTY_NOTICES.md`，依赖来源清单见 `docs/plans/2026-09-14-dependency-inventory.md`。发行与更新源的启用状态以 [CHANGELOG](CHANGELOG.md) 为准。

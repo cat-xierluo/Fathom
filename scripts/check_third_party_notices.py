@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-NOTICES = REPO_ROOT / "THIRD_PARTY_NOTICES.md"
+NOTICES = REPO_ROOT / "docs" / "THIRD_PARTY_NOTICES.md"
 CARGO_LOCK = REPO_ROOT / "apps" / "desktop" / "src-tauri" / "Cargo.lock"
 CONSTRAINTS = REPO_ROOT / "constraints.txt"
 VENV_SITE = REPO_ROOT / ".venv" / "lib" / "python3.14" / "site-packages"

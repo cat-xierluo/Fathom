@@ -13,6 +13,12 @@
  *
  * 计划一致性（ISS-016B）：消费 service_reload_state 四态（见下方 reloadStateInfo）；
  * 服务自身零系统写入口——drift 态的重装只经 010B autostart 确认层执行。
+ *
+ * 信息架构收敛（ISS-083）：打包态（Tauri 桥在位，与更新/自启面板的
+ * 降级检测同信号）默认隐藏技术区块——「运行信息」中的技术行（服务地址/
+ * 运行根/数据库/du 时限/桌面壳）与静态「服务管理」面板收进默认折叠的
+ * 「高级与诊断」区；能力不删除，展开即全部可见。浏览器/开发态（无桥）
+ * 保持原全量展示，不回退。
  */
 import { fetchJSON, beginRequest, invalidateRequest, apiPut } from "../request.js";
 import { escapeHtml } from "../format.js";
@@ -388,24 +394,22 @@ async function loadSettings() {
   }
   const p = c?.policies || {};
   const dbMb = s.db_bytes ? (s.db_bytes / 1024 / 1024).toFixed(1) : "0.0";
+  // ISS-083：第三列标记技术行——打包态收进折叠区，浏览器态全量按原序渲染
   const rows = [
-    ["监控根目录", `<code>${escapeHtml(s.root)}</code>`],
-    ["服务地址", `<code>http://127.0.0.1:${escapeHtml(String(s.port))}</code>（本地回环）`],
-    ["运行根", `<code>${escapeHtml(s.runtime?.runtime_dir || "")}</code>`],
-    ["数据库", `<code>${escapeHtml(s.runtime?.db_path || "")}</code> · ${dbMb} MB`],
+    ["监控根目录", `<code>${escapeHtml(s.root)}</code>`, false],
+    ["服务地址", `<code>http://127.0.0.1:${escapeHtml(String(s.port))}</code>（本地回环）`, true],
+    ["运行根", `<code>${escapeHtml(s.runtime?.runtime_dir || "")}</code>`, true],
+    ["数据库", `<code>${escapeHtml(s.runtime?.db_path || "")}</code> · ${dbMb} MB`, true],
     ["快照保留", p.keep_daily_days
       ? `近 ${escapeHtml(String(p.keep_daily_days))} 天每日一份 + 更早每周一份（最多 ${escapeHtml(String(p.keep_weekly_weeks))} 周）`
-      : "—"],
-    ["du 安全时限", p.du_timeout_s ? `<code>${escapeHtml(String(p.du_timeout_s))} 秒</code>` : "—"],
+      : "—", false],
+    ["du 安全时限", p.du_timeout_s ? `<code>${escapeHtml(String(p.du_timeout_s))} 秒</code>` : "—", true],
     ["大文件默认范围", p.bigfile_default_days
       ? `近 ${escapeHtml(String(p.bigfile_default_days))} 天 · ≥ ${escapeHtml(String(p.bigfile_default_mb))} MB`
-      : "—"],
-    ["桌面壳", "apps/desktop（Tauri 菜单栏 + 主窗口）"],
+      : "—", false],
+    ["桌面壳", "apps/desktop（Tauri 菜单栏 + 主窗口）", true],
   ];
-  if (tbody) {
-    tbody.innerHTML = rows.map((r) =>
-      `<tr><td style="width:140px;color:var(--muted)">${r[0]}</td><td>${r[1]}</td></tr>`).join("");
-  }
+  renderRunInfoTables(rows);
 
   // 加载扫描运行历史（可独立失败，不影响主配置）
   loadScanHistory();
@@ -706,6 +710,79 @@ function tauriInvoke() {
   return null;
 }
 
+/* ===== 高级与诊断折叠区（ISS-083）=====
+ * 打包态（Tauri 桥在位）时创建：技术区块收纳进默认折叠的 <details>，
+ * 与 overview 卷趋势的 .tbl-toggle 同为原生 details/summary（键盘可达，
+ * Enter/Space 原生支持），零 JS 展开状态。浏览器/开发态不创建任何节点，
+ * 运行信息表保持原 8 行全量渲染，服务管理面板保持原位（不回退）。 */
+const ADVANCED_PANEL_ID = "advanced-panel";
+const TECH_TABLE_ID = "settings-table-tech";
+
+/** 是否运行在桌面壳（打包态）内：与更新/自启面板的桥降级检测同信号。 */
+function isPackagedMode() {
+  return !!tauriInvoke();
+}
+
+/** 找到 index.html 静态的「服务管理」面板（该文件不在本卡白名单内，
+ * 打包态以运行时 DOM 移动方式收进折叠区，不改静态结构）。经 h2 反查最近的
+ * .panel 祖先定位：面板被移入折叠区后，「服务管理」h2 位于 advanced 面板
+ * 子树内，若按 .panel 列表正向匹配会先命中外层容器。 */
+function findServicePanel() {
+  const page = document.getElementById("page-settings");
+  if (!page) return null;
+  const h2 = [...page.querySelectorAll(".panel-head h2")]
+    .find((node) => node.textContent === "服务管理");
+  return h2?.closest(".panel") || null;
+}
+
+/** 打包态创建「高级与诊断」面板（幂等）并把服务管理面板移入。 */
+function _ensureAdvancedPanel() {
+  const page = document.getElementById("page-settings");
+  if (!page) return null;
+  let panel = document.getElementById(ADVANCED_PANEL_ID);
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = ADVANCED_PANEL_ID;
+    panel.className = "panel";
+    panel.setAttribute("data-test", "advanced-panel");
+    panel.innerHTML = `
+      <details class="adv-toggle" data-test="advanced-toggle">
+        <summary>${icon("settings", 12)} 高级与诊断</summary>
+        <div class="adv-body" data-test="advanced-body">
+          <p class="hint">面向排障与支持的运行细节：本地服务地址、运行根与数据库位置、
+            采集参数、桌面壳形态与服务管理命令。日常使用无需关注。</p>
+          <table class="tbl tbl-mini" id="${TECH_TABLE_ID}"><tbody></tbody></table>
+        </div>
+      </details>`;
+    // 高级区放设置页末尾：不打断「配置 → 运行事实 → 历史」的主流程阅读序
+    page.appendChild(panel);
+  }
+  const body = panel.querySelector("[data-test='advanced-body']");
+  const service = findServicePanel();
+  // 服务管理面板移入折叠区（Element.appendChild 自动从原位置摘除）；
+  // 已在区内（重复进入设置页）时跳过，保持插入顺序稳定。
+  if (body && service && !body.contains(service)) {
+    body.appendChild(service);
+  }
+  return panel;
+}
+
+/** 渲染运行信息表：浏览器态全量渲染进 #settings-table（原行序）；
+ * 打包态把用户必要行留在 #settings-table、技术行渲染进折叠区内的
+ * #settings-table-tech，并确保折叠区已创建（服务管理面板随区移动）。 */
+function renderRunInfoTables(rows) {
+  const rowHtml = (list) => list.map((r) =>
+    `<tr><td style="width:140px;color:var(--muted)">${r[0]}</td><td>${r[1]}</td></tr>`).join("");
+  const packaged = isPackagedMode();
+  if (packaged) _ensureAdvancedPanel();
+  const main = document.querySelector("#settings-table tbody");
+  if (main) main.innerHTML = rowHtml(packaged ? rows.filter((r) => !r[2]) : rows);
+  if (packaged) {
+    const tech = document.querySelector(`#${TECH_TABLE_ID} tbody`);
+    if (tech) tech.innerHTML = rowHtml(rows.filter((r) => r[2]));
+  }
+}
+
 function _ensureAutostartPanel() {
   const page = document.getElementById("page-settings");
   if (!page) return null;
@@ -722,6 +799,16 @@ function _ensureAutostartPanel() {
     <div class="perm-panel" data-test="autostart-panel-body">
       <p class="hint">后台自启状态加载中…</p>
     </div>`;
+  // ISS-083：打包态不向普通用户暴露 launchd 术语（开关与状态保留，
+  // 仅措辞收敛）；浏览器/开发态保持原文案。
+  if (isPackagedMode()) {
+    const h2 = panel.querySelector(".panel-head h2");
+    if (h2) h2.textContent = "后台自启";
+    const headHint = panel.querySelector(".panel-head .hint");
+    if (headHint) {
+      headHint.textContent = "开启后每日定时扫描并随开机自动运行；开启前会展示将写入的配置与命令并请求确认，取消或失败都会回到当前状态。";
+    }
+  }
   // 插在"扫描运行历史"面板之前；找不到则追加到页面末尾
   const history = document.getElementById("scan-history");
   const anchor = history ? history.closest(".panel") : null;
@@ -734,7 +821,10 @@ function autostartStateText(record) {
   const scan = AUTOSTART_STATE_LABELS[record?.scan] || "未知";
   const web = AUTOSTART_STATE_LABELS[record?.web] || "未知";
   const login = AUTOSTART_STATE_LABELS[record?.login_item] || "未知";
-  return `定时扫描：${scan} · 常驻服务：${web} · 登录项：${login}（SMAppService 未接，恒未知）`;
+  const base = `定时扫描：${scan} · 常驻服务：${web} · 登录项：${login}`;
+  // 「SMAppService 未接」是实现注脚：打包态不展示（登录项未知如实保留），
+  // 开发态保留原文案供排障。
+  return isPackagedMode() ? base : `${base}（SMAppService 未接，恒未知）`;
 }
 
 /** 开关的呈现态由系统状态推导：两标签 enabled → on；两标签 disabled → off；

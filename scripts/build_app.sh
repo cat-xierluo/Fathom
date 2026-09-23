@@ -90,7 +90,10 @@ APP_BUNDLE="$BUNDLE_DIR/macos/Fathom.app"
 # ISS-041A：DMG 文件名含发行版本（Fathom_0.3.0_aarch64.dmg 形态）。原先
 # 硬编码 0.3.0 会在版本 bump 后 glob 落空、脚本恒报 dmg 失败；改为从单一
 # 版本源 fathom/__init__.py 读取（与 check_version_consistency.sh 同源）。
-APP_VERSION="$(grep -E '^__version__[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' "$ROOT/fathom/__init__.py" | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1')"
+# 注：v0.3.0 首跑曾因本行末尾丢失 ")" 闭合（写入缺陷，bash 将后续行拼入
+# 未闭合的命令替换，sed 收到切碎参数而挂）；本行为修复版，与 release.yml
+# 版本门同款（相对路径+完整闭合），依赖上方 cd "$ROOT" 保证 CWD。
+APP_VERSION="$(grep -E '^__version__[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' fathom/__init__.py | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')"
 [ -n "$APP_VERSION" ] || { echo "[build_app] FAIL：读不出 fathom/__init__.py 的 __version__" >&2; exit 1; }
 DMG_BUNDLE_GLOB="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "Fathom_${APP_VERSION}*.dmg" 2>/dev/null | head -1 || true)"
 

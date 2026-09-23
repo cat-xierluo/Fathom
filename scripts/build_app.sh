@@ -19,6 +19,13 @@
 #     无 updater 签名私钥（DEC-022 + G10 用户决策门未过），保留 true 会让
 #     tauri build 在生成 .sig 时因缺 TAURI_SIGNING_PRIVATE_KEY 失败。
 #     恢复 updater 产物时移除该覆盖（见 .github/workflows/release.yml）。
+#   FATHOM_BUILD_VENV : 非空时作为 build_helper.sh 的第一参数（构建 venv
+#     根）传入。发行 CI 用它把 build_app.sh 内部对 build_helper.sh 的
+#     第二次调用指向前置「冻结 helper」步骤已就绪的
+#     $RUNNER_TEMP/fathom-venv——此前内部调用无参，会退回仅存在于本机
+#     的缺省 apps/desktop/experiments/iss029/.venv-build（不在 git，
+#     干净 runner 上必 BLOCKED exit 3，reviewer B-1 / ISS-041A repair1）。
+#     unset 时内部调用保持无参（缺省路径），本地既有工作流零变化。
 #
 # 失败语义：
 #   - helper 冻结失败 → 整体退出 1
@@ -41,7 +48,15 @@ DMG_RC=0
 log_step() { echo ""; echo "=== $* ==="; }
 
 log_step "1/3 helper 冻结"
-bash "$ROOT/scripts/build_helper.sh" 2>&1 | tee "$LOG_DIR/helper.log"
+# ISS-041A repair1：FATHOM_BUILD_VENV 透传。非空时作为第一参数传给
+# build_helper.sh（CI 已就绪的构建 venv），避免干净 runner 上无参调用
+# 退回不在 git 的 iss029 缺省 venv 而 BLOCKED exit 3（reviewer B-1）；
+# unset 时保持无参调用，缺省行为与历史版本逐字一致（本地工作流零变化）。
+if [ -n "${FATHOM_BUILD_VENV:-}" ]; then
+  bash "$ROOT/scripts/build_helper.sh" "$FATHOM_BUILD_VENV" 2>&1 | tee "$LOG_DIR/helper.log"
+else
+  bash "$ROOT/scripts/build_helper.sh" 2>&1 | tee "$LOG_DIR/helper.log"
+fi
 HELPER_RC=${PIPESTATUS[0]}
 if [ "$HELPER_RC" -ne 0 ]; then
   echo "[build_app] FAIL：helper 冻结退出码 $HELPER_RC" >&2

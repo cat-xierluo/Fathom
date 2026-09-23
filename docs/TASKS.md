@@ -1,16 +1,16 @@
 # Fathom 当前任务源
 
-更新：2026-09-23。接手核对基线 `696f3b36cea3fc6bf116a0cded4ea7e560173deb`（PR #152：ISS-040C 生产更新协调接线；其前 #150=ISS-080 计数同步、#151=Wave39 回写；方向复审基线 `f8a64b1`）。执行前刷新远端与 worktree；索引是任务状态唯一来源，卡内有日期的旧派发、旧 READY、旧“下一步”均为历史证据。
+更新：2026-09-23。接手核对基线 `c46084d737ddc14fc72303008cecb4fa86fd7a49`（PR #153：Wave40 收口；其前 #152=ISS-040C 生产更新协调接线；方向复审基线 `f8a64b1`）。执行前刷新远端与 worktree；索引是任务状态唯一来源，卡内有日期的旧派发、旧 READY、旧“下一步”均为历史证据。
 
 ## 当前接手摘要
 
 - **当前目标**：收敛 M2 的 v0.3.0 可安装候选，补齐 M1 剩余原生体验门。M0 已有验收记录；M1/M2 仍未整体完成。已确认的五页 UI、R3 视觉及双形态图标继续使用；M4 智能解释、清理、扫描器重写不进入本轮。
 - **已合并能力**：扫描/数据集/设置持久化、正式 UI 和 arm64 未签名包已有实现；近期新增 ISS-010B 后台注册桥（#131/#133）、ISS-016B 计划漂移检测与经确认重装（#139）、ISS-040B 更新插件/确认流/状态（#143）、ISS-078 候选登记工具（#140）、ISS-030A 隔离升级协议夹具（#146）、ISS-080 云端 pytest 计数同步（#150）、ISS-040C updater_install 生产升级协调接线（#152）。这些接线不再重新实施。ISS-001 已有两个有效定时日期与首份真实对比日报；扫描观察见原卡，不在摘要重复流水。
 - **生产更新协调接线已并入主干**：ISS-040C（#152）把 `updater_install` 接入六步生产协调（停写/退出/一致备份/journal/进度取消/回滚），进度回调与取消边界兑现；reviewer 七条非阻断观察（journal 自动清除文案、租约释放窗口、旧 bundle 恢复缺位文案、子进程无超时、无重入门、计数同步〔已收口〕、pid TOCTOU）已登记，其中涉实机的留 ISS-040/030 的 G10 关注项。剩余为实测与真机门：安装升级实测（G10）、ISS-010 的非默认运行根/唯一 owner/睡眠重启合同、ISS-037 声明缺项、ISS-041 双架构。
-- **最新合并与在途**：ISS-080 由 #150、Wave39 回写 #151、ISS-040C 由 [PR #152](https://github.com/cat-xierluo/fathom/pull/152) 合并为 `696f3b3`（合并后 main 全量：pytest 685/cargo test 57/版本一致 ok，前端零改动故浏览器检查未复跑）。2026-09-23 两轮手动 PM 会话（用户直接指令）完成派发与收口；期间 Orca runtime 中途重启一次（a85a023e→be2406ff），040C reviewer 的 worker_done 送达通道断裂（ORCA_COMPLETION_AUTHORITY_INVALID，worker 按协议停止留档），PM 以产物验收并披露；该事件也解释了 cron 心跳 20 轮零动作（coordinator 绑定随重启失效）。PM 心跳已随本轮收口恢复。
-- **当前接续顺序**：①领取 ISS-081（通知语义测试隔离，满盘机器门禁假红修复，READY）；其后安装升级实测（G10 真机门：生产更新源 keypair 与测试窗口由用户决定，PM 亲自执行，不自动）；②按条件补 ISS-028/077 前台验证与 ISS-002/003/008/009 的同候选实测，ISS-010/016 的 G8/G9 在隔离测试账户完成；③ISS-037 保持 PAUSED，恢复前须有明确重派决定；ISS-041 补原生 Intel 环境、双架构产物与 draft 流程，最后 ISS-030 实包恢复、ISS-033 外部验收。未备齐实现合同不自动派业务代码；没有合法 READY 时报告具体缺口，不以重复文档/夹具或视觉小修维持派发。
+- **最新合并与在途**：ISS-080 由 #150、Wave39 回写 #151、ISS-040C 由 [PR #152](https://github.com/cat-xierluo/fathom/pull/152) 合并为 `696f3b3`（合并后 main 全量：pytest 685/cargo test 57/版本一致 ok，前端零改动故浏览器检查未复跑）。2026-09-23 两轮手动 PM 会话（用户直接指令）完成派发与收口；期间 Orca runtime 中途重启一次（a85a023e→be2406ff），040C reviewer 的 worker_done 送达通道断裂（ORCA_COMPLETION_AUTHORITY_INVALID，worker 按协议停止留档），PM 以产物验收并披露；该事件也解释了 cron 心跳 20 轮零动作（coordinator 绑定随重启失效）。PM 心跳已随本轮收口恢复（当前为待命只读 cron，每 20 分钟零副作用简报）。**2026-09-23 21:45 前后 Wave41 手动 PM 会话接管**（用户直接指令：确认 Actions 额度恢复、要求尽快推进 GitHub Actions 发版、license/开源声明参照 Folia 项目）：CI workflow 曾按 DEC-021 恢复命令重新启用（state=active），但 PR #154/#155 触发的 4 个 run 全部 job 在执行任何步骤前被拒、无日志——**额度实测未恢复（NOT_RUN）**，CI 已再次停用止损（详见 DEC-024 验证段）；ISS-037 经用户授权解除暂停、按 DEC-024 Folia 基线重派 repair3；登记并派发 ISS-041A（arm64 未签名 draft Release CI，额度恢复即可用，实现不受阻断）。#154 已登记 ISS-081（通知语义测试隔离，满盘机器门禁假红修复，READY）。
+- **当前接续顺序（Wave41 修订，融合 #154 的 ISS-081 登记）**：①ISS-037 repair3（已派发：修 certifi/pluggy 许可证值互换并补校验器值级核对，按 DEC-024 Folia 基线收口）；②ISS-041A arm64 未签名 draft Release CI（已派发：release.yml 与候选校验脚本）；③ISS-081 通知语义测试隔离（READY，与①②文件域不冲突，按 worker 空位领取）；④上述合并后由 PM 在 `v*` tag 首跑 draft Release 实证（额度与产物实测一并覆盖）；⑤G10 安装升级实测与生产 updater keypair 决策（用户门，PM 亲自执行不自动）；⑥按条件补 ISS-028/077 前台验证与 ISS-002/003/008/009 的同候选实测，ISS-010/016 的 G8/G9 在隔离测试账户完成；⑦ISS-041 父卡余项（Intel 双架构、updater 产物与 latest.json、publish 人工门），最后 ISS-030 实包恢复、ISS-033 外部验收。未备齐实现合同不自动派业务代码；没有合法 READY 时报告具体缺口，不以重复文档/夹具或视觉小修维持派发。
 - **原生与发行边界**：ISS-028 余 14 项、ISS-077 Esc/Tab 端到端等待已允许的前台窗口；用户在线期间 worker 不抢前台。G1–G13 操作步骤见 [实测清单](plans/2026-09-19-release-live-verification-prep.md)，候选按 ISS-078 绑定 commit/DMG/helper 指纹；切片 DONE 和脚本 `PASS_WITH_NOT_VERIFIED` 都不能关闭父卡。
-- **已确认取舍与证据**：DEC-022 仅延期 Apple 签名/公证；updater 签名、双架构、保留 quarantine 的真实下载及公开发布人工门保留。开发公钥/占位更新地址已入配置，生产更新源未启用。本地与云端 pytest 配置已同步 **685**（ISS-040C 后；#152 合并 main 全量复跑 685 passed），cargo test **57**，既有记录前端 105、浏览器 39。扫描超时根因仍未定位，成功次数不能证明资源竞争是原因。
+- **已确认取舍与证据**：DEC-022 仅延期 Apple 签名/公证；updater 签名、双架构、保留 quarantine 的真实下载及公开发布人工门保留。开发公钥/占位更新地址已入配置，生产更新源未启用。DEC-024（2026-09-23）：Actions 额度实测未恢复（4 run 步骤前被拒记 NOT_RUN，CI 已再停用止损）；开源声明按 Folia 基线（单 Apache-2.0 LICENSE + 无已知事实错误，UNKNOWN 不阻断）；首轮发行切片=ISS-041A arm64 未签名 draft。本地与云端 pytest 配置已同步 **685**（ISS-040C 后；#152 合并 main 全量复跑 685 passed），cargo test **57**，既有记录前端 105、浏览器 39。扫描超时根因仍未定位，成功次数不能证明资源竞争是原因。
 
 ## 领取与完成规则
 
@@ -96,11 +96,12 @@
 | ISS-034 | 本地目录与依赖用途识别 | P2 | M4 | DEFERRED | ISS-021、ISS-025、ISS-032 |
 | ISS-035 | 可选 Agent Runtime 与解释合同 | P2 | M4 | DEFERRED | ISS-022、ISS-025、ISS-034 |
 | ISS-036 | 目录打标与智能变化解读 | P2 | M4 | DEFERRED | ISS-028、ISS-035 |
-| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | PAUSED | ISS-029、ISS-031、ISS-045 |
+| ISS-037 | 版本、依赖来源与开源准备 | P1 | M2 | IN_PROGRESS | ISS-029、ISS-031、ISS-045 |
 | ISS-038 | PM 自动推进与监督接续 | P1 | M0 | DONE | — |
 | ISS-039 | 扫描结果合同与安全浏览器夹具兼容 | P0 | M0 | DONE | ISS-018、ISS-022 |
 | ISS-040 | 应用内更新与双架构更新清单 | P1 | M2 | BLOCKED | ISS-009、ISS-010、ISS-028、ISS-031 |
 | ISS-041 | 双架构签名、公证与 Release CI | P1 | M2 | BLOCKED | ISS-037、ISS-040 |
+| ISS-041A | arm64 未签名 draft Release 工作流与候选校验（ISS-041 首轮切片） | P1 | M2 | IN_PROGRESS | ISS-031 |
 | ISS-042 | 修复父子变化折叠的 topn 提前截断 | P0 | M0 | DONE | — |
 | ISS-043 | 同步 pytest 精确数量门禁 | P0 | M0 | DONE | — |
 | ISS-044 | 同步扫描协调后的 pytest 精确门禁 | P0 | M0 | DONE | ISS-020 |
@@ -1391,6 +1392,8 @@
 > 2026-09-19 合并后复审：仅重开发行来源/notice 收口；版本规则、已选 Apache-2.0 与贡献说明不重做。核对实际锁定及随包依赖，补齐可验证的必要版权/许可文本与来源，明确开发工具和随包资源边界；未核实项保留 UNKNOWN 并说明发行影响，不能先勾“齐全”。同步 THIRD_PARTY_NOTICES 与依赖清单的过期版本/占位图标描述；深潭 App 图标以 assets/brand/README.md 的 image_gen 原稿与处理链为来源，不改写成自绘几何或扩大权利保证。以最终候选的随包内容核对，必要输入缺失时记录具体依赖，不购买或发布资产。
 >
 > **2026-09-20 暂停登记（Wave33 验收链，PM）**：本轮对框 2 派发三轮（初版 `f6d6bf6` → repair1 `a889a2e` → repair2 `66c7d6c`，分支均在远端、**均未合并**）。每轮交付各有真实价值但 PM 复核各发现一项缺陷：① notices 把 `icon.png` 误记为脚手架占位（与 #117/e033ef6 后的 main 现实相反，repair1 已修）；② 17 条 Python UNKNOWN 指向不存在的 §6 且校验器漏解析 PEP 639 `License-Expression`（repair2 已修，含三级许可证解析与章节引用存在性校验）；③ repair2 引入 certifi/pluggy 许可证值互换（本地 METADATA 实为 certifi=MPL-2.0、pluggy=MIT，表内相反），且校验器无许可证值级交叉核对故仍退出 0——此缺陷**未修**。修复 episode 预算（2）耗尽，按失败策略暂停本卡：框 2 维持未勾、状态 PAUSED；最终 head `66c7d6cfa9248fd5f2e270fe560cc85eb8db3c7f` 保留在 `origin/iss-037-repair2-licenseexpr`（含前两轮全部成果，可续用）。解除路径：PM 重派第 3 轮（超出默认预算，需明确授权）修复③并给校验器补值级核对，或以候选构建实机核对口径另立收口切片。
+>
+> **2026-09-23 解除暂停（Wave41，用户授权）**：用户指令 license/开源声明部分「直接参照 Folia 项目」——Folia 公开仓库仅单个 Apache-2.0 LICENSE，无逐项第三方声明文件（DEC-024）。据此修订框 2 收口口径为「**无已知事实错误**」（许可证值与本地包 METADATA 一致等事实核对通过）；UNKNOWN 项保留并说明、不作为阻断项，不以逐项消除 UNKNOWN 为验收。第 3 轮 repair3（超出默认预算，经用户明确授权）基于 repair2 head `66c7d6c` 修 certifi/pluggy 值互换并补校验器值级交叉核对，分支 `iss-037-repair3-license-valuecheck`，2026-09-23 已派发。
 
 - **目标**：建立分发组件的单一版本源与来源清单，为 release 构建和用户选择开源许可准备具体方案。
 - **范围**：版本定义、依赖/资源清单、拟新增 LICENSE/NOTICE/贡献与安全说明。
@@ -1448,6 +1451,8 @@
 ### ISS-041 · 双架构签名、公证与 Release CI
 
 > 生效范围（DEC-022）：下文 Apple Developer ID、公证、stapling 相关原始条目延期，不能勾为已通过，也不作为当前 v0.3.0 内部未签名候选的阻断项。双架构、自包含、版本、checksum、updater 签名、quarantine 下载首启及用户批准公开仍是门槛；公开前是否恢复 Apple 签名由用户另定。
+>
+> **2026-09-23 首轮发行切片（Wave41，用户指令+DEC-024）**：为尽快跑通 GitHub Actions 发版拆出 ISS-041A：仅 arm64、未签名、tag 触发、保持 draft，产物 DMG+checksums.txt；updater 产物（.tar.gz/.sig）、latest.json、x86_64 双架构与 publish/公开可见性切换仍留本卡后续轮次；生产 updater keypair 仍为 G10 用户决策门，workflow 不得引用任何 TAURI_SIGNING_* secret。
 
 - **目标**：从固定提交生成 Apple Silicon 与 Intel 的自包含、Developer ID 签名、Apple 公证并 stapled 的 v0.3.0 候选包，以 draft Release 供最终验收。
 - **范围**：`.github/workflows/release.yml`、发行校验脚本、macOS entitlements/iconset、Tauri bundle/updater artifact 配置；不改业务功能。
@@ -1459,6 +1464,19 @@
   - [ ] draft Release 产物、架构、checksum、updater signature 和 manifest 交叉核对；任一缺失保持 draft/失败
   - [ ] 从 GitHub 实际下载、保留 quarantine 的干净账户能启动；公开 Release 与仓库可见性只在用户审阅具体候选后执行
 - **证据/接续**：NOT_VERIFIED。所需凭据名称与保管规则见 v0.3 发行方案；当前仓库 Secrets 为 0，本机 `security find-identity -v -p codesigning` 为 0 个有效身份，未找到 `FathomNotary` keychain profile。
+
+### ISS-041A · arm64 未签名 draft Release 工作流与候选校验（ISS-041 首轮切片）
+
+- **状态**：IN_PROGRESS（P1/M2）；登记：2026-09-23 PM（Wave41，用户指令「尽快推进 GitHub Actions 发版」，范围见 DEC-024）。前置 ISS-031（CI 版本钉定惯例）；父卡 ISS-041 的双架构/updater/publish 留后续轮次，切片 DONE 不关闭父卡。
+- **目标**：push tag `v*` 时在 arm64 原生 macOS runner 构建未签名 DMG，连同 checksums 上传 draft Release（不自动 publish），并交付可本地复跑的候选校验脚本。
+- **范围**：拟新增 `.github/workflows/release.yml`、`scripts/verify_release_candidate.sh`；复用既有 helper 冻结链、`scripts/check_version_consistency.sh`、`scripts/verify_app_bundle.sh`；不改业务功能。
+- **实施边界**：未签名（DEC-022 延续）；不引用任何 signing/updater secret；`createUpdaterArtifacts` 在构建时以 config 覆盖关闭（恢复 updater 时改回并接 G10 keypair，workflow 内注释标明）；第三方 `uses:` 固定完整 commit SHA（同 ci.yml 口径）；版本门 fail-closed（tag↔版本源不一致须在上传前失败）；产物只进 draft，publish 与转公开仅用户人工门。
+- **验收**：
+  - [ ] tag 触发构建在 arm64 runner 成功产出 DMG+checksums 并挂到 draft Release
+  - [ ] 版本门负向探针：tag 与版本源不一致时构建/上传失败
+  - [ ] `verify_release_candidate.sh` 对候选跑通（sha256、DMG 结构、版本一致）
+  - [ ] workflow 端到端首跑由 PM 在 tag 上执行并记录；worker 静态验证+本地分段之外的 NOT_VERIFIED 如实标注
+- **证据/接续**：2026-09-23 已派发（分支 `iss-041a-release-ci-arm64`）；首跑 tag 候选与实测记录由 PM 收口时回写本卡。
 
 ### ISS-033 · 外部内测与开放发布验收
 

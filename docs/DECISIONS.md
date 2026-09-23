@@ -5,6 +5,18 @@
 
 ---
 
+### [DEC-024] - 2026-09-23 - Actions 额度恢复与首轮 GitHub Actions 发版范围：arm64 未签名 draft；开源声明按 Folia 基线收口
+
+**背景**：ISS-040C 合并（#152）与 Wave40 收口（#153）后代码队列无 READY。用户 2026-09-23 晚间直接指令：①确认 GitHub Actions 额度已恢复，要求尽快推进 GitHub Actions 发版；②license/开源声明部分「直接参照 Folia 项目」。参照对象为同开发者公开仓库 cat-xierluo/Folia：仅单个 Apache-2.0 LICENSE（Fathom 经 DEC-020 已同款落地），无逐项第三方声明文件，以未签名 DMG 公开分发（截至 v0.8.1）。
+
+**决策**：①按 DEC-021 预留恢复命令经 API 将 `CI` workflow（id 356941919）重新启用；②ISS-037 验收框 2 口径修订为「无已知事实错误」：许可证值等须与本地包元数据一致，UNKNOWN 项保留说明、不作为阻断项（超出默认修复预算的第 3 轮经用户明确授权重派，续用 repair2 分支成果）；③ISS-041 拆出首轮切片 ISS-041A：仅 arm64、未签名（DEC-022 延续）、tag 触发、draft Release（DMG+checksums.txt）；updater 产物/latest.json、x86_64 双架构、publish 与仓库转公开仍留父卡及人工门——生产 updater keypair（G10）未决策前 workflow 不得引用任何 TAURI_SIGNING_* secret。转公开时机仍由用户另行决定，本决策不改变该人工门。
+
+**验证**：enable 执行后 API 返回 `state=active`（2026-09-23 实测）。**额度实测结论（同日晚间）：未恢复**——恢复后 PR #154/#155 触发的 4 个 run 全部 job 在执行任何步骤前失败、无任何步骤记录与日志，与 DEC-021 记录的 billing 拒绝模式一致，按 DEC-018 记 `NOT_RUN`。CI 已再次停用止损（同命令可逆）；用户侧确认额度真实生效后重执行 enable 命令即可，发行工作流（ISS-041A）实现不受影响、额度恢复即可用。Folia 基线以该仓库实地核对（LICENSE 单文件、无 NOTICE/THIRD_PARTY 文件、README 一行许可声明、Release 公开未签名分发）。
+
+**影响**：ISS-037 转 IN_PROGRESS（repair3 在途）；新增 ISS-041A 并派发（在途）；README/TESTING 的「Actions 停用」表述更新；ISS-041/030/033 父卡验收矩阵不变，切片 DONE 不关闭父卡。
+
+---
+
 ### [DEC-023] - 2026-09-19 - Fathom 品牌双形态体系：层叠深潭为 App 图标，深度环用于界面小尺寸（当日晚间修订）
 
 **背景**：ISS-045 自项目早期就是 Logo 人工门（仓库外 A/B/C 概念板仅供选择，PM 曾推荐「A 深度环骨架＋B 一层轻微不规则等深线」混合）。用户 2026-09-18 评审产品 UI 选定 R3 测深视觉签名方向（ISS-072 已把海沟蓝/深度环/等深线落进界面），2026-09-19 指令「这个 logo 也是要合并到主分支，然后运用这个 logo 去编译软件的」确认深度环为正式 Logo，人工门关闭。

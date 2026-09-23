@@ -855,7 +855,20 @@ class TestISS003ANotificationSemantics:
 
     改动前基线（复现已记录进 RESULT）：首扫与中断完全不发通知；partial
     通知标题恒为"扫描完成"且正文无覆盖缺口信息。
+
+    ISS-081：本类用例的通过与否不得依赖宿主磁盘剩余空间。真实磁盘在
+    FREE_ALERT_GB（10 GiB）阈值附近波动时，真实空间告警通知会先于/取代
+    首扫与完成标题，使满盘机器门禁假红（main `c46084d` 复现：宿主剩
+    9.9 GiB 时两条用例断言得到 TITLE_ALERT）。因此 `_runtime` 把
+    `scanner._volume_stat` 固定为剩余充裕的受控输入：statvfs→volume_stats
+    →notify 的生产链路照常运行，只是输入不再读宿主磁盘。空间告警本身
+    的真实链路由本类 test_low_free_volume_swaps_title_to_alert_with_sound
+    用受控低剩余单独钉住，不因隔离丢覆盖。
     """
+
+    # 剩余充裕的受控卷输入：远离告警阈值，断言只针对三态语义本身。
+    PINNED_TOTAL_BYTES = 500 * 1024**3
+    PINNED_FREE_BYTES = 400 * 1024**3
 
     @staticmethod
     def _runtime(tmp_path, monkeypatch, root_name="root"):
@@ -867,6 +880,14 @@ class TestISS003ANotificationSemantics:
         monkeypatch.setattr(config, "REPORTS_DIR", runtime / "reports")
         monkeypatch.setattr(config, "LOGS_DIR", runtime / "logs")
         monkeypatch.setattr(config, "DEFAULT_ROOT", root)
+        # ISS-081：固定空间告警输入，隔离宿主磁盘状态（见类 docstring）。
+        monkeypatch.setattr(
+            scanner, "_volume_stat",
+            lambda _root: (
+                TestISS003ANotificationSemantics.PINNED_TOTAL_BYTES,
+                TestISS003ANotificationSemantics.PINNED_FREE_BYTES,
+            ),
+        )
         return runtime, root
 
     def test_first_scan_notifies_first_snapshot_not_done(
@@ -920,6 +941,39 @@ class TestISS003ANotificationSemantics:
         assert "部分覆盖（2 处权限受限）" in done_body
         # 不夸大：不得声称完整覆盖。
         assert "完整" not in done_body
+
+    def test_low_free_volume_swaps_title_to_alert_with_sound(
+        self, tmp_path, monkeypatch, _notification_recorder
+    ):
+        """ISS-081：受控低剩余经真实链路触发空间告警，不因隔离丢该覆盖。
+
+        与本类其余用例相反，这里把 `_volume_stat` 固定为低于
+        config.FREE_ALERT_GB 的剩余（5 GiB < 10 GiB），其余照常走
+        `run_scan` 真实生产路径：告警判定、标题、声音与落库值都由协调器
+        →scanner→volume_stats→notify 链路真实产生，输入固定故不随宿主
+        磁盘波动。notify 纯函数层的告警语义另由 test_notification.py
+        用合成 volume_stats 覆盖，两层互不替代。
+        """
+        _runtime_obj, root = self._runtime(tmp_path, monkeypatch)
+        low_free = 5 * 1024**3
+        monkeypatch.setattr(
+            scanner, "_volume_stat", lambda _root: (500 * 1024**3, low_free)
+        )
+        _rid, result = scan_coordinator.run_scan(source="cli", root=root)
+        assert result["notification_status"] == "submitted"
+        assert len(_notification_recorder) == 1
+        title, body, sound = _notification_recorder[0]
+        assert title == notify.TITLE_ALERT
+        assert sound == notify.ALERT_SOUND
+        # 告警只换标题与声音：首扫语义正文与"剩余"事实仍在，不被吞。
+        assert "首次快照已建立" in body and "剩余 5.0 GB" in body
+        # 受控输入确实经真实链路落库，而不是绕过 volume_stats 直连 notify。
+        conn = db.connect()
+        try:
+            row = conn.execute("SELECT free_bytes FROM volume_stats").fetchone()
+            assert row is not None and row["free_bytes"] == low_free
+        finally:
+            conn.close()
 
     def test_timeout_sends_interrupted_notification_never_done(
         self, tmp_path, monkeypatch, _notification_recorder

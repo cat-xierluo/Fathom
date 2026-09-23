@@ -8,7 +8,7 @@
 - **已合并能力**：扫描/数据集/设置持久化、正式 UI 和 arm64 未签名包已有实现；近期新增 ISS-010B 后台注册桥（#131/#133）、ISS-016B 计划漂移检测与经确认重装（#139）、ISS-040B 更新插件/确认流/状态（#143）、ISS-078 候选登记工具（#140）、ISS-030A 隔离升级协议夹具（#146）、ISS-080 云端 pytest 计数同步（#150）、ISS-040C updater_install 生产升级协调接线（#152）。这些接线不再重新实施。ISS-001 已有两个有效定时日期与首份真实对比日报；扫描观察见原卡，不在摘要重复流水。
 - **生产更新协调接线已并入主干**：ISS-040C（#152）把 `updater_install` 接入六步生产协调（停写/退出/一致备份/journal/进度取消/回滚），进度回调与取消边界兑现；reviewer 七条非阻断观察（journal 自动清除文案、租约释放窗口、旧 bundle 恢复缺位文案、子进程无超时、无重入门、计数同步〔已收口〕、pid TOCTOU）已登记，其中涉实机的留 ISS-040/030 的 G10 关注项。剩余为实测与真机门：安装升级实测（G10）、ISS-010 的非默认运行根/唯一 owner/睡眠重启合同、ISS-037 声明缺项、ISS-041 双架构。
 - **最新合并与在途**：ISS-080 由 #150、Wave39 回写 #151、ISS-040C 由 [PR #152](https://github.com/cat-xierluo/fathom/pull/152) 合并为 `696f3b3`（合并后 main 全量：pytest 685/cargo test 57/版本一致 ok，前端零改动故浏览器检查未复跑）。2026-09-23 两轮手动 PM 会话（用户直接指令）完成派发与收口；期间 Orca runtime 中途重启一次（a85a023e→be2406ff），040C reviewer 的 worker_done 送达通道断裂（ORCA_COMPLETION_AUTHORITY_INVALID，worker 按协议停止留档），PM 以产物验收并披露；该事件也解释了 cron 心跳 20 轮零动作（coordinator 绑定随重启失效）。PM 心跳已随本轮收口恢复。
-- **当前接续顺序**：代码队列现无 READY——下一批可自动化项须由实测结果或用户决策产生。①安装升级实测（G10 真机门：生产更新源 keypair 与测试窗口由用户决定，PM 亲自执行，不自动）；②按条件补 ISS-028/077 前台验证与 ISS-002/003/008/009 的同候选实测，ISS-010/016 的 G8/G9 在隔离测试账户完成；③ISS-037 保持 PAUSED，恢复前须有明确重派决定；ISS-041 补原生 Intel 环境、双架构产物与 draft 流程，最后 ISS-030 实包恢复、ISS-033 外部验收。未备齐实现合同不自动派业务代码；没有合法 READY 时报告具体缺口，不以重复文档/夹具或视觉小修维持派发。
+- **当前接续顺序**：①领取 ISS-081（通知语义测试隔离，满盘机器门禁假红修复，READY）；其后安装升级实测（G10 真机门：生产更新源 keypair 与测试窗口由用户决定，PM 亲自执行，不自动）；②按条件补 ISS-028/077 前台验证与 ISS-002/003/008/009 的同候选实测，ISS-010/016 的 G8/G9 在隔离测试账户完成；③ISS-037 保持 PAUSED，恢复前须有明确重派决定；ISS-041 补原生 Intel 环境、双架构产物与 draft 流程，最后 ISS-030 实包恢复、ISS-033 外部验收。未备齐实现合同不自动派业务代码；没有合法 READY 时报告具体缺口，不以重复文档/夹具或视觉小修维持派发。
 - **原生与发行边界**：ISS-028 余 14 项、ISS-077 Esc/Tab 端到端等待已允许的前台窗口；用户在线期间 worker 不抢前台。G1–G13 操作步骤见 [实测清单](plans/2026-09-19-release-live-verification-prep.md)，候选按 ISS-078 绑定 commit/DMG/helper 指纹；切片 DONE 和脚本 `PASS_WITH_NOT_VERIFIED` 都不能关闭父卡。
 - **已确认取舍与证据**：DEC-022 仅延期 Apple 签名/公证；updater 签名、双架构、保留 quarantine 的真实下载及公开发布人工门保留。开发公钥/占位更新地址已入配置，生产更新源未启用。本地与云端 pytest 配置已同步 **685**（ISS-040C 后；#152 合并 main 全量复跑 685 passed），cargo test **57**，既有记录前端 105、浏览器 39。扫描超时根因仍未定位，成功次数不能证明资源竞争是原因。
 
@@ -150,10 +150,22 @@
 | ISS-079 | 近期方向复审与接手上下文收敛 | P1 | M2 | DONE | — |
 | ISS-080 | 同步 ISS-030A 后本地与云端 pytest 计数 | P1 | M0 | DONE | ISS-030A |
 | ISS-040C | 生产更新协调接线：updater_install 六步协议与进度回调（ISS-040 代码切片） | P1 | M2 | DONE | ISS-040B、ISS-030A |
+| ISS-081 | 通知语义测试隔离：固定空间告警输入，满盘机器门禁不假红 | P1 | M0 | READY | — |
 
 ## 任务卡
 
 字段合同：目标 → 范围 → 实施边界 → 验收 → 证据。优先级/阶段/状态/依赖以索引为唯一来源。验收框仅在取得证据后勾选。
+
+### ISS-081 · 通知语义测试隔离：固定空间告警输入，满盘机器门禁不假红
+
+- **状态**：READY（P1/M0）；登记：2026-09-23 PM（Wave40 收口实测发现）。
+- **来源/目标**：`c46084d` 上 `bash scripts/ci_pytest.sh` 出现 683 passed + 2 failed——`tests/test_scan_coordination.py::TestISS003ANotificationSemantics::test_first_scan_notifies_first_snapshot_not_done` 与 `test_partial_scan_notification_notes_coverage_gap`，断言显示首条通知为「Fathom 剩余空间告警」。根因（PM 已核实）：数据卷 100% 满、剩 9.9 GiB < `FREE_ALERT_GB` 默认 10 GiB，真实空间告警通知先于首扫通知注入录制器；同测试集 40 分钟前（剩余 ≥10 GiB）全量 685 全绿。**环境干扰、非代码回归**；但满盘机器正是本产品目标场景，门禁不应随宿主磁盘状态假红。
+- **范围**：`tests/test_scan_coordination.py`（通知语义类用例的隔离改造；方式 worker 定：monkeypatch statvfs/注入 free_bytes/显式关闭空间告警），可新增一条显式空间告警路径用例保住真实覆盖；计数若变同步四处。
+- **验收**：
+  - [ ] 在剩余空间 <10 GiB 的机器上 `bash scripts/ci_pytest.sh` 全绿（本机当前即复现环境，可直接用作反例基线）
+  - [ ] 空间告警的真实路径仍有显式用例覆盖（不因隔离丢覆盖）；不改 `notify.py`/`scan_coordinator.py` 生产语义（确需 test seam 按 ISS-071 先例登记偏离）
+  - [ ] 先红后绿证据；计数同步
+- **证据/接续**：2026-09-23 21:4x PM 复现：`df` 数据卷 Avail 9.9GiB/100%；单测断言原文 `assert 'Fathom 剩余空间告警' == 'Fathom 首次快照已建立'`；`fathom/config.py` `_DEFAULT_FREE_ALERT_GB = 10`；21:0x 同集 685 全绿对照。尚未派发。
 
 ### ISS-040C · 生产更新协调接线：updater_install 六步协议与进度回调（ISS-040 代码切片）
 

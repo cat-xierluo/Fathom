@@ -1,16 +1,16 @@
 # Fathom 当前任务源
 
-更新：2026-09-22。接手核对基线 `f8a64b18d82386f6dc0ba9cf92b111dfc674c148`（PR #148 已合并；代码事实仍为 #147，初始审查固定 `82b0616`）；本次 [方向复审](plans/2026-09-22-context-convergence-audit.md) 接续 [09-19 审查](plans/2026-09-19-pm-progression-audit.md)。执行前刷新远端与 worktree；索引是任务状态唯一来源，卡内有日期的旧派发、旧 READY、旧“下一步”均为历史证据。
+更新：2026-09-23。接手核对基线 `e581cdf2063d7d32ff5fa40dfb33b8d75a949213`（PR #150：ISS-080 云端 pytest 计数同步；其前 #149 为文档回写）；上一轮方向复审基线 `f8a64b1`（PR #148，初始审查固定 `82b0616`）。执行前刷新远端与 worktree；索引是任务状态唯一来源，卡内有日期的旧派发、旧 READY、旧“下一步”均为历史证据。
 
 ## 当前接手摘要
 
 - **当前目标**：收敛 M2 的 v0.3.0 可安装候选，补齐 M1 剩余原生体验门。M0 已有验收记录；M1/M2 仍未整体完成。已确认的五页 UI、R3 视觉及双形态图标继续使用；M4 智能解释、清理、扫描器重写不进入本轮。
-- **已合并能力**：扫描/数据集/设置持久化、正式 UI 和 arm64 未签名包已有实现；近期新增 ISS-010B 后台注册桥（#131/#133）、ISS-016B 计划漂移检测与经确认重装（#139）、ISS-040B 更新插件/确认流/状态（#143）、ISS-078 候选登记工具（#140）、ISS-030A 隔离升级协议夹具（#146）。这些接线不再重新实施。ISS-001 已有两个有效定时日期与首份真实对比日报；扫描观察见原卡，不在摘要重复流水。
-- **不能称为“只剩人工门”**：`updater_install` 仍直接调用插件安装，尚未接入 Fathom 的停写/一致备份/失败恢复协议，下载进度回调也为空；ISS-030A 是测试夹具，不能补足生产接线。ISS-010 的非默认运行根、唯一 owner 与睡眠/重启合同、ISS-037 声明缺项、ISS-041 双架构发行仍须收口。实现缺口和环境缺口分别记入原父卡。
-- **最新合并与在途**：审查中 ISS-030A 已由原 PM 以 #146 → `8f3564d`、#147 → `31396a0` 合并收口，已保留其测试与证据，不再派发该夹具。当前接手先刷新开放 PR/worktree；ISS-079 上下文纠偏已由 #148 合并，本轮不接管运行中的 PM。
-- **当前接续顺序**：①领取 ISS-080 同步本地/云端 pytest 计数；②在 ISS-040/030 原卡内明确生产更新协调的实现合同，先补安全接线及真实模块集成证据，再执行安装升级实测；③按条件补 ISS-028/077 前台验证与 ISS-002/003/008/009 的同候选实测，ISS-010/016 的 G8/G9 在隔离测试账户完成；④ISS-037 保持 PAUSED，恢复前须有明确重派决定；ISS-041 补原生 Intel 环境、双架构产物与 draft 流程，最后 ISS-030 实包恢复、ISS-033 外部验收。未备齐实现合同不自动派业务代码；没有合法 READY 时报告具体缺口，不以重复文档/夹具或视觉小修维持派发。
+- **已合并能力**：扫描/数据集/设置持久化、正式 UI 和 arm64 未签名包已有实现；近期新增 ISS-010B 后台注册桥（#131/#133）、ISS-016B 计划漂移检测与经确认重装（#139）、ISS-040B 更新插件/确认流/状态（#143）、ISS-078 候选登记工具（#140）、ISS-030A 隔离升级协议夹具（#146）、ISS-080 云端 pytest 计数同步（#150）。这些接线不再重新实施。ISS-001 已有两个有效定时日期与首份真实对比日报；扫描观察见原卡，不在摘要重复流水。
+- **不能称为“只剩人工门”**：`updater_install` 仍直接调用插件安装，尚未接入 Fathom 的停写/一致备份/失败恢复协议，下载进度回调也为空；ISS-030A 是测试夹具，不能补足生产接线（**该接线缺口已登记为实现卡 ISS-040C，READY**）。ISS-010 的非默认运行根、唯一 owner 与睡眠/重启合同、ISS-037 声明缺项、ISS-041 双架构发行仍须收口。实现缺口和环境缺口分别记入原父卡。
+- **最新合并与在途**：ISS-030A 已由 #146/#147 合并收口；ISS-079 上下文纠偏已由 #148 合并；ISS-080 已由 [PR #150](https://github.com/cat-xierluo/fathom/pull/150) 合并为 `e581cdf`。2026-09-23 用户直接指令手动 PM 会话推进：PM 心跳 cron 已切只读待命（原文备份 `.git/orchestration/cron-standby-20260923/`，避免双 PM），该会话派发并收口 ISS-080，登记 ISS-040C；cron 的恢复/交接以该证据目录与摘要为准。
+- **当前接续顺序**：①领取 ISS-040C 生产更新协调接线实现卡（合同已备齐，见该卡与 ISS-040 原卡登记）；②040C 合并后核对 ISS-040/030 的产品接线证据，再执行安装升级实测（仍含真机门）；③按条件补 ISS-028/077 前台验证与 ISS-002/003/008/009 的同候选实测，ISS-010/016 的 G8/G9 在隔离测试账户完成；④ISS-037 保持 PAUSED，恢复前须有明确重派决定；ISS-041 补原生 Intel 环境、双架构产物与 draft 流程，最后 ISS-030 实包恢复、ISS-033 外部验收。未备齐实现合同不自动派业务代码；没有合法 READY 时报告具体缺口，不以重复文档/夹具或视觉小修维持派发。
 - **原生与发行边界**：ISS-028 余 14 项、ISS-077 Esc/Tab 端到端等待已允许的前台窗口；用户在线期间 worker 不抢前台。G1–G13 操作步骤见 [实测清单](plans/2026-09-19-release-live-verification-prep.md)，候选按 ISS-078 绑定 commit/DMG/helper 指纹；切片 DONE 和脚本 `PASS_WITH_NOT_VERIFIED` 都不能关闭父卡。
-- **已确认取舍与证据**：DEC-022 仅延期 Apple 签名/公证；updater 签名、双架构、保留 quarantine 的真实下载及公开发布人工门保留。开发公钥/占位更新地址已入配置，生产更新源未启用。最新基线本地 pytest 配置 671、云端配置仍 655（差异归 ISS-080），既有记录前端 105、浏览器 39、cargo test 49；这是既有验证记录，本次未复跑。扫描超时根因仍未定位，成功次数不能证明资源竞争是原因。
+- **已确认取舍与证据**：DEC-022 仅延期 Apple 签名/公证；updater 签名、双架构、保留 quarantine 的真实下载及公开发布人工门保留。开发公钥/占位更新地址已入配置，生产更新源未启用。本地与云端 pytest 配置已同步 **671**（ISS-080，#150，2026-09-23 核对配置未复跑），既有记录前端 105、浏览器 39、cargo test 49。扫描超时根因仍未定位，成功次数不能证明资源竞争是原因。
 
 ## 领取与完成规则
 
@@ -148,11 +148,26 @@
 | ISS-077 | Tauri 壳 WKWebView 疑似不送达 Escape keydown | P2 | M1 | WAITING | ISS-028 |
 | ISS-078 | 发行候选重建登记夹具（076 清单 §6 备选 F2） | P2 | M2 | DONE | ISS-076 |
 | ISS-079 | 近期方向复审与接手上下文收敛 | P1 | M2 | DONE | — |
-| ISS-080 | 同步 ISS-030A 后本地与云端 pytest 计数 | P1 | M0 | READY | ISS-030A |
+| ISS-080 | 同步 ISS-030A 后本地与云端 pytest 计数 | P1 | M0 | DONE | ISS-030A |
+| ISS-040C | 生产更新协调接线：updater_install 六步协议与进度回调（ISS-040 代码切片） | P1 | M2 | READY | ISS-040B、ISS-030A |
 
 ## 任务卡
 
 字段合同：目标 → 范围 → 实施边界 → 验收 → 证据。优先级/阶段/状态/依赖以索引为唯一来源。验收框仅在取得证据后勾选。
+
+### ISS-040C · 生产更新协调接线：updater_install 六步协议与进度回调（ISS-040 代码切片）
+
+- **状态**：READY（P1/M2）；登记：2026-09-23 PM（Wave39；ISS-040 原卡「实施前先补合同」的实现合同落于本卡）。前置 ISS-040B、ISS-030A 均 DONE。真实 HTTPS 源、实机 N→N+1 与 G10 安装实测留父卡（ISS-040/030）。
+- **来源/目标**：ISS-079 复审判定「不能称为只剩人工门」：`apps/desktop/src-tauri/src/lib.rs::updater_install` 直接 `download_and_install`、进度回调为空（`|_, _| {}`）、无安装前停写/旧 helper 退出/SQLite 一致备份/失败恢复接线。本卡把安装入口接入生产升级协调协议，兑现进度与取消边界，使每类失败都回到可运行旧版与旧数据。
+- **范围**：`fathom/upgrade.py`（拟新增：生产升级协调器——停写、退出确认、一致备份、journal、回滚；必须调用真实生产模块：`scan_coordinator.ScanLease`、`fathom.db` 一致备份公共化（现 `_consistent_backup` 为私有）、helper-instance 读取/退出确认；协议步骤语义以 030A 夹具为参照，不得以夹具替代生产入口）、`fathom/cli.py`（新增协调子命令，命名 worker 定；冻结 helper 与生产 CLI 同入口 `main.py`，子命令随打包自然携带）、`apps/desktop/src-tauri/src/lib.rs`（`updater_install` 接线：确认后先经冻结 helper 子命令执行 prepare，再 `download_and_install`，进度回调接 `UPDATER_EVENT`；成功清 journal、失败走回滚）、Rust 单测、pytest 集成测试、计数同步。
+- **接口合同（固定，实现不得偏离）**：①`updater_install(confirmed=true)` 先调 prepare：非阻塞 `ScanLease` 获取——被在途扫描持有时明确拒绝（可读失败态+稍后重试提示），绝不终止在途扫描；②旧 helper 优雅退出：经 helper-instance pid 请求退出并确认端口释放、锁空闲；超时→中止→回滚（恢复旧 helper 运行）；③SQLite 一致备份：checkpoint + backup API + 完整性校验（禁止文件拷贝）；失败→中止→回滚；④journal 落盘：半升级态可检测（030A `detect_upgrade_state` 语义的生产化）；⑤`download_and_install`：进度回调映射 `UPDATER_EVENT`（downloading 态含 downloaded/total）；下载阶段允许取消，进入安装后不可取消且文案明确；⑥成功：journal 清除、候选清空、重启仍走 `updater_restart` 独立确认（不静默、不自动重启）；新版本启动后握手失败的检测与恢复经 journal 判定路径。
+- **验收**：
+  - [ ] 集成验证经生产更新协调入口（外部下载/系统动作注入）覆盖五场景：正在扫描、旧 helper 不退出、备份失败、安装失败、新 helper 握手失败——全部回到可运行旧版与旧数据，不留半升级态
+  - [ ] 进度事件合同钉住（downloading 含 downloaded/total）；取消边界按上述合同；minisign 验签不可关闭、恰 3 权限 ACL、不静默原则均不回退
+  - [ ] 全程隔离（tmp 运行根 + fake N/N+1 形态），不触生产库/生产 PID/真实 `~/Library`；冻结 helper 侧子命令有被生产入口真实调用的证据（非仅 Python 层 fake）
+  - [ ] Rust `--locked --offline` 门禁与 scoped pytest 绿；计数同步四处
+- **实施边界**：不改 `scan_coordinator` 锁语义、不改 schema、不新增 Rust crate（Rust 侧仅接线与事件）；前端仅消费既有更新状态区（如需进度展示改 `settings.js` 并同步前端检查数）；GUI 实机更新流由 PM 亲自执行，worker 交代码+单测+注入测试。本卡 DONE 支撑 ISS-040 验收框 3 的「生产入口」部分，但不关闭父卡（G10 实机门仍在）。
+- **证据/接续**：合同事实核对（2026-09-23 PM）：`lib.rs:661`（updater_install 现状）、`lib.rs:693`（空进度回调）、`fathom/db.py:420`（`_consistent_backup`）、`fathom/scan_coordinator.py`（ScanLease）、`apps/desktop/src-tauri/src/helper.rs`（instance 读取/退出路径）、`scripts/build_helper.sh`（冻结入口=生产 CLI）。尚未执行。
 
 ### ISS-079 · 近期方向复审与接手上下文收敛
 
@@ -170,14 +185,15 @@
 
 ### ISS-080 · 同步 ISS-030A 后本地与云端 pytest 计数
 
+- **状态**：DONE（P1/M0，2026-09-23；[PR #150](https://github.com/cat-xierluo/fathom/pull/150) squash 合并为 main `e581cdf2063d7d32ff5fa40dfb33b8d75a949213`，worker head `3bca4bc3ed28abe0722aca0f4656dca9c4e30ca8`）。审查方式：单文件配置同步（+5/−4、零生产逻辑与测试语义），按 ISS-058/027 波先例由 PM 直接审阅替代独立 reviewer；PM 未改任何业务文件。
 - **来源/目标**：ISS-079 复审中主干新增 #146/#147；`31396a0` 的 `scripts/ci_pytest.sh` 默认 671，但 `.github/workflows/ci.yml` 的 `EXPECTED_PYTEST_PASSED` 与步骤名仍 655。CI 当前停用不代表配置可保持分叉，恢复后会误拒绝正确通过数。
 - **范围**：`.github/workflows/ci.yml` 的 pytest 计数说明、环境值和步骤名，以及本卡/TESTING 的同步记录。不得修改测试断言、减少测试或恢复 CI。
-- **实施边界**：先刷新最新 main；以已合并测试集合和本地门禁为依据，核对新增 16 项后的总数，再同步云端同口径值。ISS-030A 的测试与既有通过记录保留；本次文档审计只发现并登记，未改 CI 配置。
+- **实施边界**：先刷新最新 main；以已合并测试集合和本地门禁为依据，核对新增 16 项后的总数，再同步云端同口径值。ISS-030A 的测试与既有通过记录保留。
 - **验收**：
-  - [ ] 本地默认值、云端环境值与步骤名一致，保留与新增 16 项对应的可复核依据
-  - [ ] 差异仅为计数/说明同步，不修改产品、测试语义、CI 启停或权限
-  - [ ] 固定候选经独立复核；验证依据区分收集数量与实际通过数，不把 `--collect-only` 称为全量通过
-- **证据**：`31396a0` 静态比对：`scripts/ci_pytest.sh` 默认 671；`.github/workflows/ci.yml` 环境值与步骤名 655。030A 运行记录见原卡/#146/#147；本卡尚未执行。
+  - [x] 本地默认值、云端环境值与步骤名一致，保留与新增 16 项对应的可复核依据 —— env `EXPECTED_PYTEST_PASSED: "671"`（ci.yml:44）、步骤名「pytest（断言 671 项通过）」（ci.yml:80）、注释与 `ci_pytest.sh` 同口径：671 = 655 + 16（ISS-030A），注明 655 已含 ISS-040B +8、依据 #146/#147 收口 PM 全量复跑 671 passed
+  - [x] 差异仅为计数/说明同步，不修改产品、测试语义、CI 启停或权限 —— diff 仅 `.github/workflows/ci.yml`（+5/−4）；触发/权限/`concurrency` 未动；CI 保持 `disabled_manually`（DEC-021）
+  - [x] 固定候选经独立复核；验证依据区分收集数量与实际通过数 —— PM 在 worktree 独立复跑三条冻结 grep 全 exit 0；通过数为 #146/#147 记录的实际通过数（PM 全量复跑 671 passed），本次未运行 `--collect-only`、无收集数冒充通过数
+- **证据/接续**（2026-09-23，Wave39 手动 PM 会话）：worker `iss-080-r1`（claude-code/GLM lane；dispatch `ctx_1844fbe4db55`、run `run_0645af930625`）交付分支 `iss-080-ci-pytest-sync`，safe-push 校验通过。PM 验收链：派发价值门 ok → worker-value-postflight ok（资产匹配、无越界文件、3/3 验证证据、head 一致）→ pr-audit decision=create（无重复 PR）→ #150 squash 合并核实 merged=true。合并后 main 静态核对仅 ci.yml 9 行；无测试/代码文件变化，全量 pytest 未复跑（无新信号，671 依据 #147 记录）。云端 job 仍 `NOT_RUN`（CI 停用态），恢复后即为同口径。PM 心跳本轮切待命（备份 `.git/orchestration/cron-standby-20260923/`），本卡由用户直接指令的手动 PM 会话派发收口。
 
 ### ISS-074 · PM 推进审查与权威上下文校正
 
@@ -1402,6 +1418,8 @@
 > **2026-09-22 静态复审**：ISS-040A/040B 已合并清单工具、插件与最小权限、检查/确认安装/确认重启入口；生产 endpoint 仍为占位。**尚有产品实现缺口，不只是 G10 人工环境**：`src/lib.rs::updater_install` 直接 `download_and_install`，无安装前停写/旧 helper 退出/SQLite 一致备份/失败恢复接线；进度回调为空，安装中进度/取消合同未兑现。`updater_restart` 的退出回收不等于安装前协调。由本卡承接产品接线，ISS-030 承接恢复与实包证据；ISS-030A 只能贡献夹具证据。现有基础握手与 schema 备份工具不证明更新入口已经调用它们。
 >
 > **实施前先补合同**：固定更新与扫描/服务 owner 交接顺序、失败后旧 app/helper/数据库恢复路径、进度/取消边界及要调用的生产接口，再拆聚焦实现卡。集成验证必须经过生产更新协调入口（外部下载/系统动作可注入），覆盖正在扫描、旧 helper 不退出、备份失败、安装失败、新 helper 握手失败；单独 fake 六步全绿不能勾选本卡第 3 框。G10 检查/离线态可按条件先验，安装部分须等实现接线满足。
+>
+> **2026-09-23 合同登记**：实现合同已固化为 [ISS-040C](#iss-040c--生产更新协调接线updater_install-六步协议与进度回调iss-040-代码切片)（owner 交接顺序/失败恢复路径/进度取消边界/生产接口见该卡「接口合同」）；其合并证据支撑本卡验收框 3 的生产入口部分，G10 实机门与父卡其余验收不变。
 
 - **目标**：让已安装的 v0.3.0 能在应用内安全检查、下载并安装后续版本，失败不影响本地基础功能或扫描历史。
 - **范围**：Tauri updater 插件/最小 capability、Rust 更新协调模块、设置页更新状态、双架构 `latest.json` 生成与专用测试。

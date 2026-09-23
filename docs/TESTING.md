@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；2026-09-22 核对基线 `31396a0` 的本地 pytest 配置门禁为 **671**（本次仅核对配置，未复跑；当前 CI 配置仍 655，差异归 ISS-080；执行前核对所选候选的两处配置），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **671**（ISS-030A +16），CI 配置已由 ISS-080（[PR #150](https://github.com/cat-xierluo/fathom/pull/150)）同步为 **671**、两处同口径（2026-09-23 核对配置，未复跑；执行前核对所选候选的两处配置），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh

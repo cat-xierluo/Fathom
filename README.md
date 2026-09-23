@@ -33,7 +33,7 @@ python3.14 -m venv .venv
 /bin/bash scripts/ci_cargo_locked.sh
 ```
 
-仓库目前私有，clone 需要访问权限。锁定的本地脚本会运行 pytest、Cargo 和隔离 Chromium/API 检查；GitHub Actions 当前因账户额度在 job 步骤前 `NOT_RUN`，恢复额度后重新启用。完整复跑命令与临时本地合并门禁见 [TESTING](docs/TESTING.md)。开发 UI 首选其中的隔离夹具服务，可安全查看两天数据及重扫交互，不扫描 HOME。
+仓库目前私有，clone 需要访问权限。锁定的本地脚本会运行 pytest、Cargo 和隔离 Chromium/API 检查；GitHub Actions 已于 2026-09-23 重新启用（此前因账户额度停用，见 docs/DECISIONS.md DEC-021/024）。完整复跑命令与临时本地合并门禁见 [TESTING](docs/TESTING.md)。开发 UI 首选其中的隔离夹具服务，可安全查看两天数据及重扫交互，不扫描 HOME。
 
 已了解当前限制并准备监控本机时：
 

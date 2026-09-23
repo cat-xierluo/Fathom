@@ -17,10 +17,13 @@
 
 覆盖目标：THIRD_PARTY_NOTICES.md §1/§3/§4/§5 表格行数与 Cargo.lock
 / constraints.txt / frontend vendored 实物一一对应。UNKNOWN 许可证
-（`license = "UNKNOWN"`）必须带 `发行影响` 列说明，否则红。
+（`license = "UNKNOWN"`）必须带 `发行影响` 列说明，否则红。repair3 起
+§1/§3 的许可证值与本地权威源做值级交叉核对：Python 侧对本地存在的
+包 METADATA（PEP 639 三级解析）逐值比对，不一致即红；本地无该包
+METADATA 时显式登记 SKIP（放行但注明未核对，不假装核对过）。
 
 退出码（CI 直接调用，shell 合同稳定）：
-  0  全绿（覆盖、版本漂移、UNKNOWN 影响说明都通过）
+  0  全绿（覆盖、版本漂移、UNKNOWN 影响说明、许可证值级核对都通过）
   1  校验失败（缺项 / 版本漂移 / UNKNOWN 缺发行影响 / 许可证文本与本地源不符）
   2  结构性失败（权威文件缺失、不可解析）
 
@@ -83,8 +86,11 @@ class Crate:
 class PyDep:
     name: str
     version: str
-    license: str  # "UNKNOWN" 表示未读出
+    license: str  # "UNKNOWN" 表示未读出（三级全空）
     category: str  # "运行时" / "构建" / "测试"
+    # 本地 dist-info/METADATA 是否存在（repair3）：False 表示本地无该包，
+    # 值级核对必须显式 SKIP，不得假装核对过。
+    metadata_found: bool = False
 
 
 @dataclass
@@ -165,13 +171,18 @@ def parse_constraints(path: Path) -> list[PyDep]:
         if not m:
             continue
         name, ver = m.group(1), m.group(2)
-        license_text = _lookup_python_license(name, ver)
-        deps.append(PyDep(name, ver, license_text, current))
+        license_text, metadata_found = _lookup_python_license(name, ver)
+        deps.append(PyDep(name, ver, license_text, current, metadata_found))
     return deps
 
 
-def _lookup_python_license(name: str, version: str) -> str:
+def _lookup_python_license(name: str, version: str) -> tuple[str, bool]:
     """从 .venv site-packages/<name>-<version>.dist-info/METADATA 读 License 字段。
+
+    返回 ``(license_text, metadata_found)``：
+      - ``metadata_found=False``：本地不存在该包 dist-info（值级核对须显式 SKIP）；
+      - ``metadata_found=True`` 且 ``license_text=="UNKNOWN"``：METADATA 存在但
+        三级字段全空。
 
     PEP 639 + 历史 License + 分类器三级优先级：
       1) ``License-Expression:``（PEP 639，现代打包元数据规范）
@@ -199,13 +210,13 @@ def _lookup_python_license(name: str, version: str) -> str:
                 if ln.startswith("License-Expression:") and not ln.startswith("License-Expression-File:"):
                     val = ln.split(":", 1)[1].strip()
                     if val:
-                        return val
+                        return val, True
             # 2) License:（旧式自由文本；排除 License-File / License-Expression-*）
             for ln in lines:
                 if ln.startswith("License:"):
                     val = ln.split(":", 1)[1].strip()
                     if val:
-                        return val
+                        return val, True
             # 3) Classifier: License :: OSI Approved :: XXX License（取末段）
             for ln in lines:
                 if ln.startswith("Classifier:") and "License" in ln:
@@ -217,9 +228,9 @@ def _lookup_python_license(name: str, version: str) -> str:
                         if last.endswith(" License"):
                             last = last[: -len(" License")]
                         if last:
-                            return last
-            return "UNKNOWN"
-    return "UNKNOWN"  # 未找到 dist-info
+                            return last, True
+            return "UNKNOWN", True
+    return "UNKNOWN", False  # 未找到 dist-info（本地无该包 METADATA）
 
 
 def parse_notices_tables(path: Path) -> dict[str, list[dict[str, str]]]:
@@ -447,6 +458,10 @@ def audit_python(deps: list[PyDep], notices: dict[str, list[dict[str, str]]]) ->
     missing: list[str] = []
     drift: list[str] = []
     unknown_no_impact: list[str] = []
+    # repair3：许可证值级交叉核对（certifi/pluggy 互换反例的防回归）
+    license_mismatch: list[str] = []
+    license_skip: list[str] = []
+    license_checked = 0
 
     # 期望覆盖集合：运行时 + 构建 + 测试三类
     expected = [d for d in deps if d.category in {"运行时", "构建", "测试"}]
@@ -470,6 +485,24 @@ def audit_python(deps: list[PyDep], notices: dict[str, list[dict[str, str]]]) ->
         lic_cell = info["license"]  # type: ignore[index]
         if lic_cell == "UNKNOWN" and not info["impact"]:  # type: ignore[index]
             unknown_no_impact.append(f"{d.name}@{d.version}")
+        # 值级核对（repair3）：表内写了具体许可证值且本地有该包 METADATA 时，
+        # 两值必须一致；本地无该包 → 显式 SKIP（不假装核对过）；表内 UNKNOWN
+        # → 走既有 UNKNOWN 影响说明通道，不做值比对。
+        if lic_cell and lic_cell != "UNKNOWN":
+            if not d.metadata_found:
+                license_skip.append(
+                    f"{d.name}@{d.version}：本地无 dist-info/METADATA，未核对（SKIP）"
+                )
+            elif d.license == "UNKNOWN":
+                license_skip.append(
+                    f"{d.name}@{d.version}：METADATA 三级均未提供许可证值，未核对（SKIP）"
+                )
+            else:
+                license_checked += 1
+                if lic_cell != d.license:
+                    license_mismatch.append(
+                        f"{d.name}@{d.version}：notices={lic_cell!r} vs METADATA={d.license!r}"
+                    )
 
     if missing:
         for m in missing:
@@ -495,6 +528,31 @@ def audit_python(deps: list[PyDep], notices: dict[str, list[dict[str, str]]]) ->
             "ok",
             "ok",
             "§1 UNKNOWN 行均带发行影响或当前不存在 UNKNOWN 行",
+        )
+    if license_mismatch:
+        for lm in license_mismatch:
+            report.fail(f"Python 许可证值不一致：{lm}")
+    else:
+        report.add(
+            "Python 许可证值级核对",
+            str(license_checked),
+            "ok",
+            "§1 表内具体许可证值与本地 METADATA（PEP 639 三级解析）逐一相等",
+        )
+    if license_skip:
+        report.add(
+            "Python 许可证 SKIP 清单",
+            str(len(license_skip)),
+            "ok",
+            "本地无 METADATA 或 METADATA 无值，显式放行未核对："
+            + "；".join(license_skip),
+        )
+    else:
+        report.add(
+            "Python 许可证 SKIP 清单",
+            "0",
+            "ok",
+            "全部可核对条目均已本地比对，无 SKIP",
         )
     return report
 
@@ -743,7 +801,7 @@ def cmd_audit() -> int:
     print("-" * 100)
     if overall_fail:
         print(
-            f"check_third_party_notices: FAIL（缺项 / 版本漂移 / UNKNOWN 缺影响）",
+            f"check_third_party_notices: FAIL（缺项 / 版本漂移 / UNKNOWN 缺影响 / 许可证值不一致）",
             file=sys.stderr,
         )
         return 1
@@ -903,7 +961,11 @@ def _build_rust_table_lines() -> list[str]:
             if lst[-1].source and lst[-1].source.startswith("registry")
             else (lst[-1].source or "—")
         )
-        impact = "" if lic != "UNKNOWN" and "UNKNOWN" not in lic.split(" / ") else "见 §6 UNKNOWN 集中说明"
+        impact = (
+            ""
+            if lic != "UNKNOWN" and "UNKNOWN" not in lic.split(" / ")
+            else "来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断）"
+        )
         lines.append(_format_row([name, " / ".join(versions), lic, url, impact]))
     return lines
 
@@ -915,7 +977,11 @@ def _build_python_table_lines() -> list[str]:
     lines.append(_format_row(["组件", "锁定版本", "许可证", "来源", "类别", "发行影响"]))
     lines.append(_format_row(["---", "---", "---", "---", "---", "---"]))
     for d in sorted(deps, key=lambda x: ({"运行时": 0, "构建": 1, "测试": 2}.get(x.category, 9), x.name)):
-        impact = "" if d.license != "UNKNOWN" else "见 §6 UNKNOWN 集中说明"
+        impact = (
+            ""
+            if d.license != "UNKNOWN"
+            else "来源待核：本地 METADATA 三级均未提供许可证值（DEC-024 口径：UNKNOWN 保留，不阻断）"
+        )
         url = f"https://pypi.org/project/{d.name}/{d.version}/"
         lines.append(
             _format_row([d.name, d.version, d.license, url, d.category, impact])

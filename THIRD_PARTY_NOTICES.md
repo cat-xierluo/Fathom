@@ -28,24 +28,24 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | annotated-doc | 0.0.5 | MIT | https://pypi.org/project/annotated-doc/0.0.5/ | 构建 |  |
 | annotated-types | 0.8.0 | MIT | https://pypi.org/project/annotated-types/0.8.0/ | 构建 |  |
 | anyio | 4.15.1 | MIT | https://pypi.org/project/anyio/4.15.1/ | 构建 |  |
-| certifi | 2026.7.22 | MIT | https://pypi.org/project/certifi/2026.7.22/ | 构建 |  |
+| certifi | 2026.7.22 | MPL-2.0 | https://pypi.org/project/certifi/2026.7.22/ | 构建 |  |
 | click | 8.5.0 | BSD-3-Clause | https://pypi.org/project/click/8.5.0/ | 构建 |  |
 | fastapi | 0.141.1 | MIT | https://pypi.org/project/fastapi/0.141.1/ | 构建 |  |
 | h11 | 0.16.0 | MIT | https://pypi.org/project/h11/0.16.0/ | 构建 |  |
 | httpcore | 1.0.9 | BSD-3-Clause | https://pypi.org/project/httpcore/1.0.9/ | 构建 |  |
 | httpx | 0.28.1 | BSD-3-Clause | https://pypi.org/project/httpx/0.28.1/ | 构建 |  |
-| idna | 3.19 | BSD-2-Clause | https://pypi.org/project/idna/3.19/ | 构建 |  |
+| idna | 3.19 | BSD-3-Clause | https://pypi.org/project/idna/3.19/ | 构建 |  |
 | pydantic | 2.13.5 | MIT | https://pypi.org/project/pydantic/2.13.5/ | 构建 |  |
 | pydantic-core | 2.46.5 | MIT | https://pypi.org/project/pydantic-core/2.46.5/ | 构建 |  |
 | pytest | 9.1.1 | MIT | https://pypi.org/project/pytest/9.1.1/ | 构建 |  |
 | starlette | 1.6.0 | BSD-3-Clause | https://pypi.org/project/starlette/1.6.0/ | 构建 |  |
-| typing-extensions | 4.16.0 | BSD-3-Clause | https://pypi.org/project/typing-extensions/4.16.0/ | 构建 |  |
+| typing-extensions | 4.16.0 | PSF-2.0 | https://pypi.org/project/typing-extensions/4.16.0/ | 构建 |  |
 | typing-inspection | 0.4.4 | MIT | https://pypi.org/project/typing-inspection/0.4.4/ | 构建 |  |
-| uvicorn | 0.52.4 | PSF-2.0 | https://pypi.org/project/uvicorn/0.52.4/ | 构建 |  |
+| uvicorn | 0.52.4 | BSD-3-Clause | https://pypi.org/project/uvicorn/0.52.4/ | 构建 |  |
 | iniconfig | 2.3.0 | MIT | https://pypi.org/project/iniconfig/2.3.0/ | 测试 |  |
 | packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | https://pypi.org/project/packaging/26.3/ | 测试 |  |
-| pluggy | 1.6.0 | MPL-2.0 | https://pypi.org/project/pluggy/1.6.0/ | 测试 |  |
-| pygments | 2.21.0 | BSD-3-Clause | https://pypi.org/project/pygments/2.21.0/ | 测试 |  |
+| pluggy | 1.6.0 | MIT | https://pypi.org/project/pluggy/1.6.0/ | 测试 |  |
+| pygments | 2.21.0 | BSD-2-Clause | https://pypi.org/project/pygments/2.21.0/ | 测试 |  |
 
 ## 2. 内嵌解释器与构建工具链
 
@@ -75,6 +75,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | alloc-stdlib | 0.2.4 | BSD-3-Clause | https://crates.io/crates/alloc-stdlib/0.2.4 |  |
 | android_system_properties | 0.1.6 | MIT OR Apache-2.0 | https://crates.io/crates/android_system_properties/0.1.6 |  |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 | https://crates.io/crates/anyhow/1.0.104 |  |
+| arbitrary | 1.4.2 | UNKNOWN | https://crates.io/crates/arbitrary/1.4.2 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
 | async-broadcast | 0.7.2 | MIT OR Apache-2.0 | https://crates.io/crates/async-broadcast/0.7.2 |  |
 | async-channel | 2.5.0 | Apache-2.0 OR MIT | https://crates.io/crates/async-channel/2.5.0 |  |
 | async-executor | 1.14.0 | Apache-2.0 OR MIT | https://crates.io/crates/async-executor/1.14.0 |  |
@@ -139,6 +140,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | defmt-macros | 1.1.1 | MIT OR Apache-2.0 | https://crates.io/crates/defmt-macros/1.1.1 |  |
 | defmt-parser | 1.0.0 | MIT OR Apache-2.0 | https://crates.io/crates/defmt-parser/1.0.0 |  |
 | deranged | 0.5.8 | MIT OR Apache-2.0 | https://crates.io/crates/deranged/0.5.8 |  |
+| derive_arbitrary | 1.4.2 | UNKNOWN | https://crates.io/crates/derive_arbitrary/1.4.2 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
 | derive_more | 2.1.1 | MIT | https://crates.io/crates/derive_more/2.1.1 |  |
 | derive_more-impl | 2.1.1 | MIT | https://crates.io/crates/derive_more-impl/2.1.1 |  |
 | digest | 0.10.7 | MIT OR Apache-2.0 | https://crates.io/crates/digest/0.10.7 |  |
@@ -169,6 +171,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | fastrand | 2.5.0 | Apache-2.0 OR MIT | https://crates.io/crates/fastrand/2.5.0 |  |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | https://crates.io/crates/fdeflate/0.3.7 |  |
 | field-offset | 0.3.6 | MIT OR Apache-2.0 | https://crates.io/crates/field-offset/0.3.6 |  |
+| filetime | 0.2.29 | MIT/Apache-2.0 | https://crates.io/crates/filetime/0.2.29 |  |
 | find-msvc-tools | 0.1.12 | MIT OR Apache-2.0 | https://crates.io/crates/find-msvc-tools/0.1.12 |  |
 | flate2 | 1.1.10 | MIT OR Apache-2.0 | https://crates.io/crates/flate2/1.1.10 |  |
 | fnv | 1.0.7 | Apache-2.0 / MIT | https://crates.io/crates/fnv/1.0.7 |  |
@@ -215,6 +218,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | http-body-util | 0.1.5 | MIT | https://crates.io/crates/http-body-util/0.1.5 |  |
 | httparse | 1.10.1 | MIT OR Apache-2.0 | https://crates.io/crates/httparse/1.10.1 |  |
 | hyper | 1.11.1 | MIT | https://crates.io/crates/hyper/1.11.1 |  |
+| hyper-rustls | 0.27.9 | Apache-2.0 OR ISC OR MIT | https://crates.io/crates/hyper-rustls/0.27.9 |  |
 | hyper-util | 0.1.20 | MIT | https://crates.io/crates/hyper-util/0.1.20 |  |
 | iana-time-zone | 0.1.65 | MIT OR Apache-2.0 | https://crates.io/crates/iana-time-zone/0.1.65 |  |
 | iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 | https://crates.io/crates/iana-time-zone-haiku/0.1.2 |  |
@@ -242,7 +246,8 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | jiff-static | 0.2.35 | Unlicense OR MIT | https://crates.io/crates/jiff-static/0.2.35 |  |
 | jiff-tzdb | 0.1.8 | Unlicense OR MIT | https://crates.io/crates/jiff-tzdb/0.1.8 |  |
 | jiff-tzdb-platform | 0.1.3 | Unlicense OR MIT | https://crates.io/crates/jiff-tzdb-platform/0.1.3 |  |
-| jni | 0.21.1 | MIT/Apache-2.0 | https://crates.io/crates/jni/0.21.1 |  |
+| jni | 0.21.1 / 0.22.4 | MIT/Apache-2.0 / UNKNOWN | https://crates.io/crates/jni/0.22.4 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| jni-macros | 0.22.4 | UNKNOWN | https://crates.io/crates/jni-macros/0.22.4 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
 | jni-sys | 0.3.1 / 0.4.1 | MIT OR Apache-2.0 | https://crates.io/crates/jni-sys/0.4.1 |  |
 | jni-sys-macros | 0.4.1 | MIT OR Apache-2.0 | https://crates.io/crates/jni-sys-macros/0.4.1 |  |
 | js-sys | 0.3.105 | MIT OR Apache-2.0 | https://crates.io/crates/js-sys/0.3.105 |  |
@@ -263,6 +268,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | memchr | 2.8.3 | Unlicense OR MIT | https://crates.io/crates/memchr/2.8.3 |  |
 | memoffset | 0.9.1 | MIT | https://crates.io/crates/memoffset/0.9.1 |  |
 | mime | 0.3.17 | MIT OR Apache-2.0 | https://crates.io/crates/mime/0.3.17 |  |
+| minisign-verify | 0.2.5 | MIT | https://crates.io/crates/minisign-verify/0.2.5 |  |
 | miniz_oxide | 0.8.9 / 0.9.1 | MIT OR Zlib OR Apache-2.0 | https://crates.io/crates/miniz_oxide/0.9.1 |  |
 | mio | 1.2.3 | MIT | https://crates.io/crates/mio/1.2.3 |  |
 | muda | 0.19.3 | Apache-2.0 OR MIT | https://crates.io/crates/muda/0.19.3 |  |
@@ -286,14 +292,17 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | objc2-exception-helper | 0.1.1 | Zlib OR Apache-2.0 OR MIT | https://crates.io/crates/objc2-exception-helper/0.1.1 |  |
 | objc2-foundation | 0.3.2 | MIT | https://crates.io/crates/objc2-foundation/0.3.2 |  |
 | objc2-io-surface | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://crates.io/crates/objc2-io-surface/0.3.2 |  |
+| objc2-osa-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://crates.io/crates/objc2-osa-kit/0.3.2 |  |
 | objc2-quartz-core | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://crates.io/crates/objc2-quartz-core/0.3.2 |  |
 | objc2-ui-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://crates.io/crates/objc2-ui-kit/0.3.2 |  |
 | objc2-user-notifications | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://crates.io/crates/objc2-user-notifications/0.3.2 |  |
 | objc2-web-kit | 0.3.2 | Zlib OR Apache-2.0 OR MIT | https://crates.io/crates/objc2-web-kit/0.3.2 |  |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 | https://crates.io/crates/once_cell/1.21.4 |  |
 | open | 5.4.4 | MIT | https://crates.io/crates/open/5.4.4 |  |
+| openssl-probe | 0.2.1 | UNKNOWN | https://crates.io/crates/openssl-probe/0.2.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
 | option-ext | 0.2.0 | MPL-2.0 | https://crates.io/crates/option-ext/0.2.0 |  |
 | ordered-stream | 0.2.0 | MIT OR Apache-2.0 | https://crates.io/crates/ordered-stream/0.2.0 |  |
+| osakit | 0.3.1 | MIT OR Apache-2.0 | https://crates.io/crates/osakit/0.3.1 |  |
 | pango | 0.18.3 | MIT | https://crates.io/crates/pango/0.18.3 |  |
 | pango-sys | 0.18.0 | MIT | https://crates.io/crates/pango-sys/0.18.0 |  |
 | parking | 2.2.1 | Apache-2.0 OR MIT | https://crates.io/crates/parking/2.2.1 |  |
@@ -332,14 +341,24 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | regex-automata | 0.4.18 | MIT OR Apache-2.0 | https://crates.io/crates/regex-automata/0.4.18 |  |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 | https://crates.io/crates/regex-syntax/0.8.11 |  |
 | reqwest | 0.13.5 | MIT OR Apache-2.0 | https://crates.io/crates/reqwest/0.13.5 |  |
+| ring | 0.17.14 | Apache-2.0 AND ISC | https://crates.io/crates/ring/0.17.14 |  |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT | https://crates.io/crates/rustc-hash/2.1.3 |  |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 | https://crates.io/crates/rustc_version/0.4.1 |  |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://crates.io/crates/rustix/1.1.4 |  |
+| rustls | 0.23.43 | Apache-2.0 OR ISC OR MIT | https://crates.io/crates/rustls/0.23.43 |  |
+| rustls-native-certs | 0.8.4 | UNKNOWN | https://crates.io/crates/rustls-native-certs/0.8.4 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| rustls-pki-types | 1.15.1 | MIT OR Apache-2.0 | https://crates.io/crates/rustls-pki-types/1.15.1 |  |
+| rustls-platform-verifier | 0.7.0 | MIT OR Apache-2.0 | https://crates.io/crates/rustls-platform-verifier/0.7.0 |  |
+| rustls-platform-verifier-android | 0.1.1 | UNKNOWN | https://crates.io/crates/rustls-platform-verifier-android/0.1.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| rustls-webpki | 0.103.15 | ISC | https://crates.io/crates/rustls-webpki/0.103.15 |  |
 | rustversion | 1.0.23 | MIT OR Apache-2.0 | https://crates.io/crates/rustversion/1.0.23 |  |
 | same-file | 1.0.6 | Unlicense/MIT | https://crates.io/crates/same-file/1.0.6 |  |
+| schannel | 0.1.29 | UNKNOWN | https://crates.io/crates/schannel/0.1.29 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
 | schemars | 0.8.22 / 0.9.0 / 1.2.2 | MIT | https://crates.io/crates/schemars/1.2.2 |  |
 | schemars_derive | 0.8.22 | MIT | https://crates.io/crates/schemars_derive/0.8.22 |  |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 | https://crates.io/crates/scopeguard/1.2.0 |  |
+| security-framework | 3.7.0 | MIT OR Apache-2.0 | https://crates.io/crates/security-framework/3.7.0 |  |
+| security-framework-sys | 2.17.0 | MIT OR Apache-2.0 | https://crates.io/crates/security-framework-sys/2.17.0 |  |
 | selectors | 0.36.1 | MPL-2.0 | https://crates.io/crates/selectors/0.36.1 |  |
 | semver | 1.0.28 | MIT OR Apache-2.0 | https://crates.io/crates/semver/1.0.28 |  |
 | serde | 1.0.229 | MIT OR Apache-2.0 | https://crates.io/crates/serde/1.0.229 |  |
@@ -359,6 +378,8 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | shlex | 2.0.1 | MIT OR Apache-2.0 | https://crates.io/crates/shlex/2.0.1 |  |
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 | https://crates.io/crates/signal-hook-registry/1.4.8 |  |
 | simd-adler32 | 0.3.10 | MIT | https://crates.io/crates/simd-adler32/0.3.10 |  |
+| simd_cesu8 | 1.2.0 | UNKNOWN | https://crates.io/crates/simd_cesu8/1.2.0 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| simdutf8 | 0.1.5 | MIT OR Apache-2.0 | https://crates.io/crates/simdutf8/0.1.5 |  |
 | siphasher | 1.0.3 | MIT/Apache-2.0 | https://crates.io/crates/siphasher/1.0.3 |  |
 | slab | 0.4.12 | MIT | https://crates.io/crates/slab/0.4.12 |  |
 | smallvec | 1.16.1 | MIT OR Apache-2.0 | https://crates.io/crates/smallvec/1.16.1 |  |
@@ -370,6 +391,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | string_cache | 0.9.0 | MIT OR Apache-2.0 | https://crates.io/crates/string_cache/0.9.0 |  |
 | string_cache_codegen | 0.6.1 | MIT OR Apache-2.0 | https://crates.io/crates/string_cache_codegen/0.6.1 |  |
 | strsim | 0.11.1 | MIT | https://crates.io/crates/strsim/0.11.1 |  |
+| subtle | 2.6.1 | BSD-3-Clause | https://crates.io/crates/subtle/2.6.1 |  |
 | swift-rs | 1.0.8 | MIT OR Apache-2.0 | https://crates.io/crates/swift-rs/1.0.8 |  |
 | syn | 1.0.109 / 2.0.119 / 3.0.5 | MIT OR Apache-2.0 | https://crates.io/crates/syn/3.0.5 |  |
 | sync_wrapper | 1.0.2 | Apache-2.0 | https://crates.io/crates/sync_wrapper/1.0.2 |  |
@@ -377,6 +399,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | system-deps | 6.2.2 | MIT OR Apache-2.0 | https://crates.io/crates/system-deps/6.2.2 |  |
 | tao | 0.35.3 | Apache-2.0 | https://crates.io/crates/tao/0.35.3 |  |
 | tao-macros | 0.1.4 | MIT OR Apache-2.0 | https://crates.io/crates/tao-macros/0.1.4 |  |
+| tar | 0.4.46 | MIT OR Apache-2.0 | https://crates.io/crates/tar/0.4.46 |  |
 | target-lexicon | 0.12.16 | Apache-2.0 WITH LLVM-exception | https://crates.io/crates/target-lexicon/0.12.16 |  |
 | tauri | 2.11.5 | Apache-2.0 OR MIT | https://crates.io/crates/tauri/2.11.5 |  |
 | tauri-build | 2.6.3 | Apache-2.0 OR MIT | https://crates.io/crates/tauri-build/2.6.3 |  |
@@ -384,6 +407,8 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | tauri-macros | 2.6.3 | Apache-2.0 OR MIT | https://crates.io/crates/tauri-macros/2.6.3 |  |
 | tauri-plugin | 2.6.3 | Apache-2.0 OR MIT | https://crates.io/crates/tauri-plugin/2.6.3 |  |
 | tauri-plugin-opener | 2.5.5 | Apache-2.0 OR MIT | https://crates.io/crates/tauri-plugin-opener/2.5.5 |  |
+| tauri-plugin-process | 2.3.1 | Apache-2.0 OR MIT | https://crates.io/crates/tauri-plugin-process/2.3.1 |  |
+| tauri-plugin-updater | 2.10.1 | Apache-2.0 OR MIT | https://crates.io/crates/tauri-plugin-updater/2.10.1 |  |
 | tauri-runtime | 2.11.3 | Apache-2.0 OR MIT | https://crates.io/crates/tauri-runtime/2.11.3 |  |
 | tauri-runtime-wry | 2.11.4 | Apache-2.0 OR MIT | https://crates.io/crates/tauri-runtime-wry/2.11.4 |  |
 | tauri-utils | 2.9.3 | Apache-2.0 OR MIT | https://crates.io/crates/tauri-utils/2.9.3 |  |
@@ -399,6 +424,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | tinyvec | 1.13.2 | Zlib OR Apache-2.0 OR MIT | https://crates.io/crates/tinyvec/1.13.2 |  |
 | tinyvec_macros | 0.1.1 | MIT OR Apache-2.0 OR Zlib | https://crates.io/crates/tinyvec_macros/0.1.1 |  |
 | tokio | 1.53.1 | MIT | https://crates.io/crates/tokio/1.53.1 |  |
+| tokio-rustls | 0.26.4 | MIT OR Apache-2.0 | https://crates.io/crates/tokio-rustls/0.26.4 |  |
 | tokio-util | 0.7.19 | MIT | https://crates.io/crates/tokio-util/0.7.19 |  |
 | toml | 0.8.2 / 0.9.12+spec-1.1.0 / 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | https://crates.io/crates/toml/1.1.6+spec-1.1.0 |  |
 | toml_datetime | 0.6.3 / 0.7.5+spec-1.1.0 / 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | https://crates.io/crates/toml_datetime/1.1.1+spec-1.1.0 |  |
@@ -424,6 +450,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | unic-ucd-version | 0.9.0 | MIT/Apache-2.0 | https://crates.io/crates/unic-ucd-version/0.9.0 |  |
 | unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 | https://crates.io/crates/unicode-ident/1.0.24 |  |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | https://crates.io/crates/unicode-segmentation/1.13.3 |  |
+| untrusted | 0.9.0 | ISC | https://crates.io/crates/untrusted/0.9.0 |  |
 | url | 2.5.8 | MIT OR Apache-2.0 | https://crates.io/crates/url/2.5.8 |  |
 | urlpattern | 0.3.0 | MIT | https://crates.io/crates/urlpattern/0.3.0 |  |
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT | https://crates.io/crates/utf8_iter/1.0.4 |  |
@@ -446,6 +473,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | web_atoms | 0.2.6 | MIT OR Apache-2.0 | https://crates.io/crates/web_atoms/0.2.6 |  |
 | webkit2gtk | 2.0.2 | MIT | https://crates.io/crates/webkit2gtk/2.0.2 |  |
 | webkit2gtk-sys | 2.0.2 | MIT | https://crates.io/crates/webkit2gtk-sys/2.0.2 |  |
+| webpki-root-certs | 1.0.9 | UNKNOWN | https://crates.io/crates/webpki-root-certs/1.0.9 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
 | webview2-com | 0.38.2 | MIT | https://crates.io/crates/webview2-com/0.38.2 |  |
 | webview2-com-macros | 0.8.1 | MIT | https://crates.io/crates/webview2-com-macros/0.8.1 |  |
 | webview2-com-sys | 0.38.2 | MIT | https://crates.io/crates/webview2-com-sys/0.38.2 |  |
@@ -464,18 +492,18 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | windows-numerics | 0.2.0 | MIT OR Apache-2.0 | https://crates.io/crates/windows-numerics/0.2.0 |  |
 | windows-result | 0.3.4 / 0.4.1 | MIT OR Apache-2.0 | https://crates.io/crates/windows-result/0.4.1 |  |
 | windows-strings | 0.4.2 / 0.5.1 | MIT OR Apache-2.0 | https://crates.io/crates/windows-strings/0.5.1 |  |
-| windows-sys | 0.45.0 / 0.59.0 / 0.61.2 | MIT OR Apache-2.0 | https://crates.io/crates/windows-sys/0.61.2 |  |
-| windows-targets | 0.42.2 / 0.52.6 | MIT OR Apache-2.0 | https://crates.io/crates/windows-targets/0.52.6 |  |
+| windows-sys | 0.45.0 / 0.52.0 / 0.59.0 / 0.60.2 / 0.61.2 | MIT OR Apache-2.0 / UNKNOWN / MIT OR Apache-2.0 / UNKNOWN / MIT OR Apache-2.0 | https://crates.io/crates/windows-sys/0.61.2 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| windows-targets | 0.42.2 / 0.52.6 / 0.53.5 | MIT OR Apache-2.0 / MIT OR Apache-2.0 / UNKNOWN | https://crates.io/crates/windows-targets/0.53.5 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
 | windows-threading | 0.1.0 | MIT OR Apache-2.0 | https://crates.io/crates/windows-threading/0.1.0 |  |
 | windows-version | 0.1.7 | MIT OR Apache-2.0 | https://crates.io/crates/windows-version/0.1.7 |  |
-| windows_aarch64_gnullvm | 0.42.2 / 0.52.6 | MIT OR Apache-2.0 | https://crates.io/crates/windows_aarch64_gnullvm/0.52.6 |  |
-| windows_aarch64_msvc | 0.42.2 / 0.52.6 | MIT OR Apache-2.0 | https://crates.io/crates/windows_aarch64_msvc/0.52.6 |  |
-| windows_i686_gnu | 0.42.2 / 0.52.6 | MIT OR Apache-2.0 | https://crates.io/crates/windows_i686_gnu/0.52.6 |  |
-| windows_i686_gnullvm | 0.52.6 | MIT OR Apache-2.0 | https://crates.io/crates/windows_i686_gnullvm/0.52.6 |  |
-| windows_i686_msvc | 0.42.2 / 0.52.6 | MIT OR Apache-2.0 | https://crates.io/crates/windows_i686_msvc/0.52.6 |  |
-| windows_x86_64_gnu | 0.42.2 / 0.52.6 | MIT OR Apache-2.0 | https://crates.io/crates/windows_x86_64_gnu/0.52.6 |  |
-| windows_x86_64_gnullvm | 0.42.2 / 0.52.6 | MIT OR Apache-2.0 | https://crates.io/crates/windows_x86_64_gnullvm/0.52.6 |  |
-| windows_x86_64_msvc | 0.42.2 / 0.52.6 | MIT OR Apache-2.0 | https://crates.io/crates/windows_x86_64_msvc/0.52.6 |  |
+| windows_aarch64_gnullvm | 0.42.2 / 0.52.6 / 0.53.1 | MIT OR Apache-2.0 / MIT OR Apache-2.0 / UNKNOWN | https://crates.io/crates/windows_aarch64_gnullvm/0.53.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| windows_aarch64_msvc | 0.42.2 / 0.52.6 / 0.53.1 | MIT OR Apache-2.0 / MIT OR Apache-2.0 / UNKNOWN | https://crates.io/crates/windows_aarch64_msvc/0.53.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| windows_i686_gnu | 0.42.2 / 0.52.6 / 0.53.1 | MIT OR Apache-2.0 / MIT OR Apache-2.0 / UNKNOWN | https://crates.io/crates/windows_i686_gnu/0.53.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| windows_i686_gnullvm | 0.52.6 / 0.53.1 | MIT OR Apache-2.0 / UNKNOWN | https://crates.io/crates/windows_i686_gnullvm/0.53.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| windows_i686_msvc | 0.42.2 / 0.52.6 / 0.53.1 | MIT OR Apache-2.0 / MIT OR Apache-2.0 / UNKNOWN | https://crates.io/crates/windows_i686_msvc/0.53.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| windows_x86_64_gnu | 0.42.2 / 0.52.6 / 0.53.1 | MIT OR Apache-2.0 / MIT OR Apache-2.0 / UNKNOWN | https://crates.io/crates/windows_x86_64_gnu/0.53.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| windows_x86_64_gnullvm | 0.42.2 / 0.52.6 / 0.53.1 | MIT OR Apache-2.0 / MIT OR Apache-2.0 / UNKNOWN | https://crates.io/crates/windows_x86_64_gnullvm/0.53.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
+| windows_x86_64_msvc | 0.42.2 / 0.52.6 / 0.53.1 | MIT OR Apache-2.0 / MIT OR Apache-2.0 / UNKNOWN | https://crates.io/crates/windows_x86_64_msvc/0.53.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
 | winnow | 0.5.40 / 0.7.15 / 1.0.4 | MIT | https://crates.io/crates/winnow/1.0.4 |  |
 | winreg | 0.55.0 | MIT | https://crates.io/crates/winreg/0.55.0 |  |
 | wit-bindgen | 0.57.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | https://crates.io/crates/wit-bindgen/0.57.1 |  |
@@ -483,6 +511,7 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | wry | 0.55.1 | Apache-2.0 OR MIT | https://crates.io/crates/wry/0.55.1 |  |
 | x11 | 2.21.0 | MIT | https://crates.io/crates/x11/2.21.0 |  |
 | x11-dl | 2.21.0 | MIT | https://crates.io/crates/x11-dl/2.21.0 |  |
+| xattr | 1.6.1 | MIT OR Apache-2.0 | https://crates.io/crates/xattr/1.6.1 |  |
 | yoke | 0.8.3 | Unicode-3.0 | https://crates.io/crates/yoke/0.8.3 |  |
 | yoke-derive | 0.8.2 | Unicode-3.0 | https://crates.io/crates/yoke-derive/0.8.2 |  |
 | zbus | 5.19.0 | MIT | https://crates.io/crates/zbus/5.19.0 |  |
@@ -491,9 +520,11 @@ Fathom（本仓库/分发产物）包含以下第三方软件与资源。本文�
 | zcheapstr | 1.1.0 | MIT | https://crates.io/crates/zcheapstr/1.1.0 |  |
 | zerofrom | 0.1.8 | Unicode-3.0 | https://crates.io/crates/zerofrom/0.1.8 |  |
 | zerofrom-derive | 0.1.7 | Unicode-3.0 | https://crates.io/crates/zerofrom-derive/0.1.7 |  |
+| zeroize | 1.9.0 | Apache-2.0 OR MIT | https://crates.io/crates/zeroize/1.9.0 |  |
 | zerotrie | 0.2.5 | Unicode-3.0 | https://crates.io/crates/zerotrie/0.2.5 |  |
 | zerovec | 0.11.8 | Unicode-3.0 | https://crates.io/crates/zerovec/0.11.8 |  |
 | zerovec-derive | 0.11.6 | Unicode-3.0 | https://crates.io/crates/zerovec-derive/0.11.6 |  |
+| zip | 4.6.1 | UNKNOWN | https://crates.io/crates/zip/4.6.1 | 来源待核：本地 registry Cargo.toml 未提供 license 字段（DEC-024 口径：UNKNOWN 保留，不阻断） |
 | zlib-rs | 0.6.7 | Zlib | https://crates.io/crates/zlib-rs/0.6.7 |  |
 | zmij | 1.0.23 | MIT | https://crates.io/crates/zmij/1.0.23 |  |
 | zvariant | 5.15.0 | MIT | https://crates.io/crates/zvariant/5.15.0 |  |

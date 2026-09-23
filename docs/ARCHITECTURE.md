@@ -98,7 +98,7 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 
 ## 当前验证覆盖
 
-固定基线 `31396a0` 的本地 pytest 配置门禁为 **671**（ISS-030A 新增 16 项夹具测试）；ISS-040B 任务记录的前端检查为 **105**、浏览器/API **39**、`cargo test` **49**。本次仅核对代码与既有记录，未复跑这些入口；后续精确 pytest 数以受测候选的门禁配置为准，运行结果必须绑定受测 commit。CI 配置已由 ISS-080（PR #150，2026-09-23）同步为 671，与本地门禁同口径（核对配置，未复跑）。030A 的 fake 升级协议复用真实 flock 与 SQLite checkpoint/backup，但未接入生产更新命令（生产接线归 ISS-040C）。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0–v4→v5 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收（含超时进度条数线索）、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
+固定基线 `31396a0` 的本地 pytest 配置门禁为 **671**，ISS-040C 后本地口径 **685**（新增 `tests/test_upgrade_production_wiring.py` 14 项，scoped 实测 14 passed；全量 685=671+14 未复跑，CI/`ci_pytest.sh` 仍 671 待 PM 同步）；ISS-040B 任务记录的前端检查为 **105**、浏览器/API **39**、`cargo test` **49**（ISS-040C 后 **57**：lib.rs 新增 8 项内联单测，`cargo test --locked --offline` 实测 57 passed）。ISS-040C 已把 `updater_install` 接入生产更新协调入口（`fathom/upgrade.py` 六步协议 + 冻结 helper upgrade-* 子命令 + 进度/取消边界），030A 夹具仅作协议参照。覆盖扫描完整性、特殊路径真实 BSD `du`→bytes→SQLite、v0–v4→v5 迁移/WAL 一致备份、真实跨进程 `flock`、API 空库首扫、CLI/定时来源、报告/通知故障、SIGTERM/超时回收（含超时进度条数线索）、Host/Origin/写令牌、reveal 越界、前端重扫/乱序/错误状态、CSP 及浏览器资源清理。GitHub Actions 因账户额度在 job 步骤前拒绝，当前云端结果记为 `NOT_RUN`；恢复额度后重新启用。
 
 已有历史实测记录：ISS-009 切片 2 的打包态主界面/端口耗尽页、ISS-045 图标入口、ISS-001 的两个有效定时日期与日报。仍 `NOT_VERIFIED`：系统通知实际展示、完整 tray 菜单与发行生命周期、新账户/断网/实际下载首启、原生 x86_64 冻结及真实更新。Developer ID 签名/公证/stapling 按 DEC-022 延期，未通过，不可与 updater 签名混同。
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 [审查证据](plans/2026-09-12-project-review.md)，隔离操作见 [TESTING](TESTING.md)。

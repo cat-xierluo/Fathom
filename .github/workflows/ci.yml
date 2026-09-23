@@ -65,6 +65,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: 'false'
+          fetch-depth: 0  # 红态基线演示测试需读历史提交（仓库 ~10MB，全历史代价可忽略）
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -96,6 +97,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: 'false'
+          fetch-depth: 0  # 红态基线演示测试需读历史提交（仓库 ~10MB，全历史代价可忽略）
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -135,6 +137,10 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+
+        with:
+
+          fetch-depth: 0
       - name: 深度环几何与 favicon 资产一致性
         run: bash scripts/ci_brand_geometry.sh
 
@@ -158,6 +164,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: 'false'
+          fetch-depth: 0  # 红态基线演示测试需读历史提交（仓库 ~10MB，全历史代价可忽略）
 
       - name: 固定 Rust 工具链 ${{ env.RUST_VERSION }}
         run: |

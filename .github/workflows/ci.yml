@@ -176,4 +176,8 @@ jobs:
       # 紧跟 cargo build——本步骤读取其上一步刚生成的
       # target/debug/build/*/out/acl-manifests.json；不依赖 .app bundle。
       - name: Tauri opener 插件注册与授权断言
+        env:
+          # 脚本以 -x 检查解释器路径（不查 PATH），cargo job 无 venv，
+          # 用 runner 系统 python3 绝对路径（仅标准库解析 acl-manifests.json）。
+          FATHOM_PYTHON: /usr/bin/python3
         run: bash scripts/ci_tauri_opener_registered.sh

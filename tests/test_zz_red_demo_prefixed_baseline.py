@@ -4,9 +4,11 @@
 运行 scripts/verify_tauri_esc_delivery.sh，断言脚本必须红（exit 1）——
 证明回归断言真的能抓住 ISS-077 的未修复状态，而不是恒绿摆设。
 
-PREFIX_BASE_SHA 是本修复落地前的分支基线（1537ceb，提交信息含 ISS-077
-派发登记），在完整克隆历史中恒可达；若仓库改用浅克隆导致 SHA 不可达，
-本测试失败并明示原因（不静默跳过）。
+PREFIX_BASE_SHA 是「ISS-077 修复前基线」的固定提交（lib.rs + capabilities
+均为未修复态）。2026-09-23 历史改写（DEC-025：内部文档路径移出+提交者统
+一）后，原基线提交 1537ceb（docs(pm) 纯文档提交）被空化丢弃；本测试改指
+修复提交 d6b5c6c（#130）的父提交——拓扑等价，树中 lib.rs 同为未修复态。
+若仓库改用浅克隆导致 SHA 不可达，本测试失败并明示原因（不静默跳过）。
 """
 
 from __future__ import annotations
@@ -19,9 +21,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "verify_tauri_esc_delivery.sh"
-# 修复前基线：分支 iss-077-esc-keydown 派发时的 HEAD（1537ceb，含 ISS-077
-# 派发登记的 docs(pm) 提交）。修复提交是其子提交，此 SHA 恒指向未修复状态。
-PREFIX_BASE_SHA = "1537ceb8bfca20c6b7f9f60545f4c8b13de879eb"
+# 修复前基线：ISS-077 修复提交 d6b5c6c（#130）的父提交。修复提交是其子
+# 提交，此 SHA 恒指向未修复状态。（2026-09-23 历史改写后自 1537ceb 迁移，
+# 旧提交见 .git/filter-repo/commit-map，已随纯文档空化被丢弃。）
+PREFIX_BASE_SHA = "12bd8407de01b3dc24275b997fd1ac0c1c53bd72"
 BASE_FILES = [
     "apps/desktop/src-tauri/src/lib.rs",
     "apps/desktop/src-tauri/capabilities/default.json",

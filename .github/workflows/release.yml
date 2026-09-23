@@ -1,0 +1,264 @@
+# Fathom Release（ISS-041A：arm64 未签名 draft Release 首轮切片）
+#
+# 边界（DEC-022 签名公证延期 + 用户 2026-09-23 拆卡指令）：
+# - 仅 arm64：macos-15 原生 runner，显式断言 uname -m，无 x86_64 job
+#   （双架构留父卡 ISS-041 后续轮次）。
+# - 未签名：不引用任何 Apple 签名/公证身份；产物未签名属预期，DMG 背景
+#   图承载 Gatekeeper 手动放行说明（verify_app_bundle.sh (j) 段合同）。
+# - 不含 updater 产物：tauri.conf.json 的 bundle.createUpdaterArtifacts 为
+#   true，但生产 updater keypair 尚未生成（G10 用户决策门未过）。无
+#   TAURI_SIGNING_PRIVATE_KEY 时 tauri build 生成 updater .sig 会失败
+#   （官方 updater 文档：构建 updater 产物必须以环境变量提供私钥），
+#   故本 workflow 用 `--config` 内联覆盖把该键置 false。恢复 updater 时
+#   必须删除此覆盖并接 G10 keypair（见下方 build-app 步骤注释）。
+#   覆盖生效依据：Tauri v2 CLI 文档——`--config` 接受 "JSON strings or
+#   paths to JSON ... to merge with the default configuration file"，冲突
+#   键后者覆盖（2026-09-23 查证）；本机 tauri-cli 2.6.2 实测 --config
+#   传入的键参与合并后 schema 校验（非法值在编译前即报
+#   `tauri.conf.json error on bundle > createUpdaterArtifacts`，退出码 1）。
+# - 绝不 publish：只创建 draft Release（releaseName `Fathom <tag>`）。
+#   公开发布（--draft=false）是人工门，workflow 内不存在该调用。
+# - 无 secrets：全 workflow 不引用 secrets.* 上下文。GITHUB_TOKEN 是
+#   runner 每 job 自动签发的临时令牌（非仓库 secret），permissions 已
+#   收敛为 contents: write，仅用于创建 draft release 与上传资产。
+# - 版本门 fail-closed：tag（去 v 前缀）必须等于 fathom/__init__.py 单一
+#   版本源；scripts/check_version_consistency.sh 另行断言 tauri.conf.json/
+#   Cargo.toml/Cargo.lock 与单一源一致。任一不一致在构建前即失败；
+#   上传前重跑同一门（合同要求"上传前 fail-closed"）。
+# - 第三方 action 固定完整 commit SHA（SHA 来源与 ci.yml 相同：取自
+#   api.github.com git/ref/tags，2026-09-13）。
+# - 版本钉定与 ci.yml 同口径：Python 3.14.6（constraints.txt 锁定闭包）、
+#   Rust 1.88.0（rustup default）、tauri-cli 2.6.2（--locked，与本机及
+#   apps/desktop/src-tauri/Cargo.lock 的 tauri 2.x 系列一致）。
+
+name: Release (draft)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # 手动触发（可选）：默认用触发 ref 的名字；从分支触发时必须显式填
+  # tag 输入，否则下方 tag 形态断言会 fail-closed（不接受无 tag 的发布）。
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发行 tag（vX.Y.Z，须已与单一版本源一致）'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.14.6"
+  RUST_VERSION: "1.88.0"
+  # ci.yml 头注约定：发行 CI 启用 tauri 构建时必须同步固定 CLI 版本。
+  # 2.6.2 = 本机已用于产出 2026-09-19 DMG 基线的 cargo-tauri 版本。
+  TAURI_CLI_VERSION: "2.6.2"
+
+jobs:
+  build-arm64-draft:
+    name: 构建 + draft Release（arm64 未签名）
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: 断言原生 runner 架构 arm64 与 tag 形态
+        run: |
+          set -euo pipefail
+          echo "uname -m = $(uname -m)"
+          sw_vers
+          [ "$(uname -m)" = "arm64" ]
+          # push tag 触发时 ref_name 即 tag；dispatch 时优先用输入。
+          TAG="${TAG_INPUT:-$GITHUB_REF_NAME}"
+          case "$TAG" in
+            v[0-9]*.[0-9]*.[0-9]*)
+              ;;
+            *)
+              echo "[release] FAIL：tag '$TAG' 不匹配 vX.Y.Z 形态（dispatch 分支触发须填 tag 输入）" >&2
+              exit 1
+              ;;
+          esac
+          # 残余形态检查：v 后必须是纯数字段（上面 case 的 [0-9]* 已放宽，
+          # 这里收紧为严格 semver 三段数字）。
+          VER="${TAG#v}"
+          printf '%s' "$VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "[release] FAIL：tag '$TAG' 去前缀后 '$VER' 非严格 X.Y.Z" >&2
+            exit 1
+          }
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: 'false'
+          # persist-credentials false：git 侧不保留令牌；创建 draft release
+          # 走下方 gh 步骤的 GH_TOKEN（github.token，临时 job 令牌）。
+          ref: ${{ env.RELEASE_TAG }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装锁定依赖（venv + constraints，helper 冻结闭包）
+        run: |
+          python -m venv "$RUNNER_TEMP/fathom-venv"
+          "$RUNNER_TEMP/fathom-venv/bin/python" --version
+          # requirements-runtime.txt（fastapi/uvicorn 运行时 pin）+
+          # requirements-runtime-build.txt（pyinstaller 6.22.3），
+          # 闭包由 constraints.txt 精确锁定——与本机 ISS-029 冻结 venv
+          # 同一口径（build_helper.sh 会断言 pyinstaller 版本 == pin）。
+          "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
+            -r requirements-runtime.txt \
+            -r requirements-runtime-build.txt \
+            -c constraints.txt
+
+      - name: 版本门（构建前快检：tag == 单一版本源）
+        run: |
+          set -euo pipefail
+          bash scripts/check_version_consistency.sh
+          VER="$(grep -E '^__version__[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' fathom/__init__.py | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')"
+          [ "$RELEASE_VERSION" = "$VER" ] || {
+            echo "[release] FAIL：tag '$RELEASE_TAG' 版本 $RELEASE_VERSION != 单一版本源 __version__ $VER" >&2
+            exit 1
+          }
+          echo "[release] 版本门（构建前）：tag 与单一版本源一致（${VER}）"
+
+      - name: 冻结 helper（PyInstaller onedir，复用 build_helper.sh）
+        run: |
+          set -euo pipefail
+          bash scripts/build_helper.sh "$RUNNER_TEMP/fathom-venv"
+
+      - name: 固定 Rust 工具链 ${{ env.RUST_VERSION }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustc --version
+          cargo --version
+          [ "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION" ]
+
+      - name: Cargo.lock 锁定离线构建（预热缓存 + 锁文件证明）
+        env:
+          CARGO_PREFETCH: '1'
+        run: |
+          set -euo pipefail
+          bash scripts/ci_cargo_locked.sh
+
+      - name: 安装锁定版本 tauri-cli ${{ env.TAURI_CLI_VERSION }}
+        run: |
+          set -euo pipefail
+          cargo install tauri-cli --version "$TAURI_CLI_VERSION" --locked
+          cargo tauri --version
+          [ "$(cargo tauri --version | awk '{print $2}')" = "$TAURI_CLI_VERSION" ]
+
+      - name: 构建 .app + DMG（tauri build，updater 产物按首轮边界关闭）
+        run: |
+          set -euo pipefail
+          # ISS-041A 首轮无 updater 边界：内联 --config 把
+          # bundle.createUpdaterArtifacts 覆盖为 false（官方文档：--config
+          # JSON 与默认配置合并、冲突键后者覆盖；本机 2.6.2 实测该键
+          # 参与合并后校验）。恢复 updater 时：删除本覆盖、生成 G10 生产
+          # keypair，并在受控环境以 TAURI_SIGNING_* 环境变量（非 workflow
+          # secrets 内联）重新接入——本 workflow 当前不引用任何 secrets。
+          cat > "$RUNNER_TEMP/tauri-updater-off.json" <<'EOF'
+          {
+            "bundle": {
+              "createUpdaterArtifacts": false
+            }
+          }
+          EOF
+          export FATHOM_TAURI_BUILD_ARGS="--config $RUNNER_TEMP/tauri-updater-off.json"
+          # ISS-041A repair1：build_app.sh 内部会再次调用 build_helper.sh，
+          # 无参时退回本机 iss029 缺省 venv（不在 git，干净 runner 上必
+          # BLOCKED exit 3）。透传前置「冻结 helper」步骤已就绪的同一 venv。
+          export FATHOM_BUILD_VENV="$RUNNER_TEMP/fathom-venv"
+          bash scripts/build_app.sh
+
+      - name: 定位 DMG 并生成 Release checksums.txt
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="$PWD/apps/desktop/src-tauri/target/release/bundle"
+          DMG="$(find "$BUNDLE_DIR/dmg" -maxdepth 1 -name "Fathom_${RELEASE_VERSION}_*.dmg" | head -1)"
+          [ -n "$DMG" ] && [ -f "$DMG" ] || {
+            echo "[release] FAIL：未找到 Fathom_${RELEASE_VERSION}_*.dmg（构建产物缺失）" >&2
+            exit 1
+          }
+          echo "DMG=$DMG" >> "$GITHUB_ENV"
+          DMG_NAME="$(basename "$DMG")"
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+          # 标准 `shasum -a 256` 输出（<sha>  <文件名>，两个空格），
+          # 下载侧可直接 `shasum -c checksums.txt` 复跑（文件名无路径）。
+          # 与 build_app.sh 写的 bundle/checksums.txt（本地证据全指纹）
+          # 用途不同，互不替代。
+          STAGE="$RUNNER_TEMP/release-assets"
+          mkdir -p "$STAGE"
+          cp "$DMG" "$STAGE/$DMG_NAME"
+          ( cd "$STAGE" && shasum -a 256 "$DMG_NAME" > checksums.txt )
+          cat "$STAGE/checksums.txt"
+          # helper 二进制指纹附带在 notes 里引用本地证据，不作为资产上传。
+          [ -f "apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper.sha256" ] \
+            || { echo "[release] FAIL：helper sha256 证据文件缺失" >&2; exit 1; }
+
+      - name: 版本门（上传前 fail-closed 重跑）
+        run: |
+          set -euo pipefail
+          bash scripts/check_version_consistency.sh
+          VER="$(grep -E '^__version__[[:space:]]*=[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"[[:space:]]*$' fathom/__init__.py | head -1 | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/')"
+          [ "$RELEASE_VERSION" = "$VER" ] || {
+            echo "[release] FAIL：上传前版本门不一致：tag $RELEASE_VERSION != $VER" >&2
+            exit 1
+          }
+          # DMG 文件名也必须携带同一版本（构建用了错误版本时在此拦截）。
+          case "$DMG_NAME" in
+            "Fathom_${RELEASE_VERSION}"_*) ;;
+            *) echo "[release] FAIL：DMG 文件名 $DMG_NAME 未携带版本 $RELEASE_VERSION" >&2; exit 1 ;;
+          esac
+          echo "[release] 版本门（上传前）：通过（tag/单一源/DMG 文件名 = ${VER}）"
+
+      - name: 上传资产到 draft Release（绝不 publish）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          STAGE="$RUNNER_TEMP/release-assets"
+          NOTES="$(mktemp)"
+          cat > "$NOTES" <<EOF
+          Fathom ${RELEASE_TAG}（ISS-041A 首轮 draft）
+
+          - 仅 arm64（Apple Silicon 原生构建），无 x86_64 产物。
+          - 未签名、未公证：首次打开需在 Finder 右键打开或系统设置放行
+            （DMG 背景含指引）。这是 DEC-022 延期签名后的预期状态。
+          - 本轮无 updater 产物（.tar.gz/.sig/latest.json 均不在内），
+            应用内更新不可用，属预期。
+          - 校验：sha256 -c checksums.txt；结构校验可复跑
+            scripts/verify_release_candidate.sh（见仓库 scripts/ 目录）。
+          - 保持 draft：公开发布由维护者人工执行，本 workflow 不 publish。
+          EOF
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "[release] draft 已存在，改为追加/覆盖资产：$RELEASE_TAG"
+            gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              "$STAGE/$DMG_NAME" "$STAGE/checksums.txt" --clobber
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title "Fathom $RELEASE_TAG" \
+              --notes-file "$NOTES" \
+              --target "$(git rev-list -n1 "$RELEASE_TAG")" \
+              "$STAGE/$DMG_NAME" "$STAGE/checksums.txt"
+          fi
+          # --target 用 tag 实际指向的 commit SHA：GitHub 创建 Release 的
+          # target_commitish 只接受分支名/SHA，传 tag 名会 422 invalid
+          # （v0.3.0 第二跑实测）。收尾断言：release 必须仍是 draft（防上游
+          # gh 行为变化悄悄发布）。
+          IS_DRAFT="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft)"
+          [ "$IS_DRAFT" = "true" ] || {
+            echo "[release] FAIL：release $RELEASE_TAG 不是 draft（isDraft=${IS_DRAFT}），中止" >&2
+            exit 1
+          }
+          echo "[release] draft Release 就绪：${RELEASE_TAG}（资产：${DMG_NAME}、checksums.txt）"

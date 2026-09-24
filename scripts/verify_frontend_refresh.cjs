@@ -700,20 +700,35 @@ async function main() {
       selected: [document.querySelector("#sel-a").value, document.querySelector("#sel-b").value],
       status: document.querySelector("#diff-status").textContent,
       report: document.querySelector("#report-list").textContent,
-      canvases: [...document.querySelectorAll("#page-changes canvas")].map((c) => [c.width, c.height]),
     }));
     record("same-day-rescan-reconciles-ids",
       after.options.join(",") === "3,1" && after.selected.join(",") === "1,3" &&
         after.status.includes("已更新或不再可用"), JSON.stringify(after));
+    /* ISS-094：增长/缩减图表移入独立分区 tab（默认比对明细，图表隐藏
+     * 初始化记 stale）——真实点击 tab 激活分区后图表画布必须恢复非零尺寸
+     * （tabs.js 的 resumeChartsIn），两个图表分区各验一次后回默认 tab。 */
+    const tabCanvases = {};
+    for (const tab of ["grown", "shrunk"]) {
+      await page.click(`#page-changes .page-tab[data-tab="${tab}"]`);
+      await page.waitForFunction((tab) => {
+        const c = document.querySelector(`#page-changes .page-tab-section[data-tab="${tab}"] canvas`);
+        return c && c.width > 0 && c.height > 0;
+      }, tab, { timeout: 5000 });
+      tabCanvases[tab] = true;
+    }
+    await page.click('#page-changes .page-tab[data-tab="detail"]');
     record("diff-and-report-refresh-after-scan",
       fixture.state.lastDiff?.join(",") === "1,3" && fixture.state.staleDiffs === 0 &&
-        after.report.includes("2026-09-13") && after.canvases.every(([w, h]) => w > 0 && h > 0));
+        after.report.includes("2026-09-13") && tabCanvases.grown && tabCanvases.shrunk);
     const changesShot = path.join(evidenceDir, "changes-after-rescan-1220x820.png");
     await page.screenshot({ path: changesShot });
 
     /* ---------- 分布页 + 零差值渲染 ---------- */
     await page.click('a[data-page="browse"]');
     await page.waitForURL("**/#/browse");
+    await page.waitForSelector("#chart-sunburst canvas");  // 默认分区=占用分布
+    // ISS-094：目录浏览器已分区 tab 化——真实点击切到该分区再断言表格。
+    await page.click('#page-browse .page-tab[data-tab="browser"]');
     await page.waitForSelector("#tbl-browse tbody tr");
     const browse = await page.evaluate(() => ({
       text: document.querySelector("#tbl-browse").textContent,
@@ -1346,6 +1361,8 @@ async function main() {
     record("single-snapshot-enables-distribution-not-diff",
       await page.locator("#sel-a").isDisabled() && await page.locator("#sel-b").isDisabled());
     await openPage("#/browse");
+    // ISS-094：目录浏览器在独立分区 tab——真实点击切过去再断言表格。
+    await page.click('#page-browse .page-tab[data-tab="browser"]');
     await page.waitForSelector("#tbl-browse tbody tr");
     record("single-snapshot-distribution-loads",
       (await page.locator("#tbl-browse").textContent()).includes("Archive") &&
@@ -1426,7 +1443,9 @@ async function main() {
         !treeBrowseRace.child.includes("OldChild"), JSON.stringify(treeBrowseRace));
 
     // 快速切目录：旧目录响应后到，表格只保留当前目录。
+    // ISS-094：目录浏览器在独立分区 tab——真实点击切过去再驱动表格交互。
     await setScenario("browse-switch-race");
+    await page.click('#page-browse .page-tab[data-tab="browser"]');
     await page.waitForSelector("#tbl-browse .dir-name");
     await page.click("#tbl-browse .dir-name");  // 下钻 Archive（慢响应 SlowOldDir）
     await waitForCount("browse", 1);
@@ -1629,19 +1648,179 @@ async function main() {
     const statusAfter = (await fixtureState()).counts.status;
     record("scan-poll-stops-after-settle", statusAfter === 1, `status calls=${statusAfter} after settle`);
 
-    /* ---------- 行操作可访问名 ---------- */
+    /* ---------- ISS-094：内容页页内二级导航（横向 tab 分区） ----------
+     * 口径：变化页五分区（默认比对明细）/ 分布页两分区（默认占用分布）/
+     * 大文件页天然单区块不加 tab。断言覆盖：tab 结构与默认分区、点击切换
+     * 渲染对应分区并写 hash 段、hash 刷新保持（路由不回落 overview）、
+     * 方向键 + Enter 键盘激活、tab 条 sticky 于唯一滚动容器（082 不回归）、
+     * 旭日图点扇区联动切目录浏览器分区。全部经真实 UI 驱动。 */
     await setMode("addedremoved");
     await openPage("#/changes");
+    await page.waitForFunction(() => document.querySelectorAll("#sel-b option").length === 2);
+    const tabsInitial = await page.evaluate(() => ({
+      tabs: [...document.querySelectorAll("#page-changes .page-tab")].map((b) => b.dataset.tab),
+      labels: [...document.querySelectorAll("#page-changes .page-tab")].map((b) => b.textContent.trim()),
+      active: document.querySelector('#page-changes .page-tab[aria-current="true"]')?.dataset.tab || null,
+      visibleSections: [...document.querySelectorAll("#page-changes .page-tab-section")]
+        .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.tab),
+      hash: location.hash,
+    }));
+    record("changes-tabs-5-sections-default-detail",
+      JSON.stringify(tabsInitial.tabs) === JSON.stringify(["detail", "grown", "shrunk", "added", "removed"]) &&
+        tabsInitial.labels.join("/") === "比对明细/增长最多/缩减最多/新出现/消失" &&
+        tabsInitial.active === "detail" &&
+        JSON.stringify(tabsInitial.visibleSections) === JSON.stringify(["detail"]) &&
+        tabsInitial.hash === "#/changes",
+      JSON.stringify(tabsInitial));
+
+    // 点击切换：added 分区渲染对应表格 + hash 写段；回默认 tab 清段。
+    await page.click('#page-changes .page-tab[data-tab="added"]');
     await page.waitForSelector("#tbl-added [data-reveal]");
+    await page.click('#page-changes .page-tab[data-tab="removed"]');
     await page.waitForSelector("#tbl-removed [data-reveal]");
+    const removedActive = await page.evaluate(() => ({
+      active: document.querySelector('#page-changes .page-tab[aria-current="true"]')?.dataset.tab || null,
+      visibleSections: [...document.querySelectorAll("#page-changes .page-tab-section")]
+        .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.tab),
+      hash: location.hash,
+    }));
+    record("changes-tab-click-switches-section-and-persists-hash",
+      removedActive.active === "removed" &&
+        JSON.stringify(removedActive.visibleSections) === JSON.stringify(["removed"]) &&
+        removedActive.hash === "#/changes/removed",
+      JSON.stringify(removedActive));
+    await page.click('#page-changes .page-tab[data-tab="detail"]');
+    const backToDefault = await page.evaluate(() => location.hash);
+    record("changes-tab-returning-default-clears-hash-segment",
+      backToDefault === "#/changes", backToDefault);
+
+    // 行操作可访问名（addedremoved 场景；分区 tab 化后 DOM 仍可查询，
+    // textContent/属性读取不依赖可见性）
     const accessibleNames = await page.evaluate(() =>
       ["#tbl-added [data-reveal]", "#tbl-removed [data-reveal]"].map((selector) => {
         const button = document.querySelector(selector);
-        return [button.getAttribute("aria-label"), button.getAttribute("title")];
+        return [button?.getAttribute("aria-label"), button?.getAttribute("title")];
       }));
     record("added-and-removed-actions-have-accessible-names",
       accessibleNames.every(([aria, title]) => aria === "在 Finder 中显示" && title === aria),
       JSON.stringify(accessibleNames));
+
+    // 键盘可达：方向键在 tab 间移动焦点（不激活），Enter 激活。
+    await page.focus('#page-changes .page-tab[data-tab="detail"]');
+    await page.keyboard.press("ArrowRight");   // → grown
+    await page.keyboard.press("ArrowRight");   // → shrunk
+    await page.keyboard.press("End");          // → removed（Home/End 亦可达）
+    const keyboardFocused = await page.evaluate(() => ({
+      focusTab: document.activeElement?.dataset?.tab || null,
+      activeTab: document.querySelector('#page-changes .page-tab[aria-current="true"]')?.dataset.tab || null,
+    }));
+    await page.keyboard.press("Enter");
+    const keyboardActivated = await page.evaluate(() => ({
+      activeTab: document.querySelector('#page-changes .page-tab[aria-current="true"]')?.dataset.tab || null,
+      visibleSections: [...document.querySelectorAll("#page-changes .page-tab-section")]
+        .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.tab),
+      hash: location.hash,
+    }));
+    record("changes-tabs-arrow-keys-move-focus-enter-activates",
+      keyboardFocused.focusTab === "removed" && keyboardFocused.activeTab === "detail" &&
+        keyboardActivated.activeTab === "removed" &&
+        JSON.stringify(keyboardActivated.visibleSections) === JSON.stringify(["removed"]) &&
+        keyboardActivated.hash === "#/changes/removed",
+      JSON.stringify({ keyboardFocused, keyboardActivated }));
+
+    // hash 刷新保持：带段 URL 整页加载后 tab 恢复、路由不回落 overview。
+    await openPage("#/changes/grown");
+    await page.waitForFunction(() => document.querySelectorAll("#sel-b option").length === 2);
+    const reloadedGrown = await page.evaluate(() => ({
+      activeTab: document.querySelector('#page-changes .page-tab[aria-current="true"]')?.dataset.tab || null,
+      visibleSections: [...document.querySelectorAll("#page-changes .page-tab-section")]
+        .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.tab),
+      hash: location.hash,
+      pageTitle: document.getElementById("page-title").textContent,
+      changesVisible: !document.getElementById("page-changes").classList.contains("hidden"),
+    }));
+    record("changes-tab-hash-persists-across-reload",
+      reloadedGrown.activeTab === "grown" &&
+        JSON.stringify(reloadedGrown.visibleSections) === JSON.stringify(["grown"]) &&
+        reloadedGrown.hash === "#/changes/grown" &&
+        reloadedGrown.pageTitle === "变化" && reloadedGrown.changesVisible,
+      JSON.stringify(reloadedGrown));
+
+    // tab 条 sticky：内容上滚后 tab 条贴唯一滚动容器（.page-container）顶。
+    // 滚动容器高度合同（ISS-082）由既有 viewport-no-horizontal-overflow 探针
+    // 钉住；这里钉「tab 条在容器内 sticky 常驻」不回归。
+    // sticky 需要真实滚动量：dual 夹具的分区内容在 820 高视口下不足一屏
+    // （scrollable=false），缩到 600 高制造小窗口场景（sticky 的价值场景，
+    // 布局本身不变），检查后恢复标准视口。
+    await page.setViewportSize({ width: 1220, height: 600 });
+    const stickyCheck = await page.evaluate(() => {
+      const container = document.querySelector(".page-container");
+      const tabs = document.querySelector("#page-changes .page-tabs");
+      const padTop = parseFloat(getComputedStyle(container).paddingTop) || 0;
+      container.scrollTop = 600;
+      const tabTop = tabs.getBoundingClientRect().top;
+      const containerTop = container.getBoundingClientRect().top;
+      return {
+        tabTop, containerTop, padTop,
+        scrollable: container.scrollHeight > container.clientHeight,
+        scrollTop: container.scrollTop,
+      };
+    });
+    record("changes-tabs-sticky-at-scroll-container-top",
+      stickyCheck.scrollable && stickyCheck.scrollTop > 0 &&
+        Math.abs(stickyCheck.tabTop - (stickyCheck.containerTop + stickyCheck.padTop)) <= 1,
+      JSON.stringify(stickyCheck));
+    await page.setViewportSize({ width: 1220, height: 820 });
+    const changesTabsShot = path.join(evidenceDir, "changes-tabs-grown-1220x820.png");
+    await page.screenshot({ path: changesTabsShot });
+
+    // 分布页：两分区 + 默认占用分布 + 旭日图点扇区联动切目录浏览器。
+    await setMode("dual");
+    await openPage("#/browse");
+    await page.waitForSelector("#chart-sunburst canvas");
+    const browseTabsInitial = await page.evaluate(() => ({
+      tabs: [...document.querySelectorAll("#page-browse .page-tab")].map((b) => b.dataset.tab),
+      active: document.querySelector('#page-browse .page-tab[aria-current="true"]')?.dataset.tab || null,
+      visibleSections: [...document.querySelectorAll("#page-browse .page-tab-section")]
+        .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.tab),
+    }));
+    record("browse-tabs-default-sunburst",
+      JSON.stringify(browseTabsInitial.tabs) === JSON.stringify(["sunburst", "browser"]) &&
+        browseTabsInitial.active === "sunburst" &&
+        JSON.stringify(browseTabsInitial.visibleSections) === JSON.stringify(["sunburst"]),
+      JSON.stringify(browseTabsInitial));
+    // 真实点击旭日图扇区（一级环 Archive：radius=[40,"92%"]，环心 40px
+    // 空洞，中心是空洞；右侧 70px 落在一级环 40~94px 内）→ 自动切目录
+    // 浏览器分区。先等初始径向展开动画结束再点，避免点击落在未绘制区域。
+    await page.waitForTimeout(1300);
+    const sunburstBox = await page.locator("#chart-sunburst canvas").boundingBox();
+    await page.mouse.click(
+      sunburstBox.x + sunburstBox.width / 2 + 70,
+      sunburstBox.y + sunburstBox.height / 2);
+    await page.waitForSelector('#page-browse .page-tab[data-tab="browser"][aria-current="true"]');
+    const sunburstLink = await page.evaluate(() => ({
+      activeTab: document.querySelector('#page-browse .page-tab[aria-current="true"]')?.dataset.tab || null,
+      browserVisible: !document.querySelector('#page-browse .page-tab-section[data-tab="browser"]').hasAttribute("hidden"),
+      hash: location.hash,
+      tableRows: document.querySelectorAll("#tbl-browse tbody tr").length,
+    }));
+    record("browse-sunburst-click-switches-to-browser-tab",
+      sunburstLink.activeTab === "browser" && sunburstLink.browserVisible &&
+        sunburstLink.hash === "#/browse/browser" && sunburstLink.tableRows > 0,
+      JSON.stringify(sunburstLink));
+    const browseTabsShot = path.join(evidenceDir, "browse-tabs-browser-1220x820.png");
+    await page.screenshot({ path: browseTabsShot });
+
+    // 大文件页：调研结论钉住——天然单区块（一个查询表即整页），不加 tab。
+    await openPage("#/bigfiles");
+    await page.waitForSelector("#tbl-bigfiles tbody tr");
+    const bigfilesNoTabs = await page.evaluate(() => ({
+      tabBars: document.querySelectorAll("#page-bigfiles .page-tabs").length,
+      sections: document.querySelectorAll("#page-bigfiles .page-tab-section").length,
+    }));
+    record("bigfiles-single-block-no-tabs-by-design",
+      bigfilesNoTabs.tabBars === 0 && bigfilesNoTabs.sections === 0,
+      JSON.stringify(bigfilesNoTabs));
 
     /* ---------- 净变化口径：根同口径差分，非行求和（ISS-028 修复） ---------- */
     // 父子重叠：父 +100 KiB 与子 +33/+33 同时入选（DEC-005），行求和 = +166；
@@ -1736,6 +1915,8 @@ async function main() {
       baselineReady.quality.includes("基线") && baselineReady.scanNote.includes("最近扫描"),
       baselineReady.quality.slice(0, 80));
     await openPage("#/browse");
+    // ISS-094：默认分区=占用分布（旭日图）；旅程走目录浏览器分区——真实点击切换。
+    await page.click('#page-browse .page-tab[data-tab="browser"]');
     await page.waitForSelector("#tbl-browse tbody tr");
     const browseFirstLaunch = await page.locator("#tbl-browse").textContent();
     record("journey-first-launch-distribution-loads",
@@ -1865,8 +2046,9 @@ async function main() {
     record("changes-copy-path-feedback-rendered",
       copyResult === "已复制" || copyResult === "复制失败",
       copyResult);
-    // 分布页同样有复制按钮
+    // 分布页同样有复制按钮（ISS-094：切到目录浏览器分区后可见可点）
     await openPage("#/browse");
+    await page.click('#page-browse .page-tab[data-tab="browser"]');
     await page.waitForSelector("#tbl-browse tbody tr");
     const browseCopyBtn = await page.evaluate(() => {
       const b = document.querySelector("#tbl-browse [data-copy]");
@@ -1892,9 +2074,11 @@ async function main() {
     record("overview-volume-chart-and-table-coexist",
       volumeEq.canvas && volumeEq.tableRows >= 2,
       JSON.stringify(volumeEq));
-    // 分布页：sunburst + 浏览器表格同时存在
+    // 分布页：sunburst + 浏览器表格同时存在（ISS-094：两个分区各真实
+    // 点击一次——默认占用分布可见；目录浏览器切过去后趋势图 resume）
     await openPage("#/browse");
     await page.waitForSelector("#chart-sunburst canvas");
+    await page.click('#page-browse .page-tab[data-tab="browser"]');
     await page.waitForSelector("#tbl-browse tbody tr");
     const browseEq = await page.evaluate(() => ({
       canvas: Boolean(document.querySelector("#chart-sunburst canvas")),

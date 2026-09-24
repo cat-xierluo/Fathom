@@ -109,45 +109,88 @@
         </div>
       </section>
 
-      <!-- ===== 变化 ===== -->
+      <!-- ===== 变化（ISS-094：页内二级导航——五分区 tab，默认比对明细） ===== -->
       <section class="page hidden" id="page-changes">
-        <div class="panel">
-          <div class="panel-head">
-            <h2>快照对比</h2>
-            <div class="controls">
-              <label>基线 <select id="sel-a"></select></label>
-              <label>对比 <select id="sel-b"></select></label>
-              <input id="changes-search" class="ctl-input" type="search"
-                     placeholder="搜索目录" aria-label="搜索目录" autocomplete="off">
+        <!-- 横向 tab 条（tabs.js 接线；sticky 在 page-container 顶部，ISS-082 合同不破） -->
+        <nav class="page-tabs" aria-label="变化页分区导航" data-test="changes-tabs">
+          <button type="button" class="page-tab" data-tab="detail" data-test="changes-tab-detail">比对明细</button>
+          <button type="button" class="page-tab" data-tab="grown" data-test="changes-tab-grown">增长最多</button>
+          <button type="button" class="page-tab" data-tab="shrunk" data-test="changes-tab-shrunk">缩减最多</button>
+          <button type="button" class="page-tab" data-tab="added" data-test="changes-tab-added">新出现</button>
+          <button type="button" class="page-tab" data-tab="removed" data-test="changes-tab-removed">消失</button>
+        </nav>
+
+        <section class="page-tab-section" data-tab="detail" data-test="changes-section-detail">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>快照对比</h2>
+              <div class="controls">
+                <label>基线 <select id="sel-a"></select></label>
+                <label>对比 <select id="sel-b"></select></label>
+                <input id="changes-search" class="ctl-input" type="search"
+                       placeholder="搜索目录" aria-label="搜索目录" autocomplete="off">
+              </div>
+            </div>
+            <p id="diff-status" class="hint" role="status" aria-live="polite"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>正在加载快照列表…</p>
+            <div class="net-line" id="changes-net" hidden></div>
+            <p class="hint" id="changes-foot" hidden>列表包含父子目录，行值不可相加为净变化；"未记录"不等于新增或删除。</p>
+            <div class="tbl-wrap">
+              <table class="tbl" id="changes-table">
+                <thead><tr>
+                  <th><button class="th-sort" data-sort="path" type="button">目录</button></th>
+                  <th class="num"><button class="th-sort" data-sort="prev" type="button">之前</button></th>
+                  <th class="num"><button class="th-sort" data-sort="curr" type="button">现在</button></th>
+                  <th class="num"><button class="th-sort" data-sort="delta" type="button">变化</button></th>
+                  <th>状态</th>
+                  <th><span class="visually-hidden">操作</span></th>
+                </tr></thead>
+                <tbody id="changes-body"></tbody>
+              </table>
             </div>
           </div>
-          <p id="diff-status" class="hint" role="status" aria-live="polite"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>正在加载快照列表…</p>
-          <div class="net-line" id="changes-net" hidden></div>
-          <p class="hint" id="changes-foot" hidden>列表包含父子目录，行值不可相加为净变化；"未记录"不等于新增或删除。</p>
-          <div class="tbl-wrap">
-            <table class="tbl" id="changes-table">
-              <thead><tr>
-                <th><button class="th-sort" data-sort="path" type="button">目录</button></th>
-                <th class="num"><button class="th-sort" data-sort="prev" type="button">之前</button></th>
-                <th class="num"><button class="th-sort" data-sort="curr" type="button">现在</button></th>
-                <th class="num"><button class="th-sort" data-sort="delta" type="button">变化</button></th>
-                <th>状态</th>
-                <th><span class="visually-hidden">操作</span></th>
-              </tr></thead>
-              <tbody id="changes-body"></tbody>
-            </table>
+        </section>
+
+        <section class="page-tab-section" data-tab="grown" data-test="changes-section-grown" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2 class="grow"><span data-icon-inline="arrowUpRight"></span>增长最多</h2>
+              <p class="hint">对比区间内增量最大的目录（Top 12）；行值不可相加为净变化</p>
+            </div>
+            <div id="chart-grown" class="chart"></div>
           </div>
-          <div class="diff-grid">
-            <div><h3 class="grow"><span data-icon-inline="arrowUpRight"></span>增长最多</h3><div id="chart-grown" class="chart"></div></div>
-            <div><h3 class="shrink"><span data-icon-inline="arrowDownRight"></span>缩减最多</h3><div id="chart-shrunk" class="chart"></div></div>
+        </section>
+
+        <section class="page-tab-section" data-tab="shrunk" data-test="changes-section-shrunk" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2 class="shrink"><span data-icon-inline="arrowDownRight"></span>缩减最多</h2>
+              <p class="hint">对比区间内减量最大的目录（Top 12）</p>
+            </div>
+            <div id="chart-shrunk" class="chart"></div>
           </div>
-          <div class="diff-tables">
-            <div><h3><span data-icon-inline="plus"></span>新出现的大目录（≥100MB）</h3>
-              <table class="tbl" id="tbl-added"><thead><tr><th>目录</th><th>大小</th><th></th></tr></thead><tbody></tbody></table></div>
-            <div><h3><span data-icon-inline="trash"></span>消失的目录</h3>
-              <table class="tbl" id="tbl-removed"><thead><tr><th>目录</th><th>曾占</th><th></th></tr></thead><tbody></tbody></table></div>
+        </section>
+
+        <section class="page-tab-section" data-tab="added" data-test="changes-section-added" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2><span data-icon-inline="plus"></span>新出现的大目录</h2>
+              <p class="hint">基线中不存在、对比时已 ≥100MB 的目录；"新出现"不等于新增数据</p>
+            </div>
+            <table class="tbl" id="tbl-added"><thead><tr><th>目录</th><th>大小</th><th></th></tr></thead><tbody></tbody></table>
           </div>
-        </div>
+        </section>
+
+        <section class="page-tab-section" data-tab="removed" data-test="changes-section-removed" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h2><span data-icon-inline="trash"></span>消失的目录</h2>
+              <p class="hint">基线中存在、对比时已不存在的目录；缺失条目不是删除证据</p>
+            </div>
+            <table class="tbl" id="tbl-removed"><thead><tr><th>目录</th><th>曾占</th><th></th></tr></thead><tbody></tbody></table>
+          </div>
+        </section>
+
+        <!-- 历史日报：五分区之外页尾常驻（跨 tab 的历史证据，与当前对比数据源不同） -->
         <div class="panel">
           <div class="panel-head"><h2>历史日报</h2><p class="hint">每日扫描后自动生成，可回看任意一天</p></div>
           <div id="report-list" class="report-list"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>加载中…</div>
@@ -157,13 +200,22 @@
         <aside id="changes-detail" class="changes-detail" hidden aria-label="目录详情"></aside>
       </section>
 
-      <!-- ===== 分布（旭日图 + 目录浏览器） ===== -->
+      <!-- ===== 分布（ISS-094：页内二级导航——分布图 / 目录浏览器两分区 tab） ===== -->
       <section class="page hidden" id="page-browse">
-        <div class="panel">
-          <div class="panel-head"><h2>当前占用分布</h2><p class="hint">点击扇区在下方目录浏览器中定位</p></div>
-          <div id="chart-sunburst" class="chart chart-lg"></div>
-        </div>
-        <div class="panel" id="browser-panel">
+        <nav class="page-tabs" aria-label="分布页分区导航" data-test="browse-tabs">
+          <button type="button" class="page-tab" data-tab="sunburst" data-test="browse-tab-sunburst">占用分布</button>
+          <button type="button" class="page-tab" data-tab="browser" data-test="browse-tab-browser">目录浏览器</button>
+        </nav>
+
+        <section class="page-tab-section" data-tab="sunburst" data-test="browse-section-sunburst">
+          <div class="panel">
+            <div class="panel-head"><h2>当前占用分布</h2><p class="hint">点击扇区切换到目录浏览器并定位</p></div>
+            <div id="chart-sunburst" class="chart chart-lg"></div>
+          </div>
+        </section>
+
+        <section class="page-tab-section" data-tab="browser" data-test="browse-section-browser" hidden>
+          <div class="panel" id="browser-panel">
           <div class="panel-head">
             <h2>目录浏览器</h2>
             <div id="browser-meta" class="hint">--</div>
@@ -181,10 +233,12 @@
               <div id="chart-browser-trend" class="chart chart-sm"></div>
             </div>
           </div>
-        </div>
+          </div>
+        </section>
       </section>
 
-      <!-- ===== 大文件 ===== -->
+      <!-- ===== 大文件（ISS-094 调研结论：天然单区块——一个查询表即整页，
+           不加无意义 tab；与变化/分布的 tab 语言不冲突） ===== -->
       <section class="page hidden" id="page-bigfiles">
         <div class="panel">
           <div class="panel-head">

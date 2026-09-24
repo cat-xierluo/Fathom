@@ -18,10 +18,17 @@
  * 「重试」小按钮（原确认按钮兼任的失败重试语义收拢到失败态）。
  * 连点竞态由既有 diff 域世代号守卫覆盖（迟到的旧响应不得写入 DOM）；
  * 结果区刷新不抢焦点（改选触发的详情关闭不回焦到已销毁的行）。
+ *
+ * 分区（ISS-094）：页头下横向 tab 条（比对明细/增长最多/缩减最多/新出现/
+ * 消失，默认比对明细；历史日报是 tab 外页尾常驻区）。数据加载逻辑不变
+ * ——loadDiff 一次渲染全部分区，tab 只切可见性；隐藏分区里初始化的图表
+ * 由 tabs.js 激活时经 resumeChartsIn 恢复尺寸。tab 状态记 hash
+ * （#/changes/grown；刷新保持由 app.js 在路由前规范化承接，见 tabs.js）。
  */
 import { fetchJSON, beginRequest, invalidateRequest, revealInFinder } from "../request.js";
 import { fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, hasChart, clearChart } from "../charts.js";
+import { initPageTabs } from "../tabs.js";
 import { icon } from "../../icons.js";
 
 /* ISS-084：图表色与 style.css :root 语义 token 同源（单一色源，不硬编码）。
@@ -34,6 +41,7 @@ let currentRows = [];
 let lastDiff = null;                 // 最近一次成功 diff，用于详情
 let activeDetailPath = null;          // 当前详情目录
 let activeDetailRow = null;           // 当前详情触发行（Esc 后焦点回此）
+let changesTabs = null;               // ISS-094 页内二级导航（五分区 tab）
 
 function setDiffStatus(message) {
   // textContent 赋值整体替换子节点：若此前失败态挂了「重试」按钮，此处一并清除。
@@ -625,10 +633,14 @@ async function loadReportList() {
 export const changesPage = {
   id: "changes",
   load() {
+    // ISS-094：进入页面按 hash 恢复 tab（无段 = 默认比对明细）。
+    changesTabs?.applyHash();
     loadSnapshotsForDiff();
     loadReportList();
   },
   init() {
+    // ISS-094：页内二级导航（五分区 tab；index.html 静态 DOM）。
+    changesTabs = initPageTabs({ page: "changes", defaultTab: "detail" });
     // ISS-093：选择即比对——select 改选（鼠标或键盘）在选齐后自动触发加载。
     ["sel-a", "sel-b"].forEach((id) => {
       document.getElementById(id).addEventListener("change", onSelectionChange);

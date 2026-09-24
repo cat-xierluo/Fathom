@@ -9,10 +9,15 @@
  * - 长路径：可一键复制（DESIGN 关键可达性约束）；
  * - 趋势图与表格不重复：本页已有侧栏趋势，分布面板的图表与下钻表格
  *   共存于浏览器内（DESIGN：图表有表格替代/并列）。
+ *
+ * 分区（ISS-094）：页头下横向 tab 条（占用分布/目录浏览器，默认占用分布）。
+ * 数据加载逻辑不变——load() 仍一次拉取 trees + browse 渲染两个分区，
+ * tab 只切可见性；旭日图点击扇区联动切到「目录浏览器」并定位该路径。
  */
 import { fetchJSON, beginRequest, invalidateRequest, revealInFinder } from "../request.js";
 import { fmtBytes, fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, showChartMessage } from "../charts.js";
+import { initPageTabs } from "../tabs.js";
 import { state } from "../state.js";
 import { icon } from "../../icons.js";
 
@@ -29,6 +34,8 @@ const SUNBURST_PALETTE = [
   "#4d7391", "#5c9490", "#6e8ca6",
   "#82c8c2", "#9db4c6",
 ];
+
+let browseTabs = null;  // ISS-094 页内二级导航（占用分布 / 目录浏览器）
 
 async function loadTree() {
   const request = beginRequest("tree");
@@ -52,7 +59,11 @@ async function loadTree() {
     }, true);
     chart.off("click");
     chart.on("click", (p) => {
-      if (p.data && p.data.path) loadBrowse(p.data.path);
+      if (!p.data || !p.data.path) return;
+      // ISS-094：扇区点击联动——目录浏览器已改为并列分区，定位前先
+      // 切到该 tab（用户停在分布图 tab 时也能一跳即达）。
+      browseTabs?.activate("browser", { persistHash: true });
+      loadBrowse(p.data.path);
     });
   } catch (e) {
     if (!request.current()) return;
@@ -170,8 +181,14 @@ async function loadBrowse(path) {
 export const browsePage = {
   id: "browse",
   load() {
+    // ISS-094：进入页面按 hash 恢复 tab（无段 = 默认占用分布）。
+    browseTabs?.applyHash();
     loadTree();
     loadBrowse(state.browsePath);
+  },
+  init() {
+    // ISS-094：页内二级导航（占用分布 / 目录浏览器；index.html 静态 DOM）。
+    browseTabs = initPageTabs({ page: "browse", defaultTab: "sunburst" });
   },
   leave() {
     invalidateRequest("tree");

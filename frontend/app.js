@@ -7,7 +7,7 @@
 import { icon, ICON_PATHS } from "./icons.js";
 import { setRequestScope } from "./modules/request.js";
 import { state } from "./modules/state.js";
-import { initPages, navigate } from "./modules/router.js";
+import { initPages, navigate, PAGE_TITLES } from "./modules/router.js";
 import { initStatus, loadStatus, triggerScan } from "./modules/status.js";
 import { listenTrayActions } from "./modules/tauri.js";
 
@@ -48,16 +48,46 @@ function mountDepthRingDecor() {
   });
 }
 
+/* ---------- ISS-094 带分段的 hash 规范化 ----------
+ * 页内二级导航（tabs.js）把 tab 段写进 hash（#/changes/grown 形态，经
+ * replaceState 不触发 hashchange）。刷新/直达这类 URL 时，router.js 的
+ * navigate() 会把 "changes/grown" 当未知页回落 overview——本函数在
+ * navigate() 之前把 hash 规范化回 #/changes，并把 tab 段挂到
+ * window.__fathomTabPending 供对应页面的 tabs.js init 消费；navigate()
+ * 之后再写回原分段形态，URL 与页面、tab 三者保持一致（刷新保持 tab）。
+ * 只认 #/<page>/<tab> 形态（设置页 ISS-087 的 #settings/<section> 无
+ * 斜杠前缀，不在此列，行为不变）。 */
+function normalizeTabHash() {
+  const m = /^#\/([a-z]+)\/([a-z]+)$/i.exec(location.hash || "");
+  if (!m) return null;
+  const page = m[1].toLowerCase();
+  if (!(page in PAGE_TITLES)) return null;
+  const pending = { page, tab: m[2].toLowerCase() };
+  history.replaceState(null, "", `#/${page}`);
+  window.__fathomTabPending = pending;
+  return pending;
+}
+
+function restoreTabHash(pending) {
+  if (!pending || state.page !== pending.page) {
+    window.__fathomTabPending = null;  // 页面不符（防御）：丢弃挂起段
+    return;
+  }
+  history.replaceState(null, "", `#/${pending.page}/${pending.tab}`);
+}
+
 /* ---------- 启动 ---------- */
 
 (async function init() {
   try {
     setRequestScope(() => state.page);  // 世代号 pageScoped 的判定依据
+    const pendingTab = normalizeTabHash();  // 必须先于 navigate()：分段 hash 会破坏页面解析
     mountStaticIcons();
     mountDepthRingDecor();
-    initPages();      // 各页一次性事件接线
+    initPages();      // 各页一次性事件接线（tabs.js 在此消费挂起段）
     initStatus();     // 顶栏扫描按钮 + tray 心跳
     navigate();
+    restoreTabHash(pendingTab);  // navigate 之后写回分段，路由已完成、不再重解析
     await loadStatus();
     await listenTrayActions({ onScan: triggerScan });
   } catch (e) {

@@ -7,7 +7,7 @@
 # 单一版本源（ISS-037 收口）；helper 合同、/health、FastAPI、Tauri/Cargo
 # 与发行 tag 全部以本值为准，漂移由 scripts/check_version_consistency.sh
 # fail-closed 拦截。
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 # 协议版本：与 helper_contract.py / G4 身份探测一致；旧版本不兼容。
 __protocol_version__ = 1
 # 身份串：用于同服务身份探测（端口被占时让位、退码 0）。

@@ -10,7 +10,7 @@ from pathlib import Path
 import threading
 import uuid
 
-from . import config, db, notify, reports, scanner
+from . import config, db, notify, reports, scan_progress, scanner
 
 
 class ScanBusyError(RuntimeError):
@@ -100,6 +100,9 @@ class ScanSession:
         # 外层，扫描记为 status=interrupted 且保留上次有效快照。
         self.du_timeout_seconds = config.DU_TIMEOUT_S
         self._finished = False
+        # ISS-090：du 流式进度写入器（跨进程状态文件）。start/close 的
+        # 一切失败都被写入器自身吞掉——进度通道故障绝不影响扫描本体。
+        self._progress = scan_progress.ProgressReporter(run_id=run_id)
 
     def cancel(self) -> None:
         self.cancel_event.set()
@@ -155,10 +158,12 @@ class ScanSession:
             if self.cancel_event.is_set():
                 raise ScanCancelledError("扫描在启动前被取消")
             self._update(phase="snapshot")
+            self._progress.start()  # ISS-090：落 live 初值（写失败自吞）
             conn = db.connect()
             with scanner.du_process_context(
                 inherited_fd=self.lease.fd, cancel_event=self.cancel_event,
                 timeout_seconds=self.du_timeout_seconds,
+                progress=self._progress,
             ):
                 sid = scanner.create_snapshot(conn, self.root)
             conn.close()
@@ -293,6 +298,9 @@ class ScanSession:
         finally:
             if conn is not None:
                 conn.close()
+            # ISS-090：扫描结束（成功/中断/失败）统一清理 live 进度文件；
+            # 进程崩溃残留的 stale 文件由读取方按 heartbeat 判活兜底。
+            self._progress.close()
             self.lease.release()
 
 
@@ -348,6 +356,13 @@ def run_scan(*, source: str, root: Path | None = None) -> tuple[int, dict]:
 
 
 def latest_scan_state(conn) -> dict:
+    """最近一次扫描状态 + live 进度（ISS-090）。
+
+    DB 部分只读 scan_runs；``live`` 来自运行根状态文件（scan_progress.
+    live_progress 已含 heartbeat 判活：stale/缺失/损坏 → None，前端据此
+    回退到无计数的「扫描进行中…」文案）。文件通道与 DB 通道相互独立：
+    任一失败都不影响另一路。
+    """
     row = conn.execute(
         "SELECT r.*, d.source, d.phase, d.snapshot_id, d.report_status, "
         "d.report_path, d.notification_status, d.pruned_count "
@@ -357,7 +372,7 @@ def latest_scan_state(conn) -> dict:
     if row is None:
         return {"id": None, "status": None, "running": False, "started_at": None,
                 "finished_at": None, "result": None, "error": None,
-                "source": None, "phase": None}
+                "source": None, "phase": None, "live": _live_view()}
     result = None
     error = None
     if row["status"] == "done" and row["message"]:
@@ -371,5 +386,13 @@ def latest_scan_state(conn) -> dict:
         "id": row["id"], "status": row["status"],
         "running": row["status"] == "running", "started_at": row["started_at"],
         "finished_at": row["finished_at"], "result": result, "error": error,
-        "source": row["source"], "phase": row["phase"],
+        "source": row["source"], "phase": row["phase"], "live": _live_view(),
     }
+
+
+def _live_view() -> dict | None:
+    """live_progress 的异常安全包装：状态文件通道任何故障都不让查询 5xx。"""
+    try:
+        return scan_progress.live_progress()
+    except Exception:
+        return None

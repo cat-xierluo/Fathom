@@ -132,7 +132,22 @@ function createFixture() {
     }
     return row;
   });
-  const scanning = () => state.scanning || state.mode === "scanning-stuck";
+  const scanning = () => state.scanning || state.mode === "scanning-stuck" ||
+    state.mode === "scanning-live";
+  // ISS-090：scanning-live 模式每次 /api/status 递增 live 进度（du 无总量
+  // 分母，前端合同是事实计数而非百分比；旧后端/其他模式无 live 键 → 前端
+  // 必须回退「扫描进行中…」，由既有 ring 检查与新增 fallback 检查钉住）。
+  let liveDirs = 0;
+  const liveProgress = () => {
+    liveDirs += 13;
+    return {
+      active: true, run_id: 2, dirs_scanned: liveDirs,
+      bytes_seen_kb: liveDirs * 1024 * 7,
+      started_epoch_s: 1758696000.0, elapsed_s: (liveDirs / 13) * 5,
+      heartbeat_epoch_s: 1758696000.0 + (liveDirs / 13) * 5,
+      stale_after_s: 30,
+    };
+  };
 
   const diff = (a, b) => ({
     a: snapshots().find((s) => String(s.id) === String(a)),
@@ -179,6 +194,7 @@ function createFixture() {
           running: scanning(),
           started_at: scanning() ? "2026-09-13T12:02:00" : null,
           finished_at: state.version === 3 ? "2026-09-13T12:03:00" : null,
+          ...(state.mode === "scanning-live" ? { live: liveProgress() } : {}),
         },
         port: server.address().port,
       });
@@ -1581,6 +1597,27 @@ async function main() {
     // 11.2s 内：初始加载 1 次 + 5s/10s 轮询 2 次；并行重复链会 ≥4
     record("page-switches-do-not-duplicate-scan-poll",
       statusDuring >= 2 && statusDuring <= 3, `status calls=${statusDuring} in 11.2s`);
+
+    /* ---------- ISS-090：live 进度徽章——事实计数 + 无 live 键回退 ---------- */
+    await setMode("scanning-live");
+    await page.waitForFunction(() =>
+      /^扫描中 · 已扫 \d+ 目录 · [\d.]+ (B|KB|MB|GB|TB) · (\d+:)?\d+:\d{2}$/
+        .test(document.querySelector("#scan-badge")?.textContent || ""));
+    const badgeDirs = () => page.$eval("#scan-badge", (el) =>
+      Number((el.textContent.match(/已扫 (\d+) 目录/) || [0, 0])[1]));
+    const dirs1 = await badgeDirs();
+    const liveRing = await page.$("#scan-badge .badge-ring");
+    await page.waitForTimeout(5300);  // 跨一个 5s 轮询 tick：事实计数必须前进
+    const dirs2 = await badgeDirs();
+    record("scan-badge-live-progress-updates-across-ticks",
+      dirs1 > 0 && dirs2 > dirs1 && liveRing !== null,
+      `dirs ${dirs1} -> ${dirs2} ring=${liveRing !== null}`);
+    // live 键消失（旧后端形状 / 心跳超时）：回退无计数文案，绝不显示 0/NaN。
+    await setMode("scanning-stuck");
+    await waitForText(page, "#scan-badge", "扫描进行中…");
+    const fallbackText = await page.$eval("#scan-badge", (el) => el.textContent);
+    record("scan-badge-live-fallback-when-field-missing",
+      fallbackText === "扫描进行中…", `text=${JSON.stringify(fallbackText)}`);
 
     await setMode("dual");  // 扫描结束：下一次轮询观测到空闲后必须停止
     await waitForText(page, "#scan-badge", "未手动扫描过");

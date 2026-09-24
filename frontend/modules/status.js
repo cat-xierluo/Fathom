@@ -5,7 +5,7 @@
  * 单一刷新入口刷新当前页，不自行拼装加载列表。
  */
 import { fetchJSON, apiPost, beginRequest } from "./request.js";
-import { fmtBytes } from "./format.js";
+import { fmtBytes, fmtKB, fmtDuration } from "./format.js";
 import { ICON_PATHS } from "../icons.js";
 import { pushTrayStatus } from "./tauri.js";
 import { createPoller, createInterval } from "./polling.js";
@@ -86,7 +86,14 @@ export async function loadStatus() {
   const wasRunning = state.scanWasRunning;
   state.scanWasRunning = Boolean(s.scan.running);
   if (s.scan.running) {
-    setBadge(true, "扫描进行中…"); badge.classList.add("running"); btn.disabled = true;
+    // ISS-090：live 进度是可选字段（旧后端/夹具无该键，或心跳超时/写通道
+    // 故障时为 null）——缺失即回退既有文案，不伪造计数。计数是进行中的
+    // 事实（du 无总量分母，不做百分比）；fmtKB 复用既有 GB/MB 换算惯例。
+    const live = s.scan.live;
+    const text = live && live.active
+      ? `扫描中 · 已扫 ${live.dirs_scanned} 目录 · ${fmtKB(live.bytes_seen_kb)} · ${fmtDuration(live.elapsed_s)}`
+      : "扫描进行中…";
+    setBadge(true, text); badge.classList.add("running"); btn.disabled = true;
     scanPoll.schedule();
   } else {
     scanPoll.cancel();

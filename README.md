@@ -1,109 +1,133 @@
+<div align="center">
+
+<img src="apps/desktop/src-tauri/icons/icon.png" width="120" alt="Fathom 应用图标：层叠深潭" />
+
 # Fathom
 
-macOS 本机的目录容量历史追踪工具：记录哪些目录在增长，把最近变化与历史证据放在一起，帮助理解空间去向。
+**macOS 目录容量历史追踪工具** —— 记录哪些目录在增长，把最近变化与历史证据放在一起，帮助理解空间去向。
 
-目前是 **v0.3.0 开发线**，已有扫描内核、SQLite 快照、Markdown 日报、正式五页界面，以及可在 Apple Silicon 上构建的未签名自包含 `.app`/`.dmg`。尚未完成新账户安装、发行后台计划、双架构和应用内更新验收，不能据此称为已可公开发布。Apple 签名/公证延期（改为未签名分发 + DMG 内首次打开放行指引）；其余发行目标见 [路线图](docs/ROADMAP.md)。
+[![CI](https://github.com/cat-xierluo/fathom/actions/workflows/ci.yml/badge.svg)](https://github.com/cat-xierluo/fathom/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/cat-xierluo/fathom)](https://github.com/cat-xierluo/fathom/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%28Apple%20Silicon%29-lightgrey)](#安装)
 
-近期目标是让其他 Mac 用户无需开发工具即可安装使用，并整体提升 UX/UI；远期增加依赖来源/用途识别、扫描结果的可选 Agent 解释与目录标签。**这些智能功能尚未实现。** 源码采用 Apache-2.0 许可证（见 LICENSE），当前仍私有托管，公开发布时机另行确认。
+[功能](#功能特性) · [安装](#安装) · [快速上手](#快速上手) · [开发者指南](#开发者指南) · [文档](#文档)
 
-## 当前能做什么
+</div>
 
-- 用系统 du 记录目录累计占用，持久化 ≥10 MiB 的目录；同根、同阈值、同排除集的当日扫描替换该数据集快照。
-- 对比快照，展示增长、缩减及首次/不再被记录的目录；缺失不能直接证明新建/删除。
-- 查看目录分布、历史趋势与近期修改的大文件；从界面在 Finder 中显示路径。
-- 开发版通过 launchd 安排每日 12:00 扫描及常驻本地 Web 服务。
-- API、CLI 与定时扫描共用 `scan_coordinator`；跨进程 `flock` 保证单一扫描，状态与分阶段结果写入 SQLite。
-- 运行根、扫描根、资源根和端口可显式隔离；旧开发库打开时会经 schema v5 校验、WAL 一致备份和事务迁移。
-- 日报写完后尝试发送 macOS 通知，摘要含增长、首次记录的大目录与剩余空间；首扫和中断也有通知语义，实际展示受系统通知策略影响、仍需实机验收。
-- 设置页可持久化监控范围、排除列表、计划时间和阈值；桌面壳已有经确认开启/关闭后台计划的入口，并能提示已保存时间与注册计划的差异、经确认重新安装计划。发行账户中的系统行为仍待验收。
-- 设置页已有检查更新、确认下载/安装与确认重启界面；安装前会先停止新写入、请后台服务退出并对数据库做一致性备份，下载有进度、可取消，失败自动回到当前可运行版本（隔离环境五类故障场景验证）。当前仍使用开发公钥和占位更新地址，真实更新源未启用、实机升级未验收，不能据此认为已支持真实升级。
+## 为什么需要 Fathom
 
-扫描事实与报告保存在本机。当前应用没有 Agent 或远程分析功能；未来云端解释将作为单独启用和授权的能力。工具不执行文件清理。
+磁盘空间总是不知不觉就满了。系统自带的工具只能告诉你「现在」各目录多大，但真正有价值的问题是：
 
-## 开发者运行
+- **这周比上周多了什么？** 单次快照无法回答，需要连续多日的同口径测量。
+- **删掉的东西为什么又长回来了？** 需要能回看任意时点的历史记录。
+- **空间到底去哪了？** 需要把变化、大文件和目录结构放在一起看，而不是凭记忆猜。
 
-当前代码在 macOS、Python 3.14 环境验证。新克隆需先建立环境（Python 3.14 须已安装）；运行与开发依赖已分层，并由 constraints 固定已验证闭包。
+Fathom 用系统 `du` 定期测量目录占用，把每个快照存进本地 SQLite，对比出增长、缩减与首次/不再出现的目录，配上趋势图和 Markdown 日报——**所有数据只存在你的机器上**。
+
+![总览](docs/images/screenshot-overview.png)
+
+![变化](docs/images/screenshot-changes.png)
+
+## 功能特性
+
+- **目录容量追踪**：按日定时扫描（默认 12:00），记录 ≥10 MiB 的目录累计占用；同口径的当日扫描自动替换当天快照。
+- **变化对比**：任意两个有效日期之间的增长、缩减、首次出现与不再记录的目录，附增长/缩减排行。
+- **历史趋势**：目录占用的多日趋势图与磁盘剩余空间变化。
+- **大文件清单**：近期修改的大文件查询，快速定位「最近刚写入的东西」。
+- **每日日报**：扫描完成后自动生成 Markdown 对比报告，并尝试发送 macOS 系统通知（含增长摘要、首记大目录与剩余空间告警）。
+- **桌面应用**：Tauri 壳 + 菜单栏托盘，设置页管理监控范围、排除列表、扫描计划与阈值；数据完整保留本机，无遥测、无云端。
+- **应用内更新**（v0.3.1 起）：检查更新 → 确认下载安装 → 确认重启；安装前自动停写与备份数据库，失败自动回滚到当前版本。
+- **跨进程安全**：跨进程互斥保证同一时刻只有一次扫描；超时保护中断的扫描不会破坏上一次有效快照。
+
+## 安装
+
+**系统要求**：macOS（Apple Silicon，M 系列芯片）。Intel Mac 支持在计划中，Windows 不在当前计划。
+
+1. 从 [Releases](https://github.com/cat-xierluo/fathom/releases) 下载最新 `Fathom_<版本>_aarch64.dmg`；
+2. 校验完整性（可选但推荐）：终端执行 `shasum -a 256 <下载的DMG>`，与 Release 页 `checksums.txt` 比对；
+3. 打开 DMG，把 Fathom 拖入 Applications；
+4. **首次打开**：本应用未经 Apple 签名与公证（首次双击会被 Gatekeeper 拦截，属预期）——在 Finder 中**右键点按 Fathom → 打开 → 再点「打开」**；或在 系统设置 → 隐私与安全性 中点「仍要打开」。每次安装新版本后如遇「已损坏」提示，执行 `xattr -cr /Applications/Fathom.app` 后再打开。
+
+<details>
+<summary>应用内更新说明</summary>
+
+v0.3.1 起内置生产更新签名与公开更新源：设置页可检查并安装后续版本（更新包经 minisign 签名校验，不可绕过）。v0.3.0 为更新基础设施就绪前的版本，从 v0.3.0 升级需手动下载 v0.3.1 覆盖安装一次。
+</details>
+
+## 快速上手
+
+1. 启动 Fathom，在设置页选择**监控范围**（建议先从一个具体目录开始，整盘首扫耗时依文件数而定）与**排除列表**；
+2. 设置每日扫描时间（默认 12:00），按引导授权后台任务；
+3. 次日起在「变化」页查看与前一天的对比，或等待日报通知；
+4. 磁盘吃紧时看「大文件」页和总览的增长排行。
+
+**口径说明**：目录数字为 `du` 口径的累计占用；父子目录数字不能相加，目录大小不等于可回收空间；缺失条目不代表已删除（可能是权限或测量时点差异）。
+
+## 开发者指南
+
+环境：macOS、Python 3.14、Rust（Tauri 构建）。依赖分层锁定（直接依赖区间 + `constraints.txt` 全闭包精确版本）。
 
 ```bash
 git clone https://github.com/cat-xierluo/fathom.git
 cd fathom
 python3.14 -m venv .venv
 .venv/bin/python -m pip install -c packaging/constraints.txt -r packaging/requirements-dev.txt
+
+# 本地门禁（与 CI 同口径）
 /bin/bash scripts/ci_pytest.sh
 /bin/bash scripts/ci_cargo_locked.sh
 ```
 
-仓库目前私有，clone 需要访问权限。锁定的本地脚本会运行 pytest、Cargo 和隔离 Chromium/API 检查；GitHub Actions 因账户额度问题暂不可用（2026-09-23 实测 job 在步骤执行前被拒），额度恢复后重新启用。完整复跑命令与临时本地合并门禁见 [TESTING](docs/TESTING.md)。开发 UI 首选其中的隔离夹具服务，可安全查看两天数据及重扫交互，不扫描 HOME。
-
-已了解当前限制并准备监控本机时：
+常用命令（会实际扫描或修改本用户后台任务，请在选定环境执行）：
 
 ```bash
-.venv/bin/python -m fathom serve      # 127.0.0.1:7952，前台运行
-.venv/bin/python -m fathom status
-```
-
-浏览器打开 [本地仪表盘](http://127.0.0.1:7952)。Tauri 开发壳需要 Rust/macOS 构建环境，并依赖上述服务另行运行：
-
-```bash
-cd apps/desktop/src-tauri
-cargo run
-```
-
-关闭窗口会隐藏；退出通过 tray 菜单。此开发入口不能证明发行包可安装。
-
-下列命令会实际扫描本机或修改本用户后台任务，请在选定部署环境执行：
-
-```bash
-.venv/bin/python -m fathom scan                     # 默认 HOME，首扫建立基线
-.venv/bin/python -m fathom report                   # 最近两快照，首日无对比报告
+.venv/bin/python -m fathom serve      # 127.0.0.1:7952 前台运行 Web 服务
+.venv/bin/python -m fathom status     # 查看服务与扫描状态
+.venv/bin/python -m fathom scan       # 手动扫描（默认 HOME，首扫建立基线）
+.venv/bin/python -m fathom report     # 生成最近两快照对比日报
 .venv/bin/python -m fathom bigfiles --days 7 --min-mb 100
-.venv/bin/python -m fathom install                  # 安装本用户两个 LaunchAgent
-.venv/bin/python -m fathom uninstall                # 卸载开发版后台任务
+.venv/bin/python -m fathom install    # 安装开发版两个 LaunchAgent
+.venv/bin/python -m fathom uninstall  # 卸载开发版后台任务
 ```
 
-当前比较、同日替换与保留按 `(root, min_kb, exclude_names)` 隔离；这不代表多根、多卷产品已经验收，首发仍以单个受支持范围为目标。扫描耗时依磁盘/文件数/权限而异，不承诺固定时长。
+Tauri 桌面壳：`cd apps/desktop/src-tauri && cargo run`（依赖上述服务另行运行）。构建未签名 DMG：`bash scripts/build_helper.sh && bash scripts/build_app.sh`（详见 [TESTING §4](docs/TESTING.md)）。
 
-## 数据、权限与已知限制
+开发数据隔离（`FATHOM_RUNTIME_DIR` / `FATHOM_SCAN_ROOT` / `FATHOM_PORT` 等）与完整验证协议见 [TESTING](docs/TESTING.md)。
 
-- development 默认数据位于项目下 `data/fathom.db`，报告在 `reports/`、日志在 `logs/`，均不入 Git；release 模式默认使用 `~/Library/Application Support/Fathom`。可用 `FATHOM_RUNTIME_DIR`、`FATHOM_SCAN_ROOT`、`FATHOM_RESOURCE_DIR`、`FATHOM_PORT` 或等价 CLI 参数完整隔离，详见 [TESTING](docs/TESTING.md)。
-- 单次 `du` 采集的安全时限由 `FATHOM_DU_TIMEOUT_S` 控制（默认 14400 秒即 4 小时）；超过时限的扫描记为「已中断」并保留上一次有效快照，不会留下半写的数据。该值必须是正的有限数，非法值会让程序在启动时报错而不是静默关闭时限。大目录（如百万级目录的用户主目录）实测可能超过 1 小时，若日报连续显示中断可适当调大。
-- `FATHOM_DB` 保留兼容：未指定运行根时，其父目录成为完整运行根，避免只隔离数据库。迁移备份使用 SQLite backup API 包含已提交 WAL；仍不能在普通备份中只拷贝活跃主 DB。
-- 未授权的目录可能无法读取；权限错误行数不等于覆盖比例，也不能说明被跳过的数据不重要。发行 helper 的授权主体待实机验证。
-- 失败扫描保护、特殊路径解析、首扫成功语义和选择器刷新已修复并有真实入口回归；开发版跨日定时和打包态主界面已有验收记录，系统通知实际展示与其余发行路径仍须单独验收。
-- 目录 du 累计大小、文件逻辑大小和整卷可用空间有不同口径；父子行不能直接相加，目录体积不等于可回收空间。
-- 保留策略实际总跨度约从今天向前 12 周，其中近 35 天保留每日快照；报告/日志已按可解析日期与各自保留天数在扫描收尾清理。
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [ARCHITECTURE](docs/ARCHITECTURE.md) | 已实现模块、数据流与接口 |
+| [DESIGN](docs/DESIGN.md) | 页面职责、交互与视觉合同 |
+| [ROADMAP](docs/ROADMAP.md) | 产品方向与阶段目标 |
+| [TESTING](docs/TESTING.md) | 验证协议与发布验收矩阵 |
+| [CHANGELOG](CHANGELOG.md) | 用户可见变更记录 |
+| [CONTRIBUTING](.github/CONTRIBUTING.md) | 贡献指南 |
+| [SECURITY](.github/SECURITY.md) | 安全反馈渠道 |
+| [第三方声明](docs/THIRD_PARTY_NOTICES.md) | 依赖许可与来源 |
+
+## 已知限制
+
+- 仅支持 Apple Silicon（arm64）；Intel Mac 双架构在计划内。
+- 未做 Developer ID 签名与 Apple 公证（有意取舍，DMG 内附放行指引）；信任边界依赖 checksums 比对。
+- 超大目录树（百万级）单次扫描可能超过 1 小时；`FATHOM_DU_TIMEOUT_S` 安全时限（默认 4 小时）到点后本次记「中断」，保留上次有效快照。
+- 系统通知的实际展示受 macOS 通知策略影响。
+- 扫描事实与解释严格分离：工具不执行清理、不删除任何文件。
 
 ## 故障处理
 
-| 现象 | 当前可核查信息 |
+| 现象 | 排查 |
 |---|---|
-| 本地页面打不开 | 检查服务是否启动、7952 是否被其他服务占用；已装 launchd 时查 `logs/launchd-web.err.log` |
-| 首日无差分 | 需要两个不同有效日期；首扫会成功保存基线，报告状态为暂不可用，分布可在基线完成后使用 |
-| Homebrew 升级后后台失效 | 当前 venv 绑定本地解释器，需重建兼容 venv 并在选定部署环境重新安装任务 |
-| 通知未显示 | 查看 `logs/notify.log`；命令提交成功不等于横幅已展示，首扫可发送基线通知，调用成功不保证横幅展示 |
-| 部分目录看不到 | 核查权限、10 MiB 入库阈值及测量时点，不直接判定目录被删除 |
+| 本地页面打不开 | 服务是否启动、7952 端口占用；launchd 部署查 `logs/launchd-web.err.log` |
+| 首日无差分 | 需要两个不同有效日期；首扫保存基线后次日才有对比 |
+| 首次打开提示「已损坏」 | 下载隔离属性所致：`xattr -cr /Applications/Fathom.app` 后重开 |
+| 通知未显示 | 查 `logs/notify.log`；提交成功不保证横幅展示（系统策略） |
+| 部分目录看不到 | 核查权限、10 MiB 入库阈值与测量时点 |
 
-## 继续开发
+## 许可证
 
-贡献者请读 [CONTRIBUTING](.github/CONTRIBUTING.md)；产品目标见 [ROADMAP](docs/ROADMAP.md)，体验合同见 [DESIGN](docs/DESIGN.md)，当前实现见 [ARCHITECTURE](docs/ARCHITECTURE.md)。本地历史数据与客户路径不得进入测试 fixture、截图或 PR。
+[Apache License 2.0](LICENSE) · Copyright 2026 maoking
 
-### 构建未签名的桌面包（开发者，ISS-009 切片 1/2）
-
-当前可在 Apple Silicon 开发机上产出**未签名、未公证**的 `.app` 与 `.dmg`，仅供本机/内部试用。DMG 安装窗口自带安装引导与「首次打开提示」（本应用未经 Apple 签名与公证，首次打开可能被 macOS 阻止；右键点按 Fathom 选「打开」，或前往 系统设置 → 隐私与安全性 点「仍要打开」）——签名/公证延后出 v0.3.0：
-
-```bash
-# 1. 冻结 helper（需 apps/desktop/experiments/iss029/.venv-build：PyInstaller 6.22.3 + fastapi/uvicorn 钉定版本）
-bash scripts/build_helper.sh
-# 2. 打包 Tauri 壳 + helper（产物：apps/desktop/src-tauri/target/release/bundle/{macos/Fathom.app,dmg/Fathom_0.3.0_aarch64.dmg}）
-bash scripts/build_app.sh
-# 3. 校验：结构 / 只读布局 / 主界面页面 / 含空格与中文路径启动 / 端口冲突让位与零击杀 / 二次启动 / 退出回收 / 陈旧 instance / 端口耗尽 / DMG 安装提示（22 项）
-bash scripts/verify_app_bundle.sh
-```
-
-- 产物校验值写在 `apps/desktop/src-tauri/target/release/bundle/checksums.txt`（SHA256）；冻结 helper 的 SHA256 由 `build_helper.sh` 打印，同一 pin 集合下可复现。**未签名分发的信任边界**：接收方只能靠校验值比对确认来源，安装与放行步骤见 DMG 背景提示。
-- 支持矩阵：仅 `darwin-aarch64`；`x86_64`、Developer ID 签名、Apple 公证与 stapling、应用内更新均未实现（签名/公证延后见 DEC-022；ISS-040/041），发行验收矩阵见 [TESTING §4](docs/TESTING.md#4-桌面与分发矩阵)。
-- 应用图标为「层叠深潭」、界面小尺寸（tray/字标/favicon）为「深度环」的双形态品牌体系（ISS-045/DEC-023，2026-09-19 实测 DMG 安装窗口/Dock/Launchpad/Spotlight 与深浅色菜单栏渲染）；图标未验证项：18pt 小菜单栏下 tray 可辨性。其余未验证项：无 Python/Rust/Homebrew 新账户从 DMG 首启、tray 菜单手点退出、断网首启（握手页实机渲染已于 2026-09-18 验证）。
-
-## 许可证状态
-
-本项目采用 **Apache License 2.0**（仓库根 `LICENSE`，Copyright 2026 maoking，与 Folia 一致），第三方组件声明见 `docs/THIRD_PARTY_NOTICES.md`，依赖来源清单见 `docs/plans/2026-09-14-dependency-inventory.md`。发行与更新源的启用状态以 [CHANGELOG](CHANGELOG.md) 为准。
+第三方组件声明见 [THIRD_PARTY_NOTICES](docs/THIRD_PARTY_NOTICES.md)。

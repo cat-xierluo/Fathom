@@ -1312,11 +1312,15 @@ async function main() {
         !(await page.locator("#overview-summary").textContent()).includes("加载失败"));
     await openPage("#/changes");
     await waitForText(page, "#diff-status", "尚无快照");
+    // ISS-093：确认按钮已移除，禁用断言落在两个 select 上，并确认按钮确实不在 DOM。
     const empty = await page.evaluate(() => ({
       options: document.querySelectorAll("#sel-a option").length,
-      disabled: document.querySelector("#btn-diff").disabled,
+      disabled: document.querySelector("#sel-a").disabled &&
+        document.querySelector("#sel-b").disabled,
+      btnGone: !document.getElementById("btn-diff"),
     }));
-    record("empty-changes-clears-stale-results", empty.options === 0 && empty.disabled, JSON.stringify(empty));
+    record("empty-changes-clears-stale-results",
+      empty.options === 0 && empty.disabled && empty.btnGone, JSON.stringify(empty));
 
     await setMode("single");
     await openPage("#/overview");
@@ -1324,7 +1328,7 @@ async function main() {
     await openPage("#/changes");
     await waitForText(page, "#diff-status", "基线已建立");
     record("single-snapshot-enables-distribution-not-diff",
-      await page.locator("#btn-diff").isDisabled());
+      await page.locator("#sel-a").isDisabled() && await page.locator("#sel-b").isDisabled());
     await openPage("#/browse");
     await page.waitForSelector("#tbl-browse tbody tr");
     record("single-snapshot-distribution-loads",
@@ -1343,7 +1347,7 @@ async function main() {
     await openPage("#/changes");
     await waitForText(page, "#diff-status", "HTTP 500");
     record("snapshot-500-disables-stale-comparison",
-      await page.locator("#btn-diff").isDisabled());
+      await page.locator("#sel-a").isDisabled() && await page.locator("#sel-b").isDisabled());
 
     await setMode("dual");
     await page.route("**/api/diff*", (route) => route.abort("internetdisconnected"));
@@ -1453,12 +1457,13 @@ async function main() {
       delayedSelection.join(",") === "2,1" && fixture.state.lastDiff?.join(",") === "2,1",
       JSON.stringify(delayedSelection));
 
-    // 对比发出前后发生同日替换：先收到 404，再协调快照列表并自动恢复。
+    // 对比发出前后发生同日替换：改选已失效基线触发自动对比（ISS-093 无确认按钮），
+    // 先收到 404，再协调快照列表并自动恢复。
     await setScenario(null);
     await openPage("#/changes");
     await page.waitForFunction(() => document.querySelector("#sel-b").value === "2");
     await setVersion(3);
-    await page.click("#btn-diff");
+    await page.selectOption("#sel-a", "2");
     await page.waitForFunction(() => document.querySelector("#sel-b").value === "3");
     await waitForText(page, "#diff-status", "已更新或不再可用");
     const recovered404 = await page.evaluate(() => ({
@@ -1468,6 +1473,80 @@ async function main() {
     record("diff-404-coordinates-snapshot-recovery",
       recovered404.selected.join(",") === "1,3" && fixture.state.staleDiffs === 1 &&
         fixture.state.lastDiff?.join(",") === "1,3", JSON.stringify(recovered404));
+
+    /* ---------- ISS-093：选择即比对——改选自动加载，无确认按钮 ---------- */
+    // dual 夹具（快照 [2,1]）初始自动对比 #1 → #2；确认按钮从 DOM 移除。
+    await setMode("dual");
+    await openPage("#/changes");
+    await waitForText(page, "#diff-status", "正在对比快照 #1 → #2");
+    record("compare-confirm-button-removed",
+      await page.evaluate(() => !document.getElementById("btn-diff")));
+    // 依次改选两个 select（全程无任何按钮点击）：选齐后结果自动出现。
+    await page.selectOption("#sel-a", "2");
+    await page.selectOption("#sel-b", "1");
+    await waitForText(page, "#diff-status", "正在对比快照 #2 → #1");
+    const autoCompared = await page.evaluate(() => ({
+      netVisible: !document.getElementById("changes-net").hidden,
+      rows: document.querySelectorAll("#changes-body tr.focusable").length,
+    }));
+    record("selecting-both-snapshots-compares-without-button",
+      fixture.state.lastDiff?.join(",") === "2,1" &&
+        autoCompared.netVisible && autoCompared.rows > 0,
+      JSON.stringify(autoCompared));
+    // 只切换一个 select：结果自动刷新为新组合；焦点仍留在被操作的 select（不抢焦点）。
+    await page.focus("#sel-b");
+    await page.selectOption("#sel-b", "2");
+    await waitForText(page, "#diff-status", "正在对比快照 #2 → #2");
+    const oneSwitch = await page.evaluate(() => ({
+      activeElement: document.activeElement ? document.activeElement.id : "",
+    }));
+    record("switching-one-snapshot-refreshes-and-keeps-focus",
+      fixture.state.lastDiff?.join(",") === "2,2" && oneSwitch.activeElement === "sel-b",
+      JSON.stringify(oneSwitch));
+    // 只选一个：空态 + 引导文案，且不发对比请求（lastDiff 保持不变）。
+    await page.evaluate(() => {
+      const sel = document.getElementById("sel-a");
+      sel.value = "";
+      sel.dispatchEvent(new Event("change"));
+    });
+    await waitForText(page, "#diff-status", "选齐后自动对比");
+    const partial = await page.evaluate(() => ({
+      emptyHint: document.querySelector("#changes-body tr td.hint")?.textContent || "",
+      netHidden: document.getElementById("changes-net").hidden,
+    }));
+    record("partial-selection-keeps-empty-state",
+      partial.emptyHint.includes("暂无可比较数据") && partial.netHidden &&
+        fixture.state.lastDiff?.join(",") === "2,2",
+      JSON.stringify(partial));
+    // 失败态：自动对比请求中断时展示内联「重试」小按钮，点击后恢复。
+    await page.route("**/api/diff*", (route) => route.abort("internetdisconnected"));
+    await page.selectOption("#sel-a", "1");
+    await waitForText(page, "#diff-status", "无法连接本地服务");
+    record("auto-compare-failure-shows-retry",
+      await page.evaluate(() => {
+        const btn = document.querySelector("#diff-status .diff-retry");
+        return Boolean(btn) && btn.textContent === "重试";
+      }));
+    await page.unroute("**/api/diff*");
+    await page.click("#diff-status .diff-retry");
+    await waitForText(page, "#diff-status", "正在对比快照 #1 → #2");
+    record("retry-button-recovers-comparison",
+      fixture.state.lastDiff?.join(",") === "1,2");
+    // 键盘路径（原生行为）：处理绑定在原生 change 事件上，键盘改选产生的正是
+    // 同一事件。headless macOS Chromium 的 select 方向键走系统弹窗、不直接改值
+    // （探针实测），故此处用「真实 focus + change 派发」验证：聚焦的 select 收到
+    // change 即自动比对，且焦点不被结果刷新抢走；真机键盘走查由 GUI 实机验收覆盖。
+    await page.focus("#sel-a");
+    await page.evaluate(() => {
+      const sel = document.getElementById("sel-a");
+      sel.value = "2";
+      sel.dispatchEvent(new Event("change"));
+    });
+    await waitForText(page, "#diff-status", "正在对比快照 #2 → #2");
+    record("keyboard-focus-select-change-compares",
+      fixture.state.lastDiff?.join(",") === "2,2" &&
+        await page.evaluate(() =>
+          document.activeElement && document.activeElement.id) === "sel-a");
 
     /* ---------- 轮询生命周期：切页不累积，扫描结束即停 ---------- */
     await setMode("scanning-stuck");

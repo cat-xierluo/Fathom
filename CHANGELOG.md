@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-24
+
+### 生产应用内更新启用（G10）
+
+- 生产更新签名与公开更新源就位：设置页「检查更新 → 确认下载安装 → 确认重启」全链可用；下载有实时进度、可取消；安装前自动停止数据库写入并对历史做一致性备份，任何一步失败回滚到当前可运行版本。更新包经 minisign 签名校验不可绕过。v0.3.0 及更早版本需手动下载本版覆盖安装一次，其后版本均可应用内更新。
+
+### 布局滚动边界、设置页信息收敛与语义配色（ISS-082 / ISS-083 / ISS-084）
+
 ### 根目录精简：CLI 入口与依赖锁定文件下沉（chore）
 
 - 命令行入口从仓库根 `main.py` 迁至 `fathom/__main__.py`：用户可见命令统一为 `python -m fathom <子命令>`（原 `python main.py ...`）；按路径直接执行 `python fathom/__main__.py` 仍可用（launchd 开发态计划与 helper 冻结走该形态）。已安装的 launchd 计划需按迁移清单更新 ProgramArguments 后重新加载，见对应 PR 描述。
@@ -197,6 +205,12 @@
 - **UI 全面去 emoji，对齐 Folia 视觉规范**：导航/面板/按钮/日报全部改用内联 SVG 线条图标（lucide 同款 stroke 风格，currentColor 跟随语义色），Markdown 日报标题同步去 emoji
 - **文档层对齐**（同日补）：README/DESIGN 残留装饰 emoji 清理；DESIGN 版本头升至 v0.3；ARCHITECTURE API 清单补齐 v0.2.0 四个端点（browse/reports/reports/{date}/reveal）并在架构图标注桌面壳入口；ROADMAP 与 0.3 开发里程碑对齐；AGENTS 模块速查补 icons.js；清理空的 docs/ux/ 遗留目录
 - **任务治理升级（TASKS.md）**：全部任务改为固定字段合同（目标/前置/范围/要点/验证/验收框），新增依赖与并行轨道图（观察/壳/后端/功能四轨）、`iss-NNN-slug` 分支规范与自动认领规则；ROADMAP 条目全部立项（新增 ISS-015 周报月报、ISS-016 设置可写、ISS-014 窄屏适配）
+
+### 工程与文档（根目录精简 / README / 仓库公开）
+
+- CLI 入口迁移为 `python -m fathom`（原根目录 main.py 下沉至包内，`fathom/__main__.py`，按路径直执行形态保持兼容）；requirements 与 constraints 下沉 `packaging/`，仓库根目录仅保留 README/LICENSE/CHANGELOG/pyproject 等必要文件。
+- README 规范化重写：应用图标与 CI/Release/License/Platform 徽章、界面截图、安装与首次打开放行指引、快速上手、开发者指南与文档索引。
+- 仓库转为公开（Apache-2.0），提交者身份统一，第三方声明见 docs/THIRD_PARTY_NOTICES.md。
 
 ## [0.2.0] - 2026-09-12
 

@@ -258,6 +258,14 @@ body {
 }
 tr:hover .btn-mini { opacity: 1; }
 .btn-mini:hover { border-color: var(--primary); }
+/* ISS-093：对比失败态在状态行内联的「重试」小按钮（确认按钮已移除，
+ * 其失败重试语义收拢到失败态）。 */
+.diff-retry {
+  border: 1px solid var(--border); background: var(--card); color: var(--text);
+  margin-left: 8px; padding: 2px 10px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; vertical-align: middle;
+}
+.diff-retry:hover { border-color: var(--primary); color: var(--primary); }
 
 /* ===== 卡片与面板 ===== */
 

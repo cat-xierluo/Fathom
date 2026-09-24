@@ -12,6 +12,12 @@
  * - 键盘可达：表行可 Tab 聚焦、Enter 打开详情、Esc 关闭后焦点返回触发行；
  * - 长路径：可一键复制（DESIGN 关键可达性约束）；
  * - 目录详情：路径 + 净变化 + 趋势（来自 /api/trend）+ 当前大小（/api/browse）。
+ *
+ * 交互（ISS-093）：选择即比对——两个 select 改选后在选齐时自动加载对比，
+ * 无确认按钮；未选齐保持空态 + 引导文案；对比失败在状态行内展示
+ * 「重试」小按钮（原确认按钮兼任的失败重试语义收拢到失败态）。
+ * 连点竞态由既有 diff 域世代号守卫覆盖（迟到的旧响应不得写入 DOM）；
+ * 结果区刷新不抢焦点（改选触发的详情关闭不回焦到已销毁的行）。
  */
 import { fetchJSON, beginRequest, invalidateRequest, revealInFinder } from "../request.js";
 import { fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
@@ -30,13 +36,28 @@ let activeDetailPath = null;          // 当前详情目录
 let activeDetailRow = null;           // 当前详情触发行（Esc 后焦点回此）
 
 function setDiffStatus(message) {
+  // textContent 赋值整体替换子节点：若此前失败态挂了「重试」按钮，此处一并清除。
   document.getElementById("diff-status").textContent = message;
+}
+
+/* ISS-093：对比失败态——文案 + 状态行内联「重试」小按钮。
+ * 原确认按钮兼任的失败重试语义收拢到这里；任何后续 setDiffStatus
+ * （加载中/成功/新的失败）都会清掉旧按钮，不残留。 */
+function showDiffFailure(message) {
+  const el = document.getElementById("diff-status");
+  el.replaceChildren(document.createTextNode(message));
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "diff-retry";
+  retry.textContent = "重试";
+  retry.setAttribute("aria-label", "重新加载快照对比");
+  retry.addEventListener("click", () => loadDiff());
+  el.appendChild(retry);
 }
 
 function setDiffControlsEnabled(enabled) {
   document.getElementById("sel-a").disabled = !enabled;
   document.getElementById("sel-b").disabled = !enabled;
-  document.getElementById("btn-diff").disabled = !enabled;
 }
 
 function clearDiffResults() {
@@ -324,6 +345,25 @@ function renderNetLine(d) {
   footEl.hidden = false;
 }
 
+/* ISS-093：选择即比对——select change 后选齐即自动加载，无确认按钮。
+ * 连点触发多次 loadDiff 时，diff 域世代号守卫保证只渲染最后一次；
+ * 未选齐（某侧为空）保持空态 + 引导文案，不发请求。
+ * select 的 change 由键盘改选同样派发（原生行为），路径不变。 */
+function onSelectionChange() {
+  snapshotSelectionRevision += 1;
+  const a = document.getElementById("sel-a").value;
+  const b = document.getElementById("sel-b").value;
+  if (!a || !b) {
+    invalidateRequest("diff");
+    clearDiffResults();
+    setDiffStatus("请选择基线与对比快照，选齐后自动对比。");
+    return;
+  }
+  // 改选使旧对比的详情侧栏失效：关闭但不回焦（焦点留在用户正在操作的 select）。
+  closeDetail({ restoreFocus: false });
+  loadDiff();
+}
+
 async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
   const request = beginRequest("diff");
   const a = document.getElementById("sel-a").value;
@@ -351,11 +391,12 @@ async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
     }
     clearDiffResults();
     if (e.status === 409) {
+      // 状态性约束（缺两个不同日期的有效快照）：重试不改变前提，保持纯文案。
       setDiffStatus("还不能比较：需要两个不同日期的有效快照。");
     } else if (e.status === 0) {
-      setDiffStatus("无法连接本地服务，快照对比暂不可用。");
+      showDiffFailure("无法连接本地服务，快照对比暂不可用。");
     } else {
-      setDiffStatus(`快照对比加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);
+      showDiffFailure(`快照对比加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);
     }
   }
 }
@@ -466,14 +507,16 @@ function renderDetailSkeleton(path) {
   `;
 }
 
-function closeDetail() {
+function closeDetail({ restoreFocus = true } = {}) {
   const el = document.getElementById("changes-detail");
   if (el) el.hidden = true;
   activeDetailPath = null;
   document.querySelectorAll("#changes-body tr.focusable.selected").forEach((t) =>
     t.classList.remove("selected"));
-  // 焦点返回触发行（DESIGN：Esc 关闭后焦点继续可用）
-  if (activeDetailRow && document.body.contains(activeDetailRow)) {
+  // 焦点返回触发行（DESIGN：Esc 关闭后焦点继续可用）。
+  // restoreFocus=false 用于自动刷新路径（ISS-093：改选触发时焦点应留在
+  // select 上，结果区刷新不得抢焦点）。
+  if (restoreFocus && activeDetailRow && document.body.contains(activeDetailRow)) {
     activeDetailRow.focus();
   }
   activeDetailRow = null;
@@ -586,14 +629,9 @@ export const changesPage = {
     loadReportList();
   },
   init() {
-    document.getElementById("btn-diff").addEventListener("click", () => loadDiff());
+    // ISS-093：选择即比对——select 改选（鼠标或键盘）在选齐后自动触发加载。
     ["sel-a", "sel-b"].forEach((id) => {
-      document.getElementById(id).addEventListener("change", () => {
-        snapshotSelectionRevision += 1;
-        invalidateRequest("diff");
-        clearDiffResults();
-        setDiffStatus("快照选择已更改，点击“对比”加载结果。");
-      });
+      document.getElementById(id).addEventListener("change", onSelectionChange);
     });
     // 排序表头
     document.querySelectorAll("#changes-table .th-sort").forEach((btn) => {

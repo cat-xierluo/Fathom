@@ -35,7 +35,11 @@ function mountStaticIcons() {
  *    挂载点的既有 textContent/innerHTML 更新自然接管，环随内容替换消失。 */
 function mountDepthRingDecor() {
   document.querySelectorAll("[data-dr]").forEach((el) => {
-    el.innerHTML = icon(el.dataset.dr, 26, "brand-mark");
+    /* ISS-088：关于区 about-mark 标注 data-dr-size=64（大尺寸应用图标
+     * 位，64px 容器此前只注入 26px 图标、图标远小于容器）；未标注的
+     * 挂载点（页头 #page-anchor）保持 26px 默认 */
+    const size = Number(el.dataset.drSize) || 26;
+    el.innerHTML = icon(el.dataset.dr, size, "brand-mark");
   });
   document.querySelectorAll("[data-dr-spin]").forEach((el) => {
     el.innerHTML =

@@ -100,19 +100,13 @@ body {
  * 探针/刻度才存在；brandBasin（主窗口品牌站位，ISS-086）下无 .dr-probe/
  * .dr-tick 元素，下方规则不命中、不会污染层叠深潭的实色填充。 */
 .brand-mark .dr-probe, .brand-mark .dr-tick { stroke: var(--mineral); }
-/* 层叠深潭（DEC-023 双形态体系主形态，ISS-086）：4 层嵌套椭圆共享
- * currentColor（来自 .brand-mark/.dr-anchor 的 var(--trench)），opacity
- * 渐进表达从外圈浅阶地到深蓝核心的层次；顶部 ivory 缺口单独定象牙白。
- * 总尺寸按 .dr-anchor 26×26 / .brand-mark 24×24 容器自适应——主窗口
- * 品牌站位不应再叠加「探针随路由旋转」动画（layer-stack basin 不是
- * 探针，无方位语义）。 */
-.brand-mark .bv-notch { fill: var(--ivory, #FCFAF4); }
-.brand-mark .bv-l1 { fill: currentColor; opacity: 0.18; }
-.brand-mark .bv-l2 { fill: currentColor; opacity: 0.42; }
-.brand-mark .bv-l3 { fill: currentColor; opacity: 0.78; }
-.brand-mark .bv-core { fill: currentColor; opacity: 1; }
-/* 关于区 / 任何 brandBasin 容器只靠 currentColor 决定整体色相，深浅
- * 层次由 opacity 表达；不引入新 token。 */
+/* 层叠深潭（DEC-023 双形态体系主形态，ISS-086 / ISS-088）：ISS-088 起
+ * 各层颜色为 icons.js 内自 icon.png 采样的固定 fill（象牙白底板 bv-base +
+ * 浅青白/青蓝/深蓝/深潭墨四层阶地 + 象牙白 notch），不再经由本文件的
+ * currentColor/opacity 规则染色——旧方案四层单色叠加在 24px 下呈模糊
+ * 色团，无法辨认出应用图标。这里只保留尺寸/位置合同：
+ * .dr-anchor 26×26 / .brand-mark 24×24 容器自适应；主窗口品牌站位
+ * 不叠加「探针随路由旋转」动画（layer-stack basin 不是探针，无方位语义）。 */
 .nav-icon { display: flex; align-items: center; justify-content: center; height: 20px; }
 
 /* ===== 应用壳：侧导航 + 主区（ISS-082：固定壳，内容区独立滚动） ===== */
@@ -152,33 +146,34 @@ body {
 .main-area { flex: 1; min-width: 0; display: flex; flex-direction: column;
   height: 100%; overflow: hidden; }
 
+/* ISS-089 分隔规范（设置页页头修正，全站同一条壳规则）：
+ * 壳的横向边界（topbar↔内容区）不用线切割——topbar 是内容表面上的
+ * 标题行，背景与工作区统一（--bg），下方的圆角卡自带 1px 边框 + 阴影
+ * 边界；旧的「白色横带 + 全宽底线」与圆角卡片是两种边界语言，在设置
+ * 页（左导航卡 + 右面板卡）上下夹击时最刺眼（用户反馈：上、下都是
+ * 纯直线，感觉混乱）。壳的纵向边界（sidenav↔主区）仍用细线，见
+ * .sidenav 的 border-right。 */
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   padding: 12px 26px;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
+  background: var(--bg);
   /* ISS-082：壳内天然固定，去掉 sticky */
   flex: none;
 }
 /* ISS-086 页头锚点：当前页标题前的层叠深潭（应用图标本身，DEC-023
- * 主形态）——实色层叠 + ivory notch；非装饰探针，无方位指示（ISS-085
- * 早期设计的「探针随路由旋转 72°」在 brandBasin 下无意义，已从
- * app.js 删除 pointAnchorToCurrentPage + PAGE_ANCHOR_ANGLES 与
- * hashchange 监听）。颜色继承 color: var(--trench)；层叠通过 .brand-mark
- * 的 .bv-* opacity 规则渐进。 */
+ * 主形态）——实色层叠真彩色板（ISS-088 固定 fill）；非装饰探针，无方位
+ * 指示（ISS-085 早期设计的「探针随路由旋转 72°」在 brandBasin 下无意义，
+ * 已从 app.js 删除 pointAnchorToCurrentPage + PAGE_ANCHOR_ANGLES 与
+ * hashchange 监听）。颜色与层叠全部由 icons.js 的固定 fill 承担。 */
 .topbar-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .dr-anchor {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; flex: none; color: var(--trench);
+  width: 26px; height: 26px; flex: none;
 }
 .dr-anchor svg { width: 100%; height: 100%; display: block; }
 /* 页头 brandBasin 单独覆写：保持 26×26 容器内层叠深潭的视觉重，与
- * 侧栏 brand-mark 的 24×24 在小尺寸上等比呈现；不引入新 token。 */
-.dr-anchor .bv-notch { fill: var(--ivory, #FCFAF4); }
-.dr-anchor .bv-l1 { fill: currentColor; opacity: 0.18; }
-.dr-anchor .bv-l2 { fill: currentColor; opacity: 0.42; }
-.dr-anchor .bv-l3 { fill: currentColor; opacity: 0.78; }
-.dr-anchor .bv-core { fill: currentColor; opacity: 1; }
+ * 侧栏 brand-mark 的 24×24 在小尺寸上等比呈现；颜色为 icons.js 内
+ * 固定 fill（ISS-088 真彩色板），本文件不再承担染色。 */
 .topbar-heading { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .topbar h1 { margin: 0; font-size: 17px; line-height: 1.15; }
 /* 深度刻度带（仪器读数尺）：长刻度全高、短刻度半高贴底，海沟蓝低透明度 */
@@ -715,8 +710,8 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   width: 64px;
   height: 64px;
   flex: none;
-  color: var(--trench);
-  /* 应用图标（DEC-023 主形态）：层叠深潭实色，由 icons.js brandBasin 几何 */
+  /* 应用图标（DEC-023 主形态）：层叠深潭实色，颜色为 icons.js brandBasin
+   * 固定 fill 真彩色板（ISS-088），容器只管尺寸 */
 }
 .about-mark svg { width: 100%; height: 100%; display: block; }
 .about-titles { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -857,14 +852,12 @@ code {
   padding: 1px 6px; font-size: 12px;
 }
 
-/* ===== 页脚（ISS-082：移入 main-area，固定在内容区下方，不再叠出视口） ===== */
-
-.app-footer {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 12px 26px 28px; color: var(--muted); font-size: 12px;
-  flex: none;
-}
-.app-footer a { color: var(--primary); text-decoration: none; }
+/* ===== 高级与诊断区尾链（ISS-089） ===== */
+/* 页脚整条移除后的「API 文档」收编：一行小链接、右对齐弱化——
+ * 开发诊断入口不与设置内容竞争视觉层级 */
+.advanced-docs-link { text-align: right; margin: 4px 2px 0 0; }
+.advanced-docs-link a { color: var(--primary); text-decoration: none; }
+.advanced-docs-link a:hover { text-decoration: underline; }
 
 @media (max-width: 900px) {
   .cards { grid-template-columns: repeat(2, 1fr); }

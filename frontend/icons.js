@@ -9,8 +9,9 @@
  *                  scripts/ci_brand_geometry.sh 门禁保证同步。
  *   - brandBasin = 实色「层叠深潭」，用于主窗口品牌站位（侧栏顶部 +
  *                  页头）。几何反向自 apps/desktop/src-tauri/icons/icon.png
- *                  （1024×1024 位图）；色阶通过 currentColor + opacity 渐进，
- *                  染色由 .brand-mark / .dr-anchor 上下文继承 var(--trench)。
+ *                  （1024×1024 位图）；ISS-088 起各层为自该位图 PIL 采样的
+ *                  固定 fill 真彩色板（象牙白底 + 蓝青阶地），不依赖 CSS
+ *                  currentColor/opacity 染色。
  * 任何新品牌位复用：先在「主窗口/页头/关于区」用 brandBasin；其余场景
  * 才用 brandRing。混用由 ISS-087 之后的 review 阶段逐项核查。
  */
@@ -26,20 +27,32 @@ export const ICON_PATHS = {
     '<path class="dr-ring" d="M20 9.1A8.5 8.5 0 1 1 14.9 4"/>' +
     '<line class="dr-probe" x1="12" y1="7.5" x2="12" y2="16.5"/>' +
     '<line class="dr-tick" x1="17.2" y1="6.8" x2="19.3" y2="4.7"/>',
-  /* 层叠深潭：DEC-023 双形态体系的「主形态」（ISS-045 / ISS-086）。
+  /* 层叠深潭：DEC-023 双形态体系的「主形态」（ISS-045 / ISS-086 / ISS-088）。
    * 反向自 apps/desktop/src-tauri/icons/icon.png（1024×1024）的几何——
    * 实色 4 层嵌套等深卵形（顶部偏窄、底部略宽的水滴/坑口）+ 顶部象牙白
-   * 测深刻痕。色阶从浅矿物青到深潭墨（currentColor + opacity 渐进，
-   * 继承 .brand-mark 的染色：默认海沟蓝；.bv-notch 单独定象牙白）。
+   * 测深刻痕。ISS-088 真彩化：各层改为自 icon.png PIL 采样的固定 fill
+   * （象牙白底板 + 浅青白/青蓝/深蓝/深潭墨四层阶地），不再依赖 CSS
+   * currentColor/opacity 叠加——旧方案在 24px 下呈模糊单色色团，用户
+   * 实机反馈「应用图标没显示出来」。色板采样记录（1024 图坐标，环形带
+   * 中心多方向均值）：
+   *   bv-base #FCFAF4 象牙白底板（(154,489)/(872,489)/(514,120)）
+   *   bv-l1   #C6DCE4 浅青白阶地（(514,763)/(715,690)/(279,489)/(345,657)）
+   *   bv-l2   #286B88 青蓝阶地  （(514,703)/(680,655)/(407,595)/(399,489) 等 7 点）
+   *   bv-l3   #062743 深蓝阶地  （(514,603)/(613,588)/(427,489) 等 7 点）
+   *   bv-core #00142A 深潭墨核心（(538,513)/(514,504)/(530,505)）
+   *   bv-notch #FCFAF4 象牙白测深刻痕（与底板同色，(514,180)）
+   * 绘制顺序：底板→四层椭圆→notch 最后叠加（icon.png 的刻痕坐在盆
+   * 顶缘之上；旧顺序 notch 垫底会被底层椭圆盖掉大半）。
    * 与 brandRing 互斥：brandRing = 线条环（小尺寸）；brandBasin =
    * 层叠面（主窗口）。两套几何由 icons.js 集中维护，便于 ISS-087 复用
    * 与 DEC-023 双形态合同审计。 */
   brandBasin:
-    '<path class="bv-notch" d="M10.4 1.6 L12 4.4 L13.6 1.6 Z"/>' +
-    '<ellipse class="bv-l1" cx="12" cy="13.4" rx="9.2" ry="9.5"/>' +
-    '<ellipse class="bv-l2" cx="12" cy="13.4" rx="6.6" ry="7"/>' +
-    '<ellipse class="bv-l3" cx="12" cy="13.4" rx="4" ry="4.4"/>' +
-    '<ellipse class="bv-core" cx="12" cy="13.4" rx="2.1" ry="2.5"/>',
+    '<ellipse class="bv-base" fill="#FCFAF4" cx="12" cy="13.4" rx="11" ry="11.3"/>' +
+    '<ellipse class="bv-l1" fill="#C6DCE4" cx="12" cy="13.4" rx="9.2" ry="9.5"/>' +
+    '<ellipse class="bv-l2" fill="#286B88" cx="12" cy="13.4" rx="6.6" ry="7"/>' +
+    '<ellipse class="bv-l3" fill="#062743" cx="12" cy="13.4" rx="4" ry="4.4"/>' +
+    '<ellipse class="bv-core" fill="#00142A" cx="12" cy="13.4" rx="2.1" ry="2.5"/>' +
+    '<path class="bv-notch" fill="#FCFAF4" d="M10.4 1.6 L12 4.4 L13.6 1.6 Z"/>',
   /* 总览：仪表盘 */
   gauge:
     '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
@@ -124,8 +137,8 @@ export const ICON_PATHS = {
  * @param {string} cls 额外 class
  *
  * 通用图标走 lucide 风格 stroke 模板；brandBasin 是实色 fill 几何（层叠
- * 嵌套 + notch），需要在 SVG 上覆盖 fill="currentColor" 并清掉 stroke 属性，
- * 否则 stroke-width=2 会污染椭圆边缘、与品牌语义不符。
+ * 嵌套 + notch，ISS-088 起各子元素带固定采样 fill 属性），SVG 根须清掉
+ * stroke 属性，否则 stroke-width=2 会污染椭圆边缘、与品牌语义不符。
  */
 export function icon(name, size = 18, cls = "") {
   const paths = ICON_PATHS[name];
@@ -134,7 +147,7 @@ export function icon(name, size = 18, cls = "") {
   if (name === "brandBasin") {
     return (
       wrap +
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" stroke="none">${paths}</svg></span>`
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke="none">${paths}</svg></span>`
     );
   }
   return (

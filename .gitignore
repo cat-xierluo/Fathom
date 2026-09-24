@@ -46,3 +46,8 @@ docs/plans/*
 
 # 本地杂项
 .video_agent/
+
+# Claude 工具本地生成文件不入库（项目级 skills/ 例外白名单——Folia 同款）
+.claude/*
+!.claude/settings.local.json
+!.claude/skills/

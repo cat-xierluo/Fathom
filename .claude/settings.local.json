@@ -1,0 +1,9 @@
+{
+  "disabledMcpjsonServers": [
+    "MiniMax",
+    "qcc-company",
+    "qcc-risk",
+    "qcc-ipr",
+    "qcc-operation"
+  ]
+}

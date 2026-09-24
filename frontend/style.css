@@ -870,3 +870,14 @@ code {
   .cards { grid-template-columns: repeat(2, 1fr); }
   .diff-grid, .diff-tables, .browser-layout { grid-template-columns: 1fr; }
 }
+
+/* 设置页「权限与覆盖」事实卡（ISS-091，监控分区末尾）：两个数字事实并排 */
+.perm-facts { display: flex; gap: 26px; flex-wrap: wrap; }
+.perm-fact { display: flex; flex-direction: column; gap: 2px; }
+.perm-fact-num {
+  font-size: 22px; font-weight: 600; line-height: 1.2;
+  font-variant-numeric: tabular-nums; color: var(--text);
+}
+.perm-fact-num[data-sev="warn"] { color: var(--warn); }
+.perm-fact-num[data-sev="ok"] { color: var(--ok); }
+.perm-fact-label { font-size: 12px; color: var(--muted); }

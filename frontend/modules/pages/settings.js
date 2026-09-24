@@ -581,6 +581,8 @@ async function loadSettings() {
   loadScanHistory();
   // 加载"权限与覆盖"小节（ISS-002A；可独立失败，不影响主配置）
   loadPermissions();
+  // 加载「权限与覆盖」事实卡（ISS-091，监控分区末尾；可独立失败）
+  loadMonitorPermissions();
   // 加载"后台自启"开关（ISS-010B；可独立失败，不影响主配置）
   loadAutostart();
   // 加载"应用更新"区（ISS-040B；可独立失败，不影响主配置）
@@ -790,6 +792,117 @@ async function loadPermissions() {
         }
       } finally {
         rescanBtn.disabled = false;
+      }
+    });
+  }
+}
+
+/* ===== 权限与覆盖事实卡（ISS-091，2026-09-24 用户反馈）=====
+ * 「监控」分区末尾新增：把最近一次有效快照的受限（denied_count）与
+ * 消失（vanished_count）事实直接呈现在监控区，并引导用户去系统设置为
+ * Fathom 开启完全磁盘访问。与 ISS-002A 面板（计划与通知 section，授权
+ * 状态推导 + 重扫入口）互补：本卡不推导状态，只呈现数字与固定解释。
+ * - 数据：GET /api/status 的 latest_snapshot（dir_count/denied_count/
+ *   vanished_count；占比 = denied ÷ dir_count，分母是本次 du 统计到的
+ *   目录总数，不是磁盘全部目录，denied 是 stderr 行数故比值可 >100%）。
+ * - macOS 不允许应用自行申请完全磁盘访问：本应用不代改系统权限，按钮
+ *   只做深链引导（plugin:opener|open_url，与 ISS-002A 同命令同目标）；
+ *   浏览器态按钮隐藏、降级为路径文字，不渲染假 <a>。
+ * - 字段缺失防御与 ISS-002A 同口径（?? 0）；空库显示「尚未扫描」。 */
+const MONITOR_PERM_CARD_ID = "monitor-permissions-card";
+
+function _ensureMonitorPermCard() {
+  const page = document.getElementById("page-settings");
+  if (!page) return null;
+  let card = document.getElementById(MONITOR_PERM_CARD_ID);
+  if (card) return card;
+  card = document.createElement("div");
+  card.id = MONITOR_PERM_CARD_ID;
+  card.className = "panel";
+  card.innerHTML = `
+    <div class="panel-head">
+      <h2>权限与覆盖</h2>
+      <p class="hint">最近一次扫描的受限与消失目录事实；本应用不代改系统权限</p>
+    </div>
+    <div class="perm-panel" data-test="mperm-card-body">
+      <p class="hint">权限与覆盖信息加载中…</p>
+    </div>`;
+  // ISS-091：本卡归「监控」section 末尾（#settings-monitor-extra，排除
+  // 列表编辑器之后）；容器缺失时回退整页末尾（与 ISS-069/002A 同兜底）。
+  const host = document.getElementById("settings-monitor-extra");
+  if (host) host.appendChild(card);
+  else page.appendChild(card);
+  return card;
+}
+
+/** denied 占比文案：分母 dir_count<=0（异常快照/防御值）时不显示，只留数字。 */
+function _mpermRatioText(denied, dirCount) {
+  if (!Number.isFinite(dirCount) || dirCount <= 0) return "";
+  return `${denied} / ${dirCount}（${((denied / dirCount) * 100).toFixed(1)}%）`;
+}
+
+async function loadMonitorPermissions() {
+  const card = _ensureMonitorPermCard();
+  if (!card) return;
+  const body = card.querySelector("[data-test='mperm-card-body']");
+  if (!body) return;
+  const request = beginRequest("settingsMonitorPermissions");
+  let statusData = null;
+  try {
+    statusData = await fetchJSON("/api/status");
+    if (!request.current()) return;
+  } catch (e) {
+    if (!request.current()) return;
+    body.innerHTML = `<p class="hint">${escapeHtml(e.status === 0
+      ? "无法连接本地服务，权限与覆盖信息暂不可用。"
+      : `权限与覆盖信息加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`)}</p>`;
+    return;
+  }
+  const latest = statusData?.latest_snapshot;
+  const tauri = window.__TAURI__;
+  const tauriAvailable = !!(tauri && tauri.core && typeof tauri.core.invoke === "function");
+  if (!latest) {
+    body.innerHTML =
+      `<p class="hint">尚未扫描：完成首次扫描后，这里会显示读取受限与扫描期间消失目录的情况。</p>`;
+    return;
+  }
+  const denied = Number(latest.denied_count ?? 0) || 0;
+  const vanished = Number(latest.vanished_count ?? 0) || 0;
+  const dirCount = Number(latest.dir_count ?? 0) || 0;
+  const ratio = _mpermRatioText(denied, dirCount);
+  body.innerHTML = `
+    <div class="perm-facts" data-test="mperm-facts">
+      <div class="perm-fact">
+        <span class="perm-fact-num" data-test="mperm-denied" data-sev="${denied > 0 ? "warn" : "ok"}">${escapeHtml(String(denied))}</span>
+        <span class="perm-fact-label">读取受限（处）${ratio ? ` · ${escapeHtml(ratio)}` : ""}</span>
+      </div>
+      <div class="perm-fact">
+        <span class="perm-fact-num" data-test="mperm-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>
+        <span class="perm-fact-label">扫描期间消失（个）</span>
+      </div>
+    </div>
+    <p class="perm-note">受限 = du 无法读取某些目录（如受系统保护的位置），为 Fathom 开启「完全磁盘访问」可减少受限；消失 = 扫描期间目录被移动或删除，属正常现象，不代表数据被清理。</p>
+    <div class="perm-link-row">
+      <button type="button" id="btn-mperm-open-prefs" class="perm-link"
+              data-test="mperm-open-prefs-btn"${tauriAvailable ? "" : " hidden"}>
+        ${icon("externalLink", 14)} 打开系统隐私设置
+      </button>
+      <span class="perm-link-fallback" data-test="mperm-path-fallback"${tauriAvailable ? " hidden" : ""}>
+        ${escapeHtml(PREFS_PATH_TEXT)}
+      </span>
+    </div>`;
+  const openBtn = document.getElementById("btn-mperm-open-prefs");
+  if (openBtn && tauriAvailable) {
+    openBtn.addEventListener("click", async () => {
+      openBtn.disabled = true;
+      try {
+        // 与 ISS-002A 深链同命令同目标：tauri-plugin-opener 1.x 的 open_url
+        await tauri.core.invoke("plugin:opener|open_url", { url: PREFS_DEEP_LINK });
+      } catch (e) {
+        // 跳转失败不静默吞错：弹路径文字作为降级（与 ISS-002A 同形态）
+        alert("无法打开系统设置。请手动前往 " + PREFS_PATH_TEXT + "。");
+      } finally {
+        openBtn.disabled = false;
       }
     });
   }

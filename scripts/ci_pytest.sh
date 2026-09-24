@@ -8,12 +8,14 @@
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 697）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 699）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-expected="${EXPECTED_PYTEST_PASSED:-697}"
+# ISS-091 +2：tests/test_api_status_coverage.py 锁定 /api/status
+# latest_snapshot 的 dir/denied/vanished 字段契约（697 → 699）。
+expected="${EXPECTED_PYTEST_PASSED:-699}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

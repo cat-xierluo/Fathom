@@ -355,11 +355,10 @@ tr:hover .btn-mini { opacity: 1; }
 .chart { width: 100%; height: 300px; }
 .chart-lg { height: 340px; }
 .chart-sm { height: 180px; }
-.diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-/* 增长/缩减（ISS-084）：沉积赭 / 矿物青族——方向是数据事实，不是对错 */
+/* ISS-094：增长/缩减双列容器（.diff-grid/.diff-tables）随分区 tab 化移除——
+ * 各分区独占整行后不再需要并排网格；.grow/.shrink 方向色保留（分区 h2）。 */
 .grow { color: var(--grow); }
 .shrink { color: var(--ok); }
-.diff-tables { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 14px; }
 
 /* 总览质量行 / 状态胶囊 / 表格等价切换 */
 .quality-line {
@@ -629,6 +628,61 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   padding-top: 10px; border-top: 1px solid var(--border);
 }
 
+/* ===== 页内二级导航（ISS-094）：内容页页头下的横向 tab 条 ===== */
+
+/* 形态取舍：设置页（ISS-087）承载并列功能分区用左导航；内容页承载同一
+ * 数据集的不同视图，用页头下横向 tab 条——「翻页」心智且不占纵向宽度。
+ * tab 条是卡片语言（圆角 + 边框 + 阴影，ISS-089 分隔规范），sticky 在
+ * .page-container（ISS-082 唯一滚动容器）顶部：长内容上滚时 tab 常驻
+ * 可达，不引入自身滚动（与设置页 nav 的 sticky 同做法，滚动合同不破）。 */
+.page-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;  /* 窄视口换行而非横向溢出（布局探针合同） */
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+  position: sticky;
+  top: 0;
+  z-index: 5;  /* 盖过上滚经过的内容（卡片不透明底遮挡） */
+}
+.page-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.page-tab:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+/* ISS-092 选中语言（与侧栏/设置导航同 token）：深潭墨实底 + 象牙白字
+ * （对比 9.2:1 ≥4.5:1）；hover 保持浅底，与深底选中明确分层；显式补
+ * :hover 一档防规则顺序回归（同 .nav-item / .settings-nav-item）。 */
+.page-tab[aria-current="true"],
+.page-tab[aria-current="true"]:hover {
+  background: var(--used);
+  color: var(--nav-active-fg);
+}
+.page-tab:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+.page-tab-section[hidden] { display: none; }
+/* 分区 panel 保持 .panel 自身的 margin-bottom（18px）：变化页明细分区后
+ * 还有页尾常驻的历史日报 panel（.panel 无 margin-top），收掉底距会让
+ * 两张卡片贴合；页尾余量由 .panel 底距 + .page-container padding-bottom
+ * 承担（与 tab 化前的页面形态一致）。 */
+
 /* ===== 设置页（ISS-087：左导航 + 右 section） ===== */
 
 /* 整页布局：左 nav 固定宽度列，右 sections 占满；
@@ -879,7 +933,7 @@ code {
 
 @media (max-width: 900px) {
   .cards { grid-template-columns: repeat(2, 1fr); }
-  .diff-grid, .diff-tables, .browser-layout { grid-template-columns: 1fr; }
+  .browser-layout { grid-template-columns: 1fr; }
 }
 
 /* 设置页「权限与覆盖」事实卡（ISS-091，监控分区末尾）：两个数字事实并排 */

@@ -51,3 +51,6 @@ docs/plans/*
 .claude/*
 !.claude/settings.local.json
 !.claude/skills/
+
+# Helper 进程运行产物（实测生产 PID/port 写入；首版本未忽略致首次未提交异常）
+helper-instance.json

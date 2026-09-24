@@ -203,53 +203,160 @@
         </div>
       </section>
 
-      <!-- ===== 设置 ===== -->
+      <!-- ===== 设置（ISS-087：左导航 + 右 section，「关于」独立） ===== -->
       <section class="page hidden" id="page-settings">
-        <div class="panel">
-          <div class="panel-head"><h2>可修改设置</h2><p class="hint">保存到运行根 settings.json；留空的字段保持不变</p></div>
-          <form id="config-form" class="config-form" novalidate>
-            <div class="cfg-row">
-              <label for="cfg-scan-root">监控根目录</label>
-              <input class="ctl-input cfg-wide" id="cfg-scan-root" type="text"
-                     autocomplete="off" spellcheck="false" placeholder="留空表示不修改">
-            </div>
-            <div class="cfg-row">
-              <label for="cfg-scan-time">计划时间</label>
-              <input class="ctl-input" id="cfg-scan-time" type="text" inputmode="numeric"
-                     autocomplete="off" placeholder="HH:MM">
-            </div>
-            <div class="cfg-row">
-              <label for="cfg-min-kb">入库阈值（KB）</label>
-              <input class="ctl-input" id="cfg-min-kb" type="number" min="0" step="any"
-                     autocomplete="off" placeholder="正数">
-            </div>
-            <div class="cfg-row">
-              <label for="cfg-free-alert-gb">低空间提醒阈值（GB）</label>
-              <input class="ctl-input" id="cfg-free-alert-gb" type="number" min="0" step="any"
-                     autocomplete="off" placeholder="正数">
-            </div>
-            <div class="cfg-actions">
-              <button type="submit" id="btn-config-save" class="btn">保存设置</button>
-              <button type="button" id="btn-config-reset" class="btn">恢复默认值</button>
-            </div>
-          </form>
-          <p id="config-effective" class="hint">配置加载中…</p>
-          <p id="config-feedback" class="hint" hidden></p>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><h2>运行信息</h2><p class="hint">来自本地服务的实际值，不含硬编码</p></div>
-          <table class="tbl" id="settings-table"><tbody></tbody></table>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><h2>扫描运行历史</h2><p class="hint">最近 5 条扫描结果、来源与说明</p></div>
-          <div id="scan-history" class="hint-line"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>加载中…</div>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><h2>服务管理</h2></div>
-          <div class="settings-actions">
-            <p class="hint">定时扫描与常驻服务由 launchd 管理（com.maoscripts.fathom-*）。</p>
-            <p class="hint">卸载：<code>.venv/bin/python -m fathom uninstall</code>；重装：<code>install</code>。</p>
-            <p class="hint">修改计划时间后需重装计划才生效；数据与日报的实际位置见上方“运行信息”。</p>
+        <div class="settings-layout">
+          <!-- 左导航（vanilla JS 切 section；不依赖 hash 路由，URL hash 可选持久化） -->
+          <nav class="settings-nav" aria-label="设置分区导航" data-test="settings-nav">
+            <button type="button" class="settings-nav-item" data-section="monitoring"
+                    aria-current="true" data-test="settings-nav-monitoring">
+              <span class="settings-nav-icon" data-icon="scope"></span>
+              <span class="settings-nav-label">监控</span>
+            </button>
+            <button type="button" class="settings-nav-item" data-section="schedule"
+                    data-test="settings-nav-schedule">
+              <span class="settings-nav-icon" data-icon="clock"></span>
+              <span class="settings-nav-label">计划与通知</span>
+            </button>
+            <button type="button" class="settings-nav-item" data-section="advanced"
+                    data-test="settings-nav-advanced">
+              <span class="settings-nav-icon" data-icon="stethoscope"></span>
+              <span class="settings-nav-label">高级与诊断</span>
+            </button>
+            <button type="button" class="settings-nav-item" data-section="about"
+                    data-test="settings-nav-about">
+              <span class="settings-nav-icon" data-icon="info"></span>
+              <span class="settings-nav-label">关于</span>
+            </button>
+          </nav>
+
+          <!-- 右分区容器：每个 <section> 是一个 IA 分区；
+               同一时刻只有一个可见（display 切换不破坏 ISS-082 的滚动合同） -->
+          <div class="settings-sections">
+            <!-- 监控：监控范围 + 阈值 + 排除（ISS-069 排除列表编辑器挂此处） -->
+            <section class="settings-section" data-section="monitoring"
+                     id="settings-section-monitoring" aria-labelledby="settings-head-monitoring">
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 id="settings-head-monitoring">监控设置</h2>
+                  <p class="hint">保存到运行根 settings.json；留空的字段保持不变</p>
+                </div>
+                <form id="config-form" class="config-form" novalidate>
+                  <div class="cfg-row">
+                    <label for="cfg-scan-root">监控根目录</label>
+                    <input class="ctl-input cfg-wide" id="cfg-scan-root" type="text"
+                           autocomplete="off" spellcheck="false" placeholder="留空表示不修改">
+                  </div>
+                  <div class="cfg-row">
+                    <label for="cfg-min-kb">入库阈值（KB）</label>
+                    <input class="ctl-input" id="cfg-min-kb" type="number" min="0" step="any"
+                           autocomplete="off" placeholder="正数">
+                  </div>
+                  <div class="cfg-actions">
+                    <button type="submit" id="btn-config-save" class="btn">保存设置</button>
+                    <button type="button" id="btn-config-reset" class="btn">恢复默认值</button>
+                  </div>
+                </form>
+                <p id="config-effective" class="hint">配置加载中…</p>
+                <p id="config-feedback" class="hint" hidden></p>
+              </div>
+              <!-- ISS-069 排除列表编辑器挂载点（运行期由 settings.js 注入） -->
+              <div id="settings-monitor-extra"></div>
+            </section>
+
+            <!-- 计划与通知：扫描计划 + 保存确认 + 通知阈值 + 扫描运行历史 + 权限/覆盖 + 后台自启 -->
+            <section class="settings-section" data-section="schedule"
+                     id="settings-section-schedule" aria-labelledby="settings-head-schedule" hidden>
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 id="settings-head-schedule">计划与通知</h2>
+                  <p class="hint">扫描时间与低空间提醒阈值；后台自启与权限深链亦归此处</p>
+                </div>
+                <form id="schedule-form" class="config-form" novalidate>
+                  <div class="cfg-row">
+                    <label for="cfg-scan-time">计划时间</label>
+                    <input class="ctl-input" id="cfg-scan-time" type="text" inputmode="numeric"
+                           autocomplete="off" placeholder="HH:MM">
+                  </div>
+                  <div class="cfg-row">
+                    <label for="cfg-free-alert-gb">低空间提醒阈值（GB）</label>
+                    <input class="ctl-input" id="cfg-free-alert-gb" type="number" min="0" step="any"
+                           autocomplete="off" placeholder="正数">
+                  </div>
+                  <div class="cfg-actions">
+                    <button type="submit" id="btn-schedule-save" class="btn">保存计划与通知</button>
+                  </div>
+                </form>
+              </div>
+              <!-- 扫描运行历史（ISS-028 m3）+ 权限与覆盖（ISS-002A）+ 后台自启（ISS-010B）挂载点 -->
+              <div id="settings-schedule-extra">
+                <div class="panel">
+                  <div class="panel-head"><h2>扫描运行历史</h2><p class="hint">最近 5 条扫描结果、来源与说明</p></div>
+                  <div id="scan-history" class="hint-line"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>加载中…</div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 高级与诊断：ISS-083 折叠区原样迁入；运行信息表 + 服务管理面板在此 section 下 -->
+            <section class="settings-section" data-section="advanced"
+                     id="settings-section-advanced" aria-labelledby="settings-head-advanced" hidden>
+              <!-- 运行信息表（ISS-016A）+ 服务管理面板均经 settings.js 注入到此容器；
+                   浏览器/开发态全量渲染，打包态按 ISS-083 收进折叠区 -->
+              <div id="settings-advanced-extra">
+                <div class="panel">
+                  <div class="panel-head"><h2>运行信息</h2><p class="hint">来自本地服务的实际值，不含硬编码</p></div>
+                  <table class="tbl" id="settings-table"><tbody></tbody></table>
+                </div>
+                <div class="panel">
+                  <div class="panel-head"><h2>服务管理</h2></div>
+                  <div class="settings-actions">
+                    <p class="hint">定时扫描与常驻服务由 launchd 管理（com.maoscripts.fathom-*）。</p>
+                    <p class="hint">卸载：<code>.venv/bin/python -m fathom uninstall</code>；重装：<code>install</code>。</p>
+                    <p class="hint">修改计划时间后需重装计划才生效；数据与日报的实际位置见上方「运行信息」。</p>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 关于：应用图标（brandBasin）+ 版本 + 检查更新 + 项目简介 + 许可证 + 作者 -->
+            <section class="settings-section" data-section="about"
+                     id="settings-section-about" aria-labelledby="settings-head-about" hidden>
+              <div class="panel about-panel" data-test="about-panel">
+                <div class="about-head">
+                  <span class="about-mark" data-dr="brandBasin" aria-hidden="true"></span>
+                  <div class="about-titles">
+                    <h2 id="settings-head-about">关于 Fathom</h2>
+                    <p class="about-version" data-test="about-version">Fathom <span data-test="about-version-num">—</span></p>
+                  </div>
+                </div>
+                <p class="hint about-blurb">
+                  macOS 目录容量历史追踪工具：记录哪些目录在增长，把最近变化与历史证据放在一起，
+                  帮助理解空间去向。所有数据只存在你的机器上。
+                </p>
+                <ul class="about-meta">
+                  <li>
+                    <span class="about-meta-key">许可证</span>
+                    <a href="../LICENSE" target="_blank" rel="noopener">Apache-2.0</a>
+                    <span class="hint">（仓库根 LICENSE）</span>
+                  </li>
+                  <li>
+                    <span class="about-meta-key">第三方声明</span>
+                    <a href="https://github.com/cat-xierluo/Fathom/blob/main/NOTICES" target="_blank" rel="noopener">NOTICES</a>
+                  </li>
+                  <li>
+                    <span class="about-meta-key">仓库</span>
+                    <a href="https://github.com/cat-xierluo/Fathom" target="_blank" rel="noopener">cat-xierluo/Fathom</a>
+                  </li>
+                  <li class="about-copyright">
+                    <span class="about-meta-key">作者</span>
+                    <span>Copyright 2026 maoking</span>
+                  </li>
+                </ul>
+                <!-- 应用更新区（ISS-040B）从原 settings.js 的 updater 面板迁入 -->
+                <div class="about-divider"></div>
+                <div id="settings-about-extra"></div>
+              </div>
+            </section>
           </div>
         </div>
       </section>

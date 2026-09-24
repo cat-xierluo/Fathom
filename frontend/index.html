@@ -315,6 +315,12 @@
                     <p class="hint">修改计划时间后需重装计划才生效；数据与日报的实际位置见上方「运行信息」。</p>
                   </div>
                 </div>
+                <!-- ISS-089：页脚移除后，「API 文档」以一行小链接收进高级与
+                     诊断区末尾——开发诊断入口，非日常内容（原页脚还带有
+                     「本地运行 · 数据不出本机」文案，属营销性重复，不再保留） -->
+                <p class="hint advanced-docs-link">
+                  <a href="/docs" target="_blank" rel="noopener">API 文档</a>（本地服务的开发诊断用接口说明）
+                </p>
               </div>
             </section>
 
@@ -323,7 +329,7 @@
                      id="settings-section-about" aria-labelledby="settings-head-about" hidden>
               <div class="panel about-panel" data-test="about-panel">
                 <div class="about-head">
-                  <span class="about-mark" data-dr="brandBasin" aria-hidden="true"></span>
+                  <span class="about-mark" data-dr="brandBasin" data-dr-size="64" aria-hidden="true"></span>
                   <div class="about-titles">
                     <h2 id="settings-head-about">关于 Fathom</h2>
                     <p class="about-version" data-test="about-version">Fathom <span data-test="about-version-num">—</span></p>
@@ -362,12 +368,6 @@
       </section>
 
     </main>
-
-    <!-- ISS-082：页脚移入主区，固定在内容区滚动容器下方 -->
-    <footer class="app-footer">
-      <span>Fathom · 本地运行 · 数据不出本机</span>
-      <a href="/docs" target="_blank">API 文档</a>
-    </footer>
   </div>
 </div>
 

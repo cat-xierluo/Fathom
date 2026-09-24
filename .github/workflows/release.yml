@@ -157,23 +157,16 @@ jobs:
           cargo tauri --version
           [ "$(cargo tauri --version | awk '{print $2}')" = "$TAURI_CLI_VERSION" ]
 
-      - name: 构建 .app + DMG（tauri build，updater 产物按首轮边界关闭）
+      - name: 构建 .app + DMG + updater 产物（G10 生产更新启用）
+        env:
+          # G10（2026-09-24）：生产 keypair 私钥经 secrets 注入（env 传递，
+          # 不内联）。build_app.sh 检测到 TAURI_SIGNING_PRIVATE_KEY 即保持
+          # createUpdaterArtifacts=true，tauri build 生成 .app.tar.gz+.sig。
+          # 本步骤起 job 读取 signing secrets——uses 已全部固定完整 SHA。
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          # ISS-041A 首轮无 updater 边界：内联 --config 把
-          # bundle.createUpdaterArtifacts 覆盖为 false（官方文档：--config
-          # JSON 与默认配置合并、冲突键后者覆盖；本机 2.6.2 实测该键
-          # 参与合并后校验）。恢复 updater 时：删除本覆盖、生成 G10 生产
-          # keypair，并在受控环境以 TAURI_SIGNING_* 环境变量（非 workflow
-          # secrets 内联）重新接入——本 workflow 当前不引用任何 secrets。
-          cat > "$RUNNER_TEMP/tauri-updater-off.json" <<'EOF'
-          {
-            "bundle": {
-              "createUpdaterArtifacts": false
-            }
-          }
-          EOF
-          export FATHOM_TAURI_BUILD_ARGS="--config $RUNNER_TEMP/tauri-updater-off.json"
           # ISS-041A repair1：build_app.sh 内部会再次调用 build_helper.sh，
           # 无参时退回本机 iss029 缺省 venv（不在 git，干净 runner 上必
           # BLOCKED exit 3）。透传前置「冻结 helper」步骤已就绪的同一 venv。
@@ -205,6 +198,38 @@ jobs:
           [ -f "apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper.sha256" ] \
             || { echo "[release] FAIL：helper sha256 证据文件缺失" >&2; exit 1; }
 
+      - name: 定位 updater 产物并生成 latest.json（fail-closed）
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="$PWD/apps/desktop/src-tauri/target/release/bundle"
+          UPDATER_TGZ="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "Fathom_${RELEASE_VERSION}_aarch64.app.tar.gz" | head -1)"
+          [ -n "$UPDATER_TGZ" ] && [ -f "$UPDATER_TGZ" ] || {
+            echo "[release] FAIL：未找到 updater 产物 Fathom_${RELEASE_VERSION}_aarch64.app.tar.gz" >&2; exit 1;
+          }
+          [ -f "${UPDATER_TGZ}.sig" ] || {
+            echo "[release] FAIL：未找到 ${UPDATER_TGZ}.sig（签名未生成，检查 secrets 注入）" >&2; exit 1;
+          }
+          STAGE="$RUNNER_TEMP/release-assets"
+          TGZ_NAME="$(basename "$UPDATER_TGZ")"
+          cp "$UPDATER_TGZ" "${UPDATER_TGZ}.sig" "$STAGE/"
+          echo "TGZ_NAME=$TGZ_NAME" >> "$GITHUB_ENV"
+          # updater 产物 sha256 一并进 checksums.txt
+          ( cd "$STAGE" && shasum -a 256 "$TGZ_NAME" >> checksums.txt && cat checksums.txt )
+          # ISS-040A 清单工具：单平台放行（x86_64 留父卡），url 指向本 tag 的 Release 资产
+          python3 scripts/generate_update_manifest.py \
+            --version "$RELEASE_VERSION" \
+            --notes "Fathom $RELEASE_TAG" \
+            --allow-single-platform \
+            --darwin-aarch64 "$STAGE/$TGZ_NAME" \
+            --darwin-aarch64-sig "$STAGE/$TGZ_NAME.sig" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG" \
+            --out "$STAGE/latest.json"
+          # 生成后立即 fail-closed 校验（同工具族规则，防坏清单上传）
+          python3 scripts/verify_update_manifest.py \
+            --manifest "$STAGE/latest.json" \
+            --artifacts-root "$STAGE" \
+            --allow-single-platform
+
       - name: 版本门（上传前 fail-closed 重跑）
         run: |
           set -euo pipefail
@@ -234,8 +259,8 @@ jobs:
           - 仅 arm64（Apple Silicon 原生构建），无 x86_64 产物。
           - 未签名、未公证：首次打开需在 Finder 右键打开或系统设置放行
             （DMG 背景含指引）。这是 DEC-022 延期签名后的预期状态。
-          - 本轮无 updater 产物（.tar.gz/.sig/latest.json 均不在内），
-            应用内更新不可用，属预期。
+          - 应用内更新已启用（G10）：含 .app.tar.gz + .sig + latest.json
+            （arm64；生产 keypair 签名，endpoint 指向 releases/latest）。
           - 校验：sha256 -c checksums.txt；结构校验可复跑
             scripts/verify_release_candidate.sh（见仓库 scripts/ 目录）。
           - 保持 draft：公开发布由维护者人工执行，本 workflow 不 publish。
@@ -243,14 +268,16 @@ jobs:
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "[release] draft 已存在，改为追加/覆盖资产：$RELEASE_TAG"
             gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              "$STAGE/$DMG_NAME" "$STAGE/checksums.txt" --clobber
+              "$STAGE/$DMG_NAME" "$STAGE/$TGZ_NAME" "$STAGE/$TGZ_NAME.sig" \
+              "$STAGE/latest.json" "$STAGE/checksums.txt" --clobber
           else
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
               --draft \
               --title "Fathom $RELEASE_TAG" \
               --notes-file "$NOTES" \
               --target "$(git rev-list -n1 "$RELEASE_TAG")" \
-              "$STAGE/$DMG_NAME" "$STAGE/checksums.txt"
+              "$STAGE/$DMG_NAME" "$STAGE/$TGZ_NAME" "$STAGE/$TGZ_NAME.sig" \
+              "$STAGE/latest.json" "$STAGE/checksums.txt"
           fi
           # --target 用 tag 实际指向的 commit SHA：GitHub 创建 Release 的
           # target_commitish 只接受分支名/SHA，传 tag 名会 422 invalid

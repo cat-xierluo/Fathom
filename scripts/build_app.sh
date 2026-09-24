@@ -81,8 +81,18 @@ cd "$ROOT/apps/desktop/src-tauri"
 rm -rf target/release/helper target/debug/helper
 # ISS-041A：FATHOM_TAURI_BUILD_ARGS 不做引号展开以外的任何解析——上层
 # 调用方（release workflow / 本地复跑）自行保证参数合法；默认空。
-# shellcheck disable=SC2086
-cargo tauri build --bundles app,dmg ${FATHOM_TAURI_BUILD_ARGS:-} 2>&1 | tee "$LOG_DIR/tauri-build.log" || OVERALL_RC=$?
+# G10（2026-09-24）生产更新启用：TAURI_SIGNING_PRIVATE_KEY 已设（发行 CI）→
+# 保持 createUpdaterArtifacts=true，tauri build 生成 .app.tar.gz + .sig；
+# 未设（本地开发）→ 内联 --config 关闭（无签名私钥时 tauri build 会失败）。
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+  UPDATER_OFF_CFG="$LOG_DIR/tauri-updater-off.json"
+  printf '{\n  "bundle": { "createUpdaterArtifacts": false }\n}\n' > "$UPDATER_OFF_CFG"
+  # shellcheck disable=SC2086
+  cargo tauri build --bundles app,dmg ${FATHOM_TAURI_BUILD_ARGS:-} --config "$UPDATER_OFF_CFG" 2>&1 | tee "$LOG_DIR/tauri-build.log" || OVERALL_RC=$?
+else
+  # shellcheck disable=SC2086
+  cargo tauri build --bundles app,dmg ${FATHOM_TAURI_BUILD_ARGS:-} 2>&1 | tee "$LOG_DIR/tauri-build.log" || OVERALL_RC=$?
+fi
 cd "$ROOT"
 
 # 即便 tauri build 整体失败，app 子产物可能已生成；分别检查

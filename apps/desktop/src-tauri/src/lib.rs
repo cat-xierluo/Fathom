@@ -441,7 +441,8 @@ const ESC_FORWARD_JS: &str = r#"(function () {
 // - 更新动作只在可信 Rust 壳内执行：前端经本壳三个命令（updater_check /
 //   updater_install / updater_restart）协调，不经 plugin:updater|* 直调插件
 //   命令——回环远程页面（127.0.0.1:7952 仪表盘）因此不获得宽泛 updater 权限。
-// - 当前 endpoint 为 RFC 保留域 updates.invalid（永不解析）＝「生产更新源关闭」
+// - 生产更新源自 v0.3.1 起启用（G10，2026-09-24）：endpoint 指向公开 GitHub
+//   Release 的 latest.json；v0.3.0 及之前为占位 updates.invalid（关闭态）
 //   语义；运行态检查得到 state=unreachable 的明确可恢复失败态，由发行侧
 //   （ISS-041/G10）替换真实 HTTPS 源后才可能 available。
 // - 验签由 tauri-plugin-updater 强制（minisign，公钥来自 tauri.conf.json

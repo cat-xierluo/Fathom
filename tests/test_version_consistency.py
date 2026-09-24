@@ -26,6 +26,9 @@ import fathom
 import fathom.api
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# 当前单一版本源版本：版本 bump 后锚点自动跟随（2026-09-24 v0.3.1 首次 bump 暴露的字面锚缺陷）
+CURRENT = fathom.__version__
 CHECKER = REPO_ROOT / "scripts" / "check_version_consistency.sh"
 
 # 校验器读取的最小文件集（与脚本内路径一致）。
@@ -82,7 +85,7 @@ def test_real_repo_consistent() -> None:
 
 def test_tauri_conf_drift_detected(tmp_path: Path) -> None:
     root = _make_copy(tmp_path)
-    _rewrite(root / "apps/desktop/src-tauri/tauri.conf.json", '"version": "0.3.0"', '"version": "9.9.9"')
+    _rewrite(root / "apps/desktop/src-tauri/tauri.conf.json", f'\"version\": \"{CURRENT}\"', '"version": "9.9.9"')
     result = _run_checker(root)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "9.9.9" in result.stdout
@@ -90,7 +93,7 @@ def test_tauri_conf_drift_detected(tmp_path: Path) -> None:
 
 def test_cargo_toml_drift_detected(tmp_path: Path) -> None:
     root = _make_copy(tmp_path)
-    _rewrite(root / "apps/desktop/src-tauri/Cargo.toml", 'version = "0.3.0"', 'version = "0.2.0"')
+    _rewrite(root / "apps/desktop/src-tauri/Cargo.toml", f'version = \"{CURRENT}\"', 'version = "0.2.0"')
     result = _run_checker(root)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "0.2.0" in result.stdout
@@ -99,7 +102,7 @@ def test_cargo_toml_drift_detected(tmp_path: Path) -> None:
 def test_single_source_bump_without_sync_detected(tmp_path: Path) -> None:
     # 只升单一源、不同步消费方：权威源变 0.4.0，其余三处立即被比对为漂移。
     root = _make_copy(tmp_path)
-    _rewrite(root / "fathom/__init__.py", '__version__ = "0.3.0"', '__version__ = "0.4.0"')
+    _rewrite(root / "fathom/__init__.py", f'__version__ = \"{CURRENT}\"', '__version__ = "0.4.0"')
     result = _run_checker(root)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "0.4.0" in result.stdout
@@ -110,7 +113,7 @@ def test_api_hardcoded_version_reintroduced(tmp_path: Path) -> None:
     _rewrite(
         root / "fathom/api.py",
         "app = FastAPI(title=\"Fathom\", version=__version__)",
-        'app = FastAPI(title="Fathom", version="0.3.0")',
+        f'app = FastAPI(title="Fathom", version="{CURRENT}")',
     )
     result = _run_checker(root)
     # 即使字面量恰好等于当前版本，也必须红：单一源不允许被旁路。
@@ -146,11 +149,11 @@ def test_cargo_lock_local_package_drift_detected(tmp_path: Path) -> None:
     # BF-2 盲区钉住：3beb3b5 时 Cargo.lock 本地包仍 0.2.0 而校验器全绿，
     # PM 人工发现后另作同步。本地包 fathom-desktop 紧随 name 行的 version
     # 漂移必须退出 1 并点名 Cargo.lock；一致场景由 test_real_repo_consistent
-    # 覆盖（真实仓库该行为 0.3.0，校验器保持退出 0）。
+    # 覆盖（真实仓库该行为当前版本，校验器保持退出 0）。
     root = _make_copy(tmp_path)
     _rewrite(
         root / "apps/desktop/src-tauri/Cargo.lock",
-        'name = "fathom-desktop"\nversion = "0.3.0"',
+        f'name = "fathom-desktop"\nversion = "{CURRENT}"',
         'name = "fathom-desktop"\nversion = "0.2.0"',
     )
     result = _run_checker(root)
@@ -168,7 +171,7 @@ def test_pyproject_declared_version_must_match(tmp_path: Path) -> None:
     result = _run_checker(root)
     assert result.returncode == 1, result.stdout + result.stderr
     # 反向对照：与单一源一致的声明保持绿。
-    _rewrite(pyproject, 'version = "0.2.0"', 'version = "0.3.0"')
+    _rewrite(pyproject, 'version = "0.2.0"', f'version = "{CURRENT}"')
     result = _run_checker(root)
     assert result.returncode == 0, result.stdout + result.stderr
 

@@ -2,16 +2,44 @@
  * 规范（DESIGN.md 视觉层）：24 viewBox、stroke=currentColor、fill=none、
  * stroke-width 2、round linecap/linejoin；禁止 emoji（DEC-010）。
  * 所有用户可见 SVG 图标只在本文件集中维护（ES module）。
+ *
+ * 双形态体系（DEC-023 / ISS-045 / ISS-086）：
+ *   - brandRing  = 线条「深度环」，用于界面小尺寸（菜单栏 tray 22pt、
+ *                  加载环、详情标题装饰、favicon）。四处几何由
+ *                  scripts/ci_brand_geometry.sh 门禁保证同步。
+ *   - brandBasin = 实色「层叠深潭」，用于主窗口品牌站位（侧栏顶部 +
+ *                  页头）。几何反向自 apps/desktop/src-tauri/icons/icon.png
+ *                  （1024×1024 位图）；色阶通过 currentColor + opacity 渐进，
+ *                  染色由 .brand-mark / .dr-anchor 上下文继承 var(--trench)。
+ * 任何新品牌位复用：先在「主窗口/页头/关于区」用 brandBasin；其余场景
+ * 才用 brandRing。混用由 ISS-087 之后的 review 阶段逐项核查。
  */
 
 export const ICON_PATHS = {
   /* 深度环：品牌标记（R3 视觉签名，ISS-072）——开放圆环（海沟蓝，
    * currentColor）+ 中心探针与跨刻度缺口的短刻度（矿物青，CSS 类染色）。
-   * Fathom = 测深单位；替代 R2 时期的船锚（R3 合同禁写实海洋元素） */
+   * Fathom = 测深单位；替代 R2 时期的船锚（R3 合同禁写实海洋元素）。
+   * 仅用于界面小尺寸场景（菜单栏 tray 22pt、侧栏字标外的加载环与
+   * favicon），由 scripts/ci_brand_geometry.sh 门禁保证四处几何同步；
+   * 主窗口品牌站位请用 brandBasin（应用图标本身）。 */
   brandRing:
     '<path class="dr-ring" d="M20 9.1A8.5 8.5 0 1 1 14.9 4"/>' +
     '<line class="dr-probe" x1="12" y1="7.5" x2="12" y2="16.5"/>' +
     '<line class="dr-tick" x1="17.2" y1="6.8" x2="19.3" y2="4.7"/>',
+  /* 层叠深潭：DEC-023 双形态体系的「主形态」（ISS-045 / ISS-086）。
+   * 反向自 apps/desktop/src-tauri/icons/icon.png（1024×1024）的几何——
+   * 实色 4 层嵌套等深卵形（顶部偏窄、底部略宽的水滴/坑口）+ 顶部象牙白
+   * 测深刻痕。色阶从浅矿物青到深潭墨（currentColor + opacity 渐进，
+   * 继承 .brand-mark 的染色：默认海沟蓝；.bv-notch 单独定象牙白）。
+   * 与 brandRing 互斥：brandRing = 线条环（小尺寸）；brandBasin =
+   * 层叠面（主窗口）。两套几何由 icons.js 集中维护，便于 ISS-087 复用
+   * 与 DEC-023 双形态合同审计。 */
+  brandBasin:
+    '<path class="bv-notch" d="M10.4 1.6 L12 4.4 L13.6 1.6 Z"/>' +
+    '<ellipse class="bv-l1" cx="12" cy="13.4" rx="9.2" ry="9.5"/>' +
+    '<ellipse class="bv-l2" cx="12" cy="13.4" rx="6.6" ry="7"/>' +
+    '<ellipse class="bv-l3" cx="12" cy="13.4" rx="4" ry="4.4"/>' +
+    '<ellipse class="bv-core" cx="12" cy="13.4" rx="2.1" ry="2.5"/>',
   /* 总览：仪表盘 */
   gauge:
     '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
@@ -66,12 +94,23 @@ export const ICON_PATHS = {
  * @param {string} name 图标名（ICON_PATHS 键）
  * @param {number} size 像素尺寸，默认 18
  * @param {string} cls 额外 class
+ *
+ * 通用图标走 lucide 风格 stroke 模板；brandBasin 是实色 fill 几何（层叠
+ * 嵌套 + notch），需要在 SVG 上覆盖 fill="currentColor" 并清掉 stroke 属性，
+ * 否则 stroke-width=2 会污染椭圆边缘、与品牌语义不符。
  */
 export function icon(name, size = 18, cls = "") {
   const paths = ICON_PATHS[name];
   if (!paths) return "";
+  const wrap = `<span class="icon${cls ? " " + cls : ""}" style="width:${size}px;height:${size}px" aria-hidden="true">`;
+  if (name === "brandBasin") {
+    return (
+      wrap +
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" stroke="none">${paths}</svg></span>`
+    );
+  }
   return (
-    `<span class="icon${cls ? " " + cls : ""}" style="width:${size}px;height:${size}px" aria-hidden="true">` +
+    wrap +
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
     `stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg></span>`
   );

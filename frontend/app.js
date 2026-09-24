@@ -15,7 +15,7 @@ import { listenTrayActions } from "./modules/tauri.js";
 
 function mountStaticIcons() {
   const brand = document.getElementById("brand-icon");
-  if (brand) brand.innerHTML = icon("brandRing", 24, "brand-mark");
+  if (brand) brand.innerHTML = icon("brandBasin", 24, "brand-mark");
   document.querySelectorAll("[data-icon]").forEach((el) => {
     el.innerHTML = icon(el.dataset.icon, 18);
   });
@@ -24,12 +24,15 @@ function mountStaticIcons() {
   });
 }
 
-/* ---------- ISS-085 深度环装饰挂载（纯装饰，无业务逻辑） ----------
- * 1) [data-dr]：深度环锚点（当前是页头 #page-anchor），brandRing 几何 +
- *    brand-mark 配色（海沟蓝环 + 矿物青探针，与侧栏字标同一规则）；
- * 2) [data-dr-spin]：区域加载占位的旋转加载环（几何同 brandRing，配色与
- *    动画由 style.css .dr-loading 承担；文本由挂载点的既有 textContent/
- *    innerHTML 更新自然接管，环随内容替换消失）。 */
+/* ---------- ISS-085/086 装饰挂载（纯装饰，无业务逻辑） ----------
+ * 1) [data-dr]：主窗口品牌站位（当前 #page-anchor = brandBasin，ISS-086
+ *    修订；早期 ISS-085 用 brandRing，因形态选用判定错而替换）。几何与
+ *    配色由 icons.js + style.css .brand-mark 承担；不再需要探针方位旋转
+ *    （brandBasin 是层叠面，不是可旋转的探针）。
+ * 2) [data-dr-spin]：区域加载占位的旋转加载环（几何同 brandRing，ISS-085
+ *    加载指示合同保留 —— 加载是测深语义、属深度环小尺寸形态担当的场景，
+ *    不进入双形态替换范围）。动画由 style.css .dr-loading 承担；文本由
+ *    挂载点的既有 textContent/innerHTML 更新自然接管，环随内容替换消失。 */
 function mountDepthRingDecor() {
   document.querySelectorAll("[data-dr]").forEach((el) => {
     el.innerHTML = icon(el.dataset.dr, 26, "brand-mark");
@@ -41,21 +44,6 @@ function mountDepthRingDecor() {
   });
 }
 
-/* 页头深度环探针随路由旋转（ISS-085）：五个页面均分环面（72° 间隔），
- * 「探针指向当前页」的仪器方位指示。独立解析 hash（与 router 同规则），
- * 不依赖 router 内部状态；reduced-motion 时 CSS 已关闭过渡，仅跳变方位。 */
-const PAGE_ANCHOR_ANGLES = {
-  overview: 0, changes: 72, browse: 144, bigfiles: 216, settings: 288,
-};
-
-function pointAnchorToCurrentPage() {
-  const anchor = document.getElementById("page-anchor");
-  if (!anchor) return;
-  const page = (location.hash || "#/overview").slice(2);
-  const angle = PAGE_ANCHOR_ANGLES[page] ?? 0;
-  anchor.style.setProperty("--dr-angle", `${angle}deg`);
-}
-
 /* ---------- 启动 ---------- */
 
 (async function init() {
@@ -63,8 +51,6 @@ function pointAnchorToCurrentPage() {
     setRequestScope(() => state.page);  // 世代号 pageScoped 的判定依据
     mountStaticIcons();
     mountDepthRingDecor();
-    pointAnchorToCurrentPage();
-    window.addEventListener("hashchange", pointAnchorToCurrentPage);
     initPages();      // 各页一次性事件接线
     initStatus();     // 顶栏扫描按钮 + tray 心跳
     navigate();

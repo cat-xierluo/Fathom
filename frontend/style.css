@@ -94,9 +94,25 @@ body {
     linear-gradient(var(--trench), var(--trench)) left 18px top 0 / 1px 5px no-repeat,
     linear-gradient(var(--trench), var(--trench)) right 0 top 0 / 1px 3px no-repeat;
 }
-/* 深度环（R3 品牌标记）：开放圆环（海沟蓝，currentColor）+ 中心探针与
- * 刻度缺口（矿物青，类覆盖）；线条 SVG 语言与 icons.js 一致 */
+/* 深度环（R3 品牌标记，小尺寸形态）：开放圆环（海沟蓝，currentColor）+
+ * 中心探针与刻度缺口（矿物青，类覆盖）；线条 SVG 语言与 icons.js 一致。
+ * 仅当挂载点实际使用 brandRing（侧栏字标、详情标题装饰、加载环）时
+ * 探针/刻度才存在；brandBasin（主窗口品牌站位，ISS-086）下无 .dr-probe/
+ * .dr-tick 元素，下方规则不命中、不会污染层叠深潭的实色填充。 */
 .brand-mark .dr-probe, .brand-mark .dr-tick { stroke: var(--mineral); }
+/* 层叠深潭（DEC-023 双形态体系主形态，ISS-086）：4 层嵌套椭圆共享
+ * currentColor（来自 .brand-mark/.dr-anchor 的 var(--trench)），opacity
+ * 渐进表达从外圈浅阶地到深蓝核心的层次；顶部 ivory 缺口单独定象牙白。
+ * 总尺寸按 .dr-anchor 26×26 / .brand-mark 24×24 容器自适应——主窗口
+ * 品牌站位不应再叠加「探针随路由旋转」动画（layer-stack basin 不是
+ * 探针，无方位语义）。 */
+.brand-mark .bv-notch { fill: var(--ivory, #FCFAF4); }
+.brand-mark .bv-l1 { fill: currentColor; opacity: 0.18; }
+.brand-mark .bv-l2 { fill: currentColor; opacity: 0.42; }
+.brand-mark .bv-l3 { fill: currentColor; opacity: 0.78; }
+.brand-mark .bv-core { fill: currentColor; opacity: 1; }
+/* 关于区 / 任何 brandBasin 容器只靠 currentColor 决定整体色相，深浅
+ * 层次由 opacity 表达；不引入新 token。 */
 .nav-icon { display: flex; align-items: center; justify-content: center; height: 20px; }
 
 /* ===== 应用壳：侧导航 + 主区（ISS-082：固定壳，内容区独立滚动） ===== */
@@ -144,25 +160,25 @@ body {
   /* ISS-082：壳内天然固定，去掉 sticky */
   flex: none;
 }
-/* ISS-085 页头锚点：当前页标题前的深度环——探针与刻度作为指针组件随路由
- * 旋转到当前页方位（app.js 设 --dr-angle，五页均分环面 72°），环弧与
- * 缺口静止；200ms 在 R3 动效合同（160-240ms）内，reduced-motion 时关闭。
- * 纯装饰方位指示，不承载信息 */
+/* ISS-086 页头锚点：当前页标题前的层叠深潭（应用图标本身，DEC-023
+ * 主形态）——实色层叠 + ivory notch；非装饰探针，无方位指示（ISS-085
+ * 早期设计的「探针随路由旋转 72°」在 brandBasin 下无意义，已从
+ * app.js 删除 pointAnchorToCurrentPage + PAGE_ANCHOR_ANGLES 与
+ * hashchange 监听）。颜色继承 color: var(--trench)；层叠通过 .brand-mark
+ * 的 .bv-* opacity 规则渐进。 */
 .topbar-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .dr-anchor {
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; flex: none; color: var(--trench);
 }
 .dr-anchor svg { width: 100%; height: 100%; display: block; }
-.dr-anchor .dr-probe, .dr-anchor .dr-tick {
-  stroke: var(--mineral);
-  transform-origin: 12px 12px;
-  transform: rotate(var(--dr-angle, 0deg));
-  transition: transform 0.2s ease;
-}
-@media (prefers-reduced-motion: reduce) {
-  .dr-anchor .dr-probe, .dr-anchor .dr-tick { transition: none; }
-}
+/* 页头 brandBasin 单独覆写：保持 26×26 容器内层叠深潭的视觉重，与
+ * 侧栏 brand-mark 的 24×24 在小尺寸上等比呈现；不引入新 token。 */
+.dr-anchor .bv-notch { fill: var(--ivory, #FCFAF4); }
+.dr-anchor .bv-l1 { fill: currentColor; opacity: 0.18; }
+.dr-anchor .bv-l2 { fill: currentColor; opacity: 0.42; }
+.dr-anchor .bv-l3 { fill: currentColor; opacity: 0.78; }
+.dr-anchor .bv-core { fill: currentColor; opacity: 1; }
 .topbar-heading { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .topbar h1 { margin: 0; font-size: 17px; line-height: 1.15; }
 /* 深度刻度带（仪器读数尺）：长刻度全高、短刻度半高贴底，海沟蓝低透明度 */

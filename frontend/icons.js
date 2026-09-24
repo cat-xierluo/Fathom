@@ -47,7 +47,10 @@ export const ICON_PATHS = {
    * 层叠面（主窗口）。两套几何由 icons.js 集中维护，便于 ISS-087 复用
    * 与 DEC-023 双形态合同审计。 */
   brandBasin:
-    '<ellipse class="bv-base" fill="#FCFAF4" cx="12" cy="13.4" rx="11" ry="11.3"/>' +
+    /* bv-base 底板 ry=10.5（ISS-095 几何修正）：原 ry=11.3 时底缘
+     * cy+ry=24.7 超 24 viewBox 底边 0.7 单位被裁平；收至 23.9（留 0.1
+     * 抗锯齿余量）后底缘完整呈现，cy 与内部四层保持同心，视觉几乎不变。 */
+    '<ellipse class="bv-base" fill="#FCFAF4" cx="12" cy="13.4" rx="11" ry="10.5"/>' +
     '<ellipse class="bv-l1" fill="#C6DCE4" cx="12" cy="13.4" rx="9.2" ry="9.5"/>' +
     '<ellipse class="bv-l2" fill="#286B88" cx="12" cy="13.4" rx="6.6" ry="7"/>' +
     '<ellipse class="bv-l3" fill="#062743" cx="12" cy="13.4" rx="4" ry="4.4"/>' +

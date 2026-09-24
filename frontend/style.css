@@ -33,7 +33,6 @@
   /* 品牌强调（低饱和）：海沟蓝承担主动作/当前选择/深度环主体，
    * 矿物青只作深度环的探针与刻度点缀 */
   --trench: #345d7f;
-  --trench-weak: #e8edf2;
   --mineral: #3e7e7c;
   --primary: #345d7f;
   /* 语义色（ISS-084 派生说明见文件头注释） */
@@ -45,6 +44,7 @@
   --warn-dot: #b08a3e;       /* 警告圆点：琥珀亮档（非文本） */
   --danger: #85453a;         /* 错误：铁锈红 */
   --sel: #e8edf2;
+  --nav-idle-fg: #5d6577;   /* ISS-095 导航非选中专用：--muted 加深一档，对侧栏 #eceef2 5.03:1 / 白卡 5.84:1（均 ≥4.5:1；--muted 原为 4.05:1） */
   --nav-active-fg: #fcfaf4;  /* ISS-092 导航选中深底前景：象牙白，对 --used 对比 9.2:1 */
   --shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
   --sidenav-w: 72px;
@@ -98,10 +98,13 @@ body {
 }
 /* 深度环（R3 品牌标记，小尺寸形态）：开放圆环（海沟蓝，currentColor）+
  * 中心探针与刻度缺口（矿物青，类覆盖）；线条 SVG 语言与 icons.js 一致。
- * 仅当挂载点实际使用 brandRing（侧栏字标、详情标题装饰、加载环）时
- * 探针/刻度才存在；brandBasin（主窗口品牌站位，ISS-086）下无 .dr-probe/
- * .dr-tick 元素，下方规则不命中、不会污染层叠深潭的实色填充。 */
-.brand-mark .dr-probe, .brand-mark .dr-tick { stroke: var(--mineral); }
+ * ISS-095 死代码清理：原「.brand-mark .dr-probe/.dr-tick 染矿物青」的
+ * 防御规则已删——brand-mark 类只出现在 brandBasin 挂载点（app.js 侧栏
+ * #brand-icon 与 [data-dr] 页头锚点，全仓库仅 index.html #page-anchor
+ * 一处 data-dr），brandBasin 几何只含 bv-* 实色 fill 子元素、无
+ * .dr-probe/.dr-tick，该规则永不命中；.dr-anchor 下经 grep 亦无同类
+ * 祖先规则（探针/刻度染色只在 .badge-ring / .dr-loading /
+ * .detail-dr 三处真实 brandRing 语境，均保留）。 */
 /* 层叠深潭（DEC-023 双形态体系主形态，ISS-086 / ISS-088）：ISS-088 起
  * 各层颜色为 icons.js 内自 icon.png 采样的固定 fill（象牙白底板 bv-base +
  * 浅青白/青蓝/深蓝/深潭墨四层阶地 + 象牙白 notch），不再经由本文件的
@@ -129,7 +132,10 @@ body {
 .nav-item {
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   width: 56px; padding: 8px 0 6px;
-  border-radius: 10px; text-decoration: none; color: var(--muted);
+  border-radius: 10px; text-decoration: none;
+  /* ISS-095：非选中文字/图标改导航专用色（--muted 4.05:1 → 5.03:1），
+   * 11px 小字按 WCAG AA 文本档 ≥4.5:1 收紧；hover/选中态见下方规则 */
+  color: var(--nav-idle-fg);
   font-size: 11px;
 }
 .nav-item:hover { background: var(--bg); color: var(--text); }
@@ -660,7 +666,9 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   border-radius: 8px;
   text-align: left;
   font-size: 13px;
-  color: var(--muted);
+  /* ISS-095：非选中与侧栏 nav-item 同口径改 --nav-idle-fg（白卡上 5.84:1，
+   * --muted 原在侧栏 4.05:1 不达标；两处导航统一收紧到 ≥4.5:1） */
+  color: var(--nav-idle-fg);
   cursor: pointer;
   /* 选中态视觉见下方 ISS-092 规则：深潭墨实底 + 象牙白（与 sidenav 一致） */
 }

@@ -114,6 +114,12 @@ function createFixture() {
       return [{ ...latest, denied_count: 6, collection_status: "partial",
                 dir_count: 12 }, snapshot(1, "2026-09-12T10:00:00")];
     }
+    if (state.mode === "denied-over") {
+      // ISS-095：denied 是 du stderr 的受限行数、可超过目录总数——
+      // 25/2 = 12.5 倍，权限卡占比文案应改用倍数表述而非「（1250.0%）」。
+      return [{ ...latest, denied_count: 25, collection_status: "partial",
+                dir_count: 2 }, snapshot(1, "2026-09-12T10:00:00")];
+    }
     return [latest, snapshot(1, "2026-09-12T10:00:00")];
   };
   // ISS-067：/api/snapshots 的合同是**显式列清单**（不含 select * 的额外列）。
@@ -2231,6 +2237,63 @@ async function main() {
       tpage6Errors.join("; "));
     await tpage6.close();
 
+    /* ---------- ISS-095 权限卡：占比 >100% 的倍数文案 + 空库「尚未扫描」 ----------
+     * 1) denied-over 夹具（denied=25 / dir_count=2；du stderr 行数可超目录数）：
+     *    标签显示「25 / 2（受限行数为目录数的 12.5 倍）」，不再出现 >100%
+     *    的百分比读数（旧形态「（1250.0%）」会被读成「1250% 的目录受限」）；
+     *    数字事实与解释文字不受影响。
+     * 2) empty 夹具（无快照）：卡片体显示「尚未扫描」引导文案，不渲染
+     *    数字事实（denied/vanished 均不出现）。
+     * 两组都在浏览器态（默认 page）走真实 UI 验证；setMode 重置竞态，
+     * 后续用例（ISS-016B）自带 setMode("dual")，不被污染。 */
+    await setMode("denied-over");
+    await openPage("#/settings");
+    await page.waitForSelector("#monitor-permissions-card [data-test='mperm-denied']");
+    const mpermOver = await page.evaluate(() => {
+      const card = document.getElementById("monitor-permissions-card");
+      return {
+        denied: card?.querySelector("[data-test='mperm-denied']")?.textContent || "",
+        label: card?.querySelector("[data-test='mperm-denied']")
+          ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
+        note: ([...(card?.querySelectorAll(".perm-note") || [])]
+          .map((p) => p.textContent).join(" | ")),
+      };
+    });
+    record("mperm-denied-over-dir-count-uses-multiple-not-percent",
+      mpermOver.denied === "25" &&
+        mpermOver.label.includes("25 / 2") &&
+        mpermOver.label.includes("受限行数为目录数的 12.5 倍") &&
+        !mpermOver.label.includes("%") &&
+        mpermOver.note.includes("完全磁盘访问"),
+      JSON.stringify(mpermOver).slice(0, 160));
+    const mpermOverShot = path.join(evidenceDir, "settings-mperm-denied-over-1220x820.png");
+    await page.screenshot({ path: mpermOverShot });
+
+    await setMode("empty");
+    await openPage("#/settings");
+    /* 空库态先用「加载中…」占位（同为 p.hint），必须等 fetch 完成后的
+     * 最终文案再断言，避免读到占位文本假绿。否定条件针对数字事实元素：
+     * 引导文案本身合法包含「读取受限/扫描期间消失」字样，不能按字面排除。 */
+    await page.waitForFunction(() => {
+      const el = document.querySelector("#monitor-permissions-card [data-test='mperm-card-body']");
+      return el && el.textContent.includes("尚未扫描");
+    });
+    const mpermEmpty = await page.evaluate(() => {
+      const body = document.querySelector("#monitor-permissions-card [data-test='mperm-card-body']");
+      return {
+        text: body?.textContent || "",
+        hasFacts: !!body?.querySelector("[data-test='mperm-facts']"),
+        hasDenied: !!body?.querySelector("[data-test='mperm-denied']"),
+        hasVanished: !!body?.querySelector("[data-test='mperm-vanished']"),
+      };
+    });
+    record("mperm-empty-library-shows-not-yet-scanned-hint",
+      mpermEmpty.text.includes("尚未扫描") &&
+        !mpermEmpty.hasFacts && !mpermEmpty.hasDenied && !mpermEmpty.hasVanished,
+      mpermEmpty.text.trim().slice(0, 80));
+    const mpermEmptyShot = path.join(evidenceDir, "settings-mperm-empty-1220x820.png");
+    await page.screenshot({ path: mpermEmptyShot });
+
     /* ---------- ISS-016B mock 桥：drift 重装入 口复用 010B 确认层 ----------
      * 形状化 mock：autostart_status 返回三态真值（两标签 enabled）、
      * autostart_register_plan 返回可审清单、autostart_register 返回 ok。
@@ -2664,6 +2727,7 @@ async function main() {
       evidence: [overviewShot, changesShot, browseShot, bigfilesShot, settingsShot,
         bigfilesTruncatedShot, bigfilesExpiredShot, bigfilesFailedShot,
         bigfilesPermShot, bigfilesNoMatchShot, settingsMonitorPermShot,
+        mpermOverShot, mpermEmptyShot,
         packagedDefaultShot, packagedOpenShot,
         ...viewportScreens],
       checks,

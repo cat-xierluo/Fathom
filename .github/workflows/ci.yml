@@ -41,7 +41,7 @@ env:
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "699"
+  EXPECTED_PYTEST_PASSED: "720"
   EXPECTED_BROWSER_PASSED: "39"
 
 jobs:
@@ -78,7 +78,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 699 项通过）
+      - name: pytest（断言 720 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh

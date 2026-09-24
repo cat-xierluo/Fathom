@@ -12,6 +12,18 @@ export function fmtBytes(bytes) {
 
 export function fmtKB(kb) { return fmtBytes((kb || 0) * 1024); }
 
+/* 运行时长（ISS-090 扫描徽章）：M:SS，满 1 小时切 H:MM:SS（生产首扫
+ * 可达小时级）。秒数补零两位，分钟不满 1 小时不补前导零（如 47:05）。 */
+export function fmtDuration(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = String(m).padStart(h ? 2 : 1, "0");
+  const ss = String(sec).padStart(2, "0");
+  return h ? `${h}:${mm}:${ss}` : `${m}:${ss}`;
+}
+
 export function fmtDelta(kb) {
   if (kb == null) return "—";
   if (kb === 0) return fmtKB(0);

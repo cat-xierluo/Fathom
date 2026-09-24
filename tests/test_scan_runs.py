@@ -20,14 +20,20 @@ from fathom import api, config, db, scan_coordinator
 
 EMPTY_STATE = {"id": None, "status": None, "running": False, "started_at": None,
                "finished_at": None, "result": None, "error": None,
-               "source": None, "phase": None}
+               "source": None, "phase": None, "live": None}  # live：ISS-090
 
 
 @pytest.fixture(autouse=True)
 def _isolated_db(tmp_path, monkeypatch):
-    """数据库与日报目录指到临时目录，避免污染真实 data/fathom.db。"""
+    """数据库与日报目录指到临时目录，避免污染真实 data/fathom.db。
+
+    ISS-090 起 /api/scan/status 还读运行根 scan-progress.json（live 进度），
+    运行根一并隔离，防止本机恰在运行的生产扫描让 live 断言间歇变红。
+    """
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(config, "REPORTS_DIR", tmp_path / "reports")
+    monkeypatch.setenv("FATHOM_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setattr(config, "_ACTIVE", config.RuntimeConfig.from_env())
     # _scan_lock 是进程身份的化身：换新锁即模拟"服务重启"（表里的记录保留）
     monkeypatch.setattr(api, "_scan_lock", threading.Lock())
 

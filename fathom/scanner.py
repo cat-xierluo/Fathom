@@ -121,6 +121,7 @@ _DU_CONTEXT = threading.local()
 def du_process_context(
     *, inherited_fd: int, cancel_event: threading.Event,
     timeout_seconds: float | None = None,
+    progress: "object | None" = None,
 ):
     """只把本次扫描锁传给本任务创建的 du，并提供协作式取消。
 
@@ -129,10 +130,14 @@ def du_process_context(
     删除——生产根一次扫描远超 1 小时，硬编码会无解释地
     截断并把当日快照丢失为 status=interrupted。调用方（scan_coordinator）
     总是显式传入，故此默认只影响把扫描器当库直接调用的场景。
+
+    ``progress``（ISS-090，可选）是 scan_progress.ProgressReporter：
+    存在时 run_du 的 communicate 轮询循环会周期喂入累计 stdout 快照、
+    du 退出后喂尾段——用于跨进程实时进度。缺省 None 时零行为变化。
     """
     effective = config.DU_TIMEOUT_S if timeout_seconds is None else timeout_seconds
     previous = getattr(_DU_CONTEXT, "value", None)
-    _DU_CONTEXT.value = (inherited_fd, cancel_event, effective)
+    _DU_CONTEXT.value = (inherited_fd, cancel_event, effective, progress)
     try:
         yield
     finally:
@@ -397,9 +402,10 @@ def run_du(root: Path) -> DuResult:
     started = time.monotonic()
     inherited_fd = None
     cancel_event = None
+    progress = None
     context = getattr(_DU_CONTEXT, "value", None)
     if context is not None:
-        inherited_fd, cancel_event, timeout_seconds = context
+        inherited_fd, cancel_event, timeout_seconds, progress = context
     if context is None:
         # 保留扫描器作为库被直接调用时的原合同；产品入口全部经协调器进入下支。
         completed = subprocess.run(
@@ -451,6 +457,12 @@ def run_du(root: Path) -> DuResult:
                     # （累计口径：Popen 内部输出缓冲跨重试保留），留作
                     # 超时报文的阻塞位置线索。
                     partial_output = exc.output or b""
+                    # ISS-090：进度是尽力而为的诊断，任何异常都不影响采集。
+                    if progress is not None:
+                        try:
+                            progress.feed_chunk(partial_output)
+                        except Exception:
+                            progress = None
                     continue
         except BaseException:
             # start_new_session=True 使 pgid 只属于本任务创建的 du；绝不按外部 PID 杀进程。
@@ -467,6 +479,14 @@ def run_du(root: Path) -> DuResult:
                         proc.wait()
             raise
         returncode = proc.returncode
+        # ISS-090：du 退出——把进度写入器喂到尾并落终值（best-effort，
+        # 失败不影响采集；终值 = 流式计数的完整结清值，成功路径下与
+        # snapshots.dir_count / total_kb 一致，由集成测试钉住）。
+        if progress is not None:
+            try:
+                progress.finish(stdout)
+            except Exception:
+                pass
     elapsed = time.monotonic() - started
     sizes, path_error_count, path_error_sample = _parse_du_stdout(stdout)
     (

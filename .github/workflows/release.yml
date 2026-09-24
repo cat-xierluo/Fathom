@@ -202,9 +202,12 @@ jobs:
         run: |
           set -euo pipefail
           BUNDLE_DIR="$PWD/apps/desktop/src-tauri/target/release/bundle"
-          UPDATER_TGZ="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "Fathom_${RELEASE_VERSION}_aarch64.app.tar.gz" | head -1)"
+          # Tauri v2 的 updater 产物固定命名为 <AppName>.app.tar.gz（不带
+          # 版本/arch——v1 才带；v0.3.1 首跑实测）。版本一致性由下方
+          # latest.json 生成器与上传前版本门另行保证。
+          UPDATER_TGZ="$(find "$BUNDLE_DIR/macos" -maxdepth 1 -name "Fathom.app.tar.gz" | head -1)"
           [ -n "$UPDATER_TGZ" ] && [ -f "$UPDATER_TGZ" ] || {
-            echo "[release] FAIL：未找到 updater 产物 Fathom_${RELEASE_VERSION}_aarch64.app.tar.gz" >&2; exit 1;
+            echo "[release] FAIL：未找到 updater 产物 Fathom.app.tar.gz" >&2; exit 1;
           }
           [ -f "${UPDATER_TGZ}.sig" ] || {
             echo "[release] FAIL：未找到 ${UPDATER_TGZ}.sig（签名未生成，检查 secrets 注入）" >&2; exit 1;

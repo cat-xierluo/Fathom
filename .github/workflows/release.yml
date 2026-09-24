@@ -213,8 +213,11 @@ jobs:
             echo "[release] FAIL：未找到 ${UPDATER_TGZ}.sig（签名未生成，检查 secrets 注入）" >&2; exit 1;
           }
           STAGE="$RUNNER_TEMP/release-assets"
-          TGZ_NAME="$(basename "$UPDATER_TGZ")"
-          cp "$UPDATER_TGZ" "${UPDATER_TGZ}.sig" "$STAGE/"
+          # 重命名为带版本号的资产名：满足清单工具的版本-产物一致性守卫
+          # （040A fail-closed），也让 Release 资产名与 DMG 命名风格一致。
+          TGZ_NAME="Fathom_${RELEASE_VERSION}_aarch64.app.tar.gz"
+          cp "$UPDATER_TGZ" "$STAGE/$TGZ_NAME"
+          cp "${UPDATER_TGZ}.sig" "$STAGE/$TGZ_NAME.sig"
           echo "TGZ_NAME=$TGZ_NAME" >> "$GITHUB_ENV"
           # updater 产物 sha256 一并进 checksums.txt
           ( cd "$STAGE" && shasum -a 256 "$TGZ_NAME" >> checksums.txt && cat checksums.txt )

@@ -140,16 +140,24 @@ command -v hdiutil >/dev/null 2>&1 || blocked "缺 hdiutil"
 command -v file >/dev/null 2>&1 || blocked "缺 file"
 
 # ---- 1. checksums.txt 格式与覆盖 ----
-CS_LINE="$(grep -vE '^(#|$)' "$CHECKSUMS_PATH" | head -1)"
+# v0.3.1 起 Release 含 updater 产物，checksums 允许 1..N 条：每条格式
+# 合法（64 位 hex + 文件名两列），且必须覆盖 DMG（核心资产）。
 CS_COUNT="$(grep -cvE '^(#|$)' "$CHECKSUMS_PATH" || true)"
-[ "$CS_COUNT" -eq 1 ] || fail "checksums.txt 应恰有 1 条记录（非注释行），实际 $CS_COUNT"
-CS_SHA="$(printf '%s' "$CS_LINE" | awk '{print $1}')"
-CS_NAME="$(printf '%s' "$CS_LINE" | awk '{print $2}')"
-printf '%s' "$CS_SHA" | grep -Eq '^[0-9a-f]{64}$' || fail "checksums.txt 首列不是 64 位小写 hex：$CS_SHA"
-[ "$CS_NAME" = "$DMG_NAME" ] || fail "checksums.txt 记录的文件名 '$CS_NAME' != 实际 DMG '$DMG_NAME'"
-ok "checksums.txt 格式合法且覆盖 $DMG_NAME"
+[ "$CS_COUNT" -ge 1 ] || fail "checksums.txt 无记录（非注释行）"
+while IFS= read -r CS_LINE; do
+  [ -n "$CS_LINE" ] || continue
+  CS_SHA="$(printf '%s' "$CS_LINE" | awk '{print $1}')"
+  CS_NAME="$(printf '%s' "$CS_LINE" | awk '{print $2}')"
+  printf '%s' "$CS_SHA" | grep -Eq '^[0-9a-f]{64}$' || fail "checksums.txt 首列不是 64 位小写 hex：$CS_SHA"
+  [ -n "$CS_NAME" ] || fail "checksums.txt 记录缺文件名：$CS_LINE"
+done < <(grep -vE '^(#|$)' "$CHECKSUMS_PATH")
+grep -vE '^(#|$)' "$CHECKSUMS_PATH" | awk '{print $2}' | grep -qx "$DMG_NAME" \
+  || fail "checksums.txt 未覆盖 DMG $DMG_NAME"
+ok "checksums.txt 格式合法（${CS_COUNT} 条）且覆盖 $DMG_NAME"
 
-# ---- 2. sha256 实测比对 ----
+# ---- 2. sha256 实测比对（按 DMG 文件名取对应记录，多资产安全） ----
+CS_SHA="$(awk -v n="$DMG_NAME" '$2==n{print $1}' "$CHECKSUMS_PATH")"
+[ -n "$CS_SHA" ] || fail "checksums.txt 中未找到 $DMG_NAME 的记录"
 ACTUAL_SHA="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
 [ "$ACTUAL_SHA" = "$CS_SHA" ] \
   || fail "sha256 不一致：实测 $ACTUAL_SHA != 记录 $CS_SHA"

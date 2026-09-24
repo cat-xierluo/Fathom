@@ -841,7 +841,7 @@ function renderAutostartBody(body, record, extraNote) {
   if (!invoke) {
     body.innerHTML = `
       <p class="hint">浏览器模式没有桌面壳桥接：后台自启的查询与注册/注销只在 Fathom 桌面应用的设置页可用。</p>
-      <p class="hint">命令行开发态仍用 <code>main.py install / uninstall</code>。</p>
+      <p class="hint">命令行开发态仍用 <code>python -m fathom install / uninstall</code>。</p>
       <div data-test="reload-section"></div>`;
     renderReloadSection();
     return;

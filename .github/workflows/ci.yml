@@ -5,8 +5,8 @@
 #   行为；Apple Silicon（arm64）与 Intel（x86_64）各自独立 job 并显式
 #   断言 uname -m，任一平台失败都会让整个 workflow 失败（无跳过、无
 #   continue-on-error）。Intel 不用 arm64 交叉 target 冒充。
-# - 依赖安装走分层锁定：requirements-dev.txt（直接依赖区间）+
-#   constraints.txt（全闭包 == 精确版本）；Cargo 用 --locked --offline；
+# - 依赖安装走分层锁定：packaging/requirements-dev.txt（直接依赖区间）+
+#   packaging/constraints.txt（全闭包 == 精确版本）；Cargo 用 --locked --offline；
 #   Python/Node/Rust/Playwright 版本号在 env 固定。
 # - 无 secret、无签名、无 Release、无 artifact；第三方 action 一律固定
 #   完整 commit SHA（SHA 取自 api.github.com git/ref/tags，2026-09-13）。
@@ -76,7 +76,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/fathom-venv"
           "$RUNNER_TEMP/fathom-venv/bin/python" --version
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
-            -r requirements-dev.txt -c constraints.txt
+            -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
       - name: pytest（断言 697 项通过）
         env:
@@ -108,7 +108,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/fathom-venv"
           "$RUNNER_TEMP/fathom-venv/bin/python" --version
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
-            -r requirements-dev.txt -c constraints.txt
+            -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

@@ -4,6 +4,10 @@
 依据：[发行方案](../docs/plans/2026-09-13-v0.3-release-design.md)与
 [ISS-029 实验发现](../apps/desktop/experiments/iss029/findings.md)
 
+> 目录现状（2026-09-24 根目录精简）：本目录另承载 Python 依赖锁定文件
+> （`requirements*.txt`、`constraints.txt`，自仓库根迁入）；下方打包
+> 布局提案与其相互独立。
+
 ## .app 布局（arm64 与 x86_64 各自原生构建，不做 universal2）
 
 ```

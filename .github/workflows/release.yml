@@ -27,7 +27,7 @@
 #   上传前重跑同一门（合同要求"上传前 fail-closed"）。
 # - 第三方 action 固定完整 commit SHA（SHA 来源与 ci.yml 相同：取自
 #   api.github.com git/ref/tags，2026-09-13）。
-# - 版本钉定与 ci.yml 同口径：Python 3.14.6（constraints.txt 锁定闭包）、
+# - 版本钉定与 ci.yml 同口径：Python 3.14.6（packaging/constraints.txt 锁定闭包）、
 #   Rust 1.88.0（rustup default）、tauri-cli 2.6.2（--locked，与本机及
 #   apps/desktop/src-tauri/Cargo.lock 的 tauri 2.x 系列一致）。
 
@@ -109,14 +109,14 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/fathom-venv"
           "$RUNNER_TEMP/fathom-venv/bin/python" --version
-          # requirements-runtime.txt（fastapi/uvicorn 运行时 pin）+
-          # requirements-runtime-build.txt（pyinstaller 6.22.3），
-          # 闭包由 constraints.txt 精确锁定——与本机 ISS-029 冻结 venv
+          # packaging/requirements-runtime.txt（fastapi/uvicorn 运行时 pin）+
+          # packaging/requirements-runtime-build.txt（pyinstaller 6.22.3），
+          # 闭包由 packaging/constraints.txt 精确锁定——与本机 ISS-029 冻结 venv
           # 同一口径（build_helper.sh 会断言 pyinstaller 版本 == pin）。
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
-            -r requirements-runtime.txt \
-            -r requirements-runtime-build.txt \
-            -c constraints.txt
+            -r packaging/requirements-runtime.txt \
+            -r packaging/requirements-runtime-build.txt \
+            -c packaging/constraints.txt
 
       - name: 版本门（构建前快检：tag == 单一版本源）
         run: |

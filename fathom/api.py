@@ -573,7 +573,7 @@ def _config_view_with_reload_state() -> dict:
 def _service_reload_hint(reload_state: dict) -> str:
     """PUT 反馈文案：保留 ISS-016A 的基础提示（兼容旧消费方），按四态追加说明。"""
     base = ("已保存到 settings.json 并在当前服务进程生效；已安装的 "
-            "launchd 后台计划不受影响，需重新安装（main.py install）后"
+            "launchd 后台计划不受影响，需重新安装（python -m fathom install）后"
             "才按新计划时间运行。")
     state = reload_state.get("state") if isinstance(reload_state, dict) else None
     if state == "in_sync":

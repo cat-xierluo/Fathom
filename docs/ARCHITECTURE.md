@@ -10,7 +10,7 @@ launchd scan / CLI / HTTP POST /api/scan
        scan_coordinator → 跨进程 flock → 分阶段 scan_run_details
                  ↓
  scanner → SQLite snapshot → reports → Markdown → notify（尝试系统通知）→ prune
-launchd web → main.py serve → FastAPI :7952 → frontend/ 五页
+launchd web → python -m fathom serve → FastAPI :7952 → frontend/ 五页
                                                ↑
 Tauri loader → 开发态外部服务；打包态 /health 身份握手 → 本地 HTTP ─┘
 前端定期 invoke → Rust tray 标题；tray-action → 前端 → /api/scan

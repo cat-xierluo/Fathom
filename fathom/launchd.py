@@ -113,7 +113,9 @@ def _bootstrap(path: Path) -> None:
 
 def install() -> None:
     config.ensure_runtime_dirs()
-    main_py = config.PROJECT_ROOT / "main.py"
+    # CLI 入口位于仓库根 fathom/__main__.py（原 main.py 已下沉，支持
+    # python -m fathom 与按路径直接执行两种形态）。
+    main_py = config.PROJECT_ROOT / "fathom" / "__main__.py"
     python = sys.executable
 
     scan_path = _write_plist(config.SCAN_LABEL, _scan_plist(main_py, python))
@@ -256,7 +258,7 @@ def dry_run_plan() -> dict:
     ``install()`` 的写入路径在 dry-run 中以字符串形式呈现，审批通过后再
     由用户显式调用 ``install()``。这是测试用 grep 守护的硬约束。
     """
-    main_py = config.PROJECT_ROOT / "main.py"
+    main_py = config.PROJECT_ROOT / "fathom" / "__main__.py"
     python = sys.executable
     scan_content = _scan_plist(main_py, python)
     web_content = _web_plist(main_py, python)
@@ -293,8 +295,8 @@ def dry_run_plan() -> dict:
 # 硬边界（与父卡 ISS-010 / 切片 ISS-010B 合同一致）：
 # - 真实写路径（写 plist + ``launchctl bootstrap/bootout``）**仅存在于本节**
 #   的 ``register_release`` / ``unregister_release``（外加上面 dev 态的
-#   ``_bootstrap``/``install``/``uninstall``，它们是 ``main.py install|
-#   uninstall`` 的显式开发态入口）。这是 tests/test_launchd_autostart.py
+#   ``install``/``uninstall`` 及其内部辅助函数，它们是 ``python -m fathom
+#   install|uninstall`` 的显式开发态入口）。这是 tests/test_launchd_autostart.py
 #   grep 守护钉住的不变量：写动词出现在任何其它函数 = 探针红。
 # - ``release_plan`` 与 ``dry_run_plan`` 一样是纯展示：只构造字符串清单，
 #   不执行命令、不写文件。
@@ -354,7 +356,7 @@ def release_plan(
 
     与 ``dry_run_plan`` 同形（plist_files/commands/uid_placeholder/warning），
     区别在 ProgramArguments 指向发行 helper 二进制（不再依赖 dev venv 的
-    python + main.py）。**本函数不执行任何命令、不写任何文件**——审批 UI
+    python + fathom/__main__.py）。**本函数不执行任何命令、不写任何文件**——审批 UI
     把内容展示给用户，确认后由 ``register_release``（经桌面壳注册命令）
     执行。
     """

@@ -1,0 +1,240 @@
+# FaroPDF doc-curator 配置（schema 2；ISS-AUD-01 / DEC-204 重建机械门禁，2026-08-29）
+# 读取方：.claude/skills/doc-curator/scripts/scan.sh。
+# worktree 目录名非 FaroPDF 时（如 chore-iss-aud-01），由同目录 <repo-basename>.local.yaml
+# 同内容镜像承载自动发现；两份内容必须保持一致，禁止单边漂移。
+# 阈值三类：硬性（必须通过）、自适应（seed × 1.5，建基线后为基线 × 1.5）、软提示（只报告不阻断）。
+
+schema_version: 2
+project: faropdf
+
+# 机械门禁验收必需的 checker：缺一即为 config hard，禁止静默降级。
+config_contract:
+  required_checkers: "context-sync decision-sync markdown-link-broken active-zone-residue context-truth"
+
+files:
+  - path: docs/TASKS.md
+    role: active-tasks
+  - path: docs/DECISIONS.md
+    role: decision-log
+  - path: docs/ROADMAP.md
+    role: roadmap
+  - path: docs/DESIGN.md
+    role: design
+  - path: docs/ARCHITECTURE.md
+    role: architecture
+  - path: CHANGELOG.md
+    role: changelog
+  - path: README.md
+    role: readme
+  - path: AGENTS.md
+    role: agent-guide
+
+hard_rules:
+  - id: tasks-progress-log-trim
+    file: docs/TASKS.md
+    limit: 5
+    description: "进度日志条目数 ≤ limit"
+  - id: tasks-archived-iss-pointer
+    file: docs/TASKS.md
+    description: "归档区必须指向 DECISIONS.md 的 ISS 任务归档"
+  - id: decisions-iss-archive-ascending
+    file: docs/DECISIONS.md
+    description: "ISS 任务归档条目按 ISS 编号升序排列"
+  - id: decisions-dec-numbering-continuous
+    file: docs/DECISIONS.md
+    description: "DEC-XXX 编号连续无跳号；缺口必须以 tombstone 显式登记"
+  - id: decisions-id-unique
+    file: docs/DECISIONS.md
+    description: "DEC-XXX 决策标题 ID 唯一；正文与子小节引用不计入标题"
+
+decision_log:
+  # 只把「以 DEC-NNN 开头」的标题当决策标题；子小节引用母决策不算重复编号。
+  heading_pattern: "^#{2,6}[[:space:]]+\[?DEC-[0-9]+\]?"
+  id_pattern: "DEC-[0-9]+"
+
+adaptive_rules:
+  - id: tasks-active-count
+    file: docs/TASKS.md
+    metric: active_task_count
+    description: "活跃任务卡数量（task_source_contract 启用时由状态合同接管，不按 H3 总数计）"
+    seed_value: 13
+    multiplier: 1.5
+    active_count_pattern: "^### (ISS-[0-9]+|ISS-[A-Z]+(-[A-Z]+)*-[0-9]+)"
+  - id: tasks-line-count
+    file: docs/TASKS.md
+    metric: line_count
+    description: "TASKS.md 总行数"
+    seed_value: 488
+    multiplier: 1.5
+  - id: decisions-line-count
+    file: docs/DECISIONS.md
+    metric: line_count
+    description: "DECISIONS.md 总行数"
+    seed_value: 8132
+    multiplier: 1.5
+  - id: roadmap-line-count
+    file: docs/ROADMAP.md
+    metric: line_count
+    description: "总行数"
+    seed_value: 176
+    multiplier: 1.5
+  - id: design-line-count
+    file: docs/DESIGN.md
+    metric: line_count
+    description: "总行数"
+    seed_value: 468
+    multiplier: 1.5
+  - id: architecture-line-count
+    file: docs/ARCHITECTURE.md
+    metric: line_count
+    description: "总行数"
+    seed_value: 880
+    multiplier: 1.5
+  - id: changelog-line-count
+    file: CHANGELOG.md
+    metric: line_count
+    description: "总行数"
+    seed_value: 1224
+    multiplier: 1.5
+  - id: readme-line-count
+    file: README.md
+    metric: line_count
+    description: "总行数"
+    seed_value: 249
+    multiplier: 1.5
+  - id: agents-line-count
+    file: AGENTS.md
+    metric: line_count
+    description: "总行数"
+    seed_value: 239
+    multiplier: 1.5
+
+soft_rules:
+  - id: changelog-recent-release-entry
+    file: CHANGELOG.md
+    description: "CHANGELOG.md 应有最近一次 release 的 entry"
+  - id: readme-current-status
+    file: README.md
+    description: "README.md 「当前状态」段存在"
+
+# AgentCMD v4 任务源合同（DEC-204）：READY/IN_PROGRESS 卡必须机判完整字段。
+# 队列表格与各卡「- **状态**：」行是唯一机读状态来源；FROZEN/暂缓不是合同状态词，天然不受合同约束。
+task_source_contract:
+  enabled: true
+  task_id_pattern: "(Task-[0-9]+|ISS-[A-Z]+(-[A-Z]+)*-[0-9]+)"
+  task_id_exclude_pattern: "^(DEC|ADR)-"
+  card_heading_pattern: "^###[[:space:]]"
+  empty_queue_pattern: "(当前无任务|无可执行任务|No active tasks)"
+  status_label_pattern: "(^[[:space:]]*[-*][[:space:]]+[*]*(状态|Status)[*]*[：:]|^[[:space:]]*[|][[:space:]]*(状态|Status)[[:space:]]*[|])"
+  status_tokens:
+    draft: "DRAFT 草案"
+    ready: "READY 就绪"
+    in_progress: "IN_PROGRESS 进行中"
+    blocked: "BLOCKED 阻塞"
+    review: "REVIEW 待验收"
+    done: "DONE 已完成"
+    cancelled: "CANCELLED 已取消"
+  requirements:
+    ready: "rationale goal non_goal inputs_dependencies scope stop acceptance"
+    review: "deliverables evidence"
+    done: "evidence"
+    blocked: "blocked_reason"
+    cancelled: "cancellation_reason"
+  fields:
+    - id: rationale
+      label: "缘由与证据"
+      pattern: "(已确认根因|输入证据|[*][*]根因[*][*]|缘由|背景|来源映射)"
+    - id: goal
+      label: "主目标"
+      pattern: "^-[[:space:]]+[*][*](类型与)?(主)?目标[*][*]"
+    - id: non_goal
+      label: "非目标"
+      pattern: "[*][*]非目标[*][*]"
+    - id: inputs_dependencies
+      label: "输入与依赖"
+      pattern: "([*][*]依赖[*][*]|[*][*]输入依赖[*][*]|输入证据|前置输入)"
+    - id: scope
+      label: "允许与禁止范围"
+      pattern: "(允许范围|禁止范围|文件边界)"
+    - id: stop
+      label: "停止条件"
+      pattern: "(停止条件|停止与升级条件)"
+    - id: acceptance
+      label: "行为验收"
+      pattern: "([*][*](行为)?验收(底线)?[*][*]|验证命令)"
+    - id: deliverables
+      label: "交付物"
+      pattern: "[*][*]交付物[*][*]"
+    - id: evidence
+      label: "执行或验收证据"
+      pattern: "([*][*]验收证据[*][*]|[*][*]执行证据[*][*]|验证结果|未完成原因|NOT_VERIFIED|[*][*]证据写回[*][*])"
+    - id: blocked_reason
+      label: "阻塞原因"
+      pattern: "([*][*]依赖[*][*]|阻塞原因|等待.*确认|关闭后领取|关闭后解冻)"
+    - id: cancellation_reason
+      label: "取消原因"
+      pattern: "(取消原因|终止原因|被.*取代)"
+
+context_sync:
+  enabled: true
+  local_reversible:
+    max_files: 1
+    max_insertions: 50
+  systemic:
+    min_files: 3
+    min_insertions: 200
+  change_types:
+    - pattern: "src/**"
+      expect_changelog: true
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+
+dec_ref_sync:
+  enabled: true
+  scan_extensions: md yaml
+  exclude_paths: .git DECISIONS.md docs/plans node_modules .claude/agent-sessions
+
+markdown_link_broken:
+  enabled: true
+  # 反引号路径不是链接；不检查代码引用。
+  check_code_paths: false
+  default_severity: hard
+  severity_paths:
+    - path: "docs/reference/pdf-expert/**"
+      severity: adaptive
+    - path: "research/**"
+      severity: adaptive
+  exclude_paths:
+    - path: "tmp/**"
+
+# 三区结构（DEC-204）：活跃区只放可领取/排队卡；暂缓区放 P2 调研；归档区放最短索引。
+active_zone_residue:
+  enabled: true
+  zone_headings:
+    active: "## 活跃区"
+    pending: "## 待核实区"
+    deferred: "## 暂缓区"
+    archive: "## 归档区"
+  residue_pattern: "(ISS-[0-9]+|ISS-[A-Z]+(-[A-Z]+)*-[0-9]+|Task[#　 ]+T?[0-9A-Za-z-]+)"
+
+# 跨文档真值：主题索引「正文当前已到 DEC-NNN」声明必须等于正文最大 DEC 编号；
+# 新增 DEC 时必须同步该声明行，否则 context-truth-index-drift hard。
+context_truth:
+  enabled: true
+  index_claims:
+    - id: decisions-index-range
+      source_file: docs/DECISIONS.md
+      item_pattern: "^#{2,6}[[:space:]]+\[?DEC-"
+      id_pattern: "DEC-[0-9]+"
+      mirror_file: docs/DECISIONS.md
+      claim_pattern: "正文当前已到 DEC-[0-9]+"
+      mode: max_numeric_suffix
+      severity: hard

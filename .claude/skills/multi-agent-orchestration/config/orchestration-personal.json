@@ -1,0 +1,222 @@
+{
+  "_comment": "个人 backend/模型路由偏好。本文件被 .gitignore 的 **/config/*.json 排除，不入库；每人本地按自己偏好改，不 commit。",
+  "_schema_version": "1.1",
+  "_read_by": "multi-agent-orchestration skill PM (任意主会话)",
+  "_path_user": "config/orchestration-personal.json（在 skill config/ 目录内，但被 .gitignore 排除、不入库；每人按自己偏好改，不 commit）",
+  "main_force": {
+    "_comment": "PM 主力宿主工具 + 按任务类型选 model（非轮换）。host = 你当前主会话用的 Agent 工具；task_routing = 按任务难度/模态选 model。",
+    "host": "claude-code",
+    "task_routing": {
+      "high_end": "glm-5.3",
+      "simple_multimodal": "glm-5.3-flash",
+      "default": "glm-5.3-flash",
+      "mid_tier": "minimax-M3",
+      "_updated": "2026-08-29：glm-5.2/5.1/M2.7 退役。glm-5.3=深度主力；glm-5.3-flash=多模态+低成本跑腿（接棒原 minimax 多模态位与原 5.1 跑腿位）；minimax-M3=中档/简单批量卸载位（额度经济化）。动态路由启用后本表是 route_suggest 的降级底座。"
+    }
+  },
+  "quota_aware_routing": {
+    "_comment": "额度感知路由【2026-08-29 实装】。PM 派单前跑 multi-agent-orchestration/scripts/route_suggest.py 按各 lane 余量/倒计时/健康常态评分选 provider。summary 由 任务自动化/idle-task-runner/scripts/dump_quota_summary.py 落盘（fuel_providers 官方直查 GLM/MiniMax + sub2api 网关 /health 拆 codebuddy/autoclaw 健康），probe_schedule.sh 定时刷新。lanes 命名与 dump 脚本 FUEL_LANE_MAP/gateway lane 一一对应，改一边要同步另一边。",
+    "enabled": true,
+    "summary_path": "/Users/maoking/Library/Application Support/maoscripts/skills/private-skills/任务自动化/idle-task-runner/state/provider_quota/route-summary.json",
+    "freshness_minutes": 30,
+    "stop_line_percent": 15,
+    "urgency_window_minutes": 120,
+    "lanes": {
+      "glm-api": {
+        "type": "fuel",
+        "providers": [
+          "glm-5.3",
+          "glm-5.3-flash"
+        ],
+        "_note": "智谱 API TOKENS_LIMIT 窗口，两模型共用额度（flash 计量倍率更低）。"
+      },
+      "minimax": {
+        "type": "fuel",
+        "providers": [
+          "minimax-M3"
+        ],
+        "_note": "MiniMax token plan。常态余量高 → L0 评分自然首选（额度经济化核心位）。"
+      },
+      "autoclaw": {
+        "type": "reservoir",
+        "providers": [
+          "sub2api-glm-5.3-flash"
+        ],
+        "concurrency_cap": 1,
+        "open_tiers": [
+          "multimodal"
+        ],
+        "_note": "多模态位：model 写 glm-5.3-flash[1M]，sub2api 网关按本地配置自动识别路由到 AutoClaw 反向通道（用户 2026-08-29 定稿，模型字段不加 zai_ 前缀）。open_tiers 开放 multimodal 链无条件入链；L0 仍 scene 门控。前置 AutoClaw 桌面端登录（JWT 跟 App 走）。【限流 2026-09-14 用户实测】并发≈1，调用速度过快即触发限流——严格串行、任务间隔留缓冲、限流错误退避不立即重试。积分查询端点/签名细节见 sub2api DEC-029。"
+      },
+      "qwenworkai": {
+        "type": "fuel",
+        "providers": [
+          "sub2api-qw-flash"
+        ],
+        "model": "qw_deepseek-flash",
+        "gateway": "http://127.0.0.1:8787",
+        "concurrency_cap": 2,
+        "_note": "千问/Qoder 池（qw_ 前缀或精选裸名经 sub2api 网关 CLI 桥接）。每日 100 当日过期 → available_apps 已临期优先，网关 /ui/api/quota remaining_total 暴露双池余量；派简单/批量任务把当日积分吃掉。CLI 桥接单请求分钟级时延，worker 别设太高并发。"
+      },
+      "lobsterai": {
+        "type": "reservoir",
+        "providers": [
+          "sub2api-lobster-flash"
+        ],
+        "model": "lobster_deepseek-flash",
+        "gateway": "http://127.0.0.1:8787",
+        "concurrency_cap": 1,
+        "open_tiers": [
+          "multimodal"
+        ],
+        "_note": "LobsterAI 积分（lobster_ 前缀经 sub2api 网关）。credit_items 逐条 expires_at（每日登录奖励 100/条）→ lane 记录带 credit_items 让 PM 看临期分项。concurrency_cap=1 为保守起点（未观测到限流），实测无压力可放宽。"
+      }
+    },
+    "tier_policy": {
+      "L2": [
+        "glm-api"
+      ],
+      "L1": [
+        "glm-api"
+      ],
+      "L0": [
+        "minimax",
+        "glm-api"
+      ],
+      "multimodal": [
+        "glm-api"
+      ],
+      "default": "glm-api",
+      "_note": "能力下限（L0 绝不派深度专属任务给 reservoir）；评分在候选内按余量×临期动态排。reservoir 仅 scene 匹配入链。2026-08-29 用户定稿：minimax 从 L1 移除——只接'路线已定'的 L0 执行型批量 + multimodal 视觉。2026-09-14 用户定稿：L0 收窄为纯 fuel 链 [minimax, glm-api]；autoclaw 移出 multimodal 自动推荐链（并发≈1 且严格限流，仅 scene 门控/显式选路）；codebuddy-hy4 lane 删除（hy4-preview 模型已不可用）。qwenworkai/lobsterai 积分 lane 不进任何 tier 链——只在 expiry_burn/overnight_batch 等 scene 显式选路时消耗。"
+    },
+    "reservoir_scenes": [
+      "overnight_batch",
+      "archive_review",
+      "long_tail_cleanup",
+      "expiry_burn"
+    ]
+  },
+  "concurrency": {
+    "_comment": "同一 API 来源(provider)的机械并发上限。spawn-worker 在副作用前原子占槽，终端/会话结算后释放；per_backend 优先于 max_per_provider。",
+    "max_per_provider": 3,
+    "prefer_lower": true,
+    "per_backend": {
+      "codebuddy": 1,
+      "qoderwork-cn": 1,
+      "zcode": 5,
+      "_codebuddy_reason": "DEC-110/111 修复完成。2026-07-10：(1)hooks已永久切除 (2)启动用env -i HOME=\"$HOME\" PATH=\"$PATH\" TERM=\"$TERM\" LANG=\"zh_CN.UTF-8\"隔离 (3)hy3/deepseek-v4-flash -p均实测通过。spawn时--command传env -i启动命令。",
+      "claude-code": 10
+    },
+    "reason": "同一 provider 默认并发 ≤3；CodeBuddy 当前启用但收窄为单 worker（per_backend=1）；2026-09-04 用户明确要求使用重置后的 GLM 额度扩大本轮 ZCode 并行度至 5。",
+    "overflow_strategy": "配额耗尽时 spawn 退出 75；等待额度，或仅在 Harness 白名单内改派另一个已配置 backend。",
+    "_claude-code-5-reason": "2026-08-27 用户授权多线并行(badminton-lab §9 条款 4):活跃 worker 上限 5,跨线文件所有权正交;同账号 429 死窗按看门狗 playbook/守夜脚本处置",
+    "_claude-code-7-reason": "2026-08-27 用户二次授权:并发再+2 试试(多线并行+长线分支模式);429 死窗按守夜/playbook 兜底",
+    "_claude-code-10-reason": "2026-09-05 用户明确将 Worker 数量限制放宽到 5-10；价值门、文件冲突、验收背压与 429 恢复策略保持有效"
+  },
+  "codex_policy": {
+    "_comment": "Codex 路由硬规则：除非用户明确要求，否则绝不调用 Codex。本字段在 SKILL.md §2.4 explicit_only 基础上进一步收紧，把「明确要求」具体化为可观察的触发短语集合，避免 PM 自行解读用户隐含意图。",
+    "policy": "explicit_only",
+    "strict_mode": true,
+    "reason": "Codex 智能高额度贵，除非用户明确要求，否则一律不调用 CodeX；任何 '这任务更适合 Codex' / 'Codex 额度还行' / '试试 Codex' 之类的弱暗示都不算解封条件。",
+    "trigger_phrases": [
+      "用 Codex",
+      "调用 Codex",
+      "跑 Codex",
+      "派 Codex",
+      "CodeX worker",
+      "use codex",
+      "run codex",
+      "spawn codex"
+    ],
+    "fallback_when_blocked": {
+      "high_end": "glm-5.3",
+      "simple_multimodal": "minimax-m3",
+      "comment": "Codex 被 block 时回落 Claude Code 第三方 provider 的 GLM 5.2 / MiniMax M3 两档（走 claude-provider-registry，anthropic-compatible 格式），不替换为其它高额度模型。"
+    },
+    "pm_must_log_on_unlock": true,
+    "log_fields": [
+      "user_phrase_原文",
+      "wave_id",
+      "worker_id",
+      "codex_profile/model"
+    ],
+    "log_destination": "Wave 计划 + STATUS.json 的 pm_notes 段",
+    "spark_lane": {
+      "_comment": "Spark 例外：与主 Codex 额度是两个池。gpt-5.3-codex-spark 走 ChatGPT 订阅 OAuth 单独额度，不占 gpt-5.6-sol/gpt-5.5 主额度，'贵额度锁死'的理由不适用。用户 2026-08-30 明确定位：聊胜于无，token 最大化，常态派简单任务。",
+      "model": "gpt-5.3-codex-spark",
+      "profile": "spark",
+      "policy": "auto_for_simple_tasks",
+      "allowed_task_types": [
+        "简单开发",
+        "文档整理",
+        "批量机械提取/格式化",
+        "代码定位扫描",
+        "初筛清单"
+      ],
+      "forbidden_task_types": [
+        "深度法律分析",
+        "复杂架构改动",
+        "高价值验收门禁"
+      ],
+      "capability_note": "2026-08-30 实测：代码定位行号真实不幻觉、JSON 格式遵从好；法律推理浅（漏时效中断、利率上限提示）。"
+    }
+  },
+  "backend_model_routing": {
+    "_comment": "跨平台/跨额度 CLI backend 的默认 model + 何时用。本项目启用 codebuddy、qoderwork-cn 与 codex(仅 spark 档) 三个跨平台 backend；codebuddy 走 hy3 (腾讯混元带思考主力) + deepseek-v4-pro/flash + kimi-k2.7；qoderwork-cn 走 Qwen3.7-Max / Qwen3.7-Plus / DeepSeek-V4-Pro / DeepSeek-V4-Flash，其中 Qwen 两档在折扣时段（22:00-08:00）二折优先调用；codex 走 gpt-5.3-codex-spark（ChatGPT 订阅单独额度，profile 制见 config/codex-spark.profile.toml.example）。",
+    "codebuddy": {
+      "default_models": [
+        "hy3",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "kimi-k2.7"
+      ],
+      "use_case": "用户主动 offload / 主力并发打满溢出；走 WorkBuddy/CodeBuddy CLI，吃平台额度，零 API Key。James 2026-07-08 偏好精简：主力只保留 hy3（带思考）+ deepseek-v4-pro / flash（深推理 + 经济档），kimi-k2.7 保留作深度推理补充；kimi-k2.6 / minimax-m3 / glm-5.2 从默认移除；hy3-r1 整体删除（2026-07-08 400 不可用 + 用户决定）。",
+      "tier_note": "hy3 = 腾讯混元 Hy3（带思考主力），2026-07-08 smoke test 确认 `Provider: 腾讯/混元 (Tencent Hunyuan)`；codebuddy 内部路由含思考能力，对外统一显示 Hy3；用户决策升级为大多数 worker 任务首选；思考深度可由 `--effort <level>` 调节（smoke test 验证部分生效）。deepseek-v4-pro = 复杂推理 / 深度法律分析（2026-07-08 smoke test 通：`Model: Deepseek-V4-Pro / Provider: DeepSeek`）。deepseek-v4-flash = 经济实惠 / 速度快（2026-07-08 smoke test 通：`Model: Deepseek-V4-Flash / Provider: Deepseek`）。kimi-k2.7 = 深度推理补充（2026-07-08 smoke test 通：`Model: Kimi-K2.7-Code / Provider: Moonshot AI`）。**已移除**：hy3-preview-agent（实测有消耗额度，用户复核 2026-07-08）、hy3-r1（2026-07-08 400 不可用，用户决定彻底删除）、kimi-k2.6 / minimax-m3 / glm-5.2（James 精简偏好）。详见 references/08-workbuddy-cli-worker.md §4.1 + §6.5 + 2026-07-08 版本记录。"
+    },
+    "qoderwork-cn": {
+      "default_models": [
+        "Qwen3.7-Max",
+        "Qwen3.7-Plus",
+        "DeepSeek-V4-Pro",
+        "DeepSeek-V4-Flash"
+      ],
+      "use_case": "用户主动 offload / 主力并发打满溢出；走 QoderWork CN CLI，吃 Qwen 每日免费额度 + DeepSeek 档位。",
+      "tier_note": "Qwen3.7-Max = Qwen 系最大档（每日有免费额度，折扣时段优先；2026-07-08 smoke test 通，平台不暴露底层模型）；Qwen3.7-Plus = Qwen 系次档（同期通）；DeepSeek-V4-Pro = 复杂推理 / 深度法律分析（2026-07-08 smoke test 通，平台不暴露底层模型）；DeepSeek-V4-Flash = 经济实惠 / 速度快（同期通）。模型命名以 `qoderclicn --list-models` 输出为准（首字母大写、连字符分隔）。",
+      "discount_window": {
+        "_comment": "Qwen3.7-Max / Qwen3.7-Plus 在此时段享受「二折」优惠，PM 派 worker 时优先使用这两个 Qwen 档位",
+        "start": "22:00",
+        "end": "08:00",
+        "timezone": "Asia/Shanghai",
+        "cross_midnight": true,
+        "models_in_window": [
+          "Qwen3.7-Max",
+          "Qwen3.7-Plus"
+        ],
+        "models_outside_window": [
+          "DeepSeek-V4-Pro",
+          "DeepSeek-V4-Flash"
+        ],
+        "rate_note": "二折（约 20% 原价）"
+      }
+    },
+    "codex": {
+      "default_models": [
+        "gpt-5.3-codex-spark"
+      ],
+      "use_case": "简单开发 / 文档整理 / 批量机械提取格式化 / 代码定位扫描 / 初筛清单。走 ChatGPT 订阅 OAuth（~/.codex/auth.json），Spark 与 gpt-5.6-sol/gpt-5.5 主额度分开计算——只消耗那条单独额度池，不碰主额度。派发解锁条件见 codex_policy.spark_lane（简单任务可自主派，其他 codex 模型仍 explicit_only）。",
+      "tier_note": "gpt-5.3-codex-spark = Spark 档（2026-08-30 实测通：slug 直配 -m 或 profile -p spark 均可）。profile 制：复制 config/codex-spark.profile.toml.example 到 ~/.codex/spark.config.toml（codex 0.147+ profile 是独立文件，config.toml 内嵌 [profiles.X] 已 legacy 被拒）。能力画像：机械活强（行号引用真实、JSON 遵从好）、深度分析弱（漏时效中断等推理点）——比 minimax-M3 再低一档的批量卸载位，任务 routed 已经成立时优先喂给它。派发链：render-runtime-profile.sh --backend codex --codex-profile spark（或 --model gpt-5.3-codex-spark）→ spawn-worker.sh --worker-backend codex。网络注意：本机 WebSocket 连 chatgpt.com 被拒时自动 fallback HTTPS，正常。不接入 quota_aware_routing lanes：ChatGPT 订阅额度无 API 可查，dump_quota_summary.py 产不出数据，PM 按任务类型直接路由（额度感知不到的 lane 硬塞会误判 stale）。"
+    }
+  },
+  "notes": [
+    "本文件只声明'偏好'，不声明真实 token/key/endpoint——那些在 config/claude-provider-registry.*.json（本地 ignored）。",
+    "【多 backend 偏好总览，2026-07-08 James 决策】",
+    "  · Claude Code 主机（main_force.task_routing）：glm-5.2 / minimax-m3 / glm-5.1 / MiniMax-M2.7，走 anthropic-compatible 第三方 provider（config/claude-provider-registry.local.json 配 base_url + api_key_env + models）。命名 lowercase + 连字符（与 anthropic API 习惯一致）。",
+    "  · codebuddy backend：hy3（混元 Hy3 带思考主力，codebuddy 内部路由含思考能力）/ deepseek-v4-pro（深推理，2026-07-08 smoke test 通）/ deepseek-v4-flash（经济档，2026-07-08 smoke test 通）/ kimi-k2.7（深度推理补充，2026-07-08 smoke test 通）。命名 lowercase + 连字符。James 2026-07-08 精简，移除 kimi-k2.6 / minimax-m3 / glm-5.2 / hy3-r1（用户决定彻底删除）/ hy3-preview-agent（有消耗额度）。",
+    "  · qoderwork-cn backend：Qwen3.7-Max / Qwen3.7-Plus / DeepSeek-V4-Pro / DeepSeek-V4-Flash（4 档均通过 smoke test 验证可调用，平台不暴露底层模型名）。命名首字母大写、连字符分隔，以 `qoderclicn --list-models` 输出为准。Qwen 两个档位 22:00-08:00（Asia/Shanghai，含跨午夜）二折优惠，PM 派 worker 时优先。",
+    "hy3 内部路由推断（2026-07-08 用户决策）：codebuddy 后端对 Hy3 做了路由，含思考能力；对外统一显示 Hy3；思考深度可由 `--effort <level>` 调节（minimal/low/medium/high/xhigh/max，smoke test 验证：effort 升高时输出形式化符号增强，结论可能不变）。",
+    "Codex 默认锁死：除非用户原话命中 codex_policy.trigger_phrases 中的任一短语，否则 PM 一律不调用 Codex；弱暗示 / 类比 / '更适合' 不算解封。Codex 被 block 时回落 Claude Code 第三方 provider 的 glm-5.2 / minimax-m3 两档，不替换为其它高额度模型。唯一例外 codex_policy.spark_lane：gpt-5.3-codex-spark 走 ChatGPT 订阅单独额度池，2026-08-30 用户定档'简单开发/文档整理常态派、token 最大化'，简单任务 PM 可自主路由，无需触发短语；其他 codex 模型（gpt-5.6-sol/gpt-5.5 等）仍锁死。",
+    "【2026-08-29 额度感知路由实装】quota_aware_routing.enabled=true。派单链：dump_quota_summary.py（probe_schedule 定时落盘 route-summary.json）→ route_suggest.py 评分（glm-api/minimax 燃料 + codebuddy-hy4/autoclaw 蓄水池）→ PM/spawn-worker/super_dispatcher 消费。静态 task_routing 同步换新（5.3/5.3-flash/minimax-M3），作为 route_suggest 降级底座。",
+    "改本 schema 字段时，同步更新 SKILL.md §2.4 字段定义。",
+    "【2026-09-14 链路收窄（用户定稿）】autoclaw 移出 multimodal 自动推荐链（并发≈1 严格限流，仅 scene/显式）；codebuddy-hy4 lane 删除（hy4-preview 模型已不可用）；L0 收窄 [minimax, glm-api]。现自动推荐链仅 glm-api（L0/L1/L2/multimodal）+ minimax（L0）；autoclaw/qwenworkai/lobsterai 全部退为 scene 门控/显式选路。历史 note 中 codebuddy-hy4 的描述已失效，以本条为准。"
+  ]
+}

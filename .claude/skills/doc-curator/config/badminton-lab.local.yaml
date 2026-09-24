@@ -1,0 +1,97 @@
+# 临时体检配置(doc-curator subagent 用,放 /tmp,不进项目)
+# 语义来源:项目 AGENTS.md 文档职责表 + docs/TASKS.md 卡片格式(### BL-xxx)
+schema_version: 2
+project: badminton-lab
+
+files:
+  - path: docs/TASKS.md
+    role: active-tasks
+  - path: docs/DECISIONS.md
+    role: decision-log
+  - path: CHANGELOG.md
+    role: changelog
+  - path: README.md
+    role: readme
+
+adaptive_rules:
+  - id: tasks-active-count
+    file: docs/TASKS.md
+    metric: active_task_count
+    seed_value: 3
+    multiplier: 1.5
+    active_count_pattern: "^### BL-[0-9]+"
+
+soft_rules:
+  - id: changelog-recent-release-entry
+    file: CHANGELOG.md
+  - id: readme-current-status
+    file: README.md
+
+context_sync:
+  enabled: true
+  local_reversible:
+    max_files: 1
+    max_insertions: 50
+  systemic:
+    min_files: 3
+    min_insertions: 200
+  change_types:
+    - pattern: "src/**"
+      expect_changelog: true
+      expect_tasks: true
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "apps/**"
+      expect_changelog: true
+      expect_tasks: true
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "tests/**"
+      expect_changelog: false
+      expect_tasks: true
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "skills/**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: true
+    - pattern: "docs/**"
+      expect_changelog: false
+      expect_tasks: true
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "Makefile"
+      expect_changelog: false
+      expect_tasks: true
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "DESIGN.md"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "config/**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+
+markdown_link_broken:
+  enabled: true
+  check_code_paths: false
+  default_severity: hard

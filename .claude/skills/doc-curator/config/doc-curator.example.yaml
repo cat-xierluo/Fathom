@@ -1,0 +1,182 @@
+# 复制为项目根 doc-curator.yaml 后按项目约定修改。
+# 这是去具体化的完整示例，不包含任何项目路径、运行基线或私有数据。
+
+schema_version: 2
+project: example
+
+config_contract:
+  required_checkers: "context-sync decision-sync markdown-link-broken active-zone-residue"
+
+files:
+  - path: docs/TASKS.md
+    role: active-tasks
+  - path: docs/DECISIONS.md
+    role: decision-log
+  - path: CHANGELOG.md
+    role: changelog
+  - path: README.md
+    role: readme
+  - path: AGENTS.md
+    role: agent-guide
+
+# 以下硬规则依赖特定文档约定；不适用时删除对应条目。
+hard_rules:
+  - id: tasks-progress-log-trim
+    file: docs/TASKS.md
+    limit: 5
+  - id: tasks-archived-iss-pointer
+    file: docs/TASKS.md
+  - id: decisions-iss-archive-ascending
+    file: docs/DECISIONS.md
+  - id: decisions-dec-numbering-continuous
+    file: docs/DECISIONS.md
+  - id: decisions-id-unique
+    file: docs/DECISIONS.md
+
+decision_log:
+  heading_pattern: "^#{2,6}[[:space:]]+\[?DEC-[0-9]+\]?"
+  id_pattern: "DEC-([0-9]+)"
+
+adaptive_rules:
+  - id: tasks-active-count
+    file: docs/TASKS.md
+    metric: active_task_count
+    seed_value: 3
+    multiplier: 1.5
+    active_count_pattern: "^### (ISS-[0-9]+|Task[# ]+T?[0-9A-Za-z-]+)"
+
+soft_rules:
+  - id: changelog-recent-release-entry
+    file: CHANGELOG.md
+  - id: readme-current-status
+    file: README.md
+
+# AgentCMD v4 当前任务源合同。DRAFT 可不完整；其它状态按 requirements 检查任务卡。
+task_source_contract:
+  enabled: true
+  task_id_pattern: "(Task-[0-9]+|[A-Z][A-Z0-9_-]*-[0-9]+)"
+  task_id_exclude_pattern: "^(DEC|ADR)-"
+  card_heading_pattern: "^###[[:space:]]"
+  empty_queue_pattern: "(当前无任务|无可执行任务|No active tasks)"
+  status_label_pattern: "(^[[:space:]]*[-*][[:space:]]+[*]*(状态|Status)[*]*[：:]|^[[:space:]]*[|][[:space:]]*(状态|Status)[[:space:]]*[|])"
+  status_tokens:
+    draft: "DRAFT 草案"
+    ready: "READY 就绪"
+    in_progress: "IN_PROGRESS 进行中"
+    blocked: "BLOCKED 阻塞"
+    review: "REVIEW 待验收"
+    done: "DONE 已完成"
+    cancelled: "CANCELLED 已取消"
+  requirements:
+    ready: "rationale goal non_goal inputs_dependencies scope stop acceptance"
+    review: "deliverables evidence"
+    done: "evidence"
+    blocked: "blocked_reason"
+    cancelled: "cancellation_reason"
+  fields:
+    - id: rationale
+      label: "缘由与证据"
+      pattern: "(^#{2,6}[[:space:]]+.*(缘由|背景|来源)|^-[[:space:]]+[*][*](缘由|背景|来源)[^*]*[*][*])"
+    - id: goal
+      label: "主目标"
+      pattern: "(^#{2,6}[[:space:]]+(主目标|目标)([[:space:]]|$)|^-[[:space:]]+[*][*](主目标|目标)[*][*])"
+    - id: non_goal
+      label: "非目标"
+      pattern: "(^#{2,6}[[:space:]]+(非目标)([[:space:]]|$)|^-[[:space:]]+[*][*]非目标[*][*])"
+    - id: inputs_dependencies
+      label: "输入与依赖"
+      pattern: "(^#{2,6}[[:space:]]+.*(输入与依赖|输入依赖|输入|依赖)|^-[[:space:]]+[*][*](输入与依赖|输入依赖|输入|依赖)[*][*])"
+    - id: scope
+      label: "允许与禁止范围"
+      pattern: "(允许范围|禁止范围|文件边界|^#{2,6}[[:space:]]+范围)"
+    - id: stop
+      label: "停止条件"
+      pattern: "(停止条件|停止与升级条件)"
+    - id: acceptance
+      label: "验收方式"
+      pattern: "(验收标准|验收方式|验证命令与预期结果)"
+    - id: deliverables
+      label: "交付物"
+      pattern: "(交付物|实际产物|交付结果)"
+    - id: evidence
+      label: "执行或验收证据"
+      pattern: "(验收证据|执行证据|验证结果|未完成原因|NOT_VERIFIED)"
+    - id: blocked_reason
+      label: "阻塞原因"
+      pattern: "(阻塞原因|未解决的依赖|等待.*确认|BLOCKED.*原因)"
+    - id: cancellation_reason
+      label: "取消原因"
+      pattern: "(取消原因|终止原因|被.*替代)"
+
+context_sync:
+  enabled: true
+  local_reversible:
+    max_files: 1
+    max_insertions: 50
+  systemic:
+    min_files: 3
+    min_insertions: 200
+  change_types:
+    - pattern: "docs/**"
+      expect_changelog: true
+      expect_tasks: true
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "skills/**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: true
+    - pattern: "**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+
+dec_ref_sync:
+  enabled: true
+  scan_extensions: md yaml
+  exclude_paths: .git DECISIONS.md docs/plans node_modules
+
+markdown_link_broken:
+  enabled: true
+  # 反引号代码不一定代表链接；只有项目明确把 `path/file.md` 当引用时才开启。
+  check_code_paths: false
+  default_severity: hard
+  exclude_paths:
+    - path: "tests/fixtures/**"
+  severity_paths:
+    - path: "references/**"
+      severity: adaptive
+  source_severity_paths:
+    - path: "research/**"
+      severity: adaptive
+  pseudo_target_patterns:
+    - path: "M[0-9]-[0-9]*"
+      severity: soft
+
+context_truth:
+  enabled: false
+  # 项目启用时至少配置一个声明式断言；索引 mode 仅支持 max_numeric_suffix。
+  # 单值角色/状态对照见 context-value-claims.example.yaml（必须 schema 3）。
+  # index_claims:
+  #   - id: retrospective-problem-index
+  #     source_file: retrospective/PROBLEMS.md
+  #     item_pattern: "^### P[0-9]+"
+  #     id_pattern: "P([0-9]+)"
+  #     mirror_file: retrospective/README.md
+  #     claim_pattern: "P1-P([0-9]+)"
+  #     mode: max_numeric_suffix
+  #     severity: hard
+
+active_zone_residue:
+  enabled: true
+  zone_headings:
+    active: "## 活跃区"
+    pending: "## 待核实区"
+    deferred: "## 暂缓区"
+    archive: "## 归档区"
+  residue_pattern: "(ISS-[0-9]+|Task[#　 ]+T?[0-9A-Za-z-]+)"

@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "project_id": "466eebc84b47529232d597f2c7d693599fef5e22d724be6336d23bd0acbc2702",
+  "config_sha256": "b677c0be5fe2ed5857e7184a226fa4a8572e73a8c50b9f41ceb04816762a8f81",
+  "measured_at": "2026-08-13T16:44:26Z",
+  "baselines": {
+    "docs/TASKS.md": {"line_count": 2327, "active_task_count": 0},
+    "docs/DECISIONS.md": {"line_count": 3827},
+    "CHANGELOG.md": {"line_count": 664},
+    "README.md": {"line_count": 131},
+    "AGENTS.md": {"line_count": 47},
+    "docs/ARCHITECTURE.md": {"line_count": 357},
+    "docs/ROADMAP.md": {"line_count": 268},
+    "docs/DESIGN.md": {"line_count": 927}
+  }
+}

@@ -1,0 +1,134 @@
+# 项目 Release 配置模板
+# 复制此文件为 projects.yaml 并填入实际项目信息
+#
+# type 字段可选值：
+#   tauri            桌面应用（Tauri / Electron），使用 references/tauri-release.md 的 build matrix
+#   cli              命令行工具
+#   web              Web 应用
+#   library          库 / SDK
+#   monorepo-skills  monorepo 多子项目批量发布（skill 集合 / CLI 工具集 / npm 包集等）
+
+# ============================================================
+# 示例 1：Tauri 桌面应用
+# ============================================================
+your-app:
+  # GitHub 仓库（owner/repo）
+  repo: owner/repo
+
+  # 项目类型：tauri | cli | web | library
+  type: tauri
+
+  # 是否启用 Tauri 内置自动更新
+  # true  → 保留 .tar.gz / .sig / latest.json
+  # false → 仅保留安装包（.dmg / .exe）
+  auto_update: true
+
+  # Windows 安装格式（仅 tauri 类型）
+  # exe  → NSIS 安装器（推荐，大多数项目使用）
+  # msi  → MSI 安装器
+  # 不要同时发布两种格式
+  windows_format: exe
+
+  # 构建平台
+  # 可选值：macos-aarch64, macos-x64, windows-x64, linux-x64
+  platforms:
+    - macos-aarch64
+    - macos-x64
+    - windows-x64
+
+  # 排除的产物（glob 模式），在验证和清理阶段使用
+  exclude_assets: []
+  # 示例：
+  # exclude_assets:
+  #   - "*.msi"
+  #   - "*.msi.sig"
+
+  # Release Notes 结构配置
+  # profile 可选：desktop-standard | cli-standard | library-standard | web-standard | monorepo-skills
+  release_notes:
+    profile: desktop-standard
+    language: zh-CN
+    required_sections:
+      - Highlights
+      - 下载
+    optional_sections:
+      - 新增
+      - 变更
+      - 修复
+    always_include:
+      - no_duplicate_title
+      - summary_blockquote
+      - full_changelog_link
+      - auto_update_assets_note
+      # 有外部贡献者 PR 时必须致谢（行内标注 + 「贡献者」节）
+      - contributor_attribution
+    warning:
+      include_when:
+        - macos_unsigned
+        - terminal_command_required
+        - breaking_change
+        - security_notice
+
+# ============================================================
+# 示例 2：monorepo-skills（多子项目批量发布）
+# ============================================================
+# 适用场景：一个仓库下有 N 个独立可发布的子项目（skill / CLI / npm 包等），
+# 希望一次 tag 同时发布所有子项目的 zip。
+# 前置：仓库根 .github/workflows/release.yml + update-readme.yml 已部署
+#       （参考本 skill 的 references/monorepo-release.md 的 SOP 章节）
+#
+# your-monorepo:
+#   repo: owner/your-monorepo
+#   type: monorepo-skills
+#
+#   # 子项目根目录（如 skills/、packages/、tools/ 等）
+#   skills_root: skills
+#
+#   # zip 输出目录（建议加入 .gitignore）
+#   output_dir: pack-skills
+#
+#   # 打包时排除的 glob 模式（git archive --worktree-attributes 会读 .gitattributes）
+#   exclude_globs:
+#     - "**/archive/**"
+#     - "**/downloads/**"
+#     - "**/output/**"
+#     - "**/DECISIONS.md"
+#     - "**/TASKS.md"
+#
+#   # 是否在 README 表格加「下载」列（update-readme.yml 会自动回写 URL）
+#   readme_download_column: true
+#
+#   # Release Notes 结构(profile 用于 release-notes-guide.md 的人工撰写)
+#   release_notes:
+#     profile: monorepo-skills
+#     language: zh-CN
+#     required_sections:
+#       - 本版包含
+#       - 下载
+#     optional_sections:
+#       - 更新明细
+#
+#   # generate-release-notes.py 用的项目级个性化配置
+#   # 用于自动生成 GitHub Release 页面 body
+#   # 留空则全部用脚本默认值
+#   notes:
+#     project_label: "Your Project"  # 标题用名（默认用 repo 最后一段）
+#     intro_template: "本版包含 **{total} 个** 最新 zip。"
+#     recent:
+#       source_marker: "🆕 最近更新"  # README 内表格章节标题
+#       top_n: 5
+#     install:
+#       single_label: "package"      # "skill" / "package" / "tool" 等
+#       full_clone_prompt: "请帮我从 GitHub 安装 {label}:{repo_url}"
+#       single_note: "3. 解压后得到 `<name>/` 文件夹,放到目标位置"
+#
+#   # Tag 方案
+#   tag:
+#     scheme: calver              # calver | semver
+#     format: "vYYYY.MM.DD"       # CalVer 格式
+#     example: v2026.06.30
+#
+# 调用示例：
+#   SKIP_ARCHIVED="deprecated-foo deprecated-bar" \
+#     bash skills/release-workflow/scripts/release-monorepo.sh v2026.06.30
+#

@@ -1,0 +1,143 @@
+# 变更日志
+
+## [1.5.1] - 2026-09-21
+
+### 修复（v2026.09.21 发布暴露的三个链路缺陷）
+
+- **`scripts/generate-release-notes.py` 本版 skill 总数误报**：`{total}` 原优先读 README badge（`Skills-<数字>`），badge 已不存在时静默回退到最近更新条数（top_n=5），v2026.09.21 Release Notes 因此误写"本版包含 5 个 skill"（实际 64 个，事后人工 `gh release edit` 修正）。现优先数 `OUTPUT_DIR`（默认 `pack-skills/`）下的 zip 数量——release.yml 中 `build-zips.sh` 先于本脚本执行，产物必在；badge 降为次选，recent 条数仍为最后兜底；完成提示行输出总数便于 CI 日志核对。
+- **`.github/workflows/update-readme.yml` 触发机制从未生效**：release.yml 用内置 GITHUB_TOKEN 创建 Release，GitHub 防递归机制下该事件不会级联触发 `on: release: published` 的其他 workflow（v1.4.0 已观察到现象，本次定位根因）。该 workflow 新增 `workflow_dispatch` 手动兜底，并改为调用 `scripts/update-readme.py`——删除漂移的 inline 旧副本（其正则只认 `latest/download` 占位形式，与 README 实际使用的显式 tag 形式不匹配，即使触发也替换不上）。
+- **`.github/workflows/release.yml` 新增内嵌 README 回写**：上传 zip 后 checkout main → 调 `scripts/update-readme.py`（v1.4.1 已修好正则的版本）→ commit + push。此前该回写只存在于 `release-monorepo.sh` 本地驱动路径；直接 push tag 走 CI 发版时（v2026.09.21 的实际路径）README 下载链接滞留旧 tag，需人工经 API 补写（commit 0c7a798f）。
+
+### 文档完善
+
+- `SKILL.md` 模式 B 核心流程与 `references/monorepo-release.md` 端到端流程同步新机制：README 回写以两条发布路径（CI 的 release.yml 内嵌步骤 / 本地的 release-monorepo.sh）为准，`update-readme.yml` 降为 `workflow_dispatch` 手动兜底，并注明 GITHUB_TOKEN 防递归根因。
+
+## [1.5.0] - 2026-09-21
+
+### 新增
+
+- **贡献者致谢（Attribution）规则**：`references/release-notes-guide.md` 新增「贡献者致谢」章节——外部贡献者 PR（含被「承接 #N」重做的原始 PR、Co-Authored-By 外部作者）必须在 Release Notes 致谢：条目行内 `(#N, @user)`（必选）+ 文末「贡献者」汇总节（推荐）；维护者自身与 bot 不标。`desktop-standard` 固定结构新增第 9 项「贡献者」节（无外部贡献者时省略），推荐模板同步补充。
+- **SKILL.md 第 2 步新增来源 3（PR 作者识别）**：`gh pr list --state merged` 列本版本区间 PR 与作者；第 6 步验证清单加「外部贡献者致谢检查」；发布完成检查清单加对应确认项。
+- **`config/projects.yaml` / `projects.example.yaml`**：`release_notes.always_include` 新增 `contributor_attribution` 约束键（folia / faropdf 已启用）。
+- **调研补充**：调研来源表新增 eslint（全条目行内作者括注）、stablyai/orca（GitHub 原生 generate-notes：`by @user in #PR` + Contributors 头像墙）；新增 generate-notes API 调用作为漏识别兜底。
+
+### 触发背景
+
+Folia v0.8.1 发布后 Release Notes 整版遗漏外部贡献者致谢——该版三个修复全部源自外部贡献者 @Yillan-lamb（#169 直接合入；#166 / #167 为 #171 / #170 的承接来源），notes 与 CHANGELOG 均无一字提及。
+
+## [1.4.1] - 2026-08-06
+
+### 修复
+- **`scripts/update-readme.py` 链接匹配范围扩大**：原正则只识别 `releases/latest/download/<skill>-<semver>.zip` 占位形式，但 legal-skills README 实际使用显式 tag 形式 `releases/download/<tag>/<skill>-<semver>.zip`，导致每次发版只刷新恰好已是新 tag 的少数链接，其余链接滞留旧 tag（指向过期版本快照）。现同时匹配「占位形式」与「显式 tag 形式」，统一改写为最新 release 的真实 `browser_download_url`（含正确 tag + 文件名版本），保证一次发版全量刷新。
+- **按文件名版本对齐**：改写时以最新 release 资产的实际 `<skill>-<semver>.zip` 文件名为准，自动修正链接内滞留的旧版本号（如 `legal-case-analysis-0.3.3` → `1.0.0`）。
+- **幂等性修正**：仅当 URL 实际变化时才计数并写回，已最新的 README 重跑报告「已是最新」而非误报「已更新 N 个」。
+- **跨仓库安全**：仅改写与 `owner/repo` 一致的链接，独立仓库（如 `trademark-assistant.skill`、`de-ai-polish.skill`）链接不受影响。
+
+### 文档完善
+
+- 仓库停用 Cloud Plugin Marketplace 并删除 `.claude-plugin/` 配置后，monorepo 发布前检查改为同步各 Skill 版本、CHANGELOG、根 README 与实际启用渠道；发布脚本行为不变。
+
+## [1.4.0] - 2026-06-30
+
+### 新增
+
+- **monorepo-skills 项目类型**：支持一次性发布多个 skill 的 zip（legal-skills 实例）。与现有 tauri / cli / web / library 类型并列，通过 `config/projects.yaml` 的 `type` 字段路由
+- **新增脚本 `scripts/build-zips.sh`**：遍历 `skills/*/`、跳过 symlink 与已归档 skill、从 CHANGELOG 头部读 semver、用 `git archive --worktree-attributes` 干净打包到 `pack-skills/<skill>-<semver>.zip`
+- **新增脚本 `scripts/release-monorepo.sh`**：主发布驱动（build → tag → push → gh run watch → 验证 assets → **内嵌 README 回写**），支持 `--dry-run` 模式（不消耗 Actions 配额）
+- **新增脚本 `scripts/update-readme.py`**：从最新 release assets 取真实 `browser_download_url` 替换 README 占位 URL。原本由 `.github/workflows/update-readme.yml` 触发，但首次 release 观察到该 workflow 未自动触发，内嵌到 `release-monorepo.sh` 第 6 步保证 100% 执行
+- **新增 reference `references/monorepo-release.md`**：完整 SOP 文档，含端到端流程、关键设计决策、已知限制
+- **新增 release-notes profile `monorepo-skills`**：与 desktop-standard 并列，适用于 GitHub Release 含 N 个 skill zip 的场景
+- **`config/projects.yaml` 新增 `legal-skills` 条目**：定义 skills_root、output_dir、exclude_globs、CalVer tag 模板
+
+### 改进
+
+- `SKILL.md` description 触发词追加："monorepo"、"批量打包"、"多 skill 发布"、"skill zip"
+- `SKILL.md` 新增「## 模式 B:monorepo 多组件批量发布」章节，与现有 7 步流程（模式 A）并列
+- 现有 Folia/Funes/FaroPDF 等 monorepo subrepo 发布流程**完全未动**（仅追加式扩展）
+
+### 触发背景
+
+legal-skills 用户下载 skill 必须懂 Git（`git clone` + 手动 cp 子目录），门槛高。本版本把 release-workflow 扩展支持 monorepo 多 skill 批量发布，使每个 skill 可独立 zip 下载，无需 Git。详见 plan：`docs/plans/2026-06-30-ski-github-release.md`。
+
+## [1.3.0] - 2026-06-20
+
+### 新增
+
+- **「修复 hotfix 与 CI retry 边界」章节**：明确 hotfix 真实修复 vs 把 release 当测试的判定信号；transient vs 真实 bug 快速判定清单（build job / publish job 各自的失败信号）；修复 hotfix 标准动作序列；重打 tag 总次数上限 3 次。来源：Folia v0.4.0 → v0.4.1 hotfix 真实案例，3 次重打 tag 后修好（双层根因：bundle.targets 缺 "app" + includeUpdaterJson: false）。
+- **打 tag 前产物完整矩阵对照表**：三平台（darwin-aarch64 / darwin-x86_64 / windows-x86_64）逐行勾选安装包 / updater binary / .sig / latest.json entry。带自动更新项目必查——缺一个 sig 都让用户升不上 vX.Y.Z。
+- **Step 3 加 `git show <tag> --stat` 校验**：重打 hotfix 时常见坑是只改了 release.yml 没把 4 处版本号文件升到新版本号，导致产物文件名仍带旧版本号（Folia v0.4.1 第一次重打的实际教训）。
+- **Step 6 加产物完整矩阵对照**：发布前必须按矩阵逐行勾选，缺任一产物**不 publish draft release**，先修再重打。
+- **Step 1 加 PATCH 注释 "hotfix patch"**：明确 PATCH 版本可以是新功能累积或 hotfix 单一修复。
+
+### 变更
+
+- 5 问自检从「软建议」升级为「AI 不得跳过的硬约束」：AI 代理被请求发布新版本时必须主动逐条打印结果让用户确认，明确禁止跳过（v0.4.0 真实教训）。
+- `references/tauri-release.md`：`includeUpdaterJson` 示例值从 `false` 改为 `true`（项目启用 Tauri 自动更新时必须为 true，否则 macOS updater 产物链断裂），添加详细原因说明。
+- `references/tauri-release.md` 新增「`tauri.conf.json` bundle.targets 必含 `"app"`」章节：解释 macOS updater binary 来源（"app" target 派生 `.app.tar.gz`），列出常见错配场景（DEC-093 收窄 target 时误删 "app"）。
+- `references/tauri-release.md` 新增「打 tag 前产物完整矩阵预检」章节：把矩阵对照表与产物预检流程整合。
+- `references/tauri-release.md` 现有产物表从「安装包 / 更新器产物 / 签名」三段扩展为包含 latest.json entry 的四列。
+- `references/tauri-release.md` 第 8 个红线（在「跨平台 CI 必踩坑」后追加）：publish job 失败时按 `includeUpdaterJson` + `bundle.targets` 顺序排查产物链断裂。
+
+### 触发背景
+
+Folia v0.4.0 发布后用户实际收到 broken build（macOS 自动更新不可用），追溯根因时发现：
+
+1. `bundle.targets` 在 DEC-093 收窄时误删了 `"app"` target（macOS updater binary 来源）
+2. `release.yml` 的 `includeUpdaterJson: false` 让 tauri-action 不生成 `.sig`
+3. skill 文档没有产物矩阵预检 + hotfix 边界 + 5 问硬约束，导致 AI 跳过了关键的发布前自检
+
+v0.4.1 hotfix 经历 3 次重打 tag（首次修 release.yml、二次加 bundle.targets + 版本号同步、三次 retry transient CI 失败），每次都有真实进展但成本是 1.5× 标准 release。skill 改进后下次类似情况可以 1 次重打搞定。
+
+## [1.2.0] - 2026-06-08
+
+### 新增
+
+- 新增 `## ⚠️ Release ≠ 测试 — 强制约束` 章节：把 release workflow 当作 CI 验证机制（"打 tag 看一下"）是反模式，强制禁止。
+- 新增打 tag 前五问自检清单：是否给真实用户、CHANGELOG 是否就绪、距上次 tag 是否 ≥ 24h、是否有实质改动、能否合并到下次。
+- 新增反模式表（7 类禁止行为）+ 借口反驳表（9 类常见借口）+ 红灯列表（7 类立即停止信号）。
+- `description` 触发词补充："Actions 配额告急"、"短时间内多次发版"、"打 tag 看一下"等反模式场景。
+
+### 变更
+
+- 发布完成检查清单拆分为"打 tag 前（强制）"和"发布完成后"两段，强制自检放在前。
+- 适用场景从"完整发布周期"扩展为"包含反模式识别和拒绝"。
+
+### 触发背景
+
+Folia 项目在 2026-06 账单周期（6/1-6/30）使用 1825/2000 Actions 分钟（91%），根因是把 release workflow 当作 CI 验证机制使用：6/1 一天发 3 个 patch 版本，22 天发 15 个版本，其中大部分是"看一下 build 行不行"而非真实用户发布。
+
+## [1.1.2] - 2026-06-01
+
+### 变更
+
+- 固定桌面应用 Release Notes 结构为摘要、Highlights、新增、变更、修复、Warning、下载和完整变更日志。
+- 新增 `release_notes` 项目配置示例，用于为 Folia 等项目指定专门的 Release Notes profile 和必备分区。
+
+## [1.1.1] - 2026-06-01
+
+### 变更
+
+- Release Notes 模板移除正文顶部的版本标题，避免与 GitHub Release 页面标题重复。
+- 发布完成检查清单增加“正文没有重复版本标题”的要求。
+
+## [1.1.0] - 2026-05-20
+
+### 变更
+
+- SKILL.md 从 Tauri 专用改为通用发布工作流，适用于桌面应用、CLI 工具、Web 应用、库/SDK 等任何 GitHub 项目
+- Tauri 特定内容下沉到 `references/tauri-release.md`
+- CI 故障排查改为通用指南，不再绑定 Tauri
+- 新增 `references/release-notes-guide.md`：Release Notes 撰写指南（含模板、设计决策、不同项目类型适配）
+
+### 新增
+
+- `references/tauri-release.md` 新增「常见配置问题与优化」章节（6 个问题），来源于 Funes 项目审查
+- `references/tauri-release.md` 参考项目表格增加 Folia 和 Funes 对比
+
+## [1.0.0] - 2026-05-20
+
+### 新增
+
+- SKILL.md：7 步发布流程 + Release Notes 模板
+- references/ci-troubleshooting.md：CI 故障排查
+- 通过 Folia v0.3.7 发布验证全流程

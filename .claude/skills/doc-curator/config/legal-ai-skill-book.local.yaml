@@ -1,0 +1,126 @@
+# doc-curator 配置：legal-ai-skill-book（法律 skill 书籍项目）
+#
+# 本项目文档结构与 FaroPDF 不同：有 figures/FIGURES-OUTLINE.md（配图 registry）、
+# docs/BOOK-TONE-REVIEW.md，无 docs/DESIGN.md / docs/ARCHITECTURE.md。
+# 故 files 段不列 DESIGN/ARCHITECTURE（否则 check-files 误报「不存在」）。
+#
+# yaml 由 common.sh 的纯 awk flat 化器解析（无 yq 依赖）。
+
+project: legal-ai-skill-book
+
+files:
+  - path: docs/TASKS.md
+    role: active-tasks
+  - path: docs/DECISIONS.md
+    role: decision-log
+  - path: CHANGELOG.md
+    role: changelog
+  - path: README.md
+    role: readme
+  - path: AGENTS.md
+    role: agent-guide
+  - path: docs/ROADMAP.md
+    role: roadmap
+  - path: figures/FIGURES-OUTLINE.md
+    role: figures-outline
+  - path: docs/BOOK-TONE-REVIEW.md
+    role: tone-review
+
+hard_rules:
+  - id: tasks-progress-log-trim
+    file: docs/TASKS.md
+    limit: 5
+    description: "进度日志条目数 ≤ limit"
+  - id: tasks-archived-iss-pointer
+    file: docs/TASKS.md
+    description: "归档任务索引指向 DECISIONS.md 归档区"
+  - id: markdown-link-broken
+    file: "**/*.md"
+    description: "markdown 链接 [text](path) / 反引号 path 指向不存在文件 (T150)"
+  - id: decisions-iss-archive-ascending
+    file: docs/DECISIONS.md
+    description: "ISS 任务归档条目按编号升序"
+  - id: decisions-dec-numbering-continuous
+    file: docs/DECISIONS.md
+    description: "DEC-XXX 编号连续无跳号"
+
+adaptive_rules:
+  - id: tasks-active-count
+    file: docs/TASKS.md
+    metric: active_task_count
+    seed_value: 3
+    multiplier: 1.5
+    # v0.5.1: 本项目用 ### Task TNN / Task#N 编号（非 ISS-N）。显式配置避免依赖默认值。
+    active_count_pattern: "^### Task[# ]+T?[0-9A-Za-z-]+"
+  - id: active-zone-residue
+    file: docs/TASKS.md
+    description: "活跃区残留已归档条目 (T152), emit adaptive 供 PM 人工判别真残留 vs 合理交叉引用/编号撞号/多批次"
+
+soft_rules:
+  - id: changelog-recent-release-entry
+    file: CHANGELOG.md
+    description: "CHANGELOG.md 含最近 release entry"
+  - id: readme-current-status
+    file: README.md
+    description: "README.md 含「当前状态」段"
+
+context_sync:
+  local_reversible:
+    max_files: 1
+    max_insertions: 50
+  systemic:
+    min_files: 3
+    min_insertions: 200
+  # 本项目路径约定：manuscript/<篇>/chNN-*.md、figures/ai-generated/chNN/、.claude/skills/<name>/
+  change_types:
+    - pattern: "manuscript/**"
+      expect_changelog: true
+      expect_tasks: true
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "figures/**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: false
+      expect_figures: true
+      expect_skill_internal: false
+    - pattern: ".claude/skills/**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: true
+    - pattern: "**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+
+# ── 决策变更同步检测（v0.3.0 新增）──
+dec_ref_sync:
+  enabled: true
+  scan_extensions: md yaml
+  exclude_paths: .git DECISIONS.md docs/plans node_modules .claude/agent-sessions
+
+# ── markdown 断链严重度细分（v0.5.1 新增）──
+# 本项目 docs/ 下是核心文档（断链 hard）；reviews/ 等可选引用走 adaptive。
+markdown_link_broken:
+  default_severity: hard
+  severity_paths:
+    - path: "reviews/**"
+      severity: adaptive
+    - path: "source-material/**"
+      severity: adaptive
+
+# ── active-zone-residue 段标题与编号 pattern（v0.5.1 新增）──
+# 本项目用 ### Task TNN 编号（非 ISS-N）。
+active_zone_residue:
+  enabled: true
+  zone_headings:
+    active: "## 活跃区"
+    pending: "## 待核实区"
+    deferred: "## 暂缓区"
+    archive: "## 归档区"
+  residue_pattern: "Task[# ]+T?[0-9A-Za-z-]+"

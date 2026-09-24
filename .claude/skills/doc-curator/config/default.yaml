@@ -1,0 +1,71 @@
+# doc-curator 公共默认配置。
+# 默认只启用通用、只读且低误报的检查；项目约定请在项目根 doc-curator.yaml 中显式开启。
+
+schema_version: 2
+project: generic
+
+files:
+  - path: docs/TASKS.md
+    role: active-tasks
+  - path: docs/DECISIONS.md
+    role: decision-log
+  - path: CHANGELOG.md
+    role: changelog
+  - path: README.md
+    role: readme
+
+adaptive_rules:
+  - id: tasks-active-count
+    file: docs/TASKS.md
+    metric: active_task_count
+    seed_value: 3
+    multiplier: 1.5
+    active_count_pattern: "^### (ISS-[0-9]+|Task[# ]+T?[0-9A-Za-z-]+)"
+
+soft_rules:
+  - id: changelog-recent-release-entry
+    file: CHANGELOG.md
+  - id: readme-current-status
+    file: README.md
+
+# AgentCMD v4 任务源合同是项目选择项。公共默认关闭，避免对未采用状态机的旧项目误报。
+task_source_contract:
+  enabled: false
+
+context_sync:
+  enabled: false
+  local_reversible:
+    max_files: 1
+    max_insertions: 50
+  systemic:
+    min_files: 3
+    min_insertions: 200
+  change_types:
+    - pattern: "**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: false
+      expect_figures: false
+      expect_skill_internal: false
+
+dec_ref_sync:
+  enabled: false
+  scan_extensions: md yaml
+  exclude_paths: .git DECISIONS.md docs/plans node_modules
+
+markdown_link_broken:
+  enabled: true
+  check_code_paths: false
+  default_severity: hard
+
+context_truth:
+  enabled: false
+
+active_zone_residue:
+  enabled: false
+  zone_headings:
+    active: "## 活跃区"
+    pending: "## 待核实区"
+    deferred: "## 暂缓区"
+    archive: "## 归档区"
+  residue_pattern: "(ISS-[0-9]+|Task[#　 ]+T?[0-9A-Za-z-]+)"

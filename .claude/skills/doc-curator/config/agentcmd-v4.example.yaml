@@ -1,0 +1,106 @@
+# AgentCMD v4 Skill 上下文审计档案。
+# 直接以某个 Skill 目录作为 --repo，检查根目录 TASKS.md 的当前任务源合同。
+
+schema_version: 2
+project: skill-context-agentcmd-v4
+
+config_contract:
+  required_checkers: "markdown-link-broken"
+
+files:
+  - path: TASKS.md
+    role: active-tasks
+  - path: DECISIONS.md
+    role: decision-log
+  - path: CHANGELOG.md
+    role: changelog
+  - path: SKILL.md
+    role: skill-guide
+
+task_source_contract:
+  enabled: true
+  task_id_pattern: "(Task-[0-9]+|[A-Z][A-Z0-9_-]*-[0-9]+)"
+  task_id_exclude_pattern: "^(DEC|ADR)-"
+  card_heading_pattern: "^###[[:space:]]"
+  empty_queue_pattern: "(当前无任务|无可执行任务|No active tasks)"
+  status_label_pattern: "(^[[:space:]]*[-*][[:space:]]+[*]*(状态|Status)[*]*[：:]|^[[:space:]]*[|][[:space:]]*(状态|Status)[[:space:]]*[|])"
+  status_tokens:
+    draft: "DRAFT 草案"
+    ready: "READY 就绪"
+    in_progress: "IN_PROGRESS 进行中"
+    blocked: "BLOCKED 阻塞"
+    review: "REVIEW 待验收"
+    done: "DONE 已完成"
+    cancelled: "CANCELLED 已取消"
+  requirements:
+    ready: "rationale goal non_goal inputs_dependencies scope stop acceptance"
+    review: "deliverables evidence"
+    done: "evidence"
+    blocked: "blocked_reason"
+    cancelled: "cancellation_reason"
+  fields:
+    - id: rationale
+      label: "缘由与证据"
+      pattern: "(^#{2,6}[[:space:]]+.*(缘由|背景|来源)|^-[[:space:]]+[*][*](缘由|背景|来源)[^*]*[*][*])"
+    - id: goal
+      label: "主目标"
+      pattern: "(^#{2,6}[[:space:]]+(主目标|目标)([[:space:]]|$)|^-[[:space:]]+[*][*](主目标|目标)[*][*])"
+    - id: non_goal
+      label: "非目标"
+      pattern: "(^#{2,6}[[:space:]]+(非目标)([[:space:]]|$)|^-[[:space:]]+[*][*]非目标[*][*])"
+    - id: inputs_dependencies
+      label: "输入与依赖"
+      pattern: "(^#{2,6}[[:space:]]+.*(输入与依赖|输入依赖|输入|依赖)|^-[[:space:]]+[*][*](输入与依赖|输入依赖|输入|依赖)[*][*])"
+    - id: scope
+      label: "允许与禁止范围"
+      pattern: "(允许范围|禁止范围|文件边界|^#{2,6}[[:space:]]+范围)"
+    - id: stop
+      label: "停止条件"
+      pattern: "(停止条件|停止与升级条件)"
+    - id: acceptance
+      label: "验收方式"
+      pattern: "(验收标准|验收方式|验证命令与预期结果)"
+    - id: deliverables
+      label: "交付物"
+      pattern: "(交付物|实际产物|交付结果)"
+    - id: evidence
+      label: "执行或验收证据"
+      pattern: "(验收证据|执行证据|验证结果|未完成原因|NOT_VERIFIED)"
+    - id: blocked_reason
+      label: "阻塞原因"
+      pattern: "(阻塞原因|未解决的依赖|等待.*确认|BLOCKED.*原因)"
+    - id: cancellation_reason
+      label: "取消原因"
+      pattern: "(取消原因|终止原因|被.*替代)"
+
+soft_rules:
+  - id: changelog-recent-release-entry
+    file: CHANGELOG.md
+
+context_sync:
+  enabled: false
+  change_types:
+    - pattern: "**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: false
+      expect_figures: false
+      expect_skill_internal: false
+
+dec_ref_sync:
+  enabled: false
+  scan_extensions: md yaml
+  exclude_paths: .git DECISIONS.md node_modules
+
+markdown_link_broken:
+  enabled: true
+  check_code_paths: false
+  default_severity: hard
+  exclude_paths:
+    - path: "tests/fixtures/**"
+
+context_truth:
+  enabled: false
+
+active_zone_residue:
+  enabled: false

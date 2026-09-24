@@ -1,0 +1,28 @@
+schema_version: 3
+project: explicit-declaration-example
+files:
+  - path: README.md
+    role: readme
+config_contract:
+  required_checkers: context-truth
+context_truth:
+  enabled: true
+  # 示例源文件有 Role: question-draft；镜像有 Interview role: question-draft。
+  # 改为 answers 必须先由人核对实际回答；checker 只验证标签相等。
+  value_claims:
+    - id: interview-role
+      mode: exact_value
+      source_file: interview.md
+      source_pattern: "^Role: ([a-z-]+)$"
+      mirror_file: README.md
+      mirror_pattern: "^Interview role: ([a-z-]+)$"
+      allowed_values: "question-draft answers"
+      severity: hard
+    - id: task-status
+      mode: exact_value
+      source_file: task.md
+      source_pattern: "^Status: ([A-Z_]+)$"
+      mirror_file: README.md
+      mirror_pattern: "^Task status: ([A-Z_]+)$"
+      allowed_values: "READY IN_PROGRESS REVIEW DONE BLOCKED CANCELLED"
+      severity: hard

@@ -1,0 +1,164 @@
+# 长期集成分支模式
+
+## 1. 适用条件
+
+同时满足以下条件时，才使用长期集成分支（long-lived integration branch）：
+
+- 一个具名大型功能需要跨多个短分支、子 PR 或开发波次；
+- 各子任务可以独立验收，但整体尚未满足进入默认主干的里程碑门禁；
+- 项目已明确指定集成分支、集成者、固定 Worktree、退出条件和最终 PR 目标。
+
+单个 PR 可以完成的功能、没有独立验收边界的探索，或只是希望暂存未完成代码时，不建立长期集成分支。
+
+## 2. 分支角色与拓扑
+
+```text
+默认主干（main/master）
+  ├─ 通用修复短分支 ── PR ──► 默认主干
+  │                              │
+  │                              └─ 波次边界 merge ──► 长期集成分支
+  │
+  └─ 长期集成分支（某一功能线的 mini-main）
+       ├─ worker 短分支 A ── squash PR ──► 长期集成分支
+       ├─ worker 短分支 B ── squash PR ──► 长期集成分支
+       └─ 具名里程碑满足 ── integration PR ──► 默认主干
+```
+
+长期集成分支不是第二个全局主干，也不是共享 WIP 分支。它只承载一个功能线，并保持可运行、可审查、可回退。
+
+## 3. 建线合同
+
+项目规则或任务合同至少固定以下信息：
+
+| 字段 | 要求 |
+|------|------|
+| `integration_branch` | 长期分支的完整名称 |
+| `integration_target` | worker PR 的显式 base，通常等于 `integration_branch` |
+| `default_branch` | 最终里程碑 PR 的 base |
+| `integration_owner` | 唯一集成者或 PM；负责长期分支同步与合并 |
+| `integration_worktree` | 固定 Worktree；不得与其他 Worktree 重复检出同一长期分支 |
+| `branch_lifecycle` | 长期分支固定为 `long-lived`；其子 Worker 分支固定为 `ephemeral-worker` |
+| `milestone` | 具名结果、退出条件和复验门禁 |
+| `sync_policy` | 默认主干同步时机、未决子 PR 的处理和冻结字段 |
+
+缺少集成目标、所有者或里程碑门禁时，保持普通短分支工作流，不自行推断建线。
+
+## 4. Worker 分支与子 PR
+
+### 子 PR 的 squash 重做断裂与树等价验证（2026-09-07 实战）
+
+长期分支上的提交只应经子 PR 进入（不直推）。若历史上已有直推提交、事后回退分支改走 PR 重做，注意：**同一树内容经 squash 重做后与原 squash 提交无共同祖先**——即使内容逐字节相同，GitHub 也判 `CONFLICTING`（merge-base 落在更早的基点，两边"各自"做了同样改动）。处置流程：
+
+```bash
+# 1) 本地合并，冲突一律以"完成态"树为准
+git checkout <integration-branch>
+git merge --no-ff <step-branch> || true
+git checkout <step-branch> -- . && git add -A
+git commit --no-edit -m "merge: <step>（PR #N，冲突以完成态树解决）"
+# 2) 树等价验证——必须 0 差异才允许 push
+git diff <step-branch> HEAD --stat   # 输出必须为空
+git push origin <integration-branch>
+# 3) push 后 PR 自动转 MERGED（head 已包含于 base）
+```
+
+树等价验证是本流程的 fail-closed 门：`--stat` 非空说明冲突解决引入了内容偏差，禁止 push。
+
+
+
+每个 worker 在创建 Worktree 前刷新远端，并从长期集成分支的远端跟踪 ref 创建短分支：
+
+```bash
+git fetch origin
+git worktree add -b <worker-branch> <worker-worktree> origin/<integration-branch>
+```
+
+通过 `multi-agent-orchestration` 派发时，把生命周期和 base 一并固化到 Session metadata：
+
+```bash
+bash scripts/spawn-worker.sh \
+  --project <project> \
+  --branch <worker-branch> \
+  --base-ref origin/<integration-branch> \
+  --branch-lifecycle ephemeral-worker \
+  --session <session> \
+  <其他参数>
+```
+
+若某次受控会话直接承载长期集成基线，必须改传 `--branch-lifecycle long-lived`；不得依赖分支名称猜测生命周期。
+
+提交和 push 仍遵守主 Skill 的身份门禁。完整 PR range 的 base 必须显式指向长期集成分支：
+
+```bash
+bash scripts/safe-push.sh \
+  --base origin/<integration-branch> \
+  --remote origin \
+  --branch <worker-branch> \
+  --expected-name "<name>" \
+  --expected-email "<email>"
+
+gh pr create \
+  --head <worker-branch> \
+  --base <integration-branch> \
+  --title "feat(<module>): <description>" \
+  --body-file <pr-body-file>
+```
+
+创建后核验 `baseRefName`、`headRefName`、diff、checks 和 mergeable 状态。子 PR 只有在独立 review 与匹配门禁通过后才能 squash merge；不得把 worker 自报当作集成验收。
+
+## 5. 变更流向
+
+| 变更类型 | 合并路径 | 理由 |
+|----------|----------|------|
+| 仅属于该大型功能 | worker 短分支 → 长期集成分支 | 在功能线内部逐步集成 |
+| 全项目都需要的修复/基础能力 | 独立短分支 → 默认主干 → 长期集成分支 | 默认主干保持权威，避免同一通用修改双重实现 |
+| 已满足具名里程碑的功能集合 | 长期集成分支 → 默认主干 | 用一次集成 PR 审查整体行为与风险 |
+
+若在功能 worker 中发现通用修复，优先拆成独立的默认主干 PR。无法安全拆分时，将它留在功能线，直到里程碑 PR 一并进入默认主干；不要把相同 patch 分别提交到两个主干后再制造冲突。
+
+## 6. 波次同步与冻结
+
+只在没有待合并子 PR 时，同步最新默认主干；如仍有 open 子 PR，先完成、关闭或重新安排这些 PR，不在它们的 base 下方移动长期分支：
+
+1. 刷新远端并核验长期分支 Worktree 干净。
+2. 确认默认主干、长期分支与 open 子 PR 的准确状态。
+3. 将 `origin/<default-branch>` merge 到长期分支；不 rebase 长期分支。
+4. 解决冲突后复跑长期分支匹配门禁。
+5. 记录并冻结本波 `default_base_sha` 与 `integration_head_sha`；本波 worker 均从该远端集成 head 起步。
+
+同步期间若长期分支、默认主干、任务合同或待合并 PR 发生漂移，旧验收失效，重新核验后再派发或合并。
+
+## 7. 里程碑集成 PR
+
+### 时机红线（2026-09-07 实战教训）
+
+集成 PR（base=默认主干）只在里程碑真正达成时开——"还要继续拆/还有子 PR 在排"就不是里程碑。提早开总 PR 的代价：功能线未完就得反复关注它的过期与 rebase，且总 PR 会掩盖"哪些子 PR 已合入"的可见性。正确形态是**先只开子 PR（base=长期分支），总 PR 留到退出条件满足的那一刻**。若总 PR 已提早存在且功能线仍在推进，保持 open 但不合并，并在项目任务源注明"总 PR 仅作合并提醒，里程碑未到"。
+
+### GitHub 自动关闭 PR 的坑（2026-09-07 实战）
+
+对 PR 的 head 分支 force-push 重置（如把分支回退到 base 以重做子 PR 纪律）时，一旦 head 与 base 无差异，GitHub 会**自动把该 PR 置为 CLOSED**——不留通知、容易被误读为"被拒绝"。处置：
+
+- 重做完成后必须重开 PR（`gh pr create` 同 base/head），PR 号会变；
+- 项目任务源、会话记忆里凡引用旧 PR 号的地方逐一更新；
+- 判别方法：`gh pr view <n> --json state` 显示 `CLOSED` 且 commits=0，即此坑。
+
+
+
+长期分支向默认主干提 PR 前，必须满足：
+
+- 里程碑名称、范围和退出条件已在项目任务源中固定；
+- 所有纳入范围的子 PR 已合并，范围外 WIP 未混入；
+- 已吸收最新默认主干，并在最终树上完成对应验证；
+- PR diff、提交身份、敏感信息、大文件、迁移与回退风险均已复核；
+- PR base 显式为默认主干，head 显式为长期集成分支。
+
+里程碑合并不等于功能线结束。除非项目明确宣布关闭，不使用 `--delete-branch` 删除长期集成分支。
+
+里程碑 PR 合入后，如果功能线仍继续，在无待合并子 PR 的边界把最新默认主干（包含该里程碑的合并结果）merge 回长期集成分支，再冻结下一波 base；不要用 reset、rebase 或重建同名分支来“对齐”历史。
+
+## 8. 生命周期与清理
+
+- worker PR 合并并确认无未推送工作后，删除其短分支和临时 Worktree。
+- 长期集成分支及固定 Worktree 持续保留，按普通活跃主干审计，不进入常规 stale branch 批量清理候选。
+- 自动清理必须同时核对 Session metadata 的 `branch_lifecycle`、`base_ref` 和 GitHub PR 的 `baseRefName`。短 Worker 合入长期分支时只删除 Worker head；integration target 始终保留。元数据声明 `long-lived` 时输出具名保留结果，不执行任何 ref/Worktree 删除。
+- 只有功能线完成或取消、未决工作已处置、最终状态已写回项目任务源，并取得明确删除授权后，才清理长期分支与固定 Worktree。
+- 删除前仍执行主 Skill 的 PR 状态、最后提交时间、Worktree 未提交改动三查；不得 `git worktree remove --force` 或 `git branch -D` 绕过证据。

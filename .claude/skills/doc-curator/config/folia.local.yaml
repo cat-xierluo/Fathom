@@ -1,0 +1,117 @@
+# Folia doc-curator 配置（Skill 内 per-project，按 repo basename 自动发现）。
+# 体检：bash .claude/skills/doc-curator/scripts/scan.sh（不带 --config，自动发现本文件）
+# 报告：scan.sh --report <path.md>
+# 说明：docs/TASKS.md 与 docs/DECISIONS.md 在 folia .gitignore 中（本地 AI 工作上下文），
+#       体检只读、不改；膨胀诊断结果供人工清理。
+
+schema_version: 2
+project: folia
+
+files:
+  - path: docs/TASKS.md
+    role: active-tasks
+  - path: docs/DECISIONS.md
+    role: decision-log
+  - path: CHANGELOG.md
+    role: changelog
+  - path: README.md
+    role: readme
+  - path: AGENTS.md
+    role: agent-guide
+  - path: docs/ARCHITECTURE.md
+    role: architecture
+  - path: docs/ROADMAP.md
+    role: roadmap
+  - path: docs/DESIGN.md
+    role: design
+
+# 硬规则：归档一致性与编号连续性。
+hard_rules:
+  - id: tasks-progress-log-trim
+    file: docs/TASKS.md
+    limit: 5
+  - id: tasks-archived-iss-pointer
+    file: docs/TASKS.md
+  - id: decisions-iss-archive-ascending
+    file: docs/DECISIONS.md
+  - id: decisions-dec-numbering-continuous
+    file: docs/DECISIONS.md
+
+# 不启用 tasks-active-count —— folia 把已归档任务也放在同一 TASKS.md，
+# active_count_pattern 会连已归档卡一起计入（语义要求只数活跃区），数值失真。
+# 膨胀检测改用下面的 line-count 规则。
+adaptive_rules:
+  - id: tasks-line-count
+    file: docs/TASKS.md
+    metric: line_count
+    seed_value: 800
+    multiplier: 1.5
+  - id: decisions-line-count
+    file: docs/DECISIONS.md
+    metric: line_count
+    seed_value: 1500
+    multiplier: 1.5
+
+soft_rules:
+  - id: changelog-recent-release-entry
+    file: CHANGELOG.md
+  - id: readme-current-status
+    file: README.md
+
+# folia 的 TASKS.md 是自由格式 ISS 卡片（### ISS-xxx + 状态 emoji），
+# 不是 AgentCMD v4 状态机合同，关闭该检查避免误报。
+task_source_contract:
+  enabled: false
+
+context_sync:
+  enabled: true
+  local_reversible:
+    max_files: 1
+    max_insertions: 50
+  systemic:
+    min_files: 3
+    min_insertions: 200
+  change_types:
+    - pattern: "docs/**"
+      expect_changelog: true
+      expect_tasks: true
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "src/**"
+      expect_changelog: true
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "src-tauri/**"
+      expect_changelog: true
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+    - pattern: "**"
+      expect_changelog: false
+      expect_tasks: false
+      expect_decision: systemic
+      expect_figures: false
+      expect_skill_internal: false
+
+dec_ref_sync:
+  enabled: true
+  scan_extensions: md yaml
+  exclude_paths: .git DECISIONS.md docs/plans node_modules
+
+# 已知 skill bug：check-markdown-link-broken.sh:84 排除 pattern 为 `*/node_modules/*`，
+# 漏掉项目根的 node_modules/（folia 的在根目录），产生 ~270 个第三方库 README 断链假阳性。
+# 该排除路径硬编码在 skill 脚本里，config 无法覆盖；待 skill 修复（补 `node_modules/*`）后启用。
+# 已知的真实断链：CHANGELOG.md → ../docs/DECISIONS.md（DECISIONS 被 gitignore，fresh clone 必断）。
+markdown_link_broken:
+  enabled: false
+  check_code_paths: false
+  default_severity: hard
+
+# folia TASKS.md 区段为 ## 待处理 / ## 已归档任务 / ## 进度日志，
+# 无独立「待核实区/暂缓区」；active-zone-residue 的四区模型不匹配，暂不启用。
+active_zone_residue:
+  enabled: false

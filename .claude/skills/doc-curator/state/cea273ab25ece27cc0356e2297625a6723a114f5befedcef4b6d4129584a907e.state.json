@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "project_id": "cea273ab25ece27cc0356e2297625a6723a114f5befedcef4b6d4129584a907e",
+  "config_sha256": "f8115f9d28d630b3a2815fbc525e029a168c4f38c3730342fc8fedd402b12a12",
+  "measured_at": "2026-09-05T13:39:39Z",
+  "baselines": {
+    "docs/TASKS.md": {"line_count": 3, "active_task_count": 1},
+    "docs/DECISIONS.md": {"line_count": 1},
+    "CHANGELOG.md": {"line_count": 3},
+    "README.md": {"line_count": 5}
+  }
+}

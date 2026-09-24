@@ -2025,6 +2025,96 @@ async function main() {
       JSON.stringify(deeplinkInvoke));
     await tpage2.close();
 
+    /* ---------- ISS-091 设置页：监控分区「权限与覆盖」事实卡 ----------
+     * 用户反馈 2026-09-24（权限受限/扫描件消失，设置页要有权限按钮）的落地验证：
+     * 1) 浏览器态（默认 page，无 Tauri 桥）：partial-all 夹具 denied=6 /
+     *    vanished=4 / dir_count=40 → 数字与占比 6/40（15.0%）如实呈现，
+     *    解释含「完全磁盘访问」与「属正常」；深链按钮隐藏、降级路径文字
+     *    可见，不渲染假 <a>。监控是默认 section（ISS-087），无需切 nav；
+     *    排除列表编辑器（ISS-069）与新卡同容器并存。
+     * 2) mock 桥（tpage6）：按钮可见、fallback 隐藏，点击后 invoke 收到
+     *    cmd=plugin:opener|open_url 且 url 指向 Privacy_AllFiles（与
+     *    ISS-002A 深链同命令同目标）。 */
+    await setMode("partial-all");
+    await openPage("#/settings");
+    await page.waitForSelector("#monitor-permissions-card [data-test='mperm-denied']");
+    const mpermBrowser = await page.evaluate(() => {
+      const card = document.getElementById("monitor-permissions-card");
+      return {
+        inMonitoring: !!card &&
+          card.closest(".settings-section[data-section='monitoring']") !== null,
+        denied: card?.querySelector("[data-test='mperm-denied']")?.textContent || "",
+        vanished: card?.querySelector("[data-test='mperm-vanished']")?.textContent || "",
+        deniedLabel: card?.querySelector("[data-test='mperm-denied']")
+          ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
+        note: [...(card?.querySelectorAll(".perm-note") || [])]
+          .map((p) => p.textContent).join(" | "),
+        openBtnVisible: !document.getElementById("btn-mperm-open-prefs")?.hidden,
+        fallbackVisible: !card?.querySelector("[data-test='mperm-path-fallback']")?.hidden,
+        fallbackText: card?.querySelector("[data-test='mperm-path-fallback']")?.textContent || "",
+        fakeAnchorCount: [...(card?.querySelectorAll("a") || [])].filter((a) =>
+          a.getAttribute("href")?.startsWith("x-apple.systempreferences")).length,
+        excludePanelStillThere: !!document.getElementById("exclude-panel"),
+      };
+    });
+    record("mperm-monitoring-card-shows-denied-vanished-ratio",
+      mpermBrowser.inMonitoring &&
+        mpermBrowser.denied === "6" && mpermBrowser.vanished === "4" &&
+        mpermBrowser.deniedLabel.includes("6 / 40") &&
+        mpermBrowser.deniedLabel.includes("15.0%") &&
+        mpermBrowser.note.includes("完全磁盘访问") &&
+        mpermBrowser.note.includes("属正常") &&
+        mpermBrowser.excludePanelStillThere,
+      JSON.stringify(mpermBrowser).slice(0, 200));
+    record("mperm-browser-fallback-hides-button-shows-path",
+      !mpermBrowser.openBtnVisible && mpermBrowser.fallbackVisible &&
+        mpermBrowser.fallbackText.includes("系统设置") &&
+        mpermBrowser.fallbackText.includes("隐私与安全性") &&
+        mpermBrowser.fallbackText.includes("完全磁盘访问") &&
+        mpermBrowser.fakeAnchorCount === 0,
+      JSON.stringify(mpermBrowser).slice(0, 160));
+    const settingsMonitorPermShot = path.join(evidenceDir, "settings-monitor-permissions-1220x820.png");
+    await page.screenshot({ path: settingsMonitorPermShot });
+
+    const tpage6 = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const tpage6Errors = [];
+    tpage6.on("pageerror", (e) => tpage6Errors.push(e.message));
+    await tpage6.addInitScript(`
+      window.__tauriMock6 = { invokes: [] };
+      Object.defineProperty(window, "__TAURI__", { value: {
+        core: { invoke: (cmd, args) => {
+          window.__tauriMock6.invokes.push({ cmd, args });
+          return Promise.resolve();
+        } },
+        event: { listen: () => Promise.resolve(0) },
+      }, configurable: true });
+    `);
+    await tpage6.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    await tpage6.waitForSelector("#monitor-permissions-card [data-test='mperm-open-prefs-btn']");
+    const mpermTauri = await tpage6.evaluate(() => {
+      const card = document.getElementById("monitor-permissions-card");
+      return {
+        openBtnVisible: !document.getElementById("btn-mperm-open-prefs")?.hidden,
+        fallbackHidden: card?.querySelector("[data-test='mperm-path-fallback']")?.hidden,
+        denied: card?.querySelector("[data-test='mperm-denied']")?.textContent || "",
+      };
+    });
+    await tpage6.click("#btn-mperm-open-prefs");
+    await tpage6.waitForFunction(() => (window.__tauriMock6.invokes || []).some(
+      (c) => c && c.cmd === "plugin:opener|open_url"));
+    // settings 页加载会先推送 tray 状态，不能断言 invokes[0]；在全部记录中定位。
+    const mpermInvoke = await tpage6.evaluate(() => (window.__tauriMock6.invokes || [])
+      .find((c) => c && c.cmd === "plugin:opener|open_url"));
+    record("mperm-tauri-mock-deeplink-invokes-opener",
+      mpermTauri.openBtnVisible && mpermTauri.fallbackHidden &&
+        mpermTauri.denied === "6" &&
+        mpermInvoke?.cmd === "plugin:opener|open_url" &&
+        mpermInvoke?.args?.url === "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+      JSON.stringify({ t: mpermTauri, i: mpermInvoke }));
+    record("mperm-tauri-mock-no-page-errors", tpage6Errors.length === 0,
+      tpage6Errors.join("; "));
+    await tpage6.close();
+
     /* ---------- ISS-016B mock 桥：drift 重装入 口复用 010B 确认层 ----------
      * 形状化 mock：autostart_status 返回三态真值（两标签 enabled）、
      * autostart_register_plan 返回可审清单、autostart_register 返回 ok。
@@ -2457,7 +2547,8 @@ async function main() {
       failed: failed.length,
       evidence: [overviewShot, changesShot, browseShot, bigfilesShot, settingsShot,
         bigfilesTruncatedShot, bigfilesExpiredShot, bigfilesFailedShot,
-        bigfilesPermShot, bigfilesNoMatchShot, packagedDefaultShot, packagedOpenShot,
+        bigfilesPermShot, bigfilesNoMatchShot, settingsMonitorPermShot,
+        packagedDefaultShot, packagedOpenShot,
         ...viewportScreens],
       checks,
     }, null, 2) + "\n");

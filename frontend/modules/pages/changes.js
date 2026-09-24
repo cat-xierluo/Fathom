@@ -441,7 +441,7 @@ function renderDetailSkeleton(path) {
   const delta = row && row.delta != null ? fmtDelta(row.delta) : "—";
   return `
     <div class="detail-head">
-      <h2>目录详情</h2>
+      <h2>${icon("brandRing", 15, "detail-dr")}目录详情</h2>
       <button class="detail-close" type="button" aria-label="关闭详情" title="关闭（Esc）">${icon("x", 14)}</button>
     </div>
     <div class="detail-path">${escapeHtml(path)}</div>

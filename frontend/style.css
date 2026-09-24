@@ -3,6 +3,11 @@
  * 等深线与短深度刻度只出现在侧栏品牌区、总览主结论背景与选中态的少量位置；
  * 禁 emoji 与写实海洋元素。
  *
+ * ISS-085 深度环基调全局风格化：在 ISS-084 色彩令牌之上只做「形与层次」——
+ * 深度环（页头锚点/加载态/目录定位）、短深度刻度（品牌站位/页头刻度带/
+ * panel 标题刻度）、选中态深度条（导航/表格行/日报项）三种几何的克制分布；
+ * 不改任何色彩令牌的值与语义，每处可独立回退。标注「ISS-085」的规则即本卡新增。
+ *
  * 语义色（ISS-084）：全部从 DEC-023 深潭色彩体系派生，低饱和仪器风，
  * 不再使用游离于体系外的鲜红/鲜绿：
  *  - 增长 --grow   沉积赭 #7c563c：海沟蓝(210°)的暖对位(≈25°)，饱和度/
@@ -70,8 +75,25 @@ body {
 }
 .icon svg { width: 100%; height: 100%; display: block; }
 
-.sidenav-brand { display: flex; align-items: center; justify-content: center;
-  margin-bottom: 10px; color: var(--trench); }
+/* ISS-085 品牌站位（原单环字标扩展）：深度环 + 微字标 + 短深度刻度，
+ * 全部纯装饰；环由 app.js 注入（#brand-icon），配色沿用 brand-mark 规则 */
+.sidenav-brand {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; margin-bottom: 12px; color: var(--trench);
+}
+.brand-word {
+  font-size: 9px; font-weight: 600; letter-spacing: 0.22em; text-indent: 0.22em; /* 字距补偿：末字符字距收回使视觉居中 */
+  color: var(--trench); user-select: none; line-height: 1;
+}
+/* 短深度刻度（R3 母题）：4 根等距竖刻度，两侧短中间长——测深标尺片段 */
+.brand-ruler {
+  width: 28px; height: 5px; margin-top: 3px; opacity: 0.55;
+  background:
+    linear-gradient(var(--trench), var(--trench)) left 0 top 0 / 1px 3px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) left 9px top 0 / 1px 5px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) left 18px top 0 / 1px 5px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) right 0 top 0 / 1px 3px no-repeat;
+}
 /* 深度环（R3 品牌标记）：开放圆环（海沟蓝，currentColor）+ 中心探针与
  * 刻度缺口（矿物青，类覆盖）；线条 SVG 语言与 icons.js 一致 */
 .brand-mark .dr-probe, .brand-mark .dr-tick { stroke: var(--mineral); }
@@ -93,6 +115,7 @@ body {
 }
 .sidenav-spacer { flex: 1; }
 .nav-item {
+  position: relative;  /* ISS-085：选中态深度条的定位上下文 */
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   width: 56px; padding: 8px 0 6px;
   border-radius: 10px; text-decoration: none; color: var(--muted);
@@ -100,6 +123,14 @@ body {
 }
 .nav-item:hover { background: var(--bg); color: var(--text); }
 .nav-item[aria-current] { background: var(--trench-weak); color: var(--trench); }
+/* ISS-085 选中态深度条（R3 白名单位置「选中态」）：当前导航项左侧的
+ * 2px 海沟蓝深度标线。nav-item 居中后距 sidenav 左缘约 7.5px，-5.5px
+ * 使标线落在 [2,4]px——贴导航列左缘、不压图标；html/body 不可滚
+ * （ISS-082），负偏移必须留在视口内，否则被壳裁剪不可见 */
+.nav-item[aria-current]::before {
+  content: ""; position: absolute; left: -5.5px; top: 22%; height: 56%;
+  width: 2px; border-radius: 1px; background: var(--trench);
+}
 .nav-icon { font-size: 18px; }
 
 .main-area { flex: 1; min-width: 0; display: flex; flex-direction: column;
@@ -113,7 +144,37 @@ body {
   /* ISS-082：壳内天然固定，去掉 sticky */
   flex: none;
 }
-.topbar h1 { margin: 0; font-size: 17px; }
+/* ISS-085 页头锚点：当前页标题前的深度环——探针与刻度作为指针组件随路由
+ * 旋转到当前页方位（app.js 设 --dr-angle，五页均分环面 72°），环弧与
+ * 缺口静止；200ms 在 R3 动效合同（160-240ms）内，reduced-motion 时关闭。
+ * 纯装饰方位指示，不承载信息 */
+.topbar-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dr-anchor {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; flex: none; color: var(--trench);
+}
+.dr-anchor svg { width: 100%; height: 100%; display: block; }
+.dr-anchor .dr-probe, .dr-anchor .dr-tick {
+  stroke: var(--mineral);
+  transform-origin: 12px 12px;
+  transform: rotate(var(--dr-angle, 0deg));
+  transition: transform 0.2s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dr-anchor .dr-probe, .dr-anchor .dr-tick { transition: none; }
+}
+.topbar-heading { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.topbar h1 { margin: 0; font-size: 17px; line-height: 1.15; }
+/* 深度刻度带（仪器读数尺）：长刻度全高、短刻度半高贴底，海沟蓝低透明度 */
+.depth-scale {
+  width: 180px; max-width: 36vw; height: 4px; opacity: 0.32; flex: none;
+  background:
+    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 36px),
+    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 9px);
+  background-size: 100% 100%, 100% 55%;
+  background-position: 0 0, 0 100%;
+  background-repeat: no-repeat;
+}
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 .scan-badge {
   font-size: 12px; color: var(--muted);
@@ -139,6 +200,21 @@ body {
   .scan-badge.running .badge-ring svg { animation: badge-spin 1.6s linear infinite; }
 }
 @keyframes badge-spin { to { transform: rotate(360deg); } }
+
+/* ISS-085 区域加载环：深度环缩小版承担「测深进行中」语义（DESIGN 允许
+ * 深度环用于加载/扫描状态）。与 badge-ring 同合同：1.6s 线性旋转，
+ * prefers-reduced-motion 时静止（环仍显示作占位）；几何由挂载方注入
+ * （app.js 静态占位 / bigfiles.js 查询行，均出自 icons.js brandRing） */
+.dr-loading {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-right: 6px;
+  vertical-align: -2px; color: var(--trench);
+}
+.dr-loading svg { width: 100%; height: 100%; display: block; }
+.dr-loading .dr-probe, .dr-loading .dr-tick { stroke: var(--mineral); }
+@media (prefers-reduced-motion: no-preference) {
+  .dr-loading svg { animation: badge-spin 1.6s linear infinite; }
+}
 
 /* ISS-082：唯一滚动容器——内容区独立滚动；min-height:0 使 flex 子项
  * 允许收缩，否则 overflow 不生效。overscroll-behavior 阻止滚动链
@@ -184,6 +260,19 @@ tr:hover .btn-mini { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   .brand-contour { animation: none; }
 }
+/* ISS-085 主结论区深度标尺：卡片带下缘的读数刻度线（短深度刻度，R3 白名单
+ * 「总览主结论背景」位置的可见层次）。与页头 .depth-scale 同语言：长刻度
+ * 全高、短刻度半高贴底线；低透明度海沟蓝，不与卡片数字竞争 */
+.cards::after {
+  content: ""; display: block; height: 4px; margin-top: 10px; opacity: 0.35;
+  grid-column: 1 / -1;  /* .cards 是 grid：标尺独占卡片带下一行整宽 */
+  background:
+    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 40px),
+    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 10px);
+  background-size: 100% 100%, 100% 55%;
+  background-position: 0 0, 0 100%;
+  background-repeat: no-repeat;
+}
 .card {
   background: var(--card); border: 1px solid var(--border); border-radius: 12px;
   padding: 14px 18px; box-shadow: var(--shadow);
@@ -212,6 +301,16 @@ tr:hover .btn-mini { opacity: 1; }
   flex-wrap: wrap; gap: 10px; margin-bottom: 8px;
 }
 .panel-head h2 { margin: 0; font-size: 15px; }
+/* ISS-085 panel 标题刻度：区块标题前的三根短深度刻度（短-长-短），
+ * 「每个区块是一次测深读数」的仪器语言；8px 微装饰不构成大面积铺陈 */
+.panel-head h2::before {
+  content: ""; display: inline-block; width: 8px; height: 9px;
+  margin-right: 8px; vertical-align: -1px; opacity: 0.5;
+  background:
+    linear-gradient(var(--trench), var(--trench)) left 0 top 4px / 1px 5px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) left 3.5px top 0 / 1px 9px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) right 0 top 4px / 1px 5px no-repeat;
+}
 .panel-head h3 { font-size: 13px; margin: 6px 0; }
 .hint { margin: 0; color: var(--muted); font-size: 12px; }
 .hint.link { color: var(--primary); text-decoration: none; cursor: pointer; }
@@ -312,7 +411,8 @@ tr.focusable:hover, tr.focusable:focus, tr.focusable.selected {
   background: #f6f7fa;
 }
 tr.focusable:focus { outline: none; box-shadow: inset 0 0 0 2px var(--primary); }
-tr.focusable.selected { background: var(--sel); }
+/* ISS-085 选中态深度条：与导航当前项同一 2px 海沟蓝标线语言 */
+tr.focusable.selected { background: var(--sel); box-shadow: inset 2px 0 0 var(--trench); }
 
 /* 行操作：hover 或键盘 focus 时可见 */
 .row-actions { display: inline-flex; gap: 4px; justify-content: flex-end; opacity: 0; transition: opacity 0.12s; }
@@ -409,7 +509,8 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
   padding: 6px 12px; border-radius: 8px; font-size: 13px;
 }
 .report-item:hover { border-color: var(--primary); color: var(--primary); }
-.report-item.active { background: var(--sel); border-color: var(--primary); color: var(--primary); }
+.report-item.active { background: var(--sel); border-color: var(--primary); color: var(--primary);
+  box-shadow: inset 2px 0 0 var(--trench); }  /* ISS-085 选中态深度条 */
 .report-view { margin-top: 14px; }
 .report-view pre {
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
@@ -456,6 +557,14 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   display: flex; align-items: center; justify-content: space-between;
   margin-bottom: 8px;
 }
+.changes-detail .detail-head h2 {
+  display: inline-flex; align-items: center; gap: 7px;
+}
+/* ISS-085 当前目录定位环（DESIGN 白名单位置「当前目录定位」）：详情侧栏
+   标题前的静止深度环——侧栏即「当前测量位置」。几何出自 icons.js brandRing */
+.changes-detail .detail-head .detail-dr { color: var(--trench); flex: none; }
+.changes-detail .detail-head .detail-dr .dr-probe,
+.changes-detail .detail-head .detail-dr .dr-tick { stroke: var(--mineral); }
 .changes-detail h2 {
   margin: 0; font-size: 14px; font-weight: 600;
   word-break: break-all;
@@ -545,6 +654,16 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   font-size: 14px; font-weight: 600;
 }
 .adv-toggle summary .icon { flex: none; }
+/* ISS-085 展开指示 chevron（icons.js）：靠右，details[open] 旋转 90°；
+   200ms 在 R3 动效合同内，reduced-motion 时静止（方向差异仍在） */
+.adv-toggle .adv-chevron {
+  margin-left: auto; color: var(--muted);
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+.adv-toggle[open] .adv-chevron { transform: rotate(90deg); color: var(--primary); }
+@media (prefers-reduced-motion: reduce) {
+  .adv-toggle .adv-chevron { transition: none; }
+}
 .adv-toggle[open] summary { margin-bottom: 10px; }
 /* .adv-body 的 flex 布局（作者样式）会覆盖 UA 对未展开 details 子内容的
  * 隐藏，须显式恢复折叠语义；展开态由上一条 .adv-body 规则接管。 */

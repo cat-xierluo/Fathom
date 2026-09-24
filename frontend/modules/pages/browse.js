@@ -16,6 +16,20 @@ import { initChart, showChartMessage } from "../charts.js";
 import { state } from "../state.js";
 import { icon } from "../../icons.js";
 
+/* ISS-084：图表色与 style.css :root 语义 token 同源（单一色源，不硬编码）。
+ * 脚本为 module（defer），执行时 CSSOM 已就绪。 */
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+/* 旭日图色板（ISS-084）：DEC-023 等深阶地派生的蓝青明度阶梯——
+ * 午夜蓝 #0f2a3d（最深）→ 海沟蓝 --trench → 矿物青 --mineral → 亮矿物青
+ * #82c8c2（刻度亮档）→ 浅海沟蓝灰；同层兄弟目录在体系内轮换取色，
+ * 替代 ECharts 默认高饱和色板。属图表专用渐变（非文本），不设 CSS token。 */
+const SUNBURST_PALETTE = [
+  "#0f2a3d", "#345d7f", "#3e7e7c",
+  "#4d7391", "#5c9490", "#6e8ca6",
+  "#82c8c2", "#9db4c6",
+];
+
 async function loadTree() {
   const request = beginRequest("tree");
   try {
@@ -27,6 +41,7 @@ async function loadTree() {
     }
     const chart = initChart("chart-sunburst");
     chart.setOption({
+      color: SUNBURST_PALETTE,
       tooltip: { formatter: (p) => `${escapeHtml(p.data.path)}<br/>${fmtKB(p.value)}` },
       series: [{
         type: "sunburst", radius: [40, "92%"], nodeClick: "rootToNode",
@@ -143,7 +158,7 @@ async function loadBrowse(path) {
       yAxis: { type: "value", axisLabel: { formatter: (v) => fmtBytes(v * 1024) }, scale: true },
       series: [{ type: "line", smooth: true, symbolSize: 4, symbol: "circle",
         data: b.trend.map((p) => p.size_kb),
-        areaStyle: { opacity: 0.12 }, itemStyle: { color: "#345d7f" } }],
+        areaStyle: { opacity: 0.12 }, itemStyle: { color: cssVar("--trench") } }],
     }, true);
   } catch (e) {
     if (!request.current()) return;

@@ -17,6 +17,10 @@ import { fmtBytes, fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, showChartMessage } from "../charts.js";
 import { icon } from "../../icons.js";
 
+/* ISS-084：图表色与 style.css :root 语义 token 同源（单一色源，不硬编码）。
+ * 脚本为 module（defer），执行时 CSSOM 已就绪。 */
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
 /* 把 ISO 时间戳规整为 "MM-DD HH:MM"（保留日期与时间，便于一眼识别） */
 function _shortTs(iso) {
   if (!iso) return "—";
@@ -253,9 +257,9 @@ async function loadVolumeTrend() {
       series: [
         { name: "已用", type: "line", smooth: true, symbolSize: 5, symbol: "circle",
           data: rows.map((r) => r.total_bytes - r.free_bytes),
-          areaStyle: { opacity: 0.12 }, itemStyle: { color: "#345d7f" } },
+          areaStyle: { opacity: 0.12 }, itemStyle: { color: cssVar("--used") } },
         { name: "剩余", type: "line", smooth: true, symbol: "none",
-          data: rows.map((r) => r.free_bytes), itemStyle: { color: "#2e9e5b" } },
+          data: rows.map((r) => r.free_bytes), itemStyle: { color: cssVar("--mineral") } },
       ],
     }, true);
     _renderVolumeTable(rows);

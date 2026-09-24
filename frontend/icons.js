@@ -55,6 +55,10 @@ export const ICON_PATHS = {
   /* 关闭详情侧栏 */
   x:
     '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  /* 折叠区展开指示（ISS-085 设置页「高级与诊断」等 details/summary）：
+   * 右向 chevron，details[open] 时由 CSS 旋转 90°（200ms） */
+  chevron:
+    '<path d="m9 18 6-6-6-6"/>',
 };
 
 /**

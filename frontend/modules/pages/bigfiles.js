@@ -105,10 +105,11 @@ async function loadBigfiles() {
   const days = document.getElementById("bf-days").value || 7;
   const mb = document.getElementById("bf-mb").value || 100;
   const tbody = document.querySelector("#tbl-bigfiles tbody");
-  // 立即进入查询态：显示“查询中…”占位
+  // 立即进入查询态：深度环加载占位（ISS-085，几何出自 icons.js brandRing，
+  // 配色与旋转由 style.css .dr-loading 承担）+「查询中…」文本
   if (tbody) {
     tbody.innerHTML =
-      `<tr class="hint-row"><td colspan="4" class="hint">查询中…</td></tr>`;
+      `<tr class="hint-row"><td colspan="4" class="hint">${icon("brandRing", 14, "dr-loading")}查询中…</td></tr>`;
   }
   let r;
   try {

@@ -747,7 +747,7 @@ function _ensureAdvancedPanel() {
     panel.setAttribute("data-test", "advanced-panel");
     panel.innerHTML = `
       <details class="adv-toggle" data-test="advanced-toggle">
-        <summary>${icon("settings", 12)} 高级与诊断</summary>
+        <summary>${icon("settings", 12)} 高级与诊断${icon("chevron", 14, "adv-chevron")}</summary>
         <div class="adv-body" data-test="advanced-body">
           <p class="hint">面向排障与支持的运行细节：本地服务地址、运行根与数据库位置、
             采集参数、桌面壳形态与服务管理命令。日常使用无需关注。</p>

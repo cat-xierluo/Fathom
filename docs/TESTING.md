@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **697**（ISS-030A +16、ISS-040C +14、ISS-037 repair3 +11、ISS-081 +1：通知语义类固定 `_volume_stat` 受控输入使满盘机器不假红并新增空间告警真实链路用例），CI 与 `scripts/ci_pytest.sh` 已同步为 **697**（2026-09-23 ISS-081），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **699**（ISS-030A +16、ISS-040C +14、ISS-037 repair3 +11、ISS-081 +1：通知语义类固定 `_volume_stat` 受控输入使满盘机器不假红并新增空间告警真实链路用例），CI 与 `scripts/ci_pytest.sh` 已同步为 **699**（2026-09-23 ISS-081），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh

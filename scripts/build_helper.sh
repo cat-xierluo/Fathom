@@ -16,7 +16,7 @@
 #
 # 校验（按合约）：
 # 1. file(1) 报告 Mach-O arm64（仅在 arm64 宿主上；x86_64 留 ISS-041）
-# 2. ./fathom-helper --version 退出码 0，单行 JSON 含 service=fathom / protocol_version=1 / version=0.3.0
+# 2. ./fathom-helper --version 退出码 0，单行 JSON 含 service=fathom / protocol_version=1 / version=单一版本源版本
 # 3. 冻结树 resources/helper/fathom-helper/ 内不包含 data/reports/logs
 #    （生产代码已用 FATHOM_RUNTIME_DIR 隔离；本脚本只断言冻结产物目录无
 #    默认运行时写入，但生产代码会在运行根写 data/reports/logs——这条断言
@@ -121,8 +121,13 @@ import json, sys
 obj = json.loads(sys.stdin.read().strip())
 assert obj.get("service") == "fathom", obj
 assert obj.get("protocol_version") == 1, obj
-assert obj.get("version") == "0.3.0", obj
-' 2>&1; then
+# 版本自单一版本源动态核对（v0.3.1 bump 时曾硬编码 0.3.0 漏同步致 CI 冻
+# 结步骤假红；" 为正则里的双引号字面量，避开 shell 单引号嵌套）。
+import re
+src = open(sys.argv[1] + "/fathom/__init__.py").read()
+m = re.search(r"__version__\s*=\s*\x22([0-9]+\.[0-9]+\.[0-9]+)\x22", src)
+assert m and obj.get("version") == m.group(1), obj
+' "$ROOT" 2>&1; then
   echo "[build_helper] FAIL：--version 身份面与合约不符" >&2
   exit 1
 fi

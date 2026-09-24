@@ -804,7 +804,8 @@ async function loadPermissions() {
  * 状态推导 + 重扫入口）互补：本卡不推导状态，只呈现数字与固定解释。
  * - 数据：GET /api/status 的 latest_snapshot（dir_count/denied_count/
  *   vanished_count；占比 = denied ÷ dir_count，分母是本次 du 统计到的
- *   目录总数，不是磁盘全部目录，denied 是 stderr 行数故比值可 >100%）。
+ *   目录总数，不是磁盘全部目录，denied 是 stderr 行数故比值可 >100%，
+ *   >100% 时改用倍数表述——见 _mpermRatioText，ISS-095）。
  * - macOS 不允许应用自行申请完全磁盘访问：本应用不代改系统权限，按钮
  *   只做深链引导（plugin:opener|open_url，与 ISS-002A 同命令同目标）；
  *   浏览器态按钮隐藏、降级为路径文字，不渲染假 <a>。
@@ -835,9 +836,16 @@ function _ensureMonitorPermCard() {
   return card;
 }
 
-/** denied 占比文案：分母 dir_count<=0（异常快照/防御值）时不显示，只留数字。 */
+/** denied 占比文案：分母 dir_count<=0（异常快照/防御值）时不显示，只留数字。
+ * ISS-095：denied 是 du stderr 的受限行数、可超过目录总数（比值 >100%），
+ * 此时「（1250.0%）」会被读成「1250% 的目录受限」——语义错误；改用
+ * 「受限行数为目录数的 X.X 倍」表述。比值 ≤100%（含 denied=0）维持
+ * 「（N%）」形态不变。 */
 function _mpermRatioText(denied, dirCount) {
   if (!Number.isFinite(dirCount) || dirCount <= 0) return "";
+  if (denied > dirCount) {
+    return `${denied} / ${dirCount}（受限行数为目录数的 ${(denied / dirCount).toFixed(1)} 倍）`;
+  }
   return `${denied} / ${dirCount}（${((denied / dirCount) * 100).toFixed(1)}%）`;
 }
 

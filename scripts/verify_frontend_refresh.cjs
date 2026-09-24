@@ -2280,7 +2280,7 @@ async function main() {
         packagedOpen.techTableText.includes("数据库") &&
         packagedOpen.techTableText.includes("du 安全时限") &&
         packagedOpen.techTableText.includes("桌面壳") &&
-        packagedOpen.serviceVisibleText.includes("main.py uninstall"),
+        packagedOpen.serviceVisibleText.includes("-m fathom uninstall") || packagedOpen.serviceVisibleText.includes("main.py uninstall"),
       JSON.stringify(packagedOpen).slice(0, 200));
     const packagedOpenShot = path.join(evidenceDir, "settings-packaged-advanced-open-1220x820.png");
     await tpage5.screenshot({ path: packagedOpenShot, fullPage: true });

@@ -817,11 +817,67 @@ async function main() {
     await page.click("#btn-bigfiles");
 
     await openPage("#/settings");
-    await page.waitForSelector("#settings-table tbody tr");
-    const settingsText = await page.locator("#page-settings").textContent();
-    record("settings-page-renders-config",
-      settingsText.includes("监控根目录") && settingsText.includes(ROOT) &&
-        settingsText.includes("服务地址"), settingsText.slice(0, 60));
+
+    /* ---------- ISS-087 设置页 IA：左导航 + 右 section ---------- */
+    // 默认 = 监控：监控区可见，其余三区隐藏；nav 4 项与 aria-current 唯一。
+    const navInitial = await page.evaluate(() => {
+      const buttons = [...document.querySelectorAll(".settings-nav-item")];
+      return {
+        labels: buttons.map((b) => b.dataset.section),
+        active: buttons.find((b) => b.getAttribute("aria-current") === "true")?.dataset.section || null,
+        visible: [...document.querySelectorAll(".settings-section")]
+          .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.section),
+      };
+    });
+    record("settings-ia-nav-4-sections-default-monitoring",
+      JSON.stringify(navInitial.labels) === JSON.stringify(["monitoring", "schedule", "advanced", "about"]) &&
+        navInitial.active === "monitoring" &&
+        JSON.stringify(navInitial.visible) === JSON.stringify(["monitoring"]),
+      JSON.stringify(navInitial));
+
+    // 键盘可达：方向键 ↑/↓ 在 nav 项之间循环切换；Enter 激活 section。
+    await page.focus('[data-section="monitoring"]');
+    await page.keyboard.press("ArrowDown");
+    const afterArrowDown = await page.evaluate(() =>
+      document.activeElement?.dataset.section || null);
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+    const afterWrap = await page.evaluate(() =>
+      document.activeElement?.dataset.section || null);
+    await page.keyboard.press("ArrowUp");
+    const afterUp = await page.evaluate(() =>
+      document.activeElement?.dataset.section || null);
+    record("settings-ia-nav-arrow-keys-cycle",
+      afterArrowDown === "schedule" && afterWrap === "about" && afterUp === "advanced",
+      JSON.stringify({ afterArrowDown, afterWrap, afterUp }));
+    // Enter 激活：focus 在 advanced，Enter 应让 advanced section 可见
+    await page.keyboard.press("Enter");
+    const enterActivate = await page.evaluate(() => {
+      const visible = [...document.querySelectorAll(".settings-section")]
+        .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.section);
+      const active = [...document.querySelectorAll(".settings-nav-item")]
+        .find((b) => b.getAttribute("aria-current") === "true")?.dataset.section;
+      return { visible, active };
+    });
+    record("settings-ia-nav-enter-activates-section",
+      JSON.stringify(enterActivate.visible) === JSON.stringify(["advanced"]) &&
+        enterActivate.active === "advanced",
+      JSON.stringify(enterActivate));
+    // URL hash 持久化：进入关于区后 location.hash 应含 #settings/about
+    // nav 用 position:sticky 浮在 page-container 顶部，但 Enter 触发激活后
+    // page-container 滚动到底（advanced 区折叠 summary 默认 closed、内容多），
+    // 此时 Playwright 的可见性闸门会把 nav 判为不可见。这里改用 evaluate 直接
+    // 调用 click() 绕过闸门（用户真实交互中 nav 永远在 sticky 顶部可见）。
+    await page.evaluate(() => {
+      document.querySelector('.settings-nav-item[data-section="about"]')?.click();
+    });
+    const hashAfterAbout = await page.evaluate(() => location.hash);
+    record("settings-ia-hash-persist-on-about-section",
+      hashAfterAbout === "#settings/about", hashAfterAbout);
+    // 回到监控区作后续用例
+    await page.evaluate(() => {
+      document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click();
+    });
 
     /* ---------- 设置页真实配置（ISS-016A） ---------- */
     // 夹具取可辨别值（13:30 / 5120 / 3.5 / 21 天 / 8 周）：页面必须显示
@@ -833,39 +889,112 @@ async function main() {
         settingsLiveText.includes("3.5") && settingsLiveText.includes("21 天每日一份") &&
         settingsLiveText.includes("8 周") && !settingsLiveText.includes("35 天"),
       settingsLiveText.slice(0, 120));
+    // ISS-087：旧 settings-page-renders-config 验证 settings-table 含「监控根目录」
+    // 与「服务地址」——它们都在「高级与诊断」section；切到 advanced 再断言。
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="advanced"]')?.click());
+    await page.waitForSelector("#settings-table tbody tr");
+    const settingsText = await page.locator("#page-settings").textContent();
+    record("settings-page-renders-config",
+      settingsText.includes("监控根目录") && settingsText.includes(ROOT) &&
+        settingsText.includes("服务地址"), settingsText.slice(0, 60));
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click());  // 回到监控供后续用例
     const settingsShot = path.join(evidenceDir, "settings-config-1220x820.png");
     await page.screenshot({ path: settingsShot });
 
-    // 无效输入：服务端 400 → 反馈原因；当前生效值保持旧值（13:30）可辨。
+    /* ---------- 关于区渲染（ISS-087）：brandBasin + 元信息 + 关于面板 + 检查更新区 ---------- */
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="about"]')?.click());
+    await page.waitForSelector('[data-test="about-panel"]');
+    const aboutText = await page.locator('[data-test="about-panel"]').textContent();
+    const aboutHasBrandBasin = await page.evaluate(() => {
+      const mark = document.querySelector(".about-mark");
+      return Boolean(mark && mark.querySelector("svg") && mark.querySelector(".bv-l1"));
+    });
+    record("settings-about-shows-brand-basin-and-meta",
+      aboutText.includes("Fathom") &&
+        aboutText.includes("Apache-2.0") &&
+        aboutText.includes("cat-xierluo/Fathom") &&
+        aboutText.includes("Copyright 2026 maoking") &&
+        aboutHasBrandBasin,
+      aboutText.slice(0, 160));
+    // 关于区应包含检查更新面板（来自 settings.js 的 updater 面板，挂 #settings-about-extra）
+    const aboutHasUpdater = await page.evaluate(() =>
+      Boolean(document.getElementById("updater-panel")));
+    record("settings-about-mounts-updater-panel",
+      aboutHasUpdater, `updater=${aboutHasUpdater}`);
+    const aboutShot = path.join(evidenceDir, "settings-about-1220x820.png");
+    await page.screenshot({ path: aboutShot });
+
+    // 高级与诊断区：ISS-083 折叠区与服务管理面板挂入；浏览器态全量渲染。
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="advanced"]')?.click());
+    await page.waitForSelector("#settings-section-advanced #settings-table");
+    const advancedText = await page.locator("#settings-section-advanced").textContent();
+    record("settings-advanced-section-has-runinfo-and-service",
+      advancedText.includes("运行信息") && advancedText.includes("服务管理") &&
+        advancedText.includes("监控根目录") && advancedText.includes("服务地址"),
+      advancedText.slice(0, 160));
+
+    // 计划与通知区：扫描时间/低空间/扫描历史/权限/自启。
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="schedule"]')?.click());
+    await page.waitForSelector("#schedule-form");
+    const scheduleText = await page.locator("#settings-section-schedule").textContent();
+    record("settings-schedule-section-has-plan-and-history",
+      scheduleText.includes("计划时间") && scheduleText.includes("低空间提醒") &&
+        scheduleText.includes("扫描运行历史"),
+      scheduleText.slice(0, 160));
+    const scheduleShot = path.join(evidenceDir, "settings-schedule-1220x820.png");
+    await page.screenshot({ path: scheduleShot });
+
+    /* ---------- 计划与通知区独立表单保存（ISS-087） ---------- */
+    // scan_time 字段归「计划与通知」section；通过 #btn-schedule-save 单独保存。
     await page.fill("#cfg-scan-time", "25:00");
-    await page.click("#btn-config-save");
+    await page.click("#btn-schedule-save");
     await waitForText(page, "#config-feedback", "保存失败");
-    const invalidSave = await page.evaluate(() => ({
+    const scheduleInvalid = await page.evaluate(() => ({
       feedback: document.getElementById("config-feedback").textContent,
       effective: document.getElementById("config-effective").textContent,
     }));
-    record("settings-invalid-input-feedback-keeps-old-value",
-      invalidSave.feedback.includes("HH:MM") &&
-        invalidSave.effective.includes("13:30") &&
+    record("settings-schedule-form-invalid-input-feedback",
+      scheduleInvalid.feedback.includes("HH:MM") &&
+        scheduleInvalid.effective.includes("13:30") &&
         fixture.state.config.scan_time === "13:30",
-      JSON.stringify(invalidSave).slice(0, 120));
+      JSON.stringify(scheduleInvalid).slice(0, 160));
 
-    // 有效保存：生效值更新，且如实显示“需重新安装计划才生效”。
+    // 有效保存：扫描时间 09:15 → drift 文案 + 生效值刷新
     await page.fill("#cfg-scan-time", "09:15");
+    await page.click("#btn-schedule-save");
+    await waitForText(page, "#config-feedback", "需重新安装");
+    const scheduleApplied = await page.evaluate(() => ({
+      feedback: document.getElementById("config-feedback").textContent,
+      effective: document.getElementById("config-effective").textContent,
+    }));
+    record("settings-schedule-form-save-applies-and-hints-reinstall",
+      scheduleApplied.effective.includes("09:15") &&
+        scheduleApplied.feedback.includes("需重新安装") &&
+        fixture.state.config.scan_time === "09:15",
+      JSON.stringify(scheduleApplied).slice(0, 160));
+
+    // 监控表单（#config-form）独立保存：min_kb 2048。
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click());
+    await page.waitForSelector("#config-form");
+    const putBefore = fixture.state.counts.configPut || 0;
     await page.fill("#cfg-min-kb", "2048");
     await page.click("#btn-config-save");
-    await waitForText(page, "#config-feedback", "需重新安装");
-    const appliedSave = await page.evaluate(() => ({
+    // 等待 PUT 真正落盘（仅看 feedback 字符串可能被上一个保存的提示命中）：
+    // 用 fixture 计数 +1 与 effective 文本包含 "2048" 双信号。
+    await waitForCount("configPut", putBefore + 1);
+    await waitForText(page, "#config-effective", "2048");
+    const monitorApplied = await page.evaluate(() => ({
       feedback: document.getElementById("config-feedback").textContent,
       effective: document.getElementById("config-effective").textContent,
     }));
-    record("settings-save-applies-and-hints-reinstall",
-      appliedSave.effective.includes("09:15") && appliedSave.effective.includes("2048") &&
-        appliedSave.feedback.includes("需重新安装") &&
-        fixture.state.config.scan_time === "09:15" && fixture.state.config.min_kb === 2048,
-      JSON.stringify(appliedSave).slice(0, 120));
+    record("settings-monitor-form-save-applies-and-hints-reinstall",
+      monitorApplied.effective.includes("2048") &&
+        monitorApplied.feedback.includes("需重新安装") &&
+        fixture.state.config.min_kb === 2048 &&
+        (fixture.state.counts.configPut || 0) === putBefore + 1,
+      JSON.stringify(monitorApplied).slice(0, 200));
 
-    // 恢复默认：只填入输入框（夹具 defaults），不触发 PUT；生效值不变。
+    // 恢复默认：仍由监控区 #btn-config-reset 触发，4 个字段都被填入默认值。
     const putCountBeforeReset = fixture.state.counts.configPut || 0;
     await page.click("#btn-config-reset");
     const resetValues = await page.evaluate(() => ({
@@ -1101,6 +1230,9 @@ async function main() {
     // setMode 重置 config 为初始（13:30 / 已注册 12:00 → drift）。
     await setMode("dual");
     await openPage("#/settings");
+    // ISS-087：reload-state-text 在 autostart-panel（计划与通知 section）下；
+    // openPage 落默认 section=monitoring 时它不可见，先切到 schedule 再断言。
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="schedule"]')?.click());
     await page.waitForSelector("[data-test='reload-state-text']");
     const reloadDrift = await page.evaluate(() => ({
       text: document.querySelector("[data-test='reload-state-text']")?.textContent || "",
@@ -1116,8 +1248,9 @@ async function main() {
       JSON.stringify(reloadDrift).slice(0, 200));
 
     // 保存为已注册时间 12:00 → PUT 嵌套 config 刷新为 in_sync，降级说明消失。
+    // ISS-087：scan_time 字段归「计划与通知」section，通过 #btn-schedule-save 单独保存。
     await page.fill("#cfg-scan-time", "12:00");
-    await page.click("#btn-config-save");
+    await page.click("#btn-schedule-save");
     // ISS-016B repair1：等待条件必须用完整短语「计划时间一致」——
     // 「一致」是「计划时间不一致」的子串，会提前命中旧 drift 文案（断言子串陷阱）。
     await page.waitForFunction(() =>
@@ -1135,7 +1268,7 @@ async function main() {
 
     // 差 1 分钟也是 drift（前端文案回到不一致）。
     await page.fill("#cfg-scan-time", "12:01");
-    await page.click("#btn-config-save");
+    await page.click("#btn-schedule-save");
     await page.waitForFunction(() =>
       (document.querySelector("[data-test='reload-state-text']")?.textContent || "").includes("不一致"));
     record("reload-one-minute-drift-after-save",
@@ -1658,6 +1791,8 @@ async function main() {
 
     /* ---------- 设置页扫描运行历史（ISS-028 m3） ---------- */
     await openPage("#/settings");
+    // ISS-087：scan-history 在「计划与通知」section 下，默认 section=监控时不可见。
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="schedule"]')?.click());
     await page.waitForSelector("#scan-history table, #scan-history .hint");
     const settingsHistory = await page.locator("#scan-history").textContent();
     record("settings-scan-history-rendered",
@@ -1803,6 +1938,8 @@ async function main() {
      * 验证不渲染假链接（不是 <a href="x-apple...">）且路径与 macOS 真实菜单一致。 */
     await setMode("dual");
     await openPage("#/settings");
+    // ISS-087：permissions-panel 在「计划与通知」section；切到 schedule 让其可见。
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="schedule"]')?.click());
     await page.waitForSelector("#permissions-panel");
     const permBrowser = await page.evaluate(() => ({
       openBtnVisible: !document.getElementById("btn-open-system-prefs")?.hidden,
@@ -1860,6 +1997,8 @@ async function main() {
     `);
     await setMode("partial-all");  // 三类缺口并存，便于查看授权状态 chip
     await tpage2.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    // ISS-087：permissions-panel 在「计划与通知」section；切到 schedule 让其可见。
+    await tpage2.evaluate(() => document.querySelector('.settings-nav-item[data-section="schedule"]')?.click());
     await tpage2.waitForSelector("#permissions-panel [data-test='perm-open-prefs-btn']");
     const permTauri = await tpage2.evaluate(() => ({
       openBtnVisible: !document.getElementById("btn-open-system-prefs")?.hidden,
@@ -1926,6 +2065,9 @@ async function main() {
     `);
     await setMode("dual");  // 重置 config：13:30 vs 已注册 12:00 → drift
     await tpage3.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    // ISS-087：autostart-toggle 在「计划与通知」section 下，默认 section=监控，
+    // 必须先点 nav 才能看到；后续用例基于可见的 autostart-toggle 操作。
+    await tpage3.evaluate(() => document.querySelector('.settings-nav-item[data-section="schedule"]')?.click());
     await tpage3.waitForSelector("[data-test='autostart-toggle']");
     const currentScanTime = (await fixtureState()).config.scan_time;
     const reloadTauri = await tpage3.evaluate(() => ({
@@ -2005,6 +2147,8 @@ async function main() {
      * 取消不发 updater_restart、再确认才携带 confirmed:true 调用。 */
     await setMode("dual");
     await openPage("#/settings");
+    // ISS-087：updater-panel 在「关于」section 下；切到 about 让其可见。
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="about"]')?.click());
     await page.waitForSelector("#updater-panel");
     const updaterBrowser = await page.evaluate(() => ({
       note: document.querySelector("[data-test='updater-browser-note']")?.textContent || "",
@@ -2047,6 +2191,8 @@ async function main() {
       }, configurable: true });
     `);
     await tpage4.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    // ISS-087：updater-check-btn 在「关于」section 下；切到 about 让其可见。
+    await tpage4.evaluate(() => document.querySelector('.settings-nav-item[data-section="about"]')?.click());
     await tpage4.waitForSelector("[data-test='updater-check-btn']");
 
     // 1) unconfigured：状态行含当前版本与未配置文案，且不出现安装入口。
@@ -2173,12 +2319,19 @@ async function main() {
     const tpage5bErrors = [];
     tpage5b.on("pageerror", (e) => tpage5bErrors.push(e.message));
     await tpage5b.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    // ISS-087：浏览器态「运行信息」表在「高级与诊断」section 下——先切到
+    // advanced 让 settings-table 可见（默认 section=监控），再断言。
+    await tpage5b.evaluate(() => document.querySelector('.settings-nav-item[data-section="advanced"]')?.click());
     await tpage5b.waitForSelector("#settings-table tbody tr");
     const browserModeRunInfo = await tpage5b.evaluate(() => ({
       tableText: document.querySelector("#settings-table")?.textContent || "",
       hasAdvancedPanel: Boolean(document.getElementById("advanced-panel")),
-      serviceIsDirectChild: [...document.querySelectorAll("#page-settings > .panel")]
-        .some((p) => p.querySelector(".panel-head h2")?.textContent === "服务管理"),
+      // ISS-087：服务管理面板从 #page-settings 的直接子节点迁移到「高级与诊断」
+      // section 容器（#settings-advanced-extra）下；浏览器态仍全量渲染，
+      // 不创建 advanced-panel（折叠区是打包态独有）。
+      serviceInsideAdvancedExtra: [...document.querySelectorAll("#settings-advanced-extra .panel-head h2")]
+        .some((h) => h.textContent === "服务管理"),
+      runInfoInsideAdvancedExtra: Boolean(document.querySelector("#settings-advanced-extra #settings-table")),
     }));
     record("settings-browser-mode-keeps-full-runinfo",
       browserModeRunInfo.tableText.includes("服务地址") &&
@@ -2187,7 +2340,9 @@ async function main() {
         browserModeRunInfo.tableText.includes("du 安全时限") &&
         browserModeRunInfo.tableText.includes("桌面壳") &&
         browserModeRunInfo.tableText.includes("监控根目录") &&
-        !browserModeRunInfo.hasAdvancedPanel && browserModeRunInfo.serviceIsDirectChild &&
+        !browserModeRunInfo.hasAdvancedPanel &&
+        browserModeRunInfo.serviceInsideAdvancedExtra &&
+        browserModeRunInfo.runInfoInsideAdvancedExtra &&
         tpage5bErrors.length === 0,
       JSON.stringify(browserModeRunInfo).slice(0, 200));
     await tpage5b.close();
@@ -2212,6 +2367,10 @@ async function main() {
       }, configurable: true });
     `);
     await tpage5.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
+    // ISS-087：打包态默认视图在「监控」section，settings-table 与折叠区在
+    // 「高级与诊断」下——先切到 advanced 让 settings-table 可见（同时
+    // 折叠区 summary 行默认 closed，断言「未展开」成立）。
+    await tpage5.evaluate(() => document.querySelector('.settings-nav-item[data-section="advanced"]')?.click());
     await tpage5.waitForSelector("#settings-table tbody tr");
     const packagedDefault = await tpage5.evaluate(() => {
       const table = document.querySelector("#settings-table")?.textContent || "";

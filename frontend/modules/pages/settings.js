@@ -14,11 +14,12 @@
  * 计划一致性（ISS-016B）：消费 service_reload_state 四态（见下方 reloadStateInfo）；
  * 服务自身零系统写入口——drift 态的重装只经 010B autostart 确认层执行。
  *
- * 信息架构收敛（ISS-083）：打包态（Tauri 桥在位，与更新/自启面板的
- * 降级检测同信号）默认隐藏技术区块——「运行信息」中的技术行（服务地址/
- * 运行根/数据库/du 时限/桌面壳）与静态「服务管理」面板收进默认折叠的
- * 「高级与诊断」区；能力不删除，展开即全部可见。浏览器/开发态（无桥）
- * 保持原全量展示，不回退。
+ * 信息架构（ISS-087）：左导航 + 右 section 的二分区布局——
+ *   监控 / 计划与通知 / 高级与诊断 / 关于 四个 section 互斥可见；
+ *   ISS-083 折叠区原封迁入「高级与诊断」，ISS-040B 检查更新区迁入「关于」，
+ *   ISS-002A 权限与覆盖、ISS-010B 后台自启、ISS-028 m3 扫描运行历史归入「计划与通知」。
+ *   默认 section = 监控；URL hash 可选持久化（`#settings/about` 等）。
+ *   浏览器/开发态无 Tauri 桥时全部 section 仍可达（不删除/隐藏入口）。
  */
 import { fetchJSON, beginRequest, invalidateRequest, apiPut } from "../request.js";
 import { escapeHtml } from "../format.js";
@@ -26,6 +27,128 @@ import { icon } from "../../icons.js";
 import { triggerScan, loadStatus } from "../status.js";
 
 let lastConfig = null;  // 最近一次生效配置（页面内存；保存/恢复默认的对照源）
+
+/* ---------- ISS-087：左导航 + 右 section 切换 ----------
+ * 设计参照 Folia/Fomo 设置页：左侧导航项 + 右侧动态 section；
+ * 本实现为 vanilla JS，无路由库，section state 由 settingsNav.active 控制。
+ * - 默认 section = monitoring（ISS-087 合同）；URL hash 可选 `#settings/about` 持久化
+ *   （与现有 #/overview 等路由解耦：本卡不引入新路由，仅页面内 hash 分段）
+ * - 浏览器/开发态（无 Tauri 桥）保持所有 section 可达（不删除/隐藏入口）
+ * - 键盘可达：Tab 进入 nav 项，方向键 ↑/↓ 切换，Enter/Space 激活；
+ *   原生 button 元素承担焦点与键盘行为，role/aria 由 markup 静态提供
+ */
+const SETTINGS_SECTIONS = ["monitoring", "schedule", "advanced", "about"];
+const SETTINGS_SECTION_LABELS = {
+  monitoring: "监控",
+  schedule: "计划与通知",
+  advanced: "高级与诊断",
+  about: "关于",
+};
+const settingsNav = {
+  active: "monitoring",
+  /* 跨调用缓存 nav 按钮引用，避免每点一次都 querySelectorAll */
+  buttons: null,
+  sections: null,
+};
+
+function _readHashSection() {
+  // `#settings/about` / `#settings/advanced` 持久化当前 section；
+  // 兼容不带 section 段（视为 monitoring 默认）。
+  const m = /#settings\/([a-z]+)/i.exec(location.hash || "");
+  if (!m) return null;
+  const sec = m[1].toLowerCase();
+  return SETTINGS_SECTIONS.includes(sec) ? sec : null;
+}
+
+function _writeHashSection(section) {
+  if (!SETTINGS_SECTIONS.includes(section)) return;
+  // 用 history.replaceState 而非 location.hash = …——避免触发 window 的
+  // hashchange 事件，让 router.js 的 navigate() 误以为页面切换并把
+  // state.page 改成 "settings/advanced" 之类的无效键。视觉上 URL 仍落到
+  // `#settings/<section>`；离开设置页后 router 自己用 #/<page> 形态覆盖。
+  const cur = location.hash || "";
+  const next = `#settings/${section}`;
+  if (cur === next) return;
+  history.replaceState(null, "", next);
+}
+
+function _cacheSettingsNavRefs() {
+  const page = document.getElementById("page-settings");
+  if (!page) return false;
+  settingsNav.buttons = [...page.querySelectorAll(".settings-nav-item")];
+  settingsNav.sections = [...page.querySelectorAll(".settings-section")];
+  return settingsNav.buttons.length === SETTINGS_SECTIONS.length;
+}
+
+function activateSettingsSection(section, { persistHash = false } = {}) {
+  if (!SETTINGS_SECTIONS.includes(section)) section = "monitoring";
+  settingsNav.active = section;
+  if (settingsNav.buttons) {
+    for (const btn of settingsNav.buttons) {
+      const on = btn.dataset.section === section;
+      // setAttribute("aria-current", "true"/"false") 比 toggleAttribute(name, bool)
+      // 更利于 CSS 选择器与测试断言：属性值是字面字符串，不是布尔存在性。
+      if (on) btn.setAttribute("aria-current", "true");
+      else btn.removeAttribute("aria-current");
+    }
+  }
+  if (settingsNav.sections) {
+    for (const sec of settingsNav.sections) {
+      const on = sec.dataset.section === section;
+      if (on) sec.removeAttribute("hidden");
+      else sec.setAttribute("hidden", "");
+    }
+  }
+  if (persistHash) _writeHashSection(section);
+}
+
+/* 方向键 ↑/↓ 在 nav 项之间循环切换；Home/End 跳到首尾。
+ * 不阻止 PageUp/PageDown（保留页面级滚动）；不拦截 Tab（焦点序）。 */
+function _handleSettingsNavKeydown(event) {
+  if (!settingsNav.buttons || !settingsNav.buttons.length) return;
+  const key = event.key;
+  let nextIndex = null;
+  if (key === "ArrowDown" || key === "ArrowRight") {
+    nextIndex = settingsNav.buttons.findIndex((b) => b === document.activeElement) + 1;
+    if (nextIndex >= settingsNav.buttons.length) nextIndex = 0;
+  } else if (key === "ArrowUp" || key === "ArrowLeft") {
+    nextIndex = settingsNav.buttons.findIndex((b) => b === document.activeElement) - 1;
+    if (nextIndex < 0) nextIndex = settingsNav.buttons.length - 1;
+  } else if (key === "Home") {
+    nextIndex = 0;
+  } else if (key === "End") {
+    nextIndex = settingsNav.buttons.length - 1;
+  }
+  if (nextIndex !== null) {
+    event.preventDefault();
+    const target = settingsNav.buttons[nextIndex];
+    target?.focus();
+  }
+}
+
+function initSettingsNav() {
+  if (!_cacheSettingsNavRefs()) return;
+  for (const btn of settingsNav.buttons) {
+    btn.addEventListener("click", () => {
+      const sec = btn.dataset.section || "monitoring";
+      activateSettingsSection(sec, { persistHash: true });
+    });
+    // Enter/Space 在 button 上原生触发 click；但部分浏览器对 Space 的 keydown
+    // 处理与 Enter 不同（Enter 不触发 keydown Space press），这里统一拦截
+    // Space 以保证两种键都能激活 section（Enter 已由 button 原生 click 兜底）。
+    btn.addEventListener("keydown", (event) => {
+      if (event.key === " ") {
+        event.preventDefault();
+        btn.click();
+        return;
+      }
+      _handleSettingsNavKeydown(event);
+    });
+  }
+  // URL hash 优先；空 hash 视为 monitoring 默认
+  const fromHash = _readHashSection();
+  activateSettingsSection(fromHash || "monitoring");
+}
 
 /* 深链目标：macOS 系统设置 → 隐私与安全性 → 完全磁盘访问。
  * Tauri 端经 opener 插件跳转；浏览器环境静默降级为显示路径文字，
@@ -114,10 +237,10 @@ function _ensureExcludePanel() {
         <button type="button" id="btn-exclude-save" class="btn primary">${icon("filter")}保存排除列表</button>
       </div>
     </div>`;
-  // 插在"扫描运行历史"面板之前；找不到则追加到页面末尾
-  const history = document.getElementById("scan-history");
-  const anchor = history ? history.closest(".panel") : null;
-  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor);
+  // ISS-087：排除列表编辑器归「监控」section，挂在 #settings-monitor-extra 容器下；
+  // 该容器随监控 section 显示/隐藏（详见 mountPanelsForSections）。
+  const host = document.getElementById("settings-monitor-extra");
+  if (host) host.appendChild(panel);
   else page.appendChild(panel);
   document.getElementById("btn-exclude-add")?.addEventListener("click", addExcludeMask);
   document.getElementById("exclude-new-input")?.addEventListener("keydown", (event) => {
@@ -350,7 +473,50 @@ function resetToDefaults() {
   fill("cfg-scan-time", defaults.scan_time || "");
   fill("cfg-min-kb", defaults.min_kb == null ? "" : String(defaults.min_kb));
   fill("cfg-free-alert-gb", defaults.free_alert_gb == null ? "" : String(defaults.free_alert_gb));
-  showFeedback("已填入默认值；仍需点击“保存设置”才会写入。", "");
+  showFeedback("已填入默认值；仍需点击「保存设置」才会写入。", "");
+}
+
+/* ISS-087：计划与通知 section 独立表单（#schedule-form）只覆盖
+ * scan_time + free_alert_gb；与 #config-form（监控：scan_root + min_kb）
+ * 共用 showFeedback / renderEffective / lastConfig。scan_time 与
+ * free_alert_gb 通过 document.getElementById 读取（与 saveConfig 同口径），
+ * 故分两个 form 仍能由各自的 submit handler 各自 PUT。 */
+async function saveScheduleConfig(event) {
+  event.preventDefault();
+  const body = {};
+  const values = {
+    scan_time: document.getElementById("cfg-scan-time")?.value.trim(),
+    free_alert_gb: document.getElementById("cfg-free-alert-gb")?.value.trim(),
+  };
+  for (const [key, value] of Object.entries(values)) {
+    if (!value) continue;
+    if (key === "free_alert_gb") {
+      const numeric = Number(value);
+      body[key] = Number.isFinite(numeric) ? numeric : value;
+    } else {
+      body[key] = value;
+    }
+  }
+  if (!Object.keys(body).length) {
+    showFeedback("没有要保存的修改：计划与通知的所有字段都留空了。", "");
+    return;
+  }
+  try {
+    const res = await apiPut("/api/config", body);
+    const data = await res.json();
+    lastConfig = data.config;
+    renderEffective(data.config);
+    renderExcludeEditor(data.config);
+    renderReloadSection();
+    showFeedback(`已保存。${data.hint || ""}`, "ok");
+  } catch (e) {
+    showFeedback(
+      e.status === 0
+        ? "保存失败：无法连接本地服务，当前生效值保持不变。"
+        : `保存失败：${e.message} 当前生效值保持不变。`,
+      "error",
+    );
+  }
 }
 
 async function loadSettings() {
@@ -482,10 +648,9 @@ function _ensurePermissionsPanel() {
     <div class="perm-panel" data-test="permissions-panel-body">
       <p class="hint">权限与覆盖信息加载中…</p>
     </div>`;
-  // 插在"扫描运行历史"面板之前；找不到则追加到页面末尾
-  const history = document.getElementById("scan-history");
-  const anchor = history ? history.closest(".panel") : null;
-  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor);
+  // ISS-087：权限与覆盖归「计划与通知」section，挂在 #settings-schedule-extra 容器下。
+  const host = document.getElementById("settings-schedule-extra");
+  if (host) host.appendChild(panel);
   else page.appendChild(panel);
   return panel;
 }
@@ -735,7 +900,9 @@ function findServicePanel() {
   return h2?.closest(".panel") || null;
 }
 
-/** 打包态创建「高级与诊断」面板（幂等）并把服务管理面板移入。 */
+/** 打包态创建「高级与诊断」面板（幂等）并把服务管理面板移入。
+ * ISS-087：原 ISS-083 折叠区整体迁入「高级与诊断」section，挂在
+ * #settings-advanced-extra 容器下；服务管理面板同区域。 */
 function _ensureAdvancedPanel() {
   const page = document.getElementById("page-settings");
   if (!page) return null;
@@ -754,8 +921,11 @@ function _ensureAdvancedPanel() {
           <table class="tbl tbl-mini" id="${TECH_TABLE_ID}"><tbody></tbody></table>
         </div>
       </details>`;
-    // 高级区放设置页末尾：不打断「配置 → 运行事实 → 历史」的主流程阅读序
-    page.appendChild(panel);
+    // ISS-087：高级折叠区放进「高级与诊断」section 的容器；
+    // 浏览器/开发态不创建任何节点（行全量渲染进 #settings-table）。
+    const host = document.getElementById("settings-advanced-extra");
+    if (host) host.appendChild(panel);
+    else page.appendChild(panel);
   }
   const body = panel.querySelector("[data-test='advanced-body']");
   const service = findServicePanel();
@@ -769,7 +939,9 @@ function _ensureAdvancedPanel() {
 
 /** 渲染运行信息表：浏览器态全量渲染进 #settings-table（原行序）；
  * 打包态把用户必要行留在 #settings-table、技术行渲染进折叠区内的
- * #settings-table-tech，并确保折叠区已创建（服务管理面板随区移动）。 */
+ * #settings-table-tech，并确保折叠区已创建（服务管理面板随区移动）。
+ * ISS-087：「运行信息」面板整体迁入「高级与诊断」section；
+ * 浏览器/开发态依然全量显示，不回退。 */
 function renderRunInfoTables(rows) {
   const rowHtml = (list) => list.map((r) =>
     `<tr><td style="width:140px;color:var(--muted)">${r[0]}</td><td>${r[1]}</td></tr>`).join("");
@@ -809,10 +981,9 @@ function _ensureAutostartPanel() {
       headHint.textContent = "开启后每日定时扫描并随开机自动运行；开启前会展示将写入的配置与命令并请求确认，取消或失败都会回到当前状态。";
     }
   }
-  // 插在"扫描运行历史"面板之前；找不到则追加到页面末尾
-  const history = document.getElementById("scan-history");
-  const anchor = history ? history.closest(".panel") : null;
-  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor);
+  // ISS-087：后台自启归「计划与通知」section（与扫描计划、权限、自启同组）。
+  const host = document.getElementById("settings-schedule-extra");
+  if (host) host.appendChild(panel);
   else page.appendChild(panel);
   return panel;
 }
@@ -1066,11 +1237,10 @@ function _ensureUpdaterPanel() {
     <div class="perm-panel" data-test="updater-panel-body">
       <p class="hint">应用更新状态加载中…</p>
     </div>`;
-  // 插在"扫描运行历史"面板之前；找不到则追加到页面末尾（与 autostart 面板同锚点，
-  // 本面板后创建，渲染在 autostart 面板之后）
-  const history = document.getElementById("scan-history");
-  const anchor = history ? history.closest(".panel") : null;
-  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor);
+  // ISS-087：应用更新区归「关于」section（与版本/更新流程/致谢同组，
+  // 参照 Folia AboutSection 的「检查更新」位），挂在 #settings-about-extra 容器下。
+  const host = document.getElementById("settings-about-extra");
+  if (host) host.appendChild(panel);
   else page.appendChild(panel);
   return panel;
 }
@@ -1156,6 +1326,7 @@ async function checkUpdater(body) {
   }
   lastUpdaterStatus = status;
   renderUpdaterBody(body, status);
+  renderAboutVersion();
 }
 
 /** 「下载并安装」确认层：展示版本与后果，确认后才 invoke（confirmed=true）；
@@ -1258,19 +1429,49 @@ function loadUpdater() {
       if (payload && typeof payload.state === "string" && UPDATER_STATE_LABELS[payload.state]) {
         lastUpdaterStatus = payload;
         renderUpdaterBody(body, payload);
+        renderAboutVersion();
       }
     });
   }
 }
 
+/* ISS-087：注入应用版本号到「关于」section 的 #about-version-num 节点；
+ * 版本源 = fathom.__version__，由打包态或 /api/status 注入——本卡不修改
+ * backend 接线，仅在 settings 模块自身可拿到的字面量场景使用：
+ *  - 打包态：version 实际由 loadUpdater 通过 updater_check 返回 current_version 渲染
+ *  - 浏览器/开发态：lastUpdaterStatus 不会更新；版本占位显示「未知」，不伪造数字
+ * 兜底：若 #about-version-num 存在且 lastUpdaterStatus 已返回 current_version，
+ * 即时回填（loadUpdater 早于本函数的首次调用，但 await 链已串行——这里用
+ * 幂等回填确保任何顺序都可见）。 */
+function renderAboutVersion() {
+  const node = document.querySelector('[data-test="about-version-num"]');
+  if (!node) return;
+  const fromUpdater = lastUpdaterStatus?.current_version;
+  if (typeof fromUpdater === "string" && fromUpdater.length > 0) {
+    node.textContent = fromUpdater;
+    return;
+  }
+  // 浏览器/开发态或 updater 尚未响应：保留「未知」字面量占位，避免硬编码误导。
+  if (!node.textContent || node.textContent === "—") {
+    node.textContent = "未知";
+  }
+}
+
 export const settingsPage = {
   id: "settings",
-  load() { loadSettings(); },
+  load() {
+    loadSettings();
+    // 关于区版本：loadUpdater 完成后回填（异步），这里先设一次占位
+    renderAboutVersion();
+  },
   init() {
+    initSettingsNav();
     document.getElementById("config-form")
       ?.addEventListener("submit", saveConfig);
     document.getElementById("btn-config-reset")
       ?.addEventListener("click", resetToDefaults);
+    document.getElementById("schedule-form")
+      ?.addEventListener("submit", saveScheduleConfig);
   },
   leave() { ["settings", "scanHistory", "settingsPermissions", "settingsAutostart", "settingsUpdater"].forEach(invalidateRequest); },
 };

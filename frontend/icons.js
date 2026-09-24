@@ -87,6 +87,34 @@ export const ICON_PATHS = {
    * 右向 chevron，details[open] 时由 CSS 旋转 90°（200ms） */
   chevron:
     '<path d="m9 18 6-6-6-6"/>',
+  /* ISS-087 设置页左导航：scope（监控范围）——十字准星/同心圆靶，
+   * 表达「选定一块扫描范围」；与 gauge / activity / pie 同 24 viewBox 语言 */
+  scope:
+    '<circle cx="12" cy="12" r="9"/>' +
+    '<circle cx="12" cy="12" r="5"/>' +
+    '<line x1="12" y1="2" x2="12" y2="5"/>' +
+    '<line x1="12" y1="19" x2="12" y2="22"/>' +
+    '<line x1="2" y1="12" x2="5" y2="12"/>' +
+    '<line x1="19" y1="12" x2="22" y2="12"/>',
+  /* ISS-087 设置页左导航：clock（计划与通知）——钟表轮廓 + 时分针，
+   * 表达「定时扫描 / 计划」语义，与 scan_coordinator / launchd 概念吻合 */
+  clock:
+    '<circle cx="12" cy="12" r="9"/>' +
+    '<polyline points="12 7 12 12 15.5 14"/>',
+  /* ISS-087 设置页左导航：stethoscope（高级与诊断）——探诊听筒轮廓，
+   * 表达「排障 / 高级与诊断」语义；与 icons.js 既有 info / settings 区分 */
+  stethoscope:
+    '<path d="M5 3v6a5 5 0 0 0 10 0V3"/>' +
+    '<path d="M5 3h2"/>' +
+    '<path d="M13 3h2"/>' +
+    '<path d="M15 13a3 3 0 1 0 3 3v-1"/>' +
+    '<path d="M18 15v2a4 4 0 0 0 4 4h0"/>',
+  /* ISS-087 设置页左导航：info（关于）——圆环 + 中央 i 字符的几何；
+   * 关于区本身用 brandBasin 作大尺寸应用图标，info 仅作左导航 glyph */
+  info:
+    '<circle cx="12" cy="12" r="9"/>' +
+    '<line x1="12" y1="11" x2="12" y2="17"/>' +
+    '<circle cx="12" cy="7.6" r="0.6" fill="currentColor" stroke="none"/>',
 };
 
 /**

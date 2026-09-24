@@ -5,7 +5,8 @@
  *
  * ISS-085 深度环基调全局风格化：在 ISS-084 色彩令牌之上只做「形与层次」——
  * 深度环（页头锚点/加载态/目录定位）、短深度刻度（品牌站位/页头刻度带/
- * panel 标题刻度）、选中态深度条（导航/表格行/日报项）三种几何的克制分布；
+ * panel 标题刻度）、选中态深度条（表格行/日报项；导航选中态自 ISS-092
+ * 起改为深色背景块，深度条从导航撤出）三种几何的克制分布；
  * 不改任何色彩令牌的值与语义，每处可独立回退。标注「ISS-085」的规则即本卡新增。
  *
  * 语义色（ISS-084）：全部从 DEC-023 深潭色彩体系派生，低饱和仪器风，
@@ -44,6 +45,7 @@
   --warn-dot: #b08a3e;       /* 警告圆点：琥珀亮档（非文本） */
   --danger: #85453a;         /* 错误：铁锈红 */
   --sel: #e8edf2;
+  --nav-active-fg: #fcfaf4;  /* ISS-092 导航选中深底前景：象牙白，对 --used 对比 9.2:1 */
   --shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
   --sidenav-w: 72px;
 }
@@ -131,21 +133,23 @@ body {
 }
 .sidenav-spacer { flex: 1; }
 .nav-item {
-  position: relative;  /* ISS-085：选中态深度条的定位上下文 */
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   width: 56px; padding: 8px 0 6px;
   border-radius: 10px; text-decoration: none; color: var(--muted);
   font-size: 11px;
 }
 .nav-item:hover { background: var(--bg); color: var(--text); }
-.nav-item[aria-current] { background: var(--trench-weak); color: var(--trench); }
-/* ISS-085 选中态深度条（R3 白名单位置「选中态」）：当前导航项左侧的
- * 2px 海沟蓝深度标线。nav-item 居中后距 sidenav 左缘约 7.5px，-5.5px
- * 使标线落在 [2,4]px——贴导航列左缘、不压图标；html/body 不可滚
- * （ISS-082），负偏移必须留在视口内，否则被壳裁剪不可见 */
-.nav-item[aria-current]::before {
-  content: ""; position: absolute; left: -5.5px; top: 22%; height: 56%;
-  width: 2px; border-radius: 1px; background: var(--trench);
+/* ISS-092 选中态深色背景块（用户 2026-09-24 反馈：灰竖线+微背景指示太弱，
+ * 指示主体改由背景色承担）：深潭墨实底（--used）+ 象牙白文字/图标
+ * （--nav-active-fg，对比 9.2:1 ≥4.5:1）；hover 保持浅底（上方规则），
+ * 与深底选中明确分层。显式补 [aria-current]:hover 一档：选中项被悬停时
+ * 不回浅——不依赖规则书写顺序，未来插入规则不改变该语义。
+ * 取舍：移除 085 的 2px 深度条——负偏移标线在圆角块外侧，与深色块分离
+ * 形成双重指示；深度条母题仍保留于表格行/日报项（见下方规则）。 */
+.nav-item[aria-current],
+.nav-item[aria-current]:hover {
+  background: var(--used);
+  color: var(--nav-active-fg);
 }
 .nav-icon { font-size: 18px; }
 
@@ -655,17 +659,20 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   font-size: 13px;
   color: var(--muted);
   cursor: pointer;
-  /* 选中态的视觉：海沟蓝 + 浅底（与 sidenav 一致） */
+  /* 选中态视觉见下方 ISS-092 规则：深潭墨实底 + 象牙白（与 sidenav 一致） */
 }
 .settings-nav-item:hover {
   background: var(--bg);
   color: var(--text);
 }
-.settings-nav-item[aria-current="true"] {
-  background: var(--trench-weak);
-  color: var(--trench);
-  /* ISS-085 选中态深度条：与侧栏 nav-item / 详情侧栏选中行同语言 */
-  box-shadow: inset 2px 0 0 var(--trench);
+/* ISS-092 设置页左导航选中态与侧栏同语言：深潭墨实底 + 象牙白文字/图标
+ * （对比 9.2:1 ≥4.5:1）；hover 保持浅底（上方规则），与深底选中明确分层。
+ * 显式补 :hover 一档防规则顺序回归；移除 085 的 inset 深度条——深色块
+ * 已承担唯一指示，深底再叠同族色线是冗余（侧栏 nav-item 同理，见上）。 */
+.settings-nav-item[aria-current="true"],
+.settings-nav-item[aria-current="true"]:hover {
+  background: var(--used);
+  color: var(--nav-active-fg);
 }
 .settings-nav-icon {
   display: inline-flex;
@@ -764,7 +771,10 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
     overflow-x: auto;
     position: static;
   }
-  .settings-nav-item { flex: none; min-width: 120px; }
+  /* ISS-092 补 width:auto：基础规则的 width:100% 在 row 布局里会把第一个
+   * 项拉满整行（087 遗留，浅底选中时代不显眼；深色选中块使其显形为
+   * 「一整条深带 + 右侧小项」的破碎形态）。水平形态改为内容自适应宽。 */
+  .settings-nav-item { flex: none; width: auto; min-width: 120px; }
   .about-meta { grid-template-columns: 1fr; gap: 4px 0; }
   .about-meta li { display: block; margin-bottom: 8px; }
   .about-meta-key { display: block; margin-bottom: 2px; }

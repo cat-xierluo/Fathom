@@ -1,6 +1,6 @@
 """命令行入口。
 
-用法（main.py <子命令>）：
+用法（python -m fathom <子命令>）：
   scan       执行一次扫描 + 生成日报 + 清理旧快照（launchd 每日调用）
   report     对比最近两个快照，输出 Markdown 到 stdout
   bigfiles   近期大文件清单（stdout）
@@ -465,7 +465,7 @@ def cmd_version(_: argparse.Namespace) -> int:
 
 
 # --------------------------------------------- 升级协调子命令（ISS-040C）
-# 与桌面壳 updater_install 的合同：壳经冻结 helper（本入口 main.py）以
+# 与桌面壳 updater_install 的合同：壳经冻结 helper（本入口 fathom/__main__.py）以
 # ``--runtime-dir <rt> upgrade-prepare --from N --to N+1`` 等 argv 调用，
 # 结果以 stdout 最后一个非空行的单行 JSON 返回（诊断走 stderr），退出码
 # 0=ok:true、1=ok:false。协议语义见 fathom/upgrade.py 模块说明。

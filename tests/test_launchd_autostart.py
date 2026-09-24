@@ -227,7 +227,7 @@ def test_dry_run_plan_uses_same_plist_generators():
     by_label = {p["label"]: p for p in plists}
 
     # 与 ``_scan_plist`` / ``_web_plist`` 同源：手动复算并断言相等。
-    main_py = config.PROJECT_ROOT / "main.py"
+    main_py = config.PROJECT_ROOT / "fathom" / "__main__.py"
     python = launchd.sys.executable
     assert by_label[config.SCAN_LABEL]["content"] == launchd._scan_plist(main_py, python)
     assert by_label[config.WEB_LABEL]["content"] == launchd._web_plist(main_py, python)
@@ -348,7 +348,7 @@ def test_release_plan_is_pure_display_and_shows_plist_summary(tmp_path):
     scan_content = plists[config.SCAN_LABEL]["content"]
     web_content = plists[config.WEB_LABEL]["content"]
     # ProgramArguments 是 helper 二进制 + 子命令（发行态），不再是 dev 态的
-    # sys.executable + main.py。
+    # sys.executable + fathom/__main__.py。
     assert f"<string>{helper_bin}</string>" in scan_content
     assert "<string>scan</string>" in scan_content
     assert "<string>--source</string>" in scan_content
@@ -645,7 +645,7 @@ def test_launchd_module_does_not_call_smappservice():
 _WRITE_VERB_LITERALS = ('"bootstrap"', '"bootout"', '"load"', '"unload"', '"enable"', '"kickstart"')
 
 # 允许出现写动词字面量的函数：dev 态写路径（_bootstrap/install/uninstall，
-# main.py install|uninstall 显式入口）+ 发行态注册命令模块
+# python -m fathom install|uninstall 显式入口）+ 发行态注册命令模块
 # （register_release/unregister_release）+ 纯展示（dry_run_plan/release_plan，
 # 命令以字符串形式呈现给用户审批）。
 _VERB_ALLOWED_FUNCS = {

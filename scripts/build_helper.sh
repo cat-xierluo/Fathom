@@ -8,7 +8,7 @@
 #
 # 输入：
 # - VENV  : PyInstaller 6.22.3 的 venv（ISS-029 预置；本脚本只 freeze，不安装）
-# - REPO_ROOT : 仓库根（含 main.py / fathom/ / frontend/）
+# - REPO_ROOT : 仓库根（含 fathom/（入口 fathom/__main__.py）/ frontend/）
 #
 # 输出：
 # - REPO_ROOT/apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper（可执行）
@@ -34,11 +34,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${1:-$ROOT/apps/desktop/experiments/iss029/.venv-build}"
-PIN_PYINSTALLER="$(sed -n 's/^pyinstaller==//p' "$ROOT/requirements-runtime-build.txt" | head -1)"
+PIN_PYINSTALLER="$(sed -n 's/^pyinstaller==//p' "$ROOT/packaging/requirements-runtime-build.txt" | head -1)"
 [ -n "$PIN_PYINSTALLER" ] || PIN_PYINSTALLER="6.22.3"
 OUT_DIR="$ROOT/apps/desktop/src-tauri/resources/helper/fathom-helper"
 WORK_DIR="$ROOT/apps/desktop/src-tauri/resources/helper/work"
-MAIN_PY="$ROOT/main.py"
+MAIN_PY="$ROOT/fathom/__main__.py"
 
 mkdir -p "$OUT_DIR" "$WORK_DIR"
 
@@ -58,7 +58,7 @@ fi
 rm -rf "$OUT_DIR"/fathom-helper "$OUT_DIR"/_internal "$OUT_DIR"/build
 
 # ISS-029 G1：freeze_entry.py 已通过 from fathom.cli import main 触发对象
-# 导入；本脚本直接 freeze main.py 即可，不再用 freeze_entry 中转。
+# 导入；本脚本直接 freeze fathom/__main__.py 即可，不再用 freeze_entry 中转。
 # ISS-009 切片 2：--add-data 把 frontend/ 打进 _MEIPASS——fathom.config 冻结态
 # frontend_dir=_MEIPASS/frontend，缺失时 api.py 静默跳过挂载、主界面 404
 # （切片 1 实机截图复现，verify 只测 /health 故未拦截）。

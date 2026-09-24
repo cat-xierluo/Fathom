@@ -16,7 +16,7 @@
   可取消、进入安装后不可取消且文案明确），新 helper 身份核验（``--version``
   身份面）后经 ``upgrade-finalize`` 清 journal；任一步失败经
   ``upgrade-rollback`` 回滚并由壳重启旧 helper。子命令与生产 CLI 同入口
-  ``main.py``，随打包自然携带。
+  ``fathom/__main__.py``，随打包自然携带。
 - **进程重启单属主**：旧 helper「恢复运行」的重启动作归 Rust 壳（helper
   进程属主，见 lib.rs 模块说明）；本模块的回滚只负责协议状态（journal、
   陈旧 instance 清理、数据不动、候选/备份保留），CLI 侧无重启钩子时记

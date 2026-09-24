@@ -691,7 +691,7 @@ async fn updater_install(
         }));
     };
 
-    // 协议①-④的 Python 侧入口 = 同一冻结 helper（生产 CLI main.py）。
+    // 协议①-④的 Python 侧入口 = 同一冻结 helper（生产 CLI fathom/__main__.py）。
     let runtime_dir = {
         let helper_state = app.state::<HelperState>();
         let resolved = match helper_state.0.lock() {
@@ -969,7 +969,7 @@ fn updater_restart(app: AppHandle, confirmed: bool) -> Result<serde_json::Value,
 // 独立确认；任一步失败回滚（旧 helper 恢复运行、旧数据不动、候选保留、
 // journal 清除）。
 //
-// ①-④与⑥的协议状态经**同一冻结 helper**（生产 CLI main.py）的
+// ①-④与⑥的协议状态经**同一冻结 helper**（生产 CLI fathom/__main__.py）的
 // upgrade-prepare / upgrade-finalize / upgrade-rollback 子命令执行——子命令
 // 随打包自然携带，不经 030A 夹具。进程重启单属主：旧 helper 的「恢复运行」
 // 由本壳（进程属主）在回滚后执行，Python 侧不 spawn 进程。
@@ -1090,7 +1090,7 @@ fn progress_should_emit(last_emitted: u64, downloaded: u64, total: Option<u64>) 
 }
 
 /// ISS-040C：构建冻结 helper 的升级协调子命令。argv 合同：全局
-/// ``--runtime-dir`` 位于子命令之前（argparse 布局，与 main.py 一致）；
+/// ``--runtime-dir`` 位于子命令之前（argparse 布局，与 python -m fathom 一致）；
 /// env 与 spawn_helper 同源（FATHOM_RUNTIME_DIR / FATHOM_RUNTIME_MODE）。
 fn upgrade_helper_command(
     bin: &Path,

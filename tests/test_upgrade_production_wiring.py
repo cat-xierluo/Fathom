@@ -3,7 +3,7 @@
 合同来源：docs/TASKS.md 的 ISS-040C 卡「接口合同」六条与验收四框。与
 ISS-030A（``tests/test_upgrade_coordination.py``，夹具）不同：本文件驱动
 **生产**升级协调入口——``fathom/upgrade.py`` 的 ``UpgradeCoordinator`` 与
-``fathom.cli`` 的 upgrade-* 子命令（与冻结 helper 同入口 ``main.py``，
+``fathom.cli`` 的 upgrade-* 子命令（与冻结 helper 同入口 ``fathom/__main__.py``，
 即 lib.rs ``updater_install`` 壳接线调用的同一命令行合同），外部下载与
 系统动作一律注入 fake；030A 夹具（``tests/upgrade_fixture.py``）只用于
 搭隔离环境（fake N/N+1 形态、真实 WAL 库、假 pid 标记），不替代生产
@@ -19,7 +19,7 @@ ISS-030A（``tests/test_upgrade_coordination.py``，夹具）不同：本文件�
 - **五场景反例**（验收框 1）：正在扫描、旧 helper 不退出、备份失败、
   安装失败、新 helper 握手失败——全部回到可运行旧版与旧数据，不留
   半升级态。
-- **CLI 子命令**（验收框 3）：经 ``main.py --runtime-dir <tmp>`` 子进程
+- **CLI 子命令**（验收框 3）：经 ``python -m fathom --runtime-dir <tmp>`` 子进程
   真实执行 upgrade-prepare/detect/rollback/finalize（含跨进程真实 flock
   拒绝、schema 拒绝原库字节不变）。
 - **壳接线合同**（验收框 2/3 的 Python 侧钉子）：lib.rs 真实调用
@@ -373,13 +373,13 @@ def test_run_full_handshake_failure_rolls_back_via_journal_path(env):
 
 # ==================================================== CLI 子命令（生产入口）
 def _run_cli(runtime: Path, *args: str) -> tuple[subprocess.CompletedProcess, dict | None]:
-    """经生产 CLI 入口 main.py 子进程执行（与冻结 helper 同一入口）。"""
+    """经生产 CLI 入口 fathom/__main__.py 子进程执行（与冻结 helper 同一入口）。"""
     env = os.environ.copy()
     env["PYTHONPATH"] = str(REPO_ROOT)
     env.pop("FATHOM_RUNTIME_DIR", None)
     env.pop("FATHOM_RUNTIME_MODE", None)
     proc = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "main.py"),
+        [sys.executable, str(REPO_ROOT / "fathom" / "__main__.py"),
          "--runtime-dir", str(runtime), *args],
         capture_output=True, text=True, env=env, timeout=120,
         cwd=str(REPO_ROOT),

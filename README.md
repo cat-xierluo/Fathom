@@ -28,7 +28,7 @@ macOS 本机的目录容量历史追踪工具：记录哪些目录在增长，�
 git clone https://github.com/cat-xierluo/fathom.git
 cd fathom
 python3.14 -m venv .venv
-.venv/bin/python -m pip install -c constraints.txt -r requirements-dev.txt
+.venv/bin/python -m pip install -c packaging/constraints.txt -r packaging/requirements-dev.txt
 /bin/bash scripts/ci_pytest.sh
 /bin/bash scripts/ci_cargo_locked.sh
 ```
@@ -38,8 +38,8 @@ python3.14 -m venv .venv
 已了解当前限制并准备监控本机时：
 
 ```bash
-.venv/bin/python main.py serve      # 127.0.0.1:7952，前台运行
-.venv/bin/python main.py status
+.venv/bin/python -m fathom serve      # 127.0.0.1:7952，前台运行
+.venv/bin/python -m fathom status
 ```
 
 浏览器打开 [本地仪表盘](http://127.0.0.1:7952)。Tauri 开发壳需要 Rust/macOS 构建环境，并依赖上述服务另行运行：
@@ -54,11 +54,11 @@ cargo run
 下列命令会实际扫描本机或修改本用户后台任务，请在选定部署环境执行：
 
 ```bash
-.venv/bin/python main.py scan                     # 默认 HOME，首扫建立基线
-.venv/bin/python main.py report                   # 最近两快照，首日无对比报告
-.venv/bin/python main.py bigfiles --days 7 --min-mb 100
-.venv/bin/python main.py install                  # 安装本用户两个 LaunchAgent
-.venv/bin/python main.py uninstall                # 卸载开发版后台任务
+.venv/bin/python -m fathom scan                     # 默认 HOME，首扫建立基线
+.venv/bin/python -m fathom report                   # 最近两快照，首日无对比报告
+.venv/bin/python -m fathom bigfiles --days 7 --min-mb 100
+.venv/bin/python -m fathom install                  # 安装本用户两个 LaunchAgent
+.venv/bin/python -m fathom uninstall                # 卸载开发版后台任务
 ```
 
 当前比较、同日替换与保留按 `(root, min_kb, exclude_names)` 隔离；这不代表多根、多卷产品已经验收，首发仍以单个受支持范围为目标。扫描耗时依磁盘/文件数/权限而异，不承诺固定时长。

@@ -227,7 +227,7 @@ def test_cli_and_scheduled_sources_use_same_contract_with_real_du(tmp_path):
     root = tmp_path / "root"
     root.mkdir()
     (root / "file").write_text("x", encoding="utf-8")
-    main = Path(__file__).parents[1] / "main.py"
+    main = Path(__file__).parents[1] / "fathom" / "__main__.py"
     base = [str(PYTHON), str(main), "--runtime-dir", str(runtime),
             "--scan-root", str(root), "scan"]
     first = subprocess.run(base + ["--source", "cli"], cwd=tmp_path, env=_env(),
@@ -255,10 +255,10 @@ def test_cli_and_scheduled_sources_use_same_contract_with_real_du(tmp_path):
 
 def test_launchd_timer_marks_scan_source_scheduled():
     payload = plistlib.loads(
-        launchd._scan_plist(Path("/tmp/main.py"), "/tmp/python").encode("utf-8")
+        launchd._scan_plist(Path("/tmp/fathom/__main__.py"), "/tmp/python").encode("utf-8")
     )
     assert payload["ProgramArguments"] == [
-        "/tmp/python", "/tmp/main.py", "scan", "--source", "scheduled"
+        "/tmp/python", "/tmp/fathom/__main__.py", "scan", "--source", "scheduled"
     ]
 
 

@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### 根目录精简：CLI 入口与依赖锁定文件下沉（chore）
+
+- 命令行入口从仓库根 `main.py` 迁至 `fathom/__main__.py`：用户可见命令统一为 `python -m fathom <子命令>`（原 `python main.py ...`）；按路径直接执行 `python fathom/__main__.py` 仍可用（launchd 开发态计划与 helper 冻结走该形态）。已安装的 launchd 计划需按迁移清单更新 ProgramArguments 后重新加载，见对应 PR 描述。
+- 依赖锁定文件（requirements*.txt、constraints.txt）从仓库根下沉至 `packaging/`；README、CI/发布工作流与脚本的引用路径已同步，`pyproject.toml` 按 Python 工具链惯例保留在根（pytest 配置依赖）。
+
 ### 布局滚动边界、设置页信息收敛与语义配色（ISS-082 / ISS-083 / ISS-084）
 
 - 页面滚动限定在内容区：侧边栏与顶栏在任何内容高度和滚动位置下保持稳定，不再出现滚出内容的空白区；窄屏宽表格改为局部横向滚动。

@@ -41,7 +41,9 @@ from fathom import (
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MAIN = REPO_ROOT / "main.py"
+# 生产 CLI 入口（原仓库根 main.py，现 fathom/__main__.py；按路径直接
+# 执行与 launchd dev 态 plist / PyInstaller 冻结同一形态）。
+MAIN = REPO_ROOT / "fathom" / "__main__.py"
 
 
 def _clean_env() -> dict[str, str]:

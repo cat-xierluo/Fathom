@@ -1,10 +1,11 @@
 # Fathom 仓库级工具配置（ISS-031）。
 #
 # 仅承载 pytest 配置；故意不含 [project]/[build-system]——fathom 不是
-# 安装包，运行方式是从仓库根直接解释执行（见 README / TESTING）。
+# 安装包，运行方式是 python -m fathom 从仓库根直接解释执行（见 README /
+# TESTING）。依赖锁定文件在 packaging/（constraints.txt 等）。
 # Python 版本基线：3.14（CI 锁定 3.14.6，见 .github/workflows/ci.yml）。
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # 弃用警告不过滤：当前两条 Starlette(httpx/anyio 别名)警告没有已验证的
-# 升级路径，保持可见以便跟踪（constraints.txt 有说明），不伪装成零警告。
+# 升级路径，保持可见以便跟踪（packaging/constraints.txt 有说明），不伪装成零警告。

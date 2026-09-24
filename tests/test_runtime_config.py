@@ -17,7 +17,8 @@ import pytest
 from fathom import config, db
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MAIN = REPO_ROOT / "main.py"
+# 生产 CLI 入口（原仓库根 main.py，现 fathom/__main__.py）。
+MAIN = REPO_ROOT / "fathom" / "__main__.py"
 
 
 def _clean_env() -> dict[str, str]:

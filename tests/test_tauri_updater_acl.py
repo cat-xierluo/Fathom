@@ -74,8 +74,8 @@ EXISTING_CAPABILITY_PERMISSIONS = (
     "opener:allow-open-url",
 )
 EXISTING_REMOTE_URLS = {
-    "http://127.0.0.1:7952",
-    "http://localhost:7952",
+    "http://127.0.0.1:*",
+    "http://localhost:*",
 }
 
 

@@ -2,9 +2,14 @@
   "$schema": "http://schema.tauri.app/capabilities.json",
   "identifier": "default",
   "description": "主窗口默认权限：本地加载页与 127.0.0.1:7952 远程仪表盘共享",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "remote": {
-    "urls": ["http://127.0.0.1:7952", "http://localhost:7952"]
+    "urls": [
+      "http://127.0.0.1:*",
+      "http://localhost:*"
+    ]
   },
   "permissions": [
     "core:default",
@@ -22,7 +27,11 @@
     "allow-updater-restart",
     {
       "identifier": "opener:allow-open-url",
-      "allow": [{ "url": "x-apple.systempreferences:*" }]
+      "allow": [
+        {
+          "url": "x-apple.systempreferences:*"
+        }
+      ]
     }
   ]
 }

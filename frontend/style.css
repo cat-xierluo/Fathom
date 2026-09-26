@@ -957,3 +957,14 @@ code {
 .perm-fact-num[data-sev="warn"] { color: var(--warn); }
 .perm-fact-num[data-sev="ok"] { color: var(--ok); }
 .perm-fact-label { font-size: 12px; color: var(--muted); }
+
+/* 设置页「应用更新」下载进度（ISS-102）：宽度由 JS 按真实字节比设置，
+ * 不加 transition/animation——进度即时反映真实下载量，reduced-motion 下
+ * 无任何动画依赖（总大小未知时不渲染进度条，只显示字节数）。 */
+.updater-progress { margin: 6px 0 2px; }
+.updater-progress-bar {
+  height: 8px; max-width: 420px; border-radius: 4px;
+  background: var(--sel); overflow: hidden;
+}
+.updater-progress-fill { height: 100%; background: var(--primary); }
+.updater-progress .hint { margin: 4px 0 0; font-variant-numeric: tabular-nums; }

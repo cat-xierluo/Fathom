@@ -347,8 +347,15 @@ async function main() {
     record("no-script-executed-from-names",
       pwnedFlags.every((f) => f === undefined), `flags=${JSON.stringify(pwnedFlags)}`);
 
-    // 分布页 Finder 按钮（成功路径：sub 目录真实存在）
+    // 分布页 Finder 按钮（成功路径：sub 目录真实存在）。
+    // ISS-099：分布页自 ISS-094 起为页内二级 tab（默认「占用分布」），
+    // 目录表格在默认 hidden 的「目录浏览器」分区——此前直接等表格按钮
+    // 可见会超时。按真实用户路径点击页内 tab 进入浏览器视图，再执行
+    // 原 reveal 断言（断言与精确计数不变）。
     await page.goto(base + "/#/browse", { waitUntil: "networkidle" });
+    await page.waitForSelector(
+      '#page-browse:not(.hidden) [data-test="browse-tab-browser"]', { timeout: 10000 });
+    await page.locator('[data-test="browse-tab-browser"]').click();
     await page.waitForSelector("#tbl-browse [data-reveal]", { timeout: 10000 });
     const firstRevealPath = await page.evaluate(
       () => document.querySelector("#tbl-browse [data-reveal]").getAttribute("data-reveal"));

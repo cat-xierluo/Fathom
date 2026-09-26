@@ -60,10 +60,17 @@ EXISTING_CAPABILITY_PERMISSIONS = (
     "allow-update-tray-status",
     "opener:allow-open-url",
 )
+# ISS-099：适配 3f470b7 已合并合同——helper 让位端口下 remote.urls 通配本机
+# 回环任意端口（与 test_tauri_updater_acl.py 同步）。通配仅限回环主机；任何
+# 非回环 origin 不在白名单（见 test_existing_core_permission_baseline_not_regressed
+# 的回环通配模式断言），安全面不因端口通配扩大。
 EXISTING_REMOTE_URLS = {
-    "http://127.0.0.1:7952",
-    "http://localhost:7952",
+    "http://127.0.0.1:*",
+    "http://localhost:*",
 }
+# remote.urls 白名单允许的主机形态：仅本机回环。落在该集合之外的 host
+# （如 0.0.0.0、局域网 IP、外部域名）一律视为合同破坏。
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost"})
 
 
 def _capability_permissions() -> list[str]:
@@ -196,10 +203,26 @@ def test_existing_tray_status_permission_not_regressed():
 
 
 def test_existing_core_permission_baseline_not_regressed():
-    """core/opener 既有权限与 remote urls 基线不变（本切片只加四条 autostart）。"""
+    """core/opener 既有权限与 remote urls 基线不变（本切片只加四条 autostart）。
+
+    remote urls 合同（3f470b7 起）：恰为本机回环主机 + 端口通配两条——
+    helper 让位端口下 invoke 不再被 ACL 拒，同时逐条校验 host 仍是回环：
+    任何非回环 origin（局域网 IP / 外部域名 / 其他 scheme）都不允许进入
+    白名单，端口通配不构成扩域。"""
     granted = _capability_permissions()
     for perm in EXISTING_CAPABILITY_PERMISSIONS:
         assert perm in granted, f"既有权限 {perm} 缺失（回退）"
-    assert _capability_remote_urls() == EXISTING_REMOTE_URLS, (
+    remote_urls = _capability_remote_urls()
+    assert remote_urls == EXISTING_REMOTE_URLS, (
         "remote urls 基线漂移——本切片绝不扩域（合同边界）"
     )
+    for url in remote_urls:
+        m = re.fullmatch(r"http://([^:/]+):\*", url)
+        assert m, (
+            f"remote url {url!r} 不符合回环端口通配合同"
+            "（期望 http://<回环主机>:*，端口固定或非 http scheme 都不允许）"
+        )
+        assert m.group(1) in LOOPBACK_HOSTS, (
+            f"remote url {url!r} 的主机 {m.group(1)!r} 非本机回环——"
+            "通配只允许 127.0.0.1 / localhost，非回环 origin 必须继续被拒绝"
+        )

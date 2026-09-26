@@ -202,8 +202,16 @@ def clear_journal(paths: UpgradePaths) -> bool:
 
 def read_instance(paths: UpgradePaths) -> dict | None:
     """读 helper-instance.json；缺失返回 None，不可解析抛错（fail-closed：
-    未知状态不做任何危险动作）。"""
-    raw = paths.instance_path.read_text(encoding="utf-8")
+    未知状态不做任何危险动作）。
+
+    「缺失」仅指预期的 ``FileNotFoundError``（helper 正常退出后的自清、
+    或本就无实例，ISS-096）：视为无实例记录，调用方按既有分支处理，不
+    据此对未知进程做任何推断。损坏 JSON（``ValueError``）与权限/I-O 等
+    其他 ``OSError`` 仍抛出，保守拒绝。"""
+    try:
+        raw = paths.instance_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
     value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError("helper-instance.json 不是 JSON object")
@@ -318,7 +326,12 @@ class UpgradeCoordinator:
 
     def _step2_old_helper_exit(self) -> None:
         """②旧 helper 优雅退出：经 helper-instance pid 请求退出，有界确认
-        pid 退出 + 端口释放；超时→中止（由上层回滚）。"""
+        pid 退出 + 端口释放；超时→中止（由上层回滚）。
+
+        无实例记录（``read_instance`` 返回 None：helper 已正常退出并自清
+        实例文件，或本就无实例——ISS-096）视为无旧 helper 可确认，直接
+        通过；不据此对未知进程做推断，也不放宽存在记录时的 pid/身份/端口
+        核查。"""
         instance = read_instance(self.paths)
         if instance is None:
             return  # 无旧 helper 记录：视为已退出

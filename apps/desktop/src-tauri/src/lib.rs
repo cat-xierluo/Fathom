@@ -750,6 +750,13 @@ async fn updater_install_transaction(
     );
 
     // ①-④ prepare（经冻结 helper 子命令；协议失败已在 Python 侧回滚）。
+    // ISS-098：附带 --helper-dir（现役 helper onedir 根）——prepare 据此在
+    // N+1 替换之前把旧 bundle 副本落盘进运行根恢复区（磁盘预算不足即在
+    // 此处拒绝升级，零副作用），作为 install 后失败的唯一真实恢复依据。
+    let helper_source_dir = helper_bin
+        .parent()
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default();
     let prepare = match run_upgrade_phase(
         &helper_bin,
         &runtime_dir,
@@ -759,6 +766,8 @@ async fn updater_install_transaction(
             &update.current_version,
             "--to",
             &update.version,
+            "--helper-dir",
+            &helper_source_dir,
         ],
     ) {
         Ok(payload) => payload,
@@ -936,15 +945,54 @@ async fn updater_install_transaction(
         }));
     }
 
-    // ⑥成功收尾：清 journal（候选清空；重启仍走 updater_restart 独立确认，
-    // 不静默、不自动重启）。
+    // ⑥成功收尾（ISS-098：数据库校验是成功判定的一部分）：upgrade-finalize
+    // 先做新版本数据库校验（integrity + schema 兼容 + 历史可读——本壳此刻
+    // 经已替换的 N+1 helper 执行该子命令，N+1 迁移失败在此暴露），通过才清
+    // journal 与恢复区材料。校验失败（kind=db_verify_failed）→ 升级无效，
+    // 走恢复链回到旧版；子命令无法执行/超时 → 无法确认失败类型，保守不
+    // 回滚已成功的安装，半升级态可检测（upgrade-detect/upgrade-rollback）。
     ctl.begin(UpdaterInstallPhase::Finalizing);
-    if let Err(err) = run_upgrade_phase(&helper_bin, &runtime_dir, &["upgrade-finalize"]) {
-        // 安装已成功：finalize 失败不回滚安装；半升级态可检测（upgrade-detect
-        // / upgrade-rollback 可恢复），如实落日志不伪装成功收尾。
-        eprintln!(
-            "[updater] upgrade-finalize 失败（journal 可能残留，可经 upgrade-detect 检测恢复）：{err}"
-        );
+    match run_upgrade_phase(&helper_bin, &runtime_dir, &["upgrade-finalize"]) {
+        Ok(payload) => {
+            let ok = payload
+                .get("ok")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if !ok {
+                let error = payload
+                    .get("error")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("未知数据库校验失败")
+                    .to_string();
+                rollback_upgrade_and_restart_helper(
+                    app,
+                    &helper_bin,
+                    &runtime_dir,
+                    "finalize 数据库校验失败",
+                );
+                let _ = app.emit(
+                    UPDATER_EVENT,
+                    serde_json::json!({
+                        "state": "failed",
+                        "kind": "db_verify_failed",
+                        "error": error.clone(),
+                    }),
+                );
+                return Ok(serde_json::json!({
+                    "ok": false,
+                    "state": "failed",
+                    "kind": "db_verify_failed",
+                    "error": error,
+                }));
+            }
+        }
+        Err(err) => {
+            // 安装已成功且身份核验通过：子命令失败不轻率回滚；半升级态可
+            // 检测（upgrade-detect / upgrade-rollback 可恢复），如实落日志。
+            eprintln!(
+                "[updater] upgrade-finalize 无法执行（journal 可能残留，可经 upgrade-detect 检测恢复）：{err}"
+            );
+        }
     }
     if let Ok(mut guard) = state.0.lock() {
         *guard = None;
@@ -998,6 +1046,16 @@ fn updater_restart(app: AppHandle, confirmed: bool) -> Result<serde_json::Value,
 // upgrade-prepare / upgrade-finalize / upgrade-rollback 子命令执行——子命令
 // 随打包自然携带，不经 030A 夹具。进程重启单属主：旧 helper 的「恢复运行」
 // 由本壳（进程属主）在回滚后执行，Python 侧不 spawn 进程。
+//
+// ISS-098（真实旧 bundle 与数据恢复）：prepare 附带 --helper-dir（现役
+// helper onedir 根）——Python 侧在 N+1 替换之前把旧 bundle 副本 + manifest
+// + SQLite 一致备份落盘进运行根 upgrade-restore/（磁盘预算不足即在替换前
+// 拒绝）；updater 插件 install 返回后临时旧包已析构，该副本是唯一恢复
+// 依据。失败路径经 upgrade-rollback 执行恢复链（停滞留 N+1 → 恢复旧版
+// 文件 → 恢复后身份核验 → 旧库校验/从备份恢复库），**全部通过才清
+// journal**；恢复失败如实报错、材料与 journal 保留，本壳不重启未核验的
+// 安装区 helper。finalize 的数据库校验失败（db_verify_failed）同样走恢复
+// 链——「只有旧版实际可运行、数据可用才能报告回滚成功」。
 
 /// ISS-040C：升级取消请求事件名。复用**已授权**的 ``core:event:default``
 /// 通道受理前端取消（本切片不动 frontend/，按钮留后续）；不新增 updater
@@ -1346,21 +1404,47 @@ fn handle_cancel_request(app: &AppHandle) {
     }
 }
 
-/// 失败回滚（合同⑥）：先经冻结 helper ``upgrade-rollback`` 清理协议状态
-/// （journal 清除、旧数据不动、候选/备份保留），再由本壳（进程属主）重启
-/// 旧 helper。重启在独立线程执行，不阻塞命令 future。
+/// 失败回滚（合同⑥）：先经冻结 helper ``upgrade-rollback`` 执行 ISS-098
+/// 恢复链（停滞留 N+1 → 从恢复区恢复旧 helper 文件 → 恢复后身份核验 →
+/// 旧库校验/从一致备份恢复库；**全部通过才清 journal**，恢复失败则材料
+/// 与 journal 保留、结果如实报错），再由本壳（进程属主）重启 helper——
+/// ``locate_helper`` 此刻拿到的已是恢复后的旧版。重启在独立线程执行，
+/// 不阻塞命令 future。
 fn rollback_upgrade_and_restart_helper(
     app: &AppHandle,
     bin: &Path,
     runtime_dir: &Path,
     reason: &str,
 ) {
+    // ISS-098：只有回滚子命令如实报告成功（旧版文件已恢复、身份与库校验
+    // 通过——或材料缺失分支的既有语义）才重启 helper；恢复失败
+    // （kind=restore_failed）时绝不启动安装区里未恢复的 N+1——材料与
+    // journal 保留、停写持续，由 upgrade-detect/upgrade-rollback 接续。
+    let mut should_restart = false;
     match run_upgrade_phase(bin, runtime_dir, &["upgrade-rollback"]) {
-        Ok(payload) => println!("[updater] 回滚完成（{reason}）：{payload}"),
+        Ok(payload) => {
+            let ok = payload
+                .get("ok")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if ok {
+                println!("[updater] 回滚完成（{reason}）：{payload}");
+                should_restart = true;
+            } else {
+                eprintln!(
+                    "[updater] 回滚未完成（{reason}）：{payload}（恢复材料与 journal \
+                     已保留；经 upgrade-detect 检测后可重试 upgrade-rollback；本壳不 \
+                     启动未核验的安装区 helper）"
+                );
+            }
+        }
         Err(err) => eprintln!(
             "[updater] 回滚子命令失败（{reason}）：{err}（journal 可能残留；\
-             启动时经 upgrade-detect 可检测并恢复）"
+             启动时经 upgrade-detect 可检测并恢复；不启动未核验的安装区 helper）"
         ),
+    }
+    if !should_restart {
+        return;
     }
     let handle = app.clone();
     let spawned = std::thread::Builder::new()
@@ -1875,20 +1959,33 @@ mod tests {
     }
 
     /// ISS-040C：升级子命令 argv 合同——全局 ``--runtime-dir`` 在子命令之前
-    ///（argparse 布局），upgrade-prepare 携带 --from/--to；env 与
-    /// spawn_helper 同源（FATHOM_RUNTIME_DIR / FATHOM_RUNTIME_MODE）。
-    /// 这是「冻结 helper 侧子命令被生产入口真实调用」的壳侧钉子（与
-    /// pytest 侧 grep 断言互为证据链）。
+    ///（argparse 布局），upgrade-prepare 携带 --from/--to/--helper-dir
+    ///（ISS-098：现役 helper onedir 根 = 本壳 locate_helper 结果的父目录，
+    /// prepare 据此落盘恢复材料）；env 与 spawn_helper 同源
+    ///（FATHOM_RUNTIME_DIR / FATHOM_RUNTIME_MODE）。这是「冻结 helper 侧
+    /// 子命令被生产入口真实调用」的壳侧钉子（与 pytest 侧 grep 断言互为
+    /// 证据链）。
     #[test]
     fn upgrade_helper_command_argv_contract() {
-        let bin = Path::new("/tmp/fathom-helper");
+        let bin = Path::new("/tmp/fake-root/fathom-helper/fathom-helper");
         let runtime = Path::new("/tmp/fathom-rt");
         let prepare = upgrade_helper_command(
             bin,
             runtime,
-            &["upgrade-prepare", "--from", "0.3.0", "--to", "0.3.1"],
+            &[
+                "upgrade-prepare",
+                "--from",
+                "0.3.0",
+                "--to",
+                "0.3.1",
+                "--helper-dir",
+                "/tmp/fake-root/fathom-helper",
+            ],
         );
-        assert_eq!(prepare.get_program().to_string_lossy(), "/tmp/fathom-helper");
+        assert_eq!(
+            prepare.get_program().to_string_lossy(),
+            "/tmp/fake-root/fathom-helper/fathom-helper"
+        );
         let argv: Vec<String> = prepare
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -1903,6 +2000,8 @@ mod tests {
                 "0.3.0",
                 "--to",
                 "0.3.1",
+                "--helper-dir",
+                "/tmp/fake-root/fathom-helper",
             ]
         );
         let mut runtime_env: Option<String> = None;

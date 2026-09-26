@@ -471,17 +471,30 @@ def cmd_version(_: argparse.Namespace) -> int:
 
 # --------------------------------------------- 升级协调子命令（ISS-040C）
 # 与桌面壳 updater_install 的合同：壳经冻结 helper（本入口 fathom/__main__.py）以
-# ``--runtime-dir <rt> upgrade-prepare --from N --to N+1`` 等 argv 调用，
-# 结果以 stdout 最后一个非空行的单行 JSON 返回（诊断走 stderr），退出码
-# 0=ok:true、1=ok:false。协议语义见 fathom/upgrade.py 模块说明。
+# ``--runtime-dir <rt> upgrade-prepare --from N --to N+1 --helper-dir <dir>`` 等
+# argv 调用，结果以 stdout 最后一个非空行的单行 JSON 返回（诊断走 stderr），
+# 退出码 0=ok:true、1=ok:false。协议语义见 fathom/upgrade.py 模块说明。
+
+
+def _frozen_helper_dir() -> str | None:
+    """ISS-098：冻结形态下现役 helper onedir 根的缺省推导（``sys.executable``
+    所在目录）；开发态（非冻结）返回 None——prepare 跳过恢复材料保存，
+    rollback 走材料缺失分支（ISS-097 前语义），不误把 venv 当安装区。"""
+    if getattr(sys, "frozen", False):
+        return str(Path(sys.executable).parent)
+    return None
 
 
 def cmd_upgrade_prepare(args: argparse.Namespace) -> int:
-    """升级协调①-④：停写→旧 helper 退出→一致备份→journal（协议失败自动
-    回滚，结果 JSON 的 kind 区分 scan_busy/helper_exit_timeout/backup 等）。"""
+    """升级协调①-④：停写→旧 helper 退出→一致备份→（ISS-098 ③b 恢复材料
+    落盘：旧 helper 副本 + manifest，磁盘预算不足即拒绝）→journal（协议失败
+    自动回滚，结果 JSON 的 kind 区分 scan_busy/disk_full/backup 等）。"""
     paths = upgrade.UpgradePaths.from_config()
     coord = upgrade.UpgradeCoordinator(
-        paths, from_version=args.from_version, to_version=args.to_version
+        paths,
+        from_version=args.from_version,
+        to_version=args.to_version,
+        helper_dir=args.helper_dir or _frozen_helper_dir(),
     )
     result = coord.run_prepare()
     print(json.dumps(result, ensure_ascii=False))
@@ -489,12 +502,18 @@ def cmd_upgrade_prepare(args: argparse.Namespace) -> int:
 
 
 def cmd_upgrade_rollback(_: argparse.Namespace) -> int:
-    """失败回滚：journal 清除、旧 helper 状态恢复（进程重启归壳——
-    本子进程不 spawn serve，见 fathom/upgrade.py 分工合同）。
+    """失败回滚/显式恢复入口（ISS-098：真实旧 bundle 与数据恢复）。
 
-    ISS-097：本子命令是**显式恢复入口**（owner/操作者决策），经
-    ``own_journal_only=False`` 允许清除在位 journal（含损坏与旧格式）——
-    这是 journal 的唯一清除通道之一；自动回滚路径只清自己的 journal。"""
+    恢复区材料在位时执行生产恢复链：停滞留 N+1 → 恢复旧 helper 文件 →
+    恢复后身份核验 → 旧库校验（不可用时从一致备份恢复库）——**只有旧版
+    文件已恢复、helper 身份与旧库校验通过才 ok=true 并清 journal**；恢复
+    失败 ok=false、明确报错、恢复材料与 journal 保留（可重试接续）。
+    材料缺失时维持既有语义（journal 清除 + 旧 helper 重启归壳）。
+
+    进程重启仍归壳（本子进程不 spawn serve，见 fathom/upgrade.py 分工
+    合同）。ISS-097：经 ``own_journal_only=False`` 允许清除在位 journal
+    （含损坏与旧格式）——这是 journal 的唯一清除通道之一；自动回滚路径
+    只清自己的 journal。"""
     paths = upgrade.UpgradePaths.from_config()
     coord = upgrade.UpgradeCoordinator(paths)
     result = coord.rollback(reason="cli upgrade-rollback", own_journal_only=False)
@@ -503,7 +522,9 @@ def cmd_upgrade_rollback(_: argparse.Namespace) -> int:
 
 
 def cmd_upgrade_finalize(_: argparse.Namespace) -> int:
-    """成功收尾：清除升级 journal（幂等）；候选清空由壳侧 UpdaterState 完成。
+    """成功收尾：先数据库校验（ISS-098：integrity + schema 兼容 + 历史可读
+    ≥ 备份基线——新 helper 迁移失败在此暴露为 ``db_verify_failed``），
+    通过才清 journal 与恢复区材料；候选清空由壳侧 UpdaterState 完成。
 
     ISS-097：owner 侧成功收尾入口，仅由壳在新 helper 身份核验通过后调用。"""
     paths = upgrade.UpgradePaths.from_config()
@@ -594,6 +615,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="当前版本 N（journal 记录）")
     p.add_argument("--to", dest="to_version", required=True,
                    help="目标版本 N+1（journal 记录）")
+    p.add_argument(
+        "--helper-dir", dest="helper_dir", default=None,
+        help="现役 helper onedir 根（ISS-098 恢复材料来源；缺省冻结形态自动推导，"
+             "开发态缺省不保存恢复材料）",
+    )
     p.set_defaults(func=cmd_upgrade_prepare)
 
     p = sub.add_parser(

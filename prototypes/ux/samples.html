@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ISS-104 · 视觉样板对照（评审壳）</title>
+<style>
+/* 评审壳样式：仅承载切换与并排缩放，样板本体在 sample-*.html */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  background: #eceef2; color: #1a2233; font-size: 13px;
+}
+.declare {
+  display: flex; align-items: center; gap: 10px;
+  height: 32px; padding: 0 14px;
+  background: #1f2937; color: #e5e7eb; font-size: 12px;
+  white-space: nowrap; overflow: hidden;
+}
+.declare strong { color: #fff; font-weight: 600; }
+.declare .note { overflow: hidden; text-overflow: ellipsis; color: #9ca3af; }
+.controls {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 8px 14px;
+  background: #fff; border-bottom: 1px solid #e4e7ec;
+}
+.ctl-group { display: flex; align-items: center; gap: 6px; }
+.ctl-group .lb { color: #6b7486; font-size: 12px; }
+.seg { display: inline-flex; border: 1px solid #e4e7ec; border-radius: 8px; overflow: hidden; }
+.seg button {
+  border: none; background: none; cursor: pointer;
+  padding: 5px 12px; font-size: 12px; color: #45474f;
+  border-right: 1px solid #e4e7ec;
+}
+.seg button:last-child { border-right: none; }
+.seg button[aria-pressed="true"] { background: rgba(52, 93, 127, 0.10); color: #345d7f; font-weight: 600; }
+.vp-note { margin-left: auto; color: #6b7486; font-size: 12px; }
+.stage { padding: 12px 14px 20px; }
+.frame-wrap { border: 1px solid #d5d8de; border-radius: 10px; overflow: hidden; background: #fff; }
+.frame-wrap iframe { display: block; border: none; width: 100%; height: calc(100vh - 132px); min-height: 480px; }
+.pair { display: flex; gap: 12px; align-items: flex-start; }
+.pane { flex: 1 1 50%; min-width: 0; }
+.pane .cap {
+  display: flex; justify-content: space-between; gap: 8px;
+  font-size: 12px; color: #45474f; margin-bottom: 6px; font-weight: 600;
+}
+.pane .fitbox { border: 1px solid #d5d8de; border-radius: 10px; overflow: hidden; background: #fff; position: relative; height: 380px; }
+.pane iframe {
+  border: none; display: block;
+  width: 1220px; height: 760px;
+  transform-origin: 0 0;
+  position: absolute; left: 0; top: 0;
+}
+.pair-note { color: #6b7486; font-size: 12px; margin: 8px 2px 0; }
+@media (max-width: 1080px) { .pair { flex-direction: column; } }
+</style>
+</head>
+<body>
+<div class="declare" data-role="declare">
+  <strong>ISS-104 视觉样板对照</strong>
+  <span class="note">全部为合成数据 · 不连接真实扫描服务 · 现状复刻 = 审计反例基线（非推荐方案）；候选方案未经用户评审前不作为全站合同 · 生产页面零改动</span>
+</div>
+
+<div class="controls">
+  <div class="ctl-group">
+    <span class="lb">对照页</span>
+    <div class="seg" role="group" aria-label="对照页">
+      <button type="button" data-page="overview" aria-pressed="true">总览</button>
+      <button type="button" data-page="settings" aria-pressed="false">设置</button>
+      <button type="button" data-page="brand" aria-pressed="false">组件与品牌</button>
+    </div>
+  </div>
+  <div class="ctl-group" data-role="mode-group">
+    <span class="lb">查看</span>
+    <div class="seg" role="group" aria-label="查看模式">
+      <button type="button" data-mode="current" aria-pressed="false">现状复刻</button>
+      <button type="button" data-mode="candidate" aria-pressed="true">候选方案</button>
+      <button type="button" data-mode="pair" aria-pressed="false">并排（缩放）</button>
+    </div>
+  </div>
+  <span class="vp-note" data-role="vp-note"></span>
+</div>
+
+<div class="stage">
+  <!-- 单页模式 -->
+  <div class="frame-wrap" data-role="single-wrap" hidden>
+    <iframe data-role="single-frame" title="样板单页视图"></iframe>
+  </div>
+  <!-- 并排模式：两侧固定 1220px 内宽，等比缩放（宽度布局语义不失真） -->
+  <div data-role="pair-wrap" hidden>
+    <div class="pair">
+      <div class="pane">
+        <div class="cap"><span>现状复刻（审计反例基线）</span><span>内宽 1220px · 缩放显示</span></div>
+        <div class="fitbox"><iframe data-role="pair-current" title="现状复刻缩略"></iframe></div>
+      </div>
+      <div class="pane">
+        <div class="cap"><span>候选方案（待评审）</span><span>内宽 1220px · 缩放显示</span></div>
+        <div class="fitbox"><iframe data-role="pair-candidate" title="候选方案缩略"></iframe></div>
+      </div>
+    </div>
+    <p class="pair-note">并排为等比缩略（实际尺寸对照请切单页模式）；两侧同一合成数据、同一 1220px 布局。</p>
+  </div>
+</div>
+
+<script>
+"use strict";
+(function () {
+  var state = { page: "overview", mode: "candidate" };
+  var SINGLE = {
+    current: { overview: "sample-current.html#overview", settings: "sample-current.html#settings" },
+    candidate: { overview: "sample-candidate.html#overview", settings: "sample-candidate.html#settings" }
+  };
+
+  var singleWrap = document.querySelector('[data-role="single-wrap"]');
+  var singleFrame = document.querySelector('[data-role="single-frame"]');
+  var pairWrap = document.querySelector('[data-role="pair-wrap"]');
+  var pairCur = document.querySelector('[data-role="pair-current"]');
+  var pairCand = document.querySelector('[data-role="pair-candidate"]');
+  var modeGroup = document.querySelector('[data-role="mode-group"]');
+  var vpNote = document.querySelector('[data-role="vp-note"]');
+
+  function vpLabel() {
+    var w = window.innerWidth, h = window.innerHeight;
+    if (Math.abs(w - 1220) <= 2 && Math.abs(h - 820) <= 2) return "当前窗口 ≈ 1220×820（合同实测视口）";
+    if (Math.abs(w - 980) <= 2 && Math.abs(h - 640) <= 2) return "当前窗口 ≈ 980×640（最小窗口）";
+    return "当前窗口 " + w + "×" + h + "（建议以 1220×820 / 980×640 评审）";
+  }
+  function refreshVp() { vpNote.textContent = vpLabel(); }
+
+  function fitPair() {
+    [pairCur, pairCand].forEach(function (f) {
+      var box = f.parentElement;
+      var k = box.clientWidth / 1220;
+      f.style.transform = "scale(" + k + ")";
+      box.style.height = Math.round(760 * k) + "px";
+    });
+  }
+
+  function render() {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-page]"), function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.page === state.page));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-mode]"), function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.mode === state.mode));
+    });
+    modeGroup.hidden = state.page === "brand";
+    if (state.page === "brand") {
+      singleWrap.hidden = false;
+      pairWrap.hidden = true;
+      singleFrame.src = "sample-brand.html";
+    } else if (state.mode === "pair") {
+      singleWrap.hidden = true;
+      pairWrap.hidden = false;
+      var srcCur = SINGLE.current[state.page], srcCand = SINGLE.candidate[state.page];
+      if (pairCur.getAttribute("src") !== srcCur) pairCur.src = srcCur;
+      if (pairCand.getAttribute("src") !== srcCand) pairCand.src = srcCand;
+      fitPair();
+    } else {
+      singleWrap.hidden = false;
+      pairWrap.hidden = true;
+      var src = SINGLE[state.mode][state.page];
+      if (singleFrame.getAttribute("src") !== src) singleFrame.src = src;
+    }
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-page]"), function (b) {
+    b.addEventListener("click", function () { state.page = b.dataset.page; render(); });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-mode]"), function (b) {
+    b.addEventListener("click", function () { state.mode = b.dataset.mode; render(); });
+  });
+  window.addEventListener("resize", function () { refreshVp(); fitPair(); });
+  refreshVp();
+  render();
+})();
+</script>
+</body>
+</html>

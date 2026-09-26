@@ -1,0 +1,285 @@
+/* ============================================================
+ * ISS-104 · 现状复刻样式（sample-current.html 专用）
+ * 复刻对象：frontend/ 产品样式（审计基线 3f470b7，2026-09-26 实拍）
+ * ——逐项取自 frontend/style.css 的当前值：h1 17px、导航 11px、
+ * 卡值 22px、340px 走势、页头 180px 刻度带、区块标题三刻度、
+ * 一级/设置分区同权重深色块（#244864 实底）等。
+ * 这是「反例基线」的可交互复刻，用于与候选样板同数据对照；
+ * 不是推荐方案，不代表 ISS-104 候选合同。
+ * 数据：sample-data.js（与 prototypes/ux/app.js 同值合成数据）。
+ * ============================================================ */
+
+:root {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --sidebar: #eceef2;
+  --border: #e4e7ec;
+  --text: #1a2233;
+  --muted: #6b7486;
+  --trench: #345d7f;
+  --mineral: #3e7e7c;
+  --primary: #345d7f;
+  --grow: #7c563c;
+  --ok: #35716f;
+  --used: #244864;
+  --nav-idle-fg: #5d6577;
+  --nav-active-fg: #fcfaf4;
+  --shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
+  --sidenav-w: 72px;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible { outline: 2px solid var(--trench); outline-offset: 2px; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+
+/* 样板标签条（评审标识，产品不含）：与候选页同位同高，保证对照公平 */
+.sample-tag {
+  height: 28px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 14px;
+  background: #f0e9dd;
+  border-bottom: 1px solid #e0d6c2;
+  color: #6a5a3b;
+  font-size: 12px;
+  white-space: nowrap; overflow: hidden;
+}
+.sample-tag strong { font-weight: 600; }
+.sample-tag .tag-note { color: #8a7a58; overflow: hidden; text-overflow: ellipsis; }
+
+.app-shell { display: flex; height: calc(100vh - 28px); min-height: 480px; }
+
+/* ===== 侧栏（现状：72px 浅灰材质 + brandBasin 24 + 9px 字标 + 短刻度） ===== */
+.sidenav {
+  width: var(--sidenav-w);
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; align-items: center;
+  padding: 14px 0 18px; gap: 6px;
+  height: 100%; flex: none;
+}
+.sidenav-brand {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px; margin-bottom: 12px; color: var(--trench);
+}
+.brand-mark { display: inline-flex; width: 24px; height: 24px; }
+.brand-mark svg { width: 100%; height: 100%; display: block; }
+.brand-word {
+  font-size: 9px; font-weight: 600; letter-spacing: 0.22em; text-indent: 0.22em;
+  color: var(--trench); user-select: none; line-height: 1;
+}
+.brand-ruler {
+  width: 28px; height: 5px; margin-top: 3px; opacity: 0.55;
+  background:
+    linear-gradient(var(--trench), var(--trench)) left 0 top 0 / 1px 3px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) left 9px top 0 / 1px 5px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) left 18px top 0 / 1px 5px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) right 0 top 0 / 1px 3px no-repeat;
+}
+.sidenav-spacer { flex: 1; }
+.nav-item {
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  width: 56px; padding: 8px 0 6px;
+  border-radius: 10px; text-decoration: none;
+  color: var(--nav-idle-fg);
+  font-size: 11px;
+}
+.nav-item:hover { background: var(--bg); color: var(--text); }
+.nav-item[aria-current],
+.nav-item[aria-current]:hover { background: var(--used); color: var(--nav-active-fg); }
+.nav-icon { display: flex; align-items: center; justify-content: center; height: 20px; font-size: 18px; }
+.nav-icon svg { width: 18px; height: 18px; display: block; }
+
+/* ===== 主区与顶栏（现状：17px 标题 + 26px 锚点 + 180px 刻度带 + 实心扫描） ===== */
+.main-area { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.page-container { flex: 1; overflow-y: auto; padding: 0 26px 26px; }
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 26px;
+  background: var(--bg);
+  flex: none;
+}
+.topbar-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dr-anchor { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: none; }
+.dr-anchor svg { width: 100%; height: 100%; display: block; }
+.topbar-heading { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.topbar h1 { margin: 0; font-size: 17px; line-height: 1.15; }
+.depth-scale {
+  width: 180px; max-width: 36vw; height: 4px; opacity: 0.32; flex: none;
+  background:
+    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 36px),
+    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 9px);
+  background-size: 100% 100%, 100% 55%;
+  background-position: 0 0, 0 100%;
+}
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+.scan-badge {
+  font-size: 12px; color: var(--muted);
+  background: var(--bg); border: 1px solid var(--border);
+  padding: 4px 10px; border-radius: 999px;
+}
+
+/* 现状按钮：主按钮（实心海沟蓝）/ 描边按钮 */
+.btn {
+  padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  border: 1px solid var(--border); background: var(--card); color: var(--text);
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn:hover { background: #f5f6f9; border-color: #c4c8d1; }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 590; }
+.btn-primary:hover { background: #3e6a8f; border-color: #3e6a8f; color: #fff; }
+
+/* ===== 总览（现状：四张等权卡 + 刻度横线 + 340px 图 + 底部最近变化） ===== */
+.stat-cards {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  margin-bottom: 14px;
+}
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: var(--shadow);
+  padding: 16px 18px;
+}
+.card-label { margin: 0; color: var(--muted); font-size: 12px; }
+.card-value { margin: 6px 0 0; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.card-value.small { font-size: 15px; }
+.card-value .card-sub { font-size: 15px; color: var(--used); font-weight: 600; }
+#card-free { color: var(--ok); }
+
+/* 区块间刻度装饰横线（现状：总览四卡下的仪器纹样横条） */
+.decor-scale {
+  height: 4px; opacity: 0.28; margin: 0 0 12px;
+  background:
+    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 48px),
+    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 12px);
+  background-size: 100% 100%, 100% 55%;
+  background-position: 0 0, 0 100%;
+}
+
+.quality-line {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  margin: 0 0 14px;
+  color: var(--muted); font-size: 12px;
+}
+.quality-line .path-mono { color: var(--text); font-family: var(--font-mono); font-size: 12px; }
+.quality-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid rgba(53, 113, 111, 0.45); border-radius: 6px;
+  padding: 1px 8px; color: var(--ok); font-size: 12px; background: #fff;
+}
+
+.panel {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: var(--shadow);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+.panel-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+.panel-head h2 { margin: 0; font-size: 15px; }
+/* 现状：每个区块标题前的三根短深度刻度（ISS-085 泛化位） */
+.panel-head h2::before {
+  content: ""; display: inline-block; width: 8px; height: 9px;
+  margin-right: 8px; vertical-align: -1px; opacity: 0.5;
+  background:
+    linear-gradient(var(--trench), var(--trench)) left 0 top 4px / 1px 5px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) left 3.5px top 0 / 1px 9px no-repeat,
+    linear-gradient(var(--trench), var(--trench)) right 0 top 4px / 1px 5px no-repeat;
+}
+.hint { margin: 0; color: var(--muted); font-size: 12px; }
+.link-muted { color: var(--primary); text-decoration: none; font-size: 13px; white-space: nowrap; }
+.link-muted:hover { text-decoration: underline; }
+.tbl-toggle { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.tbl-toggle summary { cursor: pointer; color: var(--primary); width: max-content; }
+
+.trend-box svg { display: block; width: 100%; height: 340px; }
+.trend-legend {
+  display: flex; justify-content: center; gap: 18px;
+  font-size: 12px; color: var(--text);
+  margin-bottom: 2px;
+}
+.trend-legend .lg { display: inline-flex; align-items: center; gap: 6px; }
+.trend-legend .sw { width: 18px; height: 3px; border-radius: 2px; }
+.trend-legend .sw-used { background: var(--used); }
+.trend-legend .sw-free { background: var(--ok); }
+
+/* 现状表格 */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th, .tbl td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eceef2; }
+.tbl th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.tbl .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tbl td.path { font-family: var(--font-mono); font-size: 12px; word-break: break-all; max-width: 480px; }
+.delta-grow { color: var(--grow); }
+.delta-shrink { color: var(--ok); }
+.dir-cell { color: var(--muted); width: 56px; }
+
+/* ===== 设置（现状：左分区白卡 + 深色选中块 + 空输入 + 底部摘要） ===== */
+.settings-layout { display: flex; gap: 14px; align-items: flex-start; }
+.settings-nav {
+  width: 180px; flex: none;
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: 10px 8px;
+  display: flex; flex-direction: column; gap: 2px;
+  position: sticky; top: 12px;
+}
+.settings-nav-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 8px;
+  font-size: 13px; color: var(--nav-idle-fg);
+  text-decoration: none; cursor: pointer; border: none; background: none; text-align: left;
+}
+.settings-nav-item:hover { background: var(--bg); color: var(--text); }
+.settings-nav-item[aria-current] { background: var(--used); color: var(--nav-active-fg); }
+.settings-nav-icon { display: inline-flex; width: 15px; height: 15px; color: inherit; }
+.settings-nav-icon svg { width: 100%; height: 100%; display: block; }
+
+.settings-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.config-hint { color: var(--muted); font-size: 12px; }
+.config-form { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 10px; }
+.cfg-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.cfg-row label { width: 110px; flex: none; color: var(--text); }
+.ctl-input {
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+  font-size: 13px; background: var(--card); color: var(--text); height: 28px;
+  font-family: inherit; width: 260px;
+}
+.settings-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+.effective-line {
+  margin-top: 10px; padding-top: 10px; border-top: 1px solid #eceef2;
+  color: var(--muted); font-size: 12px; line-height: 1.6;
+}
+.effective-line code { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+
+.exclude-row { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.exclude-row code {
+  flex: 1; min-width: 0; word-break: break-all; font-size: 13px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 10px; font-family: var(--font-mono);
+}
+.exclude-row .rm {
+  width: 26px; height: 24px; border-radius: 6px; cursor: pointer; font-size: 11px;
+  border: 1px solid var(--border); background: var(--card); color: var(--muted);
+}
+.exclude-note { margin: 8px 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 8px 0 10px; }
+
+@media (max-width: 900px) {
+  .stat-cards { grid-template-columns: repeat(2, 1fr); }
+  .settings-layout { flex-direction: column; }
+  .settings-nav { width: 100%; flex-direction: row; overflow-x: auto; position: static; }
+  .settings-nav-item { flex: none; width: auto; min-width: 120px; }
+}

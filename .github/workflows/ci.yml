@@ -34,14 +34,15 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # 已验证基线（ISS-096 后 727 passed = 720 + 7(tests/test_upgrade_helper_exit.py
-  # helper 正常退出聚焦测试)；720 已含 ISS-030A/040B/040C/037/081/090/091 批次）：
-  # 727 pytest、39 API/浏览器检查、cargo locked offline build（cargo test 57）。
+  # 已验证基线（ISS-097 后 739 passed = 727 + 12(tests/test_upgrade_txn_journal.py
+  # 升级事务持续停写/重入拒绝与 journal 所有权聚焦测试)；727 = 720 + 7(ISS-096
+  # helper 正常退出聚焦测试)，720 已含 ISS-030A/040B/040C/037/081/090/091 批次）：
+  # 739 pytest、39 API/浏览器检查、cargo locked offline build（cargo test 60）。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "727"
+  EXPECTED_PYTEST_PASSED: "739"
   EXPECTED_BROWSER_PASSED: "39"
 
 jobs:

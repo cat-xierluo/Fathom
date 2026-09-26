@@ -31,6 +31,40 @@ fake 验证协议语义）；⑥成功：journal 清除、候选清空（壳侧 
 后握手失败的检测与恢复经 journal 判定路径（``detect_upgrade_state`` +
 ``rollback``）。任一步失败回滚：旧 helper 恢复运行（钩子/壳）、旧数据
 不动、候选保留、journal 清除。
+
+ISS-097 升级事务合同（持续停写 / 重入拒绝 / journal 所有权）：
+
+- **事务 ID**：每个 ``UpgradeCoordinator`` 实例（= 一次 prepare 尝试）持有
+  ``txn_id``（uuid4 hex，进程内外全局唯一），随每次 journal 写入落盘；
+  ``owner_pid`` 仅为诊断，不作为所有权判据（进程退出后 flock 失效，journal
+  仍是事务凭据）。
+- **互斥持有者**：事务 owner 是发起 ``updater_install`` 的 Rust 壳；本模块
+  是 owner 在单个子命令进程内的协议执行者。prepare ①-④ 期间互斥 =
+  ScanLease flock（进程级）+ journal（跨进程持久）；prepare 子进程退出后
+  到 finalize/rollback 前，journal 是唯一停写凭据（租约按既有合同释放，
+  不回归 ISS-040C）。同壳并发 invoke 由壳侧 ``UpdaterInstallCtl`` 原子
+  独占位拒绝（见 lib.rs）。
+- **停写语义**：「写入」= 新扫描会话（``scan_coordinator.start_scan``，
+  覆盖 API/CLI/定时三入口）。拒绝条件 = journal 文件**存在**（不解析内容，
+  损坏同样停写，fail-closed）。次序不变量（防 TOCTOU）：写入方先取租约
+  后查 journal，升级方先取租约、查残留事务、再写 journal——「写入已开始」
+  与「事务已建立」不可能同时成立。事务结束（finalize 成功或显式 rollback）
+  后恢复可写。
+- **journal 所有权**：自动回滚（run_prepare/run_full 失败路径）仅当 journal
+  的 ``txn_id`` 等于本次尝试时才清除并执行恢复动作；否则记
+  ``left_foreign_journal``、journal 字节不动。拒绝方（prepare 重入、被
+  停写的写入方）绝不读改删 journal。唯一清除通道 = 显式
+  ``upgrade-rollback``（恢复入口，owner/操作者决策，可清损坏与旧格式
+  journal）与 ``upgrade-finalize``（owner 侧成功收尾，仅由壳在核验通过
+  后调用）。
+- **异常恢复**：prepare 子进程或壳在任一阶段崩溃 → journal 残留 → 停写
+  持续、新升级尝试被 ``half_upgraded_state`` 拒绝并指向恢复入口
+  （``upgrade-detect`` 只读检测 + ``upgrade-rollback`` 恢复）。全部等待
+  有界：helper 退出确认 ≤ 10s；壳侧子命令/身份核验 ≤ 120s（超时只终止
+  自己 spawn 的子进程）；停写检查零等待。
+- **兼容**：journal 新字段（txn_id/owner_pid）为增量；旧格式 journal（无
+  txn_id）按「未知所有权遗留事务」处理——停写生效、自动路径不清、显式
+  rollback 可恢复。schema/配置零改动。
 """
 
 from __future__ import annotations
@@ -44,6 +78,7 @@ import socket
 import sqlite3
 import subprocess
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -120,7 +155,7 @@ class UpgradePaths:
             db_path=db_path,
             lock_path=db_path.with_name(db_path.name + ".scan.lock"),
             instance_path=runtime.runtime_dir / config.HELPER_INSTANCE_FILENAME,
-            journal_path=db_path.with_name(db_path.name + JOURNAL_SUFFIX),
+            journal_path=journal_path_from_db(db_path),
         )
 
 
@@ -162,6 +197,14 @@ def _request_helper_graceful_exit(pid: int) -> None:
 
 
 # --------------------------------------------------------- journal 与检测
+def journal_path_from_db(db_path: Path) -> Path:
+    """journal 路径推导（单一来源）：与 db 同目录 ``<db 名>.upgrade-journal.json``。
+
+    供 ``UpgradePaths.from_config`` 与 ``scan_coordinator`` 的停写条件共用，
+    避免两处各自拼后缀漂移。"""
+    return db_path.with_name(db_path.name + JOURNAL_SUFFIX)
+
+
 def _write_0600(path: Path, data: bytes) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
@@ -182,13 +225,22 @@ def write_journal(paths: UpgradePaths, payload: dict) -> None:
     os.replace(tmp, paths.journal_path)
 
 
-def read_journal(paths: UpgradePaths) -> dict | None:
+def peek_journal(path: Path) -> dict | None:
+    """按 journal 文件路径只读探测（停写条件等只读路径使用）。
+
+    缺失或不可解析（损坏）都返回 None——调用方以**文件存在性**为停写/半
+    升级判据（fail-closed），内容仅作诊断。"""
     try:
-        return json.loads(paths.journal_path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
         return None
+    return value if isinstance(value, dict) else None
+
+
+def read_journal(paths: UpgradePaths) -> dict | None:
+    return peek_journal(paths.journal_path)
 
 
 def clear_journal(paths: UpgradePaths) -> bool:
@@ -261,6 +313,8 @@ class UpgradeCoordinator:
         self.to_version = str(to_version)
         self.hooks = dict(hooks or {})
         self.helper_exit_timeout_s = float(helper_exit_timeout_s)
+        # ISS-097：本实例（一次 prepare 尝试）的事务 ID——journal 所有权判据。
+        self.txn_id = uuid.uuid4().hex
         self.steps_done: list[str] = []
         self.backup_path: Path | None = None
         self._lease: scan_coordinator.ScanLease | None = None
@@ -285,6 +339,8 @@ class UpgradeCoordinator:
     def _journal_write(self, phase: str) -> None:
         write_journal(self.paths, {
             "service": SERVICE_IDENTITY,
+            "txn_id": self.txn_id,
+            "owner_pid": os.getpid(),
             "from_version": self.from_version,
             "to_version": self.to_version,
             "phase": phase,
@@ -294,15 +350,8 @@ class UpgradeCoordinator:
         })
 
     # ------------------------------------------------------------ 步骤
-    def _preflight(self) -> None:
-        """schema 守卫与半升级残留检查：任何危险动作之前拒绝。"""
-        leftover = detect_upgrade_state(self.paths)
-        if leftover != "clean":
-            raise UpgradeRefused(
-                "检测到未收口的半升级态（升级 journal 在位）；请先经 "
-                "upgrade-detect 检测并 upgrade-rollback 恢复后再升级",
-                kind="half_upgraded_state",
-            )
+    def _preflight_schema(self) -> None:
+        """schema 守卫：任何危险动作之前拒绝（只查库，不查事务状态）。"""
         try:
             conn = db.connect(self.paths.db_path)
         except db.DatabaseOpenError as exc:
@@ -310,6 +359,30 @@ class UpgradeCoordinator:
                 f"数据库 schema 拒绝升级：{exc}", kind="schema_refused"
             ) from exc
         conn.close()
+
+    def _refuse_if_txn_active(self) -> None:
+        """ISS-097 事务互斥：残留/在途升级 journal 在位时拒绝重入。
+
+        只在**已取得停写租约后**调用（次序不变量：升级方先取租约、查残留
+        事务、再写自己的 journal——保证任一时刻至多一个写 journal 的进程，
+        两次 prepare 竞争不会互相覆盖 journal）。损坏 journal 同样拒绝
+        （fail-closed），文案指向唯一恢复入口 upgrade-rollback。"""
+        if not self.paths.journal_path.exists():
+            return
+        journal = read_journal(self.paths)
+        if journal is None:
+            raise UpgradeRefused(
+                "检测到未收口的半升级态（升级 journal 在位但不可解析/损坏）；"
+                "请先经 upgrade-detect 检测并 upgrade-rollback 恢复后再升级",
+                kind="half_upgraded_state",
+            )
+        raise UpgradeRefused(
+            "检测到未收口的半升级态（升级 journal 在位，txn_id="
+            f"{journal.get('txn_id') or '旧格式无事务ID'}，phase="
+            f"{journal.get('phase')}）；请先经 upgrade-detect 检测并 "
+            "upgrade-rollback 恢复后再升级",
+            kind="half_upgraded_state",
+        )
 
     def _step1_quiesce(self) -> None:
         """①停写：非阻塞取得真实扫描租约；busy→明确拒绝，绝不终止在途扫描。"""
@@ -384,15 +457,20 @@ class UpgradeCoordinator:
     def run_prepare(self) -> dict:
         """执行①-④（停写→旧 helper 退出→一致备份→journal 落盘）。
 
-        协议失败不抛异常：自动回滚并以 ``{"ok": False, ...}`` 结果返回
-        （kind 分类见 ``_classify``）；只有用法错误（参数非法）才抛。
+        ISS-097 次序合同：schema 预检 → 取停写租约 → 残留事务互斥检查 →
+        写自己的 journal（txn_id）→ ②③④。协议失败不抛异常：自动回滚并以
+        ``{"ok": False, ...}`` 结果返回（kind 分类见 ``_classify``）；只有
+        用法错误（参数非法）才抛。自动回滚只清**自己的** journal
+        （``left_foreign_journal``：别人的事务凭据字节不动）。
         """
         self.steps_done = []
         try:
-            self._preflight()
+            self._preflight_schema()
+            self._step1_quiesce()
+            self._refuse_if_txn_active()
+            self.steps_done.append("1_quiesce")
             self._journal_write("started")
             for label, step in (
-                ("1_quiesce", self._step1_quiesce),
                 ("2_old_helper_exit", self._step2_old_helper_exit),
                 ("3_backup", self._step3_backup),
             ):
@@ -408,6 +486,7 @@ class UpgradeCoordinator:
                 "steps_done": list(self.steps_done),
                 "backup_path": str(self.backup_path) if self.backup_path else None,
                 "journal_path": str(self.paths.journal_path),
+                "txn_id": self.txn_id,
             }
         except Exception as exc:  # noqa: BLE001 - 协议失败统一回滚为结果
             reason = str(exc)
@@ -487,8 +566,21 @@ class UpgradeCoordinator:
         if problems:
             raise HandshakeError("新 helper 握手失败：" + "; ".join(problems))
 
-    def rollback(self, *, reason: str) -> dict:
+    def rollback(self, *, reason: str, own_journal_only: bool = True) -> dict:
         """失败回滚（合同：回到可运行旧版与旧数据，不留半升级态）。
+
+        ISS-097 所有权语义：
+
+        - ``own_journal_only=True``（默认，run_prepare/run_full 的自动回滚
+          走此语义）：仅当在位 journal 的 ``txn_id`` 等于本次尝试时才执行
+          清除与恢复动作；别人的事务（含损坏与旧格式无 txn_id 的 journal）
+          记 ``left_foreign_journal``，journal 字节不动、不恢复旧版、不重
+          启 helper——拒绝方不得动别的事务的恢复依据。
+        - ``own_journal_only=False``：显式恢复入口（CLI ``upgrade-rollback``，
+          owner/操作者决策）——允许清除在位 journal（含损坏/旧格式），其余
+          恢复语义不变。
+
+        恢复动作（仅对自己拥有的 journal 或显式恢复时执行）：
 
         - 先经 ``detect_upgrade_state`` 判定（journal 路径），再执行恢复；
         - 旧版安装恢复：``restore_old_version`` 钩子（生产无默认——安装器
@@ -501,6 +593,25 @@ class UpgradeCoordinator:
         """
         detected = detect_upgrade_state(self.paths)
         actions: list[str] = []
+        journal = read_journal(self.paths)
+        journal_is_ours = (
+            journal is not None
+            and str(journal.get("txn_id") or "") == self.txn_id
+        )
+        if detected == "half_upgraded" and not journal_is_ours and own_journal_only:
+            # 保守：非本次事务的 journal（在途/残留/损坏/旧格式）绝不清除，
+            # 也不执行任何恢复动作——那是事务 owner 或显式恢复入口的职权。
+            if self._lease is not None:
+                self._release_lease()
+                actions.append("released_quiesce_lease")
+            actions.append("left_foreign_journal")
+            return {
+                "ok": True,
+                "detected_state": detected,
+                "actions": actions,
+                "reason": reason,
+                "journal_preserved": True,
+            }
         restore = self.hooks.get("restore_old_version")
         if restore is not None:
             restore()

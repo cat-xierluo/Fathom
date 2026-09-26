@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ISS-031 可复现 pytest 入口（CI 与本地同一断言口径）。
 #
-# 本地等价命令（ISS-096 后 727 passed = 720 + 7(ISS-096 helper 正常退出聚焦测试)；720 已含 ISS-081/090/091 批次）：
+# 本地等价命令（ISS-097 后 739 passed = 727 + 12(tests/test_upgrade_txn_journal.py)；727 = 720 + 7(ISS-096)，720 已含 ISS-081/090/091 批次）：
 #   .runtime/bin/python -m pytest tests -q
 # CI：FATHOM_PYTHON 指向 setup-python 锁定版本创建的 venv 解释器。
 #
@@ -19,8 +19,13 @@ cd "$(dirname "$0")/.."
 # live 判活（699 → 720）；
 # ISS-096 +7：tests/test_upgrade_helper_exit.py helper 正常退出后实例文件
 # 清理的兼容（起始无实例/退出自清两条成功路径 + 损坏/未退出/端口未释放/
-# 身份不符四条保守拒绝路径）（720 → 727）。
-expected="${EXPECTED_PYTEST_PASSED:-727}"
+# 身份不符四条保守拒绝路径）（720 → 727）；
+# ISS-097 +12：tests/test_upgrade_txn_journal.py 升级事务持续停写
+# （prepared/installing/installed 各阶段 start_scan 拒绝 + API 409 +
+# CLI exit 3 + 恢复后可写）、journal 所有权（重入拒绝字节不变/txn_id
+# 唯一/损坏与旧格式 fail-closed + 显式恢复入口）、中断恢复链与 lib.rs
+# 独占门/有界等待 Python 钉子（727 → 739）。
+expected="${EXPECTED_PYTEST_PASSED:-739}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

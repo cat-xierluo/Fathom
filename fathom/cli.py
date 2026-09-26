@@ -120,6 +120,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
     except scan_coordinator.ScanBusyError:
         print("已有扫描在进行中，本次未进入 du", file=sys.stderr)
         return 2
+    except scan_coordinator.UpgradeWriteStopError as exc:
+        # ISS-097 停写条件：升级事务进行中（journal 在位）——定时/CLI 扫描
+        # 同样被拒（exit 3，与 scan_busy 的 2 区分）。
+        print(str(exc), file=sys.stderr)
+        return 3
     except (scan_coordinator.ScanCancelledError, KeyboardInterrupt):
         print("扫描已取消，子进程与扫描锁已回收", file=sys.stderr)
         return 130
@@ -485,16 +490,22 @@ def cmd_upgrade_prepare(args: argparse.Namespace) -> int:
 
 def cmd_upgrade_rollback(_: argparse.Namespace) -> int:
     """失败回滚：journal 清除、旧 helper 状态恢复（进程重启归壳——
-    本子进程不 spawn serve，见 fathom/upgrade.py 分工合同）。"""
+    本子进程不 spawn serve，见 fathom/upgrade.py 分工合同）。
+
+    ISS-097：本子命令是**显式恢复入口**（owner/操作者决策），经
+    ``own_journal_only=False`` 允许清除在位 journal（含损坏与旧格式）——
+    这是 journal 的唯一清除通道之一；自动回滚路径只清自己的 journal。"""
     paths = upgrade.UpgradePaths.from_config()
     coord = upgrade.UpgradeCoordinator(paths)
-    result = coord.rollback(reason="cli upgrade-rollback")
+    result = coord.rollback(reason="cli upgrade-rollback", own_journal_only=False)
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("ok") else 1
 
 
 def cmd_upgrade_finalize(_: argparse.Namespace) -> int:
-    """成功收尾：清除升级 journal（幂等）；候选清空由壳侧 UpdaterState 完成。"""
+    """成功收尾：清除升级 journal（幂等）；候选清空由壳侧 UpdaterState 完成。
+
+    ISS-097：owner 侧成功收尾入口，仅由壳在新 helper 身份核验通过后调用。"""
     paths = upgrade.UpgradePaths.from_config()
     coord = upgrade.UpgradeCoordinator(paths)
     result = coord.finalize()
@@ -503,13 +514,26 @@ def cmd_upgrade_finalize(_: argparse.Namespace) -> int:
 
 
 def cmd_upgrade_detect(args: argparse.Namespace) -> int:
-    """半升级态检测（030A detect_upgrade_state 语义生产化）。"""
+    """半升级态检测（030A detect_upgrade_state 语义生产化）。
+
+    ISS-097：附 journal 只读诊断（txn_id/phase 或损坏标记），供恢复决策。"""
     paths = upgrade.UpgradePaths.from_config()
     app_path = Path(args.app_path).expanduser() if args.app_path else None
     state = upgrade.detect_upgrade_state(paths, app_path=app_path)
+    journal: dict | None
+    if paths.journal_path.exists():
+        probe = upgrade.read_journal(paths)
+        journal = {"parse_error": True} if probe is None else {
+            "txn_id": probe.get("txn_id"), "phase": probe.get("phase"),
+            "from_version": probe.get("from_version"),
+            "to_version": probe.get("to_version"),
+        }
+    else:
+        journal = None
     print(json.dumps({
         "ok": True,
         "state": state,
+        "journal": journal,
         "journal_path": str(paths.journal_path),
     }, ensure_ascii=False))
     return 0

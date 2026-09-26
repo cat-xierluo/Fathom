@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **727**（ISS-030A +16、ISS-040C +14、ISS-037 repair3 +11、ISS-081 +1：通知语义类固定 `_volume_stat` 受控输入使满盘机器不假红并新增空间告警真实链路用例；ISS-091 +2：设置页权限 API 契约用例；ISS-090 +21：扫描进度流式计数/状态文件/live 判活用例；ISS-096 +7：升级准备兼容 helper 正常退出后实例文件清理聚焦用例；ISS-097 +12：升级事务持续停写/journal 所有权/中断恢复聚焦用例；ISS-098 +14：恢复材料/三类故障注入/恢复接续聚焦用例），CI 与 `scripts/ci_pytest.sh` 已同步为 **753**（2026-09-26 ISS-096/097/098），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **727**（ISS-030A +16、ISS-040C +14、ISS-037 repair3 +11、ISS-081 +1：通知语义类固定 `_volume_stat` 受控输入使满盘机器不假红并新增空间告警真实链路用例；ISS-091 +2：设置页权限 API 契约用例；ISS-090 +21：扫描进度流式计数/状态文件/live 判活用例；ISS-096 +7：升级准备兼容 helper 正常退出后实例文件清理聚焦用例；ISS-097 +12：升级事务持续停写/journal 所有权/中断恢复聚焦用例；ISS-098 +14：恢复材料/三类故障注入/恢复接续聚焦用例；ISS-101 +13：发行门判定聚焦用例），CI 与 `scripts/ci_pytest.sh` 已同步为 **766**（2026-09-27 ISS-101），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -43,7 +43,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（753�
 **2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 753（ISS-096/097/098 同步）
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 766（ISS-101 同步）
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 160（ISS-100）
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 60（ISS-100）
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
@@ -197,4 +197,4 @@ bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
 
 纯规划/文档 PR：检查 Markdown 链接、源文件引用、任务编号唯一、依赖无环、READY 条件、路线/任务/设计一致；核对现状语句与代码。不得因为描述了目标就把对应功能标完成。
 
-持续集成入口已由 ISS-031 建立；云端 CI 已恢复实跑（2026-09-26），额度再耗尽时的本地替代门禁见 §1.1，最近一次候选验收见任务卡证据。发布前仍需发行 workflow 对固定 tag 执行双架构 helper 冻结、更新签名和 draft Release 聚合；Apple 签名、公证、staple 按 DEC-022 延期；普通 CI 或本地全量测试通过不能替代这些门禁。
+持续集成入口已由 ISS-031 建立；云端 CI 已恢复实跑（2026-09-26），额度再耗尽时的本地替代门禁见 §1.1，最近一次候选验收见任务卡证据。**发行门已把普通 CI 结果绑定进发行判定（ISS-101，#184）**：release.yml 前置 `release-gate` job（同完整 SHA 的 CI run success + 必需 job 恰为 ci.yml 当前清单且逐个 success + tag↔单一版本源一致 + 候选登记/制品指纹比对，全部 fail-closed），四类负向输入（同 SHA 失败/缺失、其他 SHA 成功、错 tag）已真实 runner 验证且构建 job 被拦截（探针 run 见 PR #184）；`probe_mode/probe_commit/probe_unbound` 为隔离探针 dispatch 入口（只跑门，绝不 build/upload/触碰 Release）。发布前仍需发行 workflow 对固定 tag 执行双架构 helper 冻结、更新签名和 draft Release 聚合；Apple 签名、公证、staple 按 DEC-022 延期；公开发布保持人工门。

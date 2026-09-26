@@ -120,19 +120,30 @@
           <button type="button" class="page-tab" data-tab="removed" data-test="changes-tab-removed">消失</button>
         </nav>
 
+        <!-- ISS-107：跨分区共享的对比上下文——基线/对比快照选择、状态行与
+             净变化口径在所有明细分区（增长/缩减/新出现/消失）下保持可见，
+             在任一分区改选日期都会自动重查，无需返回比对明细。 -->
+        <div class="panel diff-context" data-test="changes-diff-context">
+          <div class="diff-context-row">
+            <div class="controls">
+              <label>基线 <select id="sel-a"></select></label>
+              <label>对比 <select id="sel-b"></select></label>
+            </div>
+            <p id="diff-status" class="hint" role="status" aria-live="polite"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>正在加载快照列表…</p>
+          </div>
+          <div class="net-line" id="changes-net" hidden></div>
+        </div>
+
         <section class="page-tab-section" data-tab="detail" data-test="changes-section-detail">
           <div class="panel">
             <div class="panel-head">
               <h2>快照对比</h2>
               <div class="controls">
-                <label>基线 <select id="sel-a"></select></label>
-                <label>对比 <select id="sel-b"></select></label>
-                <input id="changes-search" class="ctl-input" type="search"
-                       placeholder="搜索目录" aria-label="搜索目录" autocomplete="off">
+                <input id="changes-search" class="ctl-input search" type="search"
+                       placeholder="按路径过滤当前结果" aria-label="按路径过滤当前对比结果" autocomplete="off">
               </div>
             </div>
-            <p id="diff-status" class="hint" role="status" aria-live="polite"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>正在加载快照列表…</p>
-            <div class="net-line" id="changes-net" hidden></div>
+            <p class="hint">搜索按目录路径过滤当前对比结果；改日期用上方共享的基线/对比选择。</p>
             <p class="hint" id="changes-foot" hidden>列表包含父子目录，行值不可相加为净变化；"未记录"不等于新增或删除。</p>
             <div class="tbl-wrap">
               <table class="tbl" id="changes-table">
@@ -157,6 +168,10 @@
               <p class="hint">对比区间内增量最大的目录（Top 12）；行值不可相加为净变化</p>
             </div>
             <div id="chart-grown" class="chart"></div>
+            <p class="hint">图表同源数据（Top 12）：</p>
+            <table class="tbl" id="tbl-grown-top" aria-label="增长最多目录数据">
+              <thead><tr><th>目录</th><th class="num">之前</th><th class="num">现在</th><th class="num">变化</th><th></th></tr></thead><tbody></tbody>
+            </table>
           </div>
         </section>
 
@@ -167,6 +182,10 @@
               <p class="hint">对比区间内减量最大的目录（Top 12）</p>
             </div>
             <div id="chart-shrunk" class="chart"></div>
+            <p class="hint">图表同源数据（Top 12）：</p>
+            <table class="tbl" id="tbl-shrunk-top" aria-label="缩减最多目录数据">
+              <thead><tr><th>目录</th><th class="num">之前</th><th class="num">现在</th><th class="num">变化</th><th></th></tr></thead><tbody></tbody>
+            </table>
           </div>
         </section>
 
@@ -210,6 +229,8 @@
         <section class="page-tab-section" data-tab="sunburst" data-test="browse-section-sunburst">
           <div class="panel">
             <div class="panel-head"><h2>当前占用分布</h2><p class="hint">点击扇区切换到目录浏览器并定位</p></div>
+            <!-- ISS-107：默认图形的快照时点与根；数据不可知时如实显示"未知" -->
+            <p class="hint" id="sunburst-context" data-test="sunburst-context">快照上下文加载中…</p>
             <div id="chart-sunburst" class="chart chart-lg"></div>
           </div>
         </section>

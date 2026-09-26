@@ -24,6 +24,13 @@
  * ——loadDiff 一次渲染全部分区，tab 只切可见性；隐藏分区里初始化的图表
  * 由 tabs.js 激活时经 resumeChartsIn 恢复尺寸。tab 状态记 hash
  * （#/changes/grown；刷新保持由 app.js 在路由前规范化承接，见 tabs.js）。
+ *
+ * 共享对比上下文（ISS-107）：基线/对比 select、状态行与净变化口径行在
+ * tab 条下方的共享面板中，不随明细分区隐藏——任一分区都能判断当前对比
+ * 什么并改选日期触发重查。状态三态与实际请求一致：加载中/已完成
+ * （「已对比快照 #a → #b」）/失败（内联重试），成功渲染后不得滞留
+ * 「正在对比」。增长/缩减图表下方提供同源 Top 12 数据表（含 Finder 入口），
+ * 读数不依赖图表悬停。
  */
 import { fetchJSON, beginRequest, invalidateRequest, revealInFinder } from "../request.js";
 import { fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
@@ -76,6 +83,11 @@ function clearDiffResults() {
   ["tbl-added", "tbl-removed"].forEach((id) => {
     document.querySelector(`#${id} tbody`).innerHTML =
       '<tr><td colspan="3" class="hint">暂无可比较数据</td></tr>';
+  });
+  // ISS-107：增长/缩减分区的图表同源数据表随结果一起清空
+  ["tbl-grown-top", "tbl-shrunk-top"].forEach((id) => {
+    document.querySelector(`#${id} tbody`).innerHTML =
+      '<tr><td colspan="5" class="hint">暂无可比较数据</td></tr>';
   });
   document.getElementById("changes-body").innerHTML =
     '<tr><td colspan="6" class="hint">暂无可比较数据</td></tr>';
@@ -235,7 +247,7 @@ function renderChangesTable() {
   const rows = sortRows(filterRows(currentRows, search));
   if (!rows.length) {
     tbody.innerHTML = `<tr><td colspan="6" class="hint">${
-      search ? `没有匹配“${escapeHtml(search)}”的目录。` : "暂无可比较数据"
+      search ? `当前对比结果中没有匹配“${escapeHtml(search)}”的目录。` : "暂无可比较数据"
     }</td></tr>`;
   } else {
     tbody.innerHTML = rows.map((r) => {
@@ -384,12 +396,15 @@ async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
     lastDiff = d;
     renderDeltaBars("chart-grown", d.grown, cssVar("--grow"));
     renderDeltaBars("chart-shrunk", d.shrunk, cssVar("--mineral"));
+    fillDeltaTable("tbl-grown-top", d.grown);
+    fillDeltaTable("tbl-shrunk-top", d.shrunk);
     fillTwoColTable("tbl-added", d.added, (r) => [r.path, fmtKB(r.new_kb)]);
     fillTwoColTable("tbl-removed", d.removed, (r) => [r.path, fmtKB(r.old_kb)]);
     currentRows = synthesizeRows(d);
     renderNetLine(d);
     renderChangesTable();
-    setDiffStatus(successMessage || `正在对比快照 #${a} → #${b}`);
+    // ISS-107：渲染已完成，状态必须是完成态——不得滞留「正在对比」。
+    setDiffStatus(successMessage || `已对比快照 #${a} → #${b}`);
   } catch (e) {
     if (!request.current()) return;
     if (e.status === 404 && retryOnMissing) {
@@ -439,6 +454,30 @@ function fillTwoColTable(id, rows, cols) {
     const [c0, c1] = cols(r);
     tr.innerHTML = `<td class="path" title="${escapeHtml(r.path)}">${escapeHtml(c0)}</td>` +
       `<td class="num">${c1}</td>` +
+      `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td>`;
+    tbody.appendChild(tr);
+    tr.querySelector("[data-reveal]").addEventListener("click", () => revealInFinder(r.path));
+  });
+}
+
+/* ISS-107：增长/缩减图表的等价可读数据表（Top 12，与图同源）。
+ * 图 hover 才能读数、canvas 文本不可选中——表格让读数不依赖指针悬停，
+ * 且每行带 Finder 入口（与 added/removed 表同一目录证据语义）。 */
+function fillDeltaTable(id, rows) {
+  const tbody = document.querySelector(`#${id} tbody`);
+  tbody.innerHTML = "";
+  const top = (rows || []).slice(0, 12);
+  if (!top.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">无</td></tr>';
+    return;
+  }
+  top.forEach((r) => {
+    const tr = document.createElement("tr");
+    const deltaCls = r.delta_kb > 0 ? "delta-grow" : r.delta_kb < 0 ? "delta-shrink" : "";
+    tr.innerHTML = `<td class="path" title="${escapeHtml(r.path)}">${escapeHtml(r.path)}</td>` +
+      `<td class="num">${escapeHtml(fmtKB(r.old_kb))}</td>` +
+      `<td class="num">${escapeHtml(fmtKB(r.new_kb))}</td>` +
+      `<td class="num ${deltaCls}">${escapeHtml(fmtDelta(r.delta_kb))}</td>` +
       `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td>`;
     tbody.appendChild(tr);
     tr.querySelector("[data-reveal]").addEventListener("click", () => revealInFinder(r.path));

@@ -348,7 +348,18 @@ tr:hover .btn-mini { opacity: 1; }
   border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 13px;
   background: var(--card); color: var(--text);
 }
-.controls input { width: 60px; }
+/* ISS-107：60px 窄宽只作用于数字输入（天数/MB 等短数值）；
+ * 文本/搜索输入按自身宽度规则呈现（ctl-input.search），不得被截成
+ * 无法编辑路径片段的窄条。 */
+.controls input[type="number"] { width: 60px; }
+
+/* ISS-107：变化页跨分区共享的对比上下文面板（tab 条之下、各明细分区之上）。
+ * 基线/对比选择、状态行与净变化口径在任一分区下都可见、可改。 */
+.diff-context { margin-bottom: 14px; }
+.diff-context-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+}
+.diff-context .net-line { margin-bottom: 0; }
 
 /* ===== 图表 ===== */
 

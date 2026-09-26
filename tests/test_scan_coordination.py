@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import select
 import socket
 import sqlite3
 import subprocess
@@ -53,6 +54,21 @@ def _wait_status(client: TestClient, expected: str, timeout: float = 8) -> dict:
     raise AssertionError(f"未等到 {expected}: {state}")
 
 
+def _readline_with_timeout(pipe, timeout: float = 10.0) -> str:
+    """有界读一行：select 首个可读事件后再 readline；子进程迟迟不出数据
+    时按合同报错而非无限阻塞（每处等待有界）。"""
+    fd = pipe.fileno()
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError(
+                f"子进程未在 {timeout}s 内输出首行（无界等待已按有界等待合同修正）")
+        ready, _, _ = select.select([fd], [], [], remaining)
+        if ready:
+            return pipe.readline()
+
+
 def test_two_real_processes_only_one_enters_protected_scan(tmp_path):
     runtime = tmp_path / "runtime"
     root = tmp_path / "root"
@@ -83,7 +99,7 @@ def test_two_real_processes_only_one_enters_protected_scan(tmp_path):
     argv = [str(PYTHON), "-c", code, str(runtime), str(root), str(marker)]
     p1 = subprocess.Popen(argv, cwd=Path(__file__).parents[1], env=_env(),
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    assert p1.stdout.readline().strip() == "entered"
+    assert _readline_with_timeout(p1.stdout).strip() == "entered"
     p2 = subprocess.run(argv, cwd=Path(__file__).parents[1], env=_env(),
                         capture_output=True, text=True, timeout=5)
     out1, err1 = p1.communicate(timeout=5)
@@ -345,7 +361,14 @@ def test_cancel_or_timeout_reaps_owned_du_and_releases_lock(tmp_path, monkeypatc
 
     thread = threading.Thread(target=invoke)
     thread.start()
+    deadline = time.monotonic() + 10
     while not child_pid:
+        if time.monotonic() > deadline:
+            thread.join(timeout=5)
+            raise AssertionError(
+                "10s 内 du 进程未被启动（scanner.subprocess.Popen 未被调用）："
+                f"du_process_context 未生效或进程内 run_du 被替身泄漏；"
+                f"invoke 线程 errors={errors!r}")
         time.sleep(0.01)
     if mode == "cancel":
         cancel.set()

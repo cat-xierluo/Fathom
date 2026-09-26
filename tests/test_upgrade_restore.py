@@ -39,6 +39,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -66,9 +67,15 @@ DEAD_PORT = 1
 # 面，ISS-029 G3 语义）与 serve（最小 /health 应答器——恢复后旧 helper
 # 「健康检查」的真实可测面）。只用 stdlib，#!/usr/bin/env python3 保证
 # shebang 不受本仓 .venv 路径空格影响。
+# serve 分支手写 socket 应答而非 http.server：HTTPServer.server_bind 在
+# bind+listen 之后、accept 之前会调 socket.getfqdn() 做 PTR 反查——CI
+# runner 网络上该查询可阻塞远超健康等待窗，表现恰为「连接成功但无响应」
+# 的 timed out（run 36245868739 两架构复现，urlopen 报 timed out 而非
+# refused），故去掉对 http.server 与系统解析器的全部依赖。
 SHIM_SOURCE = """#!/usr/bin/env python3
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -84,11 +91,23 @@ if "--version" in args:
     }, ensure_ascii=False))
     raise SystemExit(0)
 if "serve" in args:
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == "/health":
+    port = int(os.environ.get("FATHOM_SHIM_PORT", "0"))
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", port))
+    listener.listen(16)
+    # double-fork：serve 子进程脱离本测试进程（过继给 launchd）——SIGTERM
+    # 后被立刻收尸，生产判活探针（ps -p）不会像对待僵尸进程那样误判存活。
+    if os.fork() == 0:
+        pidfile = os.environ.get("FATHOM_SHIM_PIDFILE", "")
+        if pidfile:
+            with open(pidfile, "w", encoding="utf-8") as pf:
+                pf.write(str(os.getpid()))
+        while True:
+            conn, _addr = listener.accept()
+            try:
+                request = conn.recv(65536)
+                request_line = request.split(b"\\r\\n", 1)[0]
                 body = json.dumps({
                     "service": "fathom",
                     "protocol_version": 1,
@@ -96,23 +115,17 @@ if "serve" in args:
                     "version": version,
                     "pid": os.getpid(),
                 }, ensure_ascii=False).encode("utf-8")
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-            else:
-                self.send_response(404)
-                self.end_headers()
-
-        def log_message(self, *_args):
-            pass
-
-    port = int(os.environ.get("FATHOM_SHIM_PORT", "0"))
-    # double-fork：serve 子进程脱离本测试进程（过继给 launchd）——SIGTERM
-    # 后被立刻收尸，生产判活探针（ps -p）不会像对待僵尸进程那样误判存活。
-    if os.fork() == 0:
-        HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+                if request_line.startswith(b"GET /health"):
+                    head = ("HTTP/1.0 200 OK\\r\\nContent-Type: application/json\\r\\n"
+                            "Content-Length: %d\\r\\n\\r\\n" % len(body))
+                else:
+                    head = "HTTP/1.0 404 Not Found\\r\\nContent-Length: 0\\r\\n\\r\\n"
+                    body = b""
+                conn.sendall(head.encode("ascii") + body)
+            except OSError:
+                pass
+            finally:
+                conn.close()
 raise SystemExit(0)
 """
 
@@ -141,9 +154,12 @@ def write_broken_helper(helper_root: Path) -> None:
 
 
 def helper_identity(helper_root: Path) -> dict:
-    """运行 helper --version 并解析身份面（与壳 probe_helper_identity 同款）。"""
+    """运行 helper --version 并解析身份面。shim 是脚本型替身，显式用
+    sys.executable 执行——身份探针不依赖执行环境 PATH 上的 python3
+    （真实冻结二进制的「入口可直接 exec」探针语义由生产
+    verify_restored_helper 与坏入口用例钉住，不经此设施）。"""
     proc = subprocess.run(
-        [str(helper_root / "fathom-helper"), "--version"],
+        [sys.executable, str(helper_root / "fathom-helper"), "--version"],
         capture_output=True, text=True, timeout=30,
     )
     lines = [ln for ln in proc.stdout.splitlines() if ln.strip()]
@@ -157,21 +173,87 @@ def freed_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def spawn_shim_serve(helper_root: Path, port: int) -> subprocess.Popen:
-    """spawn shim serve（shim 内部 double-fork：Popen 的直接子进程立即退出，
-    真正的 serve 进程过继给 launchd、/health 的 pid 字段如实上报）。"""
+class ShimServe:
+    """spawn 出的 shim serve 句柄：真实 serve 进程的 pid（pidfile 交回）、
+    spawn 诊断（退出码 + stderr 摘要）与有界回收（stop）。double-fork 使
+    Popen 无法直接持有 serve 进程，pidfile 是失败路径也能定向回收的依据
+    （进程由启动者回收合同）。"""
+
+    def __init__(self, proc: subprocess.Popen, stderr_path: Path, pidfile: Path):
+        self.proc = proc
+        self.stderr_path = stderr_path
+        self.pidfile = pidfile
+
+    @property
+    def pid(self) -> int | None:
+        try:
+            text = self.pidfile.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return int(text) if text.isdigit() else None
+
+    def stop(self) -> None:
+        """有界回收 serve 进程（已被恢复链停止时幂等）与 spawn 临时文件。"""
+        pid = self.pid
+        if pid is not None:
+            try:
+                stop_shim_serve(pid)
+            except (ProcessLookupError, AssertionError):
+                pass
+        if self.proc.poll() is None:
+            self.proc.wait(timeout=10)
+        self.stderr_path.unlink(missing_ok=True)
+        self.pidfile.unlink(missing_ok=True)
+
+    def diagnose(self) -> str:
+        """wait_health 失败时随断言消息带出的第一手证据。"""
+        parts = [f"spawn returncode={self.proc.poll()}"]
+        try:
+            tail = self.stderr_path.read_text(
+                encoding="utf-8", errors="replace").strip()[-500:]
+        except OSError:
+            tail = ""
+        if tail:
+            parts.append(f"stderr tail: {tail!r}")
+        pid = self.pid
+        if pid is not None:
+            parts.append(f"serve pid={pid} alive={not _pid_gone(pid, timeout=0.5)}")
+        else:
+            parts.append("serve pidfile 未写出（fork 子进程未运行到写 pid）")
+        return "；".join(parts)
+
+
+def spawn_shim_serve(helper_root: Path, port: int) -> ShimServe:
+    """spawn shim serve。显式用 sys.executable 执行 shim 文件——解释器与
+    pytest 进程一致，不依赖执行环境 PATH 上的 python3（shebang 仅作冻结
+    形态的兜底面）。bind 在 fork 前完成：端口冲突以 spawn 非零退出码即时
+    显形，不留「listen 前盲区」。"""
     env = os.environ.copy()
     env["FATHOM_SHIM_PORT"] = str(port)
+    stderr_fd, stderr_name = tempfile.mkstemp(prefix="fathom-shim-stderr-")
+    stderr_handle = os.fdopen(stderr_fd, "wb")
+    pid_fd, pid_name = tempfile.mkstemp(prefix="fathom-shim-pid-")
+    os.close(pid_fd)
+    pidfile = Path(pid_name)
+    env["FATHOM_SHIM_PIDFILE"] = str(pidfile)
     child = subprocess.Popen(
-        [str(helper_root / "fathom-helper"), "serve"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env,
+        [sys.executable, str(helper_root / "fathom-helper"), "serve"],
+        stdout=subprocess.DEVNULL, stderr=stderr_handle, env=env,
     )
-    child.wait(timeout=10)  # 直接子进程退出 = serve 已 double-fork
-    return child
+    serve = ShimServe(child, Path(stderr_name), pidfile)
+    child.wait(timeout=10)  # 直接子进程退出 = bind 完成且 serve 已 double-fork
+    stderr_handle.close()  # 父进程侧关闭；serve 子进程持有 dup 继续写
+    if child.returncode != 0:
+        detail = serve.diagnose()
+        serve.stop()
+        raise AssertionError(f"shim serve spawn 失败（exit={child.returncode}）：{detail}")
+    return serve
 
 
-def wait_health(port: int, timeout: float = 10.0) -> dict:
-    """轮询 127.0.0.1:port/health 至就绪；超时断言失败。"""
+def wait_health(port: int, timeout: float = 10.0,
+                spawn: "ShimServe | None" = None) -> dict:
+    """轮询 127.0.0.1:port/health 至就绪；超时断言失败，且随消息带出
+    shim 进程返回码/stderr 摘要/存活状态（失败即证据，不靠猜）。"""
     deadline = time.monotonic() + timeout
     last_error: Exception | None = None
     while time.monotonic() < deadline:
@@ -183,7 +265,8 @@ def wait_health(port: int, timeout: float = 10.0) -> dict:
         except Exception as exc:  # noqa: BLE001 - 轮询至超时
             last_error = exc
             time.sleep(0.05)
-    raise AssertionError(f"shim /health 未在 {timeout}s 内就绪：{last_error}")
+    detail = f"（{spawn.diagnose()}）" if spawn is not None else ""
+    raise AssertionError(f"shim /health 未在 {timeout}s 内就绪：{last_error}{detail}")
 
 
 def _pid_gone(pid: int, timeout: float = 10.0) -> bool:
@@ -427,62 +510,67 @@ def test_restore_material_absent_keeps_legacy_semantics(env):
     assert not env.journal_path.exists()
 
 
-def test_rollback_restore_failure_reports_and_keeps_material(env, install_area):
+def test_rollback_restore_failure_reports_and_keeps_material(
+    env, install_area, monkeypatch
+):
     """恢复失败必须明确报错并保留材料：两层拦截（形态校验——副本与清单
     字节数不符；身份核验——副本版本标记被同长度篡改为未知版本）→
     ok=false/restore_failed、材料与 journal 保留、停写持续；修复材料后
-    同一入口重试成功（接续）。"""
-    from fathom import config, notify, scanner  # 停写断言需要 config 指向
+    同一入口重试成功（接续）。
 
-    old_config = (config.DB_PATH, config.DATA_DIR, config.DEFAULT_ROOT)
-    config.DB_PATH = env.db_path
-    config.DATA_DIR = env.data_dir
-    config.DEFAULT_ROOT = env.runtime / "synthetic-root"
+    停写断言需要 config 指向本用例环境；所有进程内替身（config 三元组、
+    通知、scanner.run_du 假实现）一律经 monkeypatch 注入、用例结束自持
+    清理——裸赋值曾把 run_du 假实现泄漏给同进程后续文件，与
+    test_scan_coordination 的无界等待相遇即无限挂起（episode 1 根因）。"""
+    from fathom import config, notify, scanner
+
+    monkeypatch.setattr(config, "DB_PATH", env.db_path)
+    monkeypatch.setattr(config, "DATA_DIR", env.data_dir)
+    monkeypatch.setattr(config, "DEFAULT_ROOT", env.runtime / "synthetic-root")
     config.DEFAULT_ROOT.mkdir(exist_ok=True)
-    notify.send_notification = lambda *a, **kw: True
-    scanner.run_du = lambda target: scanner.DuResult({str(target): 0}, 0, 0, 0.01)
+    monkeypatch.setattr(notify, "send_notification", lambda *a, **kw: True)
+    monkeypatch.setattr(
+        scanner, "run_du",
+        lambda target: scanner.DuResult({str(target): 0}, 0, 0, 0.01))
     marker = (upgrade.restore_dir_from_runtime(env.runtime) / "helper"
               / "_internal" / "version.txt")
-    try:
-        _write_dead_instance(env)
-        code, payload, err = _run_cli(
-            env.runtime, "upgrade-prepare",
-            "--from", env.n_version, "--to", env.n_plus_1_version,
-            "--helper-dir", str(install_area),
-        )
-        assert code == 0 and payload["ok"], (code, payload, err)
-        _replace_with_n_plus_1(install_area, env)
+    _write_dead_instance(env)
+    code, payload, err = _run_cli(
+        env.runtime, "upgrade-prepare",
+        "--from", env.n_version, "--to", env.n_plus_1_version,
+        "--helper-dir", str(install_area),
+    )
+    assert code == 0 and payload["ok"], (code, payload, err)
+    _replace_with_n_plus_1(install_area, env)
 
-        # 拦截层一（形态校验）：副本字节数被篡改（与清单不符）。
-        marker.write_text("9.9.9-tampered-long\n", encoding="utf-8")
-        code, rolled, err = _run_cli(env.runtime, "upgrade-rollback")
-        assert code == 1, (rolled, err)
-        assert rolled["ok"] is False and rolled["kind"] == "restore_failed"
-        assert "形态与清单不符" in rolled["error"]
+    # 拦截层一（形态校验）：副本字节数被篡改（与清单不符）。
+    marker.write_text("9.9.9-tampered-long\n", encoding="utf-8")
+    code, rolled, err = _run_cli(env.runtime, "upgrade-rollback")
+    assert code == 1, (rolled, err)
+    assert rolled["ok"] is False and rolled["kind"] == "restore_failed"
+    assert "形态与清单不符" in rolled["error"]
 
-        # 拦截层二（身份核验）：同长度篡改（字节数与清单一致、版本标记为
-        # 未知值）——形态校验放行、身份核验捕获。
-        marker.write_text("9.9.9\n", encoding="utf-8")
-        code, rolled, err = _run_cli(env.runtime, "upgrade-rollback")
-        assert code == 1, (rolled, err)
-        assert rolled["ok"] is False and rolled["kind"] == "restore_failed"
-        assert "身份核验失败" in rolled["error"]
-        # 材料与 journal 保留：停写持续（写入方仍被拒）。
-        assert env.journal_path.exists()
-        assert upgrade.restore_dir_from_runtime(env.runtime).is_dir()
-        with pytest.raises(scan_coordinator.UpgradeWriteStopError):
-            scan_coordinator.start_scan(source="cli")
+    # 拦截层二（身份核验）：同长度篡改（字节数与清单一致、版本标记为
+    # 未知值）——形态校验放行、身份核验捕获。
+    marker.write_text("9.9.9\n", encoding="utf-8")
+    code, rolled, err = _run_cli(env.runtime, "upgrade-rollback")
+    assert code == 1, (rolled, err)
+    assert rolled["ok"] is False and rolled["kind"] == "restore_failed"
+    assert "身份核验失败" in rolled["error"]
+    # 材料与 journal 保留：停写持续（写入方仍被拒）。
+    assert env.journal_path.exists()
+    assert upgrade.restore_dir_from_runtime(env.runtime).is_dir()
+    with pytest.raises(scan_coordinator.UpgradeWriteStopError):
+        scan_coordinator.start_scan(source="cli")
 
-        # 接续：修复材料（版本标记改回 N）后同一入口重试成功。
-        marker.write_text(env.n_version + "\n", encoding="utf-8")
-        code, rolled, err = _run_cli(env.runtime, "upgrade-rollback")
-        assert code == 0 and rolled["ok"] is True, (rolled, err)
-        assert helper_identity(install_area)["version"] == env.n_version
-        assert not env.journal_path.exists()
-        _run_id, result = scan_coordinator.run_scan(source="cli")
-        assert result["snapshot_id"] is not None
-    finally:
-        (config.DB_PATH, config.DATA_DIR, config.DEFAULT_ROOT) = old_config
+    # 接续：修复材料（版本标记改回 N）后同一入口重试成功。
+    marker.write_text(env.n_version + "\n", encoding="utf-8")
+    code, rolled, err = _run_cli(env.runtime, "upgrade-rollback")
+    assert code == 0 and rolled["ok"] is True, (rolled, err)
+    assert helper_identity(install_area)["version"] == env.n_version
+    assert not env.journal_path.exists()
+    _run_id, result = scan_coordinator.run_scan(source="cli")
+    assert result["snapshot_id"] is not None
 
 
 def test_rollback_interrupted_midway_resumes(env, install_area, monkeypatch):
@@ -707,10 +795,9 @@ def test_fault_migration_failure_stops_new_helper_and_restores(env, install_area
     env.close()  # 释放夹具 WAL 连接（库即将被污染替换）
 
     port = freed_port()
-    spawn_shim_serve(install_area, port)
-    serve_pid = None
+    serve = spawn_shim_serve(install_area, port)
     try:
-        health = wait_health(port)
+        health = wait_health(port, spawn=serve)
         assert health["version"] == env.n_plus_1_version
         serve_pid = int(health["pid"])
         # N+1 运行中：instance 如实记录（生产中由 helper 自写）。
@@ -748,21 +835,20 @@ def test_fault_migration_failure_stops_new_helper_and_restores(env, install_area
         assert not env.instance_path.exists()
         # 旧版文件恢复 + 身份面正确。
         assert helper_identity(install_area)["version"] == env.n_version
-        serve_pid = None  # 已被恢复链停止，无需测试清理
+        # N+1 serve 已被恢复链停止；finally 的 stop 为幂等兜底。
 
     finally:
-        if serve_pid is not None:
-            stop_shim_serve(serve_pid)
+        serve.stop()
 
     # 恢复后旧版真实 serve：/health 健康（旧版版本）+ 旧库历史可读。
     old_port = freed_port()
-    spawn_shim_serve(install_area, old_port)
+    old_serve = spawn_shim_serve(install_area, old_port)
     try:
-        health = wait_health(old_port)
+        health = wait_health(old_port, spawn=old_serve)
         assert health["version"] == env.n_version
         assert health["service"] == SERVICE_IDENTITY
     finally:
-        stop_shim_serve(int(health["pid"]))
+        old_serve.stop()
     verify = upgrade.verify_database_usable(env.db_path)
     assert verify["ok"] and verify["snapshot_count"] == len(env.expected_roots())
     assert not env.journal_path.exists()

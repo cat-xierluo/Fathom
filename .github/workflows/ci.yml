@@ -34,14 +34,14 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # 已验证基线（ISS-037 repair3 后 696 passed = 685 + 11(notices 许可证值级核对)；685 已含
-  # ISS-030A +16、ISS-040B +8 与 ISS-040C +14）：
-  # 696 pytest、39 API/浏览器检查、cargo locked offline build（cargo test 57）。
+  # 已验证基线（ISS-096 后 727 passed = 720 + 7(tests/test_upgrade_helper_exit.py
+  # helper 正常退出聚焦测试)；720 已含 ISS-030A/040B/040C/037/081/090/091 批次）：
+  # 727 pytest、39 API/浏览器检查、cargo locked offline build（cargo test 57）。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "720"
+  EXPECTED_PYTEST_PASSED: "727"
   EXPECTED_BROWSER_PASSED: "39"
 
 jobs:
@@ -78,7 +78,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 720 项通过）
+      - name: pytest（断言 727 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh

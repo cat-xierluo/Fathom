@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ISS-031 可复现 pytest 入口（CI 与本地同一断言口径）。
 #
-# 本地等价命令（ISS-090 后 720 passed = 699(ISS-081+ISS-091) + 21(ISS-090 扫描进度)；699 已含 040C/030A/037/081/091 批次）：
+# 本地等价命令（ISS-096 后 727 passed = 720 + 7(ISS-096 helper 正常退出聚焦测试)；720 已含 ISS-081/090/091 批次）：
 #   .runtime/bin/python -m pytest tests -q
 # CI：FATHOM_PYTHON 指向 setup-python 锁定版本创建的 venv 解释器。
 #
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 720）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 727）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -16,8 +16,11 @@ cd "$(dirname "$0")/.."
 # ISS-091 +2：tests/test_api_status_coverage.py 锁定 /api/status
 # latest_snapshot 的 dir/denied/vanished 字段契约（697 → 699）；
 # ISS-090 +21：tests/test_scan_progress.py 扫描进度流式计数/状态文件/
-# live 判活（699 → 720）。
-expected="${EXPECTED_PYTEST_PASSED:-720}"
+# live 判活（699 → 720）；
+# ISS-096 +7：tests/test_upgrade_helper_exit.py helper 正常退出后实例文件
+# 清理的兼容（起始无实例/退出自清两条成功路径 + 损坏/未退出/端口未释放/
+# 身份不符四条保守拒绝路径）（720 → 727）。
+expected="${EXPECTED_PYTEST_PASSED:-727}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

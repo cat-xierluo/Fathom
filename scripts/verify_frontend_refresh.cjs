@@ -3192,9 +3192,6 @@ async function main() {
       pageErrors.length === 0 && tauriErrors.length === 0 && tpage4Errors.length === 0 &&
         tpage5Errors.length === 0 && tpage5bErrors.length === 0,
       [...pageErrors, ...tauriErrors, ...tpage4Errors, ...tpage5Errors, ...tpage5bErrors].join("; "));
-    // ISS-100 失败探针（临时提交，随后 revert，不入交付）：注入必然失败，
-    // 证明 refresh 失败使浏览器 job 变红、退出码不被 shell/管道吞掉。
-    record("iss100-probe-injected-failure", false, "ISS-100 失败探针：注入的必然失败");
     const failed = checks.filter((c) => !c.ok);
     process.stdout.write(JSON.stringify({
       ok: failed.length === 0,

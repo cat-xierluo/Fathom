@@ -7,11 +7,11 @@
 - 方法：本地文件事实（Cargo.lock、requirements-*.txt、vendor 文件头）＋
   crates.io API / PyPI JSON / npm registry / docs.python.org 在线元数据核对
   （核对时间 2026-09-14，均为时点数据）。**凡未核对处标 UNKNOWN，不猜测。**
-- 配套 notices 见仓库根 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)。
+- 配套 notices 见 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
 ## 1. Python 运行时依赖（随冻结 helper 进入分发产物）
 
-直接 pin（[requirements-runtime.txt](../../requirements-runtime.txt)，安装需
+直接 pin（[requirements-runtime.txt](../../packaging/requirements-runtime.txt)，安装需
 PM 批准的提案状态不变）：
 
 | 组件 | 版本 | 许可证 | 来源 URL | 证据 |

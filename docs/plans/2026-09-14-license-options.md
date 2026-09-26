@@ -7,7 +7,7 @@
   Python helper（CPython 3.14.6 + FastAPI/uvicorn）＋ vendored ECharts
   前端资源，自研核心代码（scanner/db/reports/api/cli/frontend）。
 - 依赖许可事实来源：[依赖与来源清单](2026-09-14-dependency-inventory.md)
-  （`2026-09-14-dependency-inventory.md`）与 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)。
+  （`2026-09-14-dependency-inventory.md`）与 [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md)。
 
 ## 1. 候选概览
 

@@ -1,7 +1,7 @@
 # Fathom v0.3 打包布局提案（ISS-029 产出，目标方案）
 
 状态：提案（PROPOSAL）——未构建、未签名、未公证；实施归 ISS-009/041
-依据：[发行方案](../docs/plans/2026-09-13-v0.3-release-design.md)与
+依据：2026-09-13 v0.3 发行方案（内部记录，未随公开库分发）与
 [ISS-029 实验发现](../apps/desktop/experiments/iss029/findings.md)
 
 > 目录现状（2026-09-24 根目录精简）：本目录另承载 Python 依赖锁定文件

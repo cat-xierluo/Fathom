@@ -25,6 +25,22 @@ class ScanCancelledError(RuntimeError):
     """本次扫描被自己的调用方取消。"""
 
 
+class UpgradeWriteStopError(RuntimeError):
+    """升级事务进行中（journal 在位）：停写条件拒绝新扫描会话（ISS-097）。
+
+    判据是 journal 文件**存在性**（不解析内容——损坏同样停写，fail-closed）；
+    ``journal`` 仅携带只读诊断（phase/txn_id 等，损坏时为空 dict）。
+    API/CLI/定时三入口统一映射为明确文案，事务结束（finalize 成功或显式
+    upgrade-rollback）后自动恢复可写。"""
+
+    def __init__(self, journal: dict | None = None):
+        super().__init__(
+            "升级事务进行中，扫描写入已被拒绝；请待升级完成后重试，"
+            "或先经 upgrade-detect 检测并 upgrade-rollback 恢复后再扫描"
+        )
+        self.journal = journal if isinstance(journal, dict) else {}
+
+
 def _now() -> str:
     return dt.datetime.now().isoformat(timespec="seconds")
 
@@ -308,8 +324,26 @@ def _lock_path() -> Path:
     return config.DB_PATH.with_name(config.DB_PATH.name + ".scan.lock")
 
 
+def _refuse_writes_during_upgrade_txn() -> None:
+    """ISS-097 停写条件：升级事务 journal 在位时拒绝新扫描会话。
+
+    次序不变量（防 TOCTOU）：本检查在**取得 ScanLease 之后**执行，升级方
+    （fathom.upgrade）则在取得租约之后、写 journal 之前先查残留事务——
+    「写入已开始」与「事务已建立」不可能同时成立。判据是文件存在性
+    （损坏同样停写，fail-closed）；内容只读附带给异常作诊断。延迟导入
+    upgrade 是为避免环（upgrade 模块级反向依赖本模块）。"""
+    from . import upgrade
+    journal_path = upgrade.journal_path_from_db(config.DB_PATH)
+    if not journal_path.exists():
+        return
+    raise UpgradeWriteStopError(upgrade.peek_journal(journal_path))
+
+
 def start_scan(*, source: str, root: Path | None = None) -> ScanSession:
-    """非阻塞取得全局租约并落 running；busy 时不新建运行记录。"""
+    """非阻塞取得全局租约并落 running；busy 时不新建运行记录。
+
+    ISS-097：取得租约后先过停写条件——升级事务 journal 在位即拒绝
+    （``UpgradeWriteStopError``，不建运行记录、不留 running 残行）。"""
     if source not in {"api", "cli", "scheduled"}:
         raise ValueError(f"未知扫描来源：{source}")
     # RuntimeConfig 已负责生产配置规范化；这里保留调用方路径字符串身份，避免
@@ -318,6 +352,7 @@ def start_scan(*, source: str, root: Path | None = None) -> ScanSession:
     lease = ScanLease.acquire(_lock_path(), source=source)
     conn = None
     try:
+        _refuse_writes_during_upgrade_txn()
         conn = db.connect()
         now = _now()
         # 能取得 flock 即证明不存在仍活跃的 owner/继承锁 du。此时才收尾遗留行。

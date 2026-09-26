@@ -654,6 +654,16 @@ def api_scan():
             }},
             status_code=409,
         )
+    except scan_coordinator.UpgradeWriteStopError as exc:
+        # ISS-097 停写条件：升级事务进行中（journal 在位），拒绝开始写入。
+        _scan_lock.release()
+        return JSONResponse(
+            {"ok": False, "message": str(exc), "upgrade": {
+                "phase": exc.journal.get("phase"),
+                "txn_id": exc.journal.get("txn_id"),
+            }},
+            status_code=409,
+        )
     except Exception:
         _scan_lock.release()
         raise

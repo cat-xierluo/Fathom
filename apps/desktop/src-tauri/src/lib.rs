@@ -666,6 +666,10 @@ async fn updater_check(
 /// updater_restart 独立确认（不静默、不自动重启）。任一步失败经
 /// upgrade-rollback 回滚（旧 helper 恢复运行、旧数据不动、候选保留、
 /// journal 清除）并返回 {ok:false,...} 可恢复错误，绝不 panic。
+///
+/// ISS-097 重入拒绝：进入安装事务前先过后端独占门（``try_begin_install``
+/// CAS）——重复 invoke 至多启动一个安装事务，不依赖前端按钮禁用；守卫
+/// ``InstallActiveGuard`` 经 Drop 在任何退出路径释放。
 #[tauri::command]
 async fn updater_install(
     app: AppHandle,
@@ -691,6 +695,27 @@ async fn updater_install(
         }));
     };
 
+    // ISS-097 后端独占门：已有安装事务进行中（含下载/安装/核验/收尾任一
+    // 阶段）时，本次 invoke 明确拒绝——零等待、不排队、不触碰在途事务。
+    if !ctl.try_begin_install() {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "state": "busy",
+            "error": "已有升级安装事务在进行中；本次请求已被拒绝（后端独占门，\
+                      不依赖前端按钮禁用），请待当前安装结束后再试",
+        }));
+    }
+    let _gate = InstallActiveGuard(ctl.inner());
+    updater_install_transaction(&app, &state, ctl.inner(), update).await
+}
+
+/// 单个安装事务的本体（ISS-097：仅经 ``updater_install`` 的独占门进入）。
+async fn updater_install_transaction(
+    app: &AppHandle,
+    state: &State<'_, UpdaterState>,
+    ctl: &UpdaterInstallCtl,
+    update: tauri_plugin_updater::Update,
+) -> Result<serde_json::Value, String> {
     // 协议①-④的 Python 侧入口 = 同一冻结 helper（生产 CLI fathom/__main__.py）。
     let runtime_dir = {
         let helper_state = app.state::<HelperState>();
@@ -751,7 +776,7 @@ async fn updater_install(
             .unwrap_or("未知失败")
             .to_string();
         // prepare 已自回滚；壳侧（进程属主）补齐旧 helper 重启。
-        rollback_upgrade_and_restart_helper(&app, &helper_bin, &runtime_dir, "prepare 失败");
+        rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "prepare 失败");
         let hint = prepare_failure_hint(&kind);
         let _ = app.emit(
             UPDATER_EVENT,
@@ -779,7 +804,7 @@ async fn updater_install(
     let emit_app = app.clone();
     let current_version = update.current_version.clone();
     let target_version = update.version.clone();
-    let ctl_ref = ctl.inner();
+    let ctl_ref = ctl;
     let mut download = std::pin::pin!(update.download(
         move |chunk, total| {
             downloaded = downloaded.saturating_add(chunk as u64);
@@ -822,7 +847,7 @@ async fn updater_install(
 
     let bytes = match outcome {
         DownloadOutcome::Cancelled => {
-            rollback_upgrade_and_restart_helper(&app, &helper_bin, &runtime_dir, "下载取消");
+            rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载取消");
             let _ = app.emit(
                 UPDATER_EVENT,
                 serde_json::json!({
@@ -839,7 +864,7 @@ async fn updater_install(
             }));
         }
         DownloadOutcome::Failed(err) => {
-            rollback_upgrade_and_restart_helper(&app, &helper_bin, &runtime_dir, "下载失败");
+            rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载失败");
             let error = format!("下载/验签失败（已回滚，候选保留，可重试）：{err}");
             let _ = app.emit(
                 UPDATER_EVENT,
@@ -867,7 +892,7 @@ async fn updater_install(
         }),
     );
     if let Err(err) = update.install(&bytes) {
-        rollback_upgrade_and_restart_helper(&app, &helper_bin, &runtime_dir, "安装失败");
+        rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "安装失败");
         let error = format!("安装失败（已回滚到旧版本，候选保留，可重试）：{err}");
         let _ = app.emit(
             UPDATER_EVENT,
@@ -889,7 +914,7 @@ async fn updater_install(
     };
     if let Err(err) = verify {
         rollback_upgrade_and_restart_helper(
-            &app,
+            app,
             &helper_bin,
             &runtime_dir,
             "新 helper 握手失败",
@@ -1020,10 +1045,13 @@ impl UpdaterInstallPhase {
 }
 
 /// ISS-040C：一次 updater_install 的控制面（当前阶段 + 取消请求）。
+/// ISS-097：附**后端独占门**（install_active 原子位）——同壳并发的
+/// updater_install invoke 至多一个进入安装事务，不依赖前端按钮禁用。
 /// 取消经 UPDATER_CANCEL_EVENT（core:event:default）受理，不新增 ACL 权限。
 struct UpdaterInstallCtl {
     phase: Mutex<UpdaterInstallPhase>,
     cancel_requested: std::sync::atomic::AtomicBool,
+    install_active: std::sync::atomic::AtomicBool,
 }
 
 impl UpdaterInstallCtl {
@@ -1031,6 +1059,7 @@ impl UpdaterInstallCtl {
         Self {
             phase: Mutex::new(UpdaterInstallPhase::Preparing),
             cancel_requested: std::sync::atomic::AtomicBool::new(false),
+            install_active: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1057,9 +1086,40 @@ impl UpdaterInstallCtl {
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// ISS-097：安装事务独占门——CAS 抢占，失败即拒绝（不排队、不等待）。
+    /// 零等待语义保证不会因并发 invoke 遗留静默死锁。
+    fn try_begin_install(&self) -> bool {
+        self.install_active
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// 释放独占门（正常返回与 panic unwinding 都经 ``InstallActiveGuard``
+    /// 的 Drop 到达这里；进程级 panic=abort 时进程本身已消失，位随之失效）。
+    fn end_install(&self) {
+        self.install_active
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
     fn is_cancel_requested(&self) -> bool {
         self.cancel_requested
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// ISS-097：独占门的 RAII 守卫——持有期间安装事务独占，任何退出路径
+/// （含 ``?``/提前 return/panic unwinding）经 Drop 释放，杜绝「失败后
+/// 门卡死、后续安装永远 busy」的静默死锁。
+struct InstallActiveGuard<'a>(&'a UpdaterInstallCtl);
+
+impl Drop for InstallActiveGuard<'_> {
+    fn drop(&mut self) {
+        self.0.end_install();
     }
 }
 
@@ -1119,15 +1179,56 @@ fn parse_json_last_line(stdout: &str) -> Option<serde_json::Value> {
         .and_then(|line| serde_json::from_str(line).ok())
 }
 
-/// 执行冻结 helper 协调子命令并解析其单行 JSON 结果。
+/// ISS-097：升级协调子命令/身份核验的有界等待上限。取值依据：Python 侧
+/// prepare 含旧 helper 退出确认（≤10s）+ 全库一致备份（checkpoint + backup
+/// API，生产库量级下可达数十秒），120s 覆盖慢路径仍保证不无限等待。
+const UPGRADE_PHASE_TIMEOUT_S: u64 = 120;
+
+/// ISS-097：有界等待的轮询间隔。
+const UPGRADE_PHASE_POLL_MS: u64 = 50;
+
+/// ISS-097：有界等待子进程退出。超时只 kill+wait **本次自己 spawn 的**
+/// 子进程（绝不触碰其他进程），返回 Err；不排队、不无限等待。
+fn wait_child_bounded(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(err) => return Err(format!("等待升级协调子进程失败：{err}")),
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "升级协调子命令超时（{} 秒）未返回，已终止本次自己启动的子进程；\
+                 可经 upgrade-detect 检测后用 upgrade-rollback 恢复",
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(UPGRADE_PHASE_POLL_MS));
+    }
+}
+
+/// 执行冻结 helper 协调子命令并解析其单行 JSON 结果（ISS-097：有界等待，
+/// 超时终止本次子进程，不无限挂起）。
 fn run_upgrade_phase(
     bin: &Path,
     runtime_dir: &Path,
     extra_args: &[&str],
 ) -> Result<serde_json::Value, String> {
-    let output = upgrade_helper_command(bin, runtime_dir, extra_args)
-        .output()
+    let mut child = upgrade_helper_command(bin, runtime_dir, extra_args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|err| format!("启动升级协调子命令失败（{}）：{err}", bin.display()))?;
+    wait_child_bounded(&mut child, std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("读取升级协调子命令输出失败：{err}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     parse_json_last_line(&stdout).ok_or_else(|| {
@@ -1141,13 +1242,19 @@ fn run_upgrade_phase(
 }
 
 /// 运行 helper 的 ``--version``（ISS-029 单行 JSON 身份面；静态、无运行时
-/// 副作用）并解析。
+/// 副作用）并解析（ISS-097：同样有界等待）。
 fn probe_helper_identity(bin: &Path) -> Result<serde_json::Value, String> {
-    let output = std::process::Command::new(bin)
+    let mut child = std::process::Command::new(bin)
         .arg("--version")
         .stdin(std::process::Stdio::null())
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|err| format!("运行 helper --version 失败（{}）：{err}", bin.display()))?;
+    wait_child_bounded(&mut child, std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("读取 helper --version 输出失败：{err}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     parse_json_last_line(&stdout).ok_or_else(|| {
         format!(
@@ -1895,5 +2002,72 @@ mod tests {
         assert!(!ctl.is_cancel_requested());
         ctl.begin(UpdaterInstallPhase::Installing);
         assert!(!ctl.current().allows_cancel());
+    }
+
+    /// ISS-097：后端独占门——并发/重复 invoke 至多一个进入安装事务；
+    /// 显式释放与 Drop 守卫（panic unwinding 同路径）都恢复可进入。
+    /// 后端拒绝即不依赖前端按钮禁用的证明面（验收框 2）。
+    #[test]
+    fn updater_install_exclusive_gate_allows_single_transaction() {
+        let ctl = UpdaterInstallCtl::new();
+        assert!(ctl.try_begin_install(), "空闲时首个安装事务必须可进入");
+        assert!(
+            !ctl.try_begin_install(),
+            "在途安装事务期间，重复 invoke 必须被独占门拒绝"
+        );
+        assert!(!ctl.try_begin_install(), "拒绝是幂等的（零等待、不排队）");
+        ctl.end_install();
+        assert!(ctl.try_begin_install(), "显式释放后可再次进入");
+        {
+            let _gate = InstallActiveGuard(&ctl);
+            assert!(!ctl.try_begin_install(), "守卫持有期间同样独占");
+        }
+        assert!(
+            ctl.try_begin_install(),
+            "守卫 Drop（含 panic unwinding 路径）必须释放独占门，不留 busy 死锁"
+        );
+        ctl.end_install();
+    }
+
+    /// ISS-097：升级子命令有界等待——超时只终止本次自己 spawn 的子进程并
+    /// 返回明确 Err（恢复入口指引），不无限挂起。
+    #[test]
+    fn wait_child_bounded_kills_own_oversleeping_child_with_clear_error() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn /bin/sleep 失败");
+        let child_pid = child.id();
+        let err = wait_child_bounded(&mut child, std::time::Duration::from_millis(150))
+            .expect_err("超时必须返回 Err 而非无限等待");
+        assert!(err.contains("超时"), "错误必须说明超时：{err}");
+        assert!(
+            err.contains("upgrade-rollback"),
+            "错误必须给出恢复入口：{err}"
+        );
+        // 本次子进程确已被终止并回收（try_wait 对已 wait 的子进程返回缓存
+        // 状态；kill 只作用于自己 spawn 的 pid，不触碰任何其他进程）。
+        let reaped = child
+            .try_wait()
+            .expect("终止后的 try_wait 必须成功")
+            .expect("子进程必须已退出");
+        assert!(!reaped.success(), "被超时终止的 sleep 不应成功退出");
+        let _ = child_pid;
+    }
+
+    /// ISS-097：有界等待不误伤快速退出的子进程（正常路径语义不变）。
+    #[test]
+    fn wait_child_bounded_returns_promptly_for_fast_child() {
+        let mut child = std::process::Command::new("/usr/bin/true")
+            .spawn()
+            .expect("spawn /usr/bin/true 失败");
+        wait_child_bounded(&mut child, std::time::Duration::from_secs(5))
+            .expect("快速退出的子进程必须正常返回");
+        let status = child
+            .wait()
+            .expect("已退出子进程的 wait 必须成功（状态已缓存）");
+        assert!(status.success());
     }
 }

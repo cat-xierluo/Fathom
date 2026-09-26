@@ -14,6 +14,12 @@
  *   等深线低对比且约束在结论区、语义色不与品牌色混用、品牌动效 160–240ms、
  *   摆位稀疏且不入数据表格、扫描指示为深度环且结束回落、装饰元素 aria-hidden、
  *   prefers-reduced-motion 关闭品牌动画/过渡、980 紧凑侧栏不溢出。
+ * - docs/plans/2026-09-26-ux-ui-audit.md + ISS-104 任务卡（C18–C21）：
+ *   prototypes/ux/sample-*.html 样板对照 —— 现状复刻保真（h1 17px/导航 11px/
+ *   卡值 22px/340px 趋势/深色同权重选中块等审计实测值）、候选合同（主结论
+ *   首屏、字阶 28/22、表面层级、一级/二级选中态、主次按钮、设置字段当前值
+ *   就近、空态三型）、24/26/64px 品牌与正式 icon.png 并排核对、评审壳切换。
+ *   现状复刻是反例基线不是推荐方案；候选未经用户评审不作为全站合同。
  *
  * 运行：node scripts/verify_ux_prototype.cjs [--evidence-dir <dir>]
  *   --evidence-dir  截图/日志/结果 JSON 的输出目录（默认为系统临时目录下按 uid
@@ -82,6 +88,7 @@ const MIME = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".png": "image/png",
 };
 
 const logLines = [];
@@ -694,6 +701,194 @@ async function main() {
     check("品牌·980 紧凑侧栏无横向滚动（字标不越界）", sidenavFit.sw <= sidenavFit.cw + 1, JSON.stringify(sidenavFit));
     await noOverflow("980×640 总览（品牌元素复验）");
     await page.setViewportSize({ width: 1220, height: 820 });
+
+    /* ===== C18 ISS-104 · 现状复刻保真（反例基线，对照审计实拍） ===== */
+    await page.setViewportSize({ width: 1220, height: 820 });
+    await page.goto(BASE + "sample-current.html#overview", { waitUntil: "load" });
+    await page.waitForSelector('[data-role="trend-panel"]', { timeout: 5000 });
+    const curTag = await page.textContent('[data-role="sample-tag"]');
+    check("样板·现状页声明为反例基线（非推荐方案）", curTag.includes("现状复刻") && curTag.includes("非推荐方案"), curTag.slice(0, 40));
+    const curH1 = await page.$eval('[data-role="page-title"]', (el) => getComputedStyle(el).fontSize);
+    check("现状复刻·页标题 17px（对齐审计实测 h1=17px）", curH1 === "17px", curH1);
+    const curWord = await page.$eval(".brand-word", (el) => getComputedStyle(el).fontSize);
+    check("现状复刻·侧栏微字标 9px", curWord === "9px", curWord);
+    const curNav = await page.$eval(".nav-item", (el) => getComputedStyle(el).fontSize);
+    check("现状复刻·导航文字 11px", curNav === "11px", curNav);
+    const curCard = await page.$eval("#card-free", (el) => getComputedStyle(el).fontSize);
+    check("现状复刻·四卡数值 22px", curCard === "22px", curCard);
+    const curScaleW = await page.$eval(".depth-scale", (el) => el.getBoundingClientRect().width);
+    check("现状复刻·页头 180px 刻度带存在", Math.abs(curScaleW - 180) <= 2, "w=" + curScaleW.toFixed(1));
+    const curTrendH = await page.$eval('[data-role="trend-box"] svg', (el) => el.getBoundingClientRect().height);
+    check("现状复刻·走势图 340px 高（现状体量）", Math.abs(curTrendH - 340) <= 4, "h=" + curTrendH.toFixed(1));
+    const curH2Before = await page.$eval(".panel-head h2", (el) => getComputedStyle(el, "::before").content);
+    check("现状复刻·区块标题带三刻度（刻度泛化反例）", curH2Before !== "none" && curH2Before !== "normal", curH2Before);
+    const curScanBg = await page.$eval('[data-role="btn-scan-top"]', (el) => getComputedStyle(el).backgroundColor);
+    check("现状复刻·顶栏扫描为实心主按钮", curScanBg === "rgb(52, 93, 127)", curScanBg);
+    await noOverflow("1220×820 现状复刻总览");
+    await shot("20-sample-current-overview-1220");
+
+    await page.setViewportSize({ width: 980, height: 640 });
+    await page.waitForFunction(() => true, null, { timeout: 300 }).catch(() => {});
+    const curSummaryY = await page.$eval('[data-role="summary-panel"]', (el) => el.getBoundingClientRect().top);
+    check("现状复刻·980 首屏看不到最近变化（反例复现，审计实测 y≈759 > 640）", curSummaryY > 640, "y=" + curSummaryY.toFixed(0));
+    await noOverflow("980×640 现状复刻总览");
+    await shot("21-sample-current-overview-980");
+
+    await page.setViewportSize({ width: 1220, height: 820 });
+    await page.goto(BASE + "sample-current.html#settings", { waitUntil: "load" });
+    await page.waitForSelector(".settings-nav", { timeout: 5000 });
+    const curSetSelBg = await page.$eval('.settings-nav-item[aria-current]', (el) => getComputedStyle(el).backgroundColor);
+    check("现状复刻·设置分区选中 = 深潭墨实底（与一级导航同权重反例）", curSetSelBg === "rgb(36, 72, 100)", curSetSelBg);
+    const curRootVal = await page.$eval("#cur-root", (el) => el.value);
+    const curRootPh = await page.$eval("#cur-root", (el) => el.getAttribute("placeholder"));
+    check("现状复刻·监控根为空白输入（留空表示不修改，当前值远离字段）", curRootVal === "" && curRootPh === "留空表示不修改", "value=" + JSON.stringify(curRootVal));
+    check("现状复刻·当前值集中在底部摘要行", (await page.$$eval(".effective-line", (els) => els.length)) === 1);
+    const curPrimaryCount = await page.$$eval(".btn-primary", (els) => els.length);
+    check("现状复刻·同屏两个实心主按钮（顶栏扫描 + 保存排除列表，主次反例）", curPrimaryCount === 2, "x" + curPrimaryCount);
+    await noOverflow("1220×820 现状复刻设置");
+    await shot("22-sample-current-settings-1220");
+
+    /* ===== C19 ISS-104 · 候选合同样板 ===== */
+    await page.setViewportSize({ width: 1220, height: 820 });
+    await page.goto(BASE + "sample-candidate.html#overview", { waitUntil: "load" });
+    await page.waitForSelector('[data-role="headline"]', { timeout: 5000 });
+    const candTag = await page.textContent('[data-role="sample-tag"]');
+    check("样板·候选页声明待评审（未确认不作全站合同）", candTag.includes("候选方案") && candTag.includes("不作为全站合同"), candTag.slice(0, 40));
+    const candH1 = await page.$eval('[data-role="page-title"]', (el) => getComputedStyle(el).fontSize);
+    check("候选·页标题 22px（DESIGN 字阶合同值）", candH1 === "22px", candH1);
+    const candHeadline = await page.$eval('[data-role="headline"]', (el) => ({ fs: getComputedStyle(el).fontSize, text: el.textContent }));
+    check("候选·主结论 28px 且先回答变化（+2.3 GiB）", candHeadline.fs === "28px" && candHeadline.text.indexOf("+2.3 GiB") >= 0, candHeadline.fs);
+    const candContour = await page.$eval(".brand-contour", (el) => {
+      const circles = Array.from(el.querySelectorAll("circle"));
+      return {
+        circles: circles.length,
+        maxOpacity: circles.length ? Math.max.apply(null, circles.map((c) => parseFloat(c.getAttribute("stroke-opacity") || "1"))) : 0,
+      };
+    });
+    check("候选·等深线母题仅结论区且低对比", candContour.circles >= 3 && candContour.maxOpacity <= 0.12, JSON.stringify(candContour));
+    const candCta = await page.$eval(".conclusion .btn-primary", (el) => ({
+      bg: getComputedStyle(el).backgroundColor,
+      h: el.getBoundingClientRect().height,
+    }));
+    check("候选·页主任务 CTA 为实心 36px 主按钮", candCta.bg === "rgb(52, 93, 127)" && Math.abs(candCta.h - 36) <= 2, JSON.stringify(candCta));
+    const candScanBg = await page.$eval('[data-role="btn-scan-top"]', (el) => getComputedStyle(el).backgroundColor);
+    check("候选·全局扫描降为次级描边（不压当前页主任务）", candScanBg === "rgb(255, 255, 255)", candScanBg);
+    const candPrimaryN = await page.$$eval(".btn-primary", (els) => els.filter((e) => e.offsetParent !== null).length);
+    check("候选·总览实心主按钮每视口至多一个（可见口径）", candPrimaryN === 1, "x" + candPrimaryN);
+    const candAnchor = await page.$$eval(".topbar .dr-anchor, .topbar .depth-scale", (els) => els.length);
+    check("候选·页头无重复品牌锚点与刻度带", candAnchor === 0, "x" + candAnchor);
+    await noOverflow("1220×820 候选总览");
+    await shot("23-sample-candidate-overview-1220");
+
+    await page.setViewportSize({ width: 980, height: 640 });
+    const candHeadlineY = await page.$eval('[data-role="headline"]', (el) => el.getBoundingClientRect().top);
+    const candFirstRowY = await page.$eval('[data-role="top-body"] tr', (el) => el.getBoundingClientRect().top);
+    check("候选·980 首屏包含主结论（对齐审计改进点）", candHeadlineY > 0 && candHeadlineY < 640, "y=" + candHeadlineY.toFixed(0));
+    check("候选·980 首屏包含最近变化表首行", candFirstRowY > 0 && candFirstRowY < 640, "y=" + candFirstRowY.toFixed(0));
+    const candLongCell = await page.$eval('[data-role="top-body"] tr[data-path="' + LONG_DIR + '"] .cell-path',
+      (el) => ({ w: el.getBoundingClientRect().width, t: el.textContent.trim(), title: el.getAttribute("title") }));
+    check("候选·长路径中间截断且 title 完整、宽度受控",
+      candLongCell.t.includes("…") && candLongCell.title === LONG_DIR && candLongCell.w > 0 && candLongCell.w <= 421,
+      "w=" + candLongCell.w.toFixed(1));
+    await noOverflow("980×640 候选总览");
+    await shot("24-sample-candidate-overview-980");
+    const candRowShadow = await page.evaluate(() => {
+      const row = document.querySelector('[data-role="top-body"] tr');
+      row.focus();
+      return getComputedStyle(row).boxShadow;
+    });
+    check("候选·表格行键盘聚焦有 inset 焦点环", candRowShadow.indexOf("inset") >= 0, candRowShadow);
+
+    await page.setViewportSize({ width: 1220, height: 820 });
+    await page.goto(BASE + "sample-candidate.html#settings", { waitUntil: "load" });
+    await page.waitForSelector(".subtabs", { timeout: 5000 });
+    const candSubBg = await page.$eval('.subtab[aria-selected="true"]', (el) => getComputedStyle(el).backgroundColor);
+    check("候选·二级选中态为浅品牌底（非一级深色块，权重分层）",
+      candSubBg !== "rgb(36, 72, 100)" && candSubBg.indexOf("52, 93, 127") >= 0, candSubBg);
+    const candSetPrimaryN = await page.$$eval(".btn-primary", (els) => els.filter((e) => e.offsetParent !== null).length);
+    check("候选·设置页实心主按钮唯一（保存设置，可见口径）", candSetPrimaryN === 1, "x" + candSetPrimaryN);
+    const candMasksBtn = await page.$eval('[data-role="btn-save-masks"]', (el) => el.className);
+    check("候选·排除列表保存为次级（低频高危不抢主按钮）", candMasksBtn.indexOf("btn-primary") < 0, candMasksBtn);
+    const candFieldVals = await page.evaluate(() => ({
+      root: document.getElementById("f-root").value,
+      kb: document.getElementById("f-kb").value,
+      low: document.getElementById("f-low").value,
+    }));
+    check("候选·当前值预填字段（就近显示，不再空白框+远端摘要）",
+      candFieldVals.root === ROOT && candFieldVals.kb === "5120" && candFieldVals.low === "3.5",
+      JSON.stringify(candFieldVals));
+    const candTechInDetails = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll(".field-details")).some((d) => d.textContent.indexOf("KB") >= 0) &&
+        Array.from(document.querySelectorAll(".field-details")).some((d) => d.textContent.indexOf("fnmatch") >= 0);
+    });
+    check("候选·技术口径（KB/fnmatch）收进可展开说明", candTechInDetails, "");
+    check("候选·排除列表安全语义保留（确认勾选 + 新数据集影响）",
+      !!(await page.$('[data-role="mask-confirm"]')) && (await page.textContent("#page-settings")).includes("不可直接对比"), "");
+    await noOverflow("1220×820 候选设置");
+    await shot("25-sample-candidate-settings-1220");
+
+    /* 候选 reduced-motion：等深线关闭（与主体同一合同） */
+    await page.goto(BASE + "sample-candidate.html#overview", { waitUntil: "load" });
+    await page.waitForSelector('[data-role="headline"]', { timeout: 5000 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const candReduced = await page.$eval(".brand-contour", (el) => getComputedStyle(el).animationName);
+    check("候选·reduced-motion 下等深线动画关闭", candReduced === "none", candReduced);
+    await page.emulateMedia({ reducedMotion: null });
+
+    /* ===== C20 ISS-104 · 品牌呈现与组件规则核对 ===== */
+    await page.setViewportSize({ width: 1220, height: 820 });
+    await page.goto(BASE + "sample-brand.html", { waitUntil: "load" });
+    await page.waitForSelector('[data-role="brand-img-64"]', { timeout: 5000 });
+    const brandImg = await page.$eval('[data-role="brand-img-64"]', (el) => ({ w: el.naturalWidth, ok: el.complete }));
+    check("品牌·正式 App 图标（icon.png）并排加载成功", brandImg.ok && brandImg.w > 0, "naturalWidth=" + brandImg.w);
+    const basinSizes = await page.$$eval("[data-role^='basin-slot-'] svg", (els) => els.map((s) => s.getAttribute("width")));
+    check("品牌·brandBasin 24/26/64 三档并排呈现", basinSizes.join(",") === "64,26,24", basinSizes.join(","));
+    const brandRules = await page.evaluate(() => document.body.innerText || "");
+    check("品牌·保留/移除规则与 ISS-105 分工注记可见",
+      brandRules.includes("保留") && brandRules.includes("移除") && brandRules.includes("ISS-105"), "");
+    check("品牌·形状一致性说明以并排实图为据（不靠色值）",
+      brandRules.includes("并排实图") && brandRules.includes("不靠色值"), "");
+    const emptyTypes = await page.evaluate(() => ({
+      wait: !!document.querySelector('[data-role="empty-wait"]'),
+      err: !!document.querySelector('[data-role="empty-err"]'),
+      nomatch: !!document.querySelector('[data-role="empty-nomatch"]'),
+    }));
+    check("空态·三型实例齐备（等待/错误/无匹配）", emptyTypes.wait && emptyTypes.err && emptyTypes.nomatch, JSON.stringify(emptyTypes));
+    await noOverflow("1220×820 组件与品牌核对");
+    await page.setViewportSize({ width: 980, height: 640 });
+    await noOverflow("980×640 组件与品牌核对");
+    await page.setViewportSize({ width: 1220, height: 820 });
+    await shot("26-sample-brand-1220");
+
+    /* ===== C21 ISS-104 · 评审壳切换 ===== */
+    await page.goto(BASE + "samples.html", { waitUntil: "load" });
+    await page.waitForSelector('[data-role="single-frame"]', { timeout: 5000 });
+    const shellDeclare = await page.textContent('[data-role="declare"]');
+    check("评审壳·合成数据与零改动声明", shellDeclare.includes("ISS-104 视觉样板对照") && shellDeclare.includes("合成数据") && shellDeclare.includes("零改动"), "");
+    const shellSrc0 = await page.$eval('[data-role="single-frame"]', (el) => el.getAttribute("src"));
+    check("评审壳·默认展示候选总览", shellSrc0.indexOf("sample-candidate.html#overview") >= 0, shellSrc0);
+    await page.click('[data-mode="current"]');
+    const shellSrc1 = await page.$eval('[data-role="single-frame"]', (el) => el.getAttribute("src"));
+    check("评审壳·可切换到现状复刻", shellSrc1.indexOf("sample-current.html#overview") >= 0, shellSrc1);
+    await page.click('[data-page="settings"]');
+    const shellSrc2 = await page.$eval('[data-role="single-frame"]', (el) => el.getAttribute("src"));
+    check("评审壳·设置对照可切换", shellSrc2.indexOf("sample-current.html#settings") >= 0, shellSrc2);
+    await page.click('[data-page="brand"]');
+    await page.waitForFunction(() => {
+      const f = document.querySelector('[data-role="single-frame"]');
+      return f && (f.getAttribute("src") || "").indexOf("sample-brand.html") >= 0;
+    }, null, { timeout: 5000 });
+    check("评审壳·组件与品牌页可切换", true, "");
+    await page.click('[data-page="overview"]');
+    await page.click('[data-mode="pair"]');
+    await page.waitForFunction(() => {
+      const a = document.querySelector('[data-role="pair-current"]');
+      const b = document.querySelector('[data-role="pair-candidate"]');
+      return a && b && (a.getAttribute("src") || "").indexOf("sample-current") >= 0 && (b.getAttribute("src") || "").indexOf("sample-candidate") >= 0;
+    }, null, { timeout: 5000 });
+    const pairScaled = await page.$eval('[data-role="pair-current"]', (el) => el.style.transform);
+    check("评审壳·并排为同数据双栏缩放视图", pairScaled.indexOf("scale(") === 0, pairScaled);
+    await shot("27-samples-shell-1220");
 
     /* ===== C17 运行期无错误 ===== */
     check("全程无 pageerror", pageErrors.length === 0, pageErrors.join("; ").slice(0, 200));

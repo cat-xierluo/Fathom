@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ISS-104 样板 · 候选方案</title>
+<link rel="stylesheet" href="sample-candidate.css">
+</head>
+<body>
+<!-- 样板标签条：评审标识（产品不含） -->
+<div class="sample-tag" data-role="sample-tag">
+  <strong>候选方案</strong>
+  <span class="tag-note">ISS-104 收敛样板（DEC-023 色板内，一套方案） · 合成数据 · 待用户评审，未确认前不作为全站合同</span>
+</div>
+
+<div class="app-shell">
+
+  <!-- 一级导航：保留用户认可的深色选中块（全站唯一深色实底） -->
+  <nav class="sidenav" aria-label="主导航（候选）">
+    <div class="sidenav-brand">
+      <span class="brand-mark" data-role="brand-side" aria-hidden="true"></span>
+      <span class="brand-word" aria-hidden="true">FATHOM</span>
+      <span class="brand-ruler" aria-hidden="true"></span>
+      <span class="visually-hidden">Fathom</span>
+    </div>
+    <a class="nav-item" href="#overview" data-nav="overview">
+      <span class="nav-icon" data-icon="gauge"></span>总览
+    </a>
+    <a class="nav-item" href="#overview" data-nav="changes" aria-disabled="true">
+      <span class="nav-icon" data-icon="activity"></span>变化
+    </a>
+    <a class="nav-item" href="#overview" data-nav="browse" aria-disabled="true">
+      <span class="nav-icon" data-icon="pie"></span>分布
+    </a>
+    <a class="nav-item" href="#overview" data-nav="bigfiles" aria-disabled="true">
+      <span class="nav-icon" data-icon="fileText"></span>大文件
+    </a>
+    <span class="sidenav-spacer"></span>
+    <a class="nav-item" href="#settings" data-nav="settings">
+      <span class="nav-icon" data-icon="settings"></span>设置
+    </a>
+  </nav>
+
+  <div class="main-area">
+    <!-- 顶栏：22px 标题；无品牌锚点、无刻度带；全局扫描为次级描边（不压当前页主任务） -->
+    <header class="topbar">
+      <h1 data-role="page-title">总览</h1>
+      <div class="topbar-right">
+        <span class="data-chip">数据截至 9月12日 12:03</span>
+        <button type="button" class="btn" data-role="btn-scan-top">立即扫描</button>
+      </div>
+    </header>
+
+    <div class="page-scroll">
+      <div class="page-inner">
+
+        <!-- ============ 总览（候选） ============ -->
+        <section id="page-overview" aria-label="总览（候选方案）">
+
+          <div class="quality-line">
+            <span class="path-mono" data-role="root-path"></span>
+            <span>9月11日 09:00 → 9月12日 12:03</span>
+            <span class="quality-chip">覆盖完整</span>
+          </div>
+
+          <!-- 主结论区：先回答“本次比上次变化多少”；等深线母题仅此处 -->
+          <div class="conclusion" data-role="conclusion">
+            <div data-role="contour-slot"></div>
+            <div class="conclusion-main">
+              <p class="conclusion-kicker">最近变化 · 已测量同口径</p>
+              <h2 class="conclusion-headline" data-role="headline">最近增长 +2.3 GiB</h2>
+              <p class="conclusion-sub">主要来自 开发/项目A/build（+2.1 GiB）与 下载（+1.1 GiB）；归档释放 1.0 GiB。来源用途未识别时，只描述路径与变化量。</p>
+            </div>
+            <div class="conclusion-actions">
+              <button type="button" class="btn btn-primary" data-role="cta-view-changes">查看变化 →</button>
+              <button type="button" class="btn">查看分布</button>
+            </div>
+          </div>
+
+          <!-- L1 主表面（每页一张白卡）；内部 L2 分组不套卡 -->
+          <div class="surface">
+            <div class="ov-grid">
+              <!-- 主：最近变化（首屏任务信息） -->
+              <section aria-label="最近变化">
+                <div class="panel-hd">
+                  <h2>最近变化</h2>
+                  <a class="link-muted" href="#overview">查看完整对比 →</a>
+                </div>
+                <div class="tbl-wrap">
+                  <table class="tbl">
+                    <thead>
+                      <tr><th scope="col">目录</th><th scope="col" class="num">变化</th><th scope="col">状态</th></tr>
+                    </thead>
+                    <tbody data-role="top-body"></tbody>
+                  </table>
+                </div>
+                <p class="hint-line">另有 1 个目录（小缓存 11 MiB）此前未记录，不参与净变化；行值为累计大小，不可相加。</p>
+              </section>
+
+              <!-- 辅：卷容量与走势（次级；统一图表规格） -->
+              <section aria-label="卷容量与走势">
+                <div class="panel-hd">
+                  <h2>卷容量与走势</h2>
+                  <span class="hint">09-09 未扫描（留空不补零）</span>
+                </div>
+                <div class="vol-readout">
+                  <div class="readout"><span class="rl">剩余</span><span class="rv rv-ok" data-role="rv-free"></span></div>
+                  <div class="readout"><span class="rl">已用</span><span class="rv rv-used" data-role="rv-used"></span></div>
+                  <div class="readout"><span class="rl">快照</span><span class="rv rv-s">2 个</span></div>
+                  <div class="readout"><span class="rl">下次计划</span><span class="rv rv-s">9月13日 12:00</span></div>
+                </div>
+                <div data-role="mini-spark"></div>
+                <details class="tbl-toggle">
+                  <summary>以表格查看走势</summary>
+                  <p class="hint">图表必须有等价表格（DESIGN 合同）；表格由同一序列渲染。</p>
+                </details>
+              </section>
+            </div>
+
+            <div class="ov-foot">
+              <span>最近扫描 9月12日 12:03 成功（du 42 秒）</span>
+              <a class="link-muted" href="#settings">运行历史 →</a>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ 设置（候选） ============ -->
+        <section id="page-settings" aria-label="设置（候选方案）" hidden>
+
+          <!-- 二级分区标签：浅品牌底 + 短刻度（与一级深色块权重差） -->
+          <div class="subtabs" role="tablist" aria-label="设置分区（候选）">
+            <button type="button" class="subtab" role="tab" aria-selected="true" data-role="subtab">
+              <span class="subtab-ic" data-icon="settings"></span>监控
+            </button>
+            <button type="button" class="subtab" role="tab" aria-selected="false" data-role="subtab">
+              <span class="subtab-ic" data-icon="clock"></span>计划与通知
+            </button>
+            <button type="button" class="subtab" role="tab" aria-selected="false" data-role="subtab">
+              <span class="subtab-ic" data-icon="search"></span>高级与诊断
+            </button>
+            <button type="button" class="subtab" role="tab" aria-selected="false" data-role="subtab">
+              <span class="subtab-ic" data-icon="info"></span>关于
+            </button>
+          </div>
+
+          <!-- L1 主表面：设置页单张白卡 -->
+          <div class="surface">
+            <section aria-label="监控范围与计划">
+              <div class="panel-hd">
+                <h2>监控范围与计划</h2>
+                <span class="hint">当前值已填入输入框；改动在保存后生效</span>
+              </div>
+
+              <!-- L2 字段组：当前值就近显示（预填），技术解释收进可展开说明 -->
+              <div class="field-group">
+                <div class="field-head">
+                  <span class="field-label">监控根目录</span>
+                  <span class="field-value-line">
+                    <input class="field-input field-input-mono" id="f-root" type="text" value="" aria-describedby="f-root-desc">
+                  </span>
+                  <span class="field-desc" id="f-root-desc">当前版本监控单个根目录；更改根目录会形成新数据集，历史对比将中断。</span>
+                </div>
+
+                <div class="field-head">
+                  <span class="field-label">入库阈值</span>
+                  <span class="field-value-line">
+                    <input class="field-input" id="f-kb" type="text" value="" aria-describedby="f-kb-desc">
+                    <span class="field-desc">KB</span>
+                  </span>
+                  <details class="field-details">
+                    <summary>这个阈值影响什么？</summary>
+                    <span id="f-kb-desc">单位为 KB。小于该阈值的目录不进入统计，在变化表中显示为“未记录”——未记录不等于新增或删除。当前值折合 5 MiB。</span>
+                  </details>
+                </div>
+
+                <div class="field-head">
+                  <span class="field-label">低空间提醒阈值</span>
+                  <span class="field-value-line">
+                    <input class="field-input" id="f-low" type="text" value="" aria-describedby="f-low-desc">
+                    <span class="field-desc">GB</span>
+                  </span>
+                  <span class="field-desc" id="f-low-desc">剩余空间低于该值时提醒；只影响提醒，不改变采集数据。</span>
+                </div>
+
+                <div class="field-head">
+                  <span class="field-label">扫描计划</span>
+                  <span class="field-value-line">
+                    <input class="field-input" id="f-sched" type="text" value="" aria-describedby="f-sched-desc">
+                    <span class="field-desc">每日自动扫描；首扫与重扫可手动触发。</span>
+                  </span>
+                </div>
+              </div>
+
+              <!-- 主按钮：设置页主任务（每视口唯一实心） -->
+              <div class="settings-save">
+                <button type="button" class="btn btn-primary" data-role="btn-save">保存设置</button>
+                <button type="button" class="btn">恢复默认</button>
+                <span class="hint">保存后按新配置扫描；旧数据不会被删除。</span>
+              </div>
+            </section>
+
+            <div class="block-sep" role="separator"></div>
+
+            <section aria-label="扫描排除列表">
+              <div class="panel-hd">
+                <h2>扫描排除列表</h2>
+                <span class="hint">按名字跳过整棵子树；不含路径分隔符</span>
+              </div>
+              <div class="mask-chips" data-role="mask-chips"></div>
+              <div class="mask-add">
+                <input class="field-input" type="text" placeholder="新增掩码，例如 node_modules" style="width:260px">
+                <button type="button" class="btn">添加</button>
+              </div>
+              <details class="field-details">
+                <summary>修改排除列表有什么影响？</summary>
+                <span>匹配规则与产品一致（fnmatch 通配）。修改会形成新的数据集用于后续扫描：旧数据不会被删除，但新数据集与既有历史不可直接对比。</span>
+              </details>
+              <label class="check-row"><input type="checkbox" data-role="mask-confirm"> 我已知晓：保存后按新数据集扫描，历史对比可能中断</label>
+              <div class="settings-save" style="margin-top:var(--sp2)">
+                <!-- 次级：排除列表为低频高危操作，不与页主任务争夺实心主按钮 -->
+                <button type="button" class="btn" data-role="btn-save-masks">保存排除列表</button>
+              </div>
+            </section>
+
+            <div class="block-sep" role="separator"></div>
+
+            <section aria-label="权限与覆盖">
+              <div class="panel-hd">
+                <h2>权限与覆盖</h2>
+                <span class="hint">最近一次扫描的受限与消失目录事实；本应用不改变系统权限</span>
+              </div>
+              <div class="cover-readout">
+                <div class="readout"><span class="rl">读取受限（处）</span><span class="rv rv-s">0</span></div>
+                <div class="readout"><span class="rl">扫描期间消失（个）</span><span class="rv rv-s">0</span></div>
+                <div class="readout"><span class="rl">覆盖</span><span class="rv rv-s">3/3</span></div>
+              </div>
+              <p class="hint-line">受限 = du 无法读取某些目录；消失 = 扫描期间目录被移动或删除，属正常现象，不代表数据被清理。</p>
+              <div class="settings-save">
+                <button type="button" class="btn">打开系统隐私设置</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="sample-data.js"></script>
+<script>
+"use strict";
+(function () {
+  var S = SAMPLE;
+
+  var ICONS = {
+    gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+    activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+    pie: '<path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>',
+    fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+    info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'
+  };
+  function iconSvg(name) {
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || "") + "</svg>";
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-icon]"), function (el) {
+    el.innerHTML = iconSvg(el.dataset.icon);
+  });
+
+  /* 品牌位：主窗口唯一品牌位 = 侧栏（无页头锚点、无刻度带） */
+  document.querySelector('[data-role="brand-side"]').innerHTML = S.brandBasinSvg(24);
+  /* 等深线母题：仅总览主结论区（低对比装饰，aria-hidden） */
+  document.querySelector('[data-role="contour-slot"]').outerHTML = S.CONTOUR_BG;
+
+  /* 数据 */
+  var usedNow = S.VOLUME.totalG - S.VOLUME.freeG;
+  document.querySelector('[data-role="root-path"]').textContent = S.ROOT;
+  document.querySelector('[data-role="rv-free"]').textContent = S.fmtG(S.VOLUME.freeG);
+  document.querySelector('[data-role="rv-used"]').textContent = S.fmtG(usedNow);
+  document.getElementById("f-root").value = S.SETTINGS.root;
+  document.getElementById("f-kb").value = String(S.SETTINGS.intervalKb);
+  document.getElementById("f-low").value = String(S.SETTINGS.lowSpaceGb);
+  document.getElementById("f-sched").value = "每日 " + S.SETTINGS.schedule;
+
+  /* 最近变化表（含长路径行：截断中间、title 保留全路径） */
+  document.querySelector('[data-role="top-body"]').innerHTML = S.TOP_ROWS.map(function (r) {
+    return '<tr class="krow" tabindex="0" data-path="' + S.esc(r.path) + '" title="' + S.esc(r.path) + '">' +
+      '<td><span class="cell-path cell-name" title="' + S.esc(r.path) + '">' + S.esc(S.midTrunc(r.path)) + "</span></td>" +
+      '<td class="num ' + S.deltaCls(r.prev, r.curr) + '">' + S.deltaText(r.prev, r.curr) + "</td>" +
+      '<td><span class="st st-measured"><span class="st-dot"></span>已测量</span></td></tr>';
+  }).join("");
+
+  /* 掩码 chips（当前值就近 + 移除动作） */
+  document.querySelector('[data-role="mask-chips"]').innerHTML = S.SETTINGS.masks.map(function (m) {
+    return '<span class="mask-chip">' + S.esc(m) +
+      '<button type="button" class="rm" aria-label="移除 ' + S.esc(m) + '"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button></span>';
+  }).join("");
+
+  /* 迷你走势（候选统一规格：150 高、3 条弱网格、缺失日留空、首末 x 标签锚定） */
+  (function renderMini() {
+    var el = document.querySelector('[data-role="mini-spark"]');
+    var W = 640, H = 150, L = 44, R = 14, T = 10, B = 24;
+    var vals = S.FREE_SERIES.filter(function (v) { return v !== null; });
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    if (max - min < 1) { min -= 1; max += 1; }
+    var pad = (max - min) * 0.15; min -= pad; max += pad;
+    function x(i) { return L + (i * (W - L - R)) / (S.DATES.length - 1); }
+    function y(v) { return T + (1 - (v - min) / (max - min)) * (H - T - B); }
+    function tick(v) { return v >= 100 ? String(Math.round(v)) : v.toFixed(1).replace(/\.0$/, ""); }
+    var out = '<svg class="spark" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="卷剩余走势（GiB）；缺失日期留空、不补零；等价数据见下方表格">';
+    [0.25, 0.5, 0.75].forEach(function (f) {
+      var gy = T + f * (H - T - B);
+      var gv = max - f * (max - min);
+      out += '<line class="spark-grid" x1="' + L + '" y1="' + gy.toFixed(1) + '" x2="' + (W - R) + '" y2="' + gy.toFixed(1) + '"/>';
+      out += '<text x="' + (L - 8) + '" y="' + (gy + 3.5).toFixed(1) + '" text-anchor="end">' + tick(gv) + "</text>";
+    });
+    var seg = [], segs = [];
+    S.FREE_SERIES.forEach(function (v, i) {
+      if (v === null) { if (seg.length) segs.push(seg); seg = []; }
+      else seg.push({ i: i, v: v });
+    });
+    if (seg.length) segs.push(seg);
+    segs.forEach(function (sg) {
+      var pts = sg.map(function (p) { return x(p.i).toFixed(1) + "," + y(p.v).toFixed(1); });
+      out += '<polyline class="spark-line" points="' + pts.join(" ") + '"/>';
+      if (sg.length >= 2) {
+        out += '<polygon class="spark-area" points="' + x(sg[0].i).toFixed(1) + "," + (H - B).toFixed(1) + " " +
+          pts.join(" ") + " " + x(sg[sg.length - 1].i).toFixed(1) + "," + (H - B).toFixed(1) + '"/>';
+      }
+    });
+    S.FREE_SERIES.forEach(function (v, i) {
+      if (v === null) return;
+      out += '<circle class="spark-dot" cx="' + x(i).toFixed(1) + '" cy="' + y(v).toFixed(1) + '" r="2.6"><title>' +
+        S.esc(S.DATES[i] + " · " + tick(v) + " GiB") + "</title></circle>";
+    });
+    out += '<line class="spark-axis" x1="' + L + '" y1="' + (H - B) + '" x2="' + (W - R) + '" y2="' + (H - B) + '"/>';
+    out += '<text x="' + x(0).toFixed(1) + '" y="' + (H - 6) + '">09-06</text>';
+    out += '<text x="' + x(S.DATES.length - 1).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="end">09-12</text>';
+    out += "</svg>";
+    el.innerHTML = out;
+  })();
+
+  /* 二级标签切换（样板内演示交互） */
+  var subtabs = document.querySelectorAll('[data-role="subtab"]');
+  Array.prototype.forEach.call(subtabs, function (t) {
+    t.addEventListener("click", function () {
+      Array.prototype.forEach.call(subtabs, function (o) { o.setAttribute("aria-selected", String(o === t)); });
+    });
+  });
+
+  /* 键盘：行上下移动 + Enter 模拟选中（样板级演示；完整键盘合同在原型主体） */
+  document.addEventListener("keydown", function (e) {
+    var t = e.target;
+    if (!t || !t.matches || !t.matches("tr.krow")) return;
+    var rows = Array.prototype.slice.call(document.querySelectorAll("tr.krow"));
+    var idx = rows.indexOf(t);
+    if (e.key === "ArrowDown" && idx >= 0 && idx < rows.length - 1) { e.preventDefault(); rows[idx + 1].focus(); }
+    else if (e.key === "ArrowUp" && idx > 0) { e.preventDefault(); rows[idx - 1].focus(); }
+    else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      rows.forEach(function (r) { r.classList.toggle("selected", r === t); });
+    }
+  });
+
+  /* hash 路由（overview / settings） */
+  function route() {
+    var page = (location.hash || "").indexOf("settings") >= 0 ? "settings" : "overview";
+    document.getElementById("page-overview").hidden = page !== "overview";
+    document.getElementById("page-settings").hidden = page !== "settings";
+    document.querySelector('[data-role="page-title"]').textContent = page === "settings" ? "设置" : "总览";
+    Array.prototype.forEach.call(document.querySelectorAll(".nav-item"), function (a) {
+      if (a.dataset.nav === page) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+  }
+  window.addEventListener("hashchange", route);
+  route();
+})();
+</script>
+</body>
+</html>

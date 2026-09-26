@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ISS-104 样板 · 现状复刻</title>
+<link rel="stylesheet" href="sample-current.css">
+</head>
+<body>
+<!-- 样板标签条：评审标识（产品不含）。现状复刻 = 审计反例基线，非推荐方案 -->
+<div class="sample-tag" data-role="sample-tag">
+  <strong>现状复刻</strong>
+  <span class="tag-note">按产品 2026-09-26 实拍口径复刻（审计反例基线） · 合成数据 · ISS-104 对照评审用，非推荐方案</span>
+</div>
+
+<div class="app-shell">
+
+  <!-- 侧栏：复刻产品 72px 浅灰材质 + brandBasin 24px + 9px 字标 + 短刻度 -->
+  <nav class="sidenav" aria-label="主导航（现状复刻）">
+    <div class="sidenav-brand">
+      <span class="brand-mark" data-role="brand-side" aria-hidden="true"></span>
+      <span class="brand-word" aria-hidden="true">FATHOM</span>
+      <span class="brand-ruler" aria-hidden="true"></span>
+      <span class="visually-hidden">Fathom</span>
+    </div>
+    <a class="nav-item" href="#overview" data-nav="overview">
+      <span class="nav-icon" data-icon="gauge"></span>总览
+    </a>
+    <a class="nav-item" href="#overview" data-nav="changes" aria-disabled="true">
+      <span class="nav-icon" data-icon="activity"></span>变化
+    </a>
+    <a class="nav-item" href="#overview" data-nav="browse" aria-disabled="true">
+      <span class="nav-icon" data-icon="pie"></span>分布
+    </a>
+    <a class="nav-item" href="#overview" data-nav="bigfiles" aria-disabled="true">
+      <span class="nav-icon" data-icon="fileText"></span>大文件
+    </a>
+    <span class="sidenav-spacer"></span>
+    <a class="nav-item" href="#settings" data-nav="settings">
+      <span class="nav-icon" data-icon="settings"></span>设置
+    </a>
+  </nav>
+
+  <div class="main-area">
+    <!-- 顶栏：现状 = 26px brandBasin 锚点 + 17px 标题 + 180px 刻度带 + 实心扫描 -->
+    <header class="topbar">
+      <div class="topbar-title">
+        <span class="dr-anchor" data-role="brand-anchor" aria-hidden="true"></span>
+        <div class="topbar-heading">
+          <h1 data-role="page-title">总览</h1>
+          <span class="depth-scale" aria-hidden="true"></span>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <span class="scan-badge">上次扫描 9月12日 12:03</span>
+        <button type="button" class="btn btn-primary" data-role="btn-scan-top">立即扫描</button>
+      </div>
+    </header>
+
+    <div class="page-container">
+
+      <!-- ============ 总览（现状） ============ -->
+      <section id="page-overview" aria-label="总览（现状复刻）">
+        <div class="stat-cards">
+          <div class="card"><p class="card-label">磁盘剩余</p><p class="card-value" id="card-free">--</p></div>
+          <div class="card"><p class="card-label">磁盘已用</p><p class="card-value" id="card-used">--</p></div>
+          <div class="card"><p class="card-label">快照数量</p><p class="card-value" id="card-snaps">--</p></div>
+          <div class="card"><p class="card-label">最近扫描</p><p class="card-value small">2026-09-12 12:03</p></div>
+        </div>
+        <div class="decor-scale" aria-hidden="true"></div>
+
+        <div class="quality-line">
+          <span class="path-mono" data-role="root-path"></span>
+          <span>2026-09-11 09:00 → 2026-09-12 12:03</span>
+          <span class="quality-chip">覆盖完整</span>
+        </div>
+
+        <!-- 现状：340px 卷容量趋势先于变化结论（审计反例 #2） -->
+        <section class="panel" data-role="trend-panel">
+          <div class="panel-head">
+            <h2>卷容量趋势</h2>
+            <span class="hint">每次快照记录的整卷用量</span>
+          </div>
+          <div class="trend-box" data-role="trend-box"></div>
+          <details class="tbl-toggle">
+            <summary>以表格查看走势</summary>
+            <p class="hint">等价表格在产品中由数据表渲染；本复刻省略（对照点为图与层级）。</p>
+          </details>
+        </section>
+
+        <!-- 现状：最近变化在首屏之下（980×640 时 y≈759，审计实测） -->
+        <section class="panel" data-role="summary-panel">
+          <div class="panel-head">
+            <h2>最近变化</h2>
+            <a class="link-muted" href="#overview">查看完整对比 →</a>
+          </div>
+          <p class="hint" style="margin-bottom:8px">对比区间 <span data-role="range-label"></span>：</p>
+          <table class="tbl">
+            <thead><tr><th>方向</th><th>目录</th><th class="num">变化</th></tr></thead>
+            <tbody data-role="summary-body"></tbody>
+          </table>
+          <p class="hint" style="margin-top:8px">方向符号表意增长/缩减；目录为累计大小，行值不可相加。</p>
+        </section>
+      </section>
+
+      <!-- ============ 设置（现状） ============ -->
+      <section id="page-settings" aria-label="设置（现状复刻）" hidden>
+        <div class="settings-layout">
+          <!-- 现状：分区导航白卡列，选中块与全局导航同权重（深色实底） -->
+          <nav class="settings-nav" aria-label="设置分区（现状复刻）">
+            <button type="button" class="settings-nav-item" aria-current="true">
+              <span class="settings-nav-icon" data-icon="settings"></span>监控
+            </button>
+            <button type="button" class="settings-nav-item">
+              <span class="settings-nav-icon" data-icon="clock"></span>计划与通知
+            </button>
+            <button type="button" class="settings-nav-item">
+              <span class="settings-nav-icon" data-icon="search"></span>高级与诊断
+            </button>
+            <button type="button" class="settings-nav-item">
+              <span class="settings-nav-icon" data-icon="info"></span>关于
+            </button>
+          </nav>
+
+          <div class="settings-main">
+            <!-- 现状：字段为空白输入（留空表示不修改），当前值集中在底部摘要行 -->
+            <section class="panel">
+              <div class="panel-head">
+                <h2>监控设置</h2>
+                <span class="config-hint">保存到运行根 settings.json：留空的字段保持不变</span>
+              </div>
+              <div class="config-form">
+                <div class="cfg-row">
+                  <label for="cur-root">监控根目录</label>
+                  <input class="ctl-input" id="cur-root" type="text" placeholder="留空表示不修改">
+                </div>
+                <div class="cfg-row">
+                  <label for="cur-kb">入库阈值（KB）</label>
+                  <input class="ctl-input" id="cur-kb" type="text" placeholder="正数">
+                </div>
+              </div>
+              <div class="settings-actions">
+                <button type="button" class="btn">保存设置</button>
+                <button type="button" class="btn">恢复默认值</button>
+              </div>
+              <p class="effective-line" data-role="effective-line"></p>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>扫描排除列表</h2>
+                <span class="config-hint">按名字（fnmatch 通配）跳过整棵子树，例如 <code>node_modules</code>、<code>*.noindex</code>；不含路径分隔符。</span>
+              </div>
+              <div data-role="mask-rows"></div>
+              <div class="exclude-row">
+                <input class="ctl-input" type="text" placeholder="新增掩码，例如 node_modules" style="flex:1;width:auto">
+                <button type="button" class="btn">＋ 新增</button>
+              </div>
+              <p class="exclude-note">修改排除列表会形成新的数据集用于后续扫描：旧数据不会被删除，但新数据集与既有历史不可直接对比。</p>
+              <label class="check-row"><input type="checkbox"> 我已知晓：保存后按新数据集扫描，历史对比可能中断</label>
+              <div class="settings-actions">
+                <button type="button" class="btn btn-primary">保存排除列表</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<script src="sample-data.js"></script>
+<script>
+"use strict";
+(function () {
+  var S = SAMPLE;
+
+  /* 图标（与 app.js ICON_PATHS 同源的关键几项） */
+  var ICONS = {
+    gauge: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
+    activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+    pie: '<path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/>',
+    fileText: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+    info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'
+  };
+  function iconSvg(name) {
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ICONS[name] || "") + "</svg>";
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-icon]"), function (el) {
+    el.innerHTML = iconSvg(el.dataset.icon);
+  });
+
+  /* 品牌位：侧栏 24px / 页头 26px（复刻现状重复品牌位） */
+  document.querySelector('[data-role="brand-side"]').innerHTML = S.brandBasinSvg(24);
+  document.querySelector('[data-role="brand-anchor"]').innerHTML = S.brandBasinSvg(26);
+
+  /* ===== 数据填充（同 sample-data.js 合成数据） ===== */
+  var usedNow = S.VOLUME.totalG - S.VOLUME.freeG;
+  document.getElementById("card-free").textContent = S.fmtG(S.VOLUME.freeG);
+  document.getElementById("card-used").innerHTML = S.fmtG(usedNow) + ' <span class="card-sub">（' +
+    Math.round((usedNow / S.VOLUME.totalG) * 100) + "%）</span>";
+  document.getElementById("card-snaps").textContent = String(S.SNAP_COUNT);
+  document.querySelector('[data-role="root-path"]').textContent = S.ROOT;
+  document.querySelector('[data-role="range-label"]').textContent = "2026-09-11 → 2026-09-12";
+  document.querySelector('[data-role="effective-line"]').innerHTML =
+    "当前生效：监控根 <code>" + S.esc(S.SETTINGS.root) + "</code> · 计划 " + S.esc(S.SETTINGS.schedule) +
+    " · 入库阈值 " + S.SETTINGS.intervalKb + " KB · 低空间提醒 " + S.SETTINGS.lowSpaceGb + " GB · 排除掩码 <code>*.noindex</code>";
+
+  /* 最近变化表（方向/目录/变化 —— 现状列式） */
+  var arrow = { grow: "↗", shrink: "↘" };
+  document.querySelector('[data-role="summary-body"]').innerHTML = S.TOP_ROWS.slice(0, 3).map(function (r) {
+    var up = r.curr >= r.prev;
+    return "<tr><td class=\"dir-cell\">" + arrow[up ? "grow" : "shrink"] + "</td>" +
+      '<td class="path">' + S.esc(S.midTrunc(r.path, 60)) + "</td>" +
+      '<td class="num ' + S.deltaCls(r.prev, r.curr) + '">' + S.deltaText(r.prev, r.curr) + "</td></tr>";
+  }).join("");
+
+  /* 掩码行 */
+  document.querySelector('[data-role="mask-rows"]').innerHTML = S.SETTINGS.masks.map(function (m) {
+    return '<div class="exclude-row"><code>' + S.esc(m) + '</code><button type="button" class="rm" aria-label="移除 ' + S.esc(m) + '">移除</button></div>';
+  }).join("");
+
+  /* ===== 340px 双线走势（复刻现状 ECharts 大图的层级语言：图例居中、5 档 y 轴、区间填灰） ===== */
+  function renderTrend() {
+    var box = document.querySelector('[data-role="trend-box"]');
+    var W = Math.max(560, box.clientWidth || 900);
+    var H = 340, L = 86, R = 20, T = 30, B = 40;
+    var all = S.FREE_SERIES.concat(S.USED_SERIES).filter(function (v) { return v !== null; });
+    var max = Math.ceil(Math.max.apply(null, all) / 93.1) * 93.1;
+    var min = Math.floor(Math.min.apply(null, all) / 93.1) * 93.1;
+    if (max - min < 90) max = min + 186.2;
+    function x(i) { return L + (i * (W - L - R)) / (S.DATES.length - 1); }
+    function y(v) { return T + (1 - (v - min) / (max - min)) * (H - T - B); }
+    var out = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="卷容量趋势（已用/剩余，GB）；09-09 未扫描，折线留空不补零">';
+    /* y 轴 6 档 + 弱网格（现状为 ECharts 默认风格） */
+    for (var g = 0; g <= 5; g++) {
+      var gv = min + ((max - min) * g) / 5;
+      var gy = y(gv);
+      out += '<line x1="' + L + '" y1="' + gy.toFixed(1) + '" x2="' + (W - R) + '" y2="' + gy.toFixed(1) + '" stroke="#e8eaee" stroke-width="1"/>';
+      out += '<text x="' + (L - 8) + '" y="' + (gy + 4).toFixed(1) + '" text-anchor="end" font-size="11" fill="#6b7486">' + gv.toFixed(1) + " GB</text>";
+    }
+    out += '<line x1="' + L + '" y1="' + (H - B) + '" x2="' + (W - R) + '" y2="' + (H - B) + '" stroke="#c9cdd4" stroke-width="1"/>';
+    /* 已用↔剩余之间浅灰填充（现状面积层） */
+    var areaPts = [];
+    S.DATES.forEach(function (d, i) {
+      if (S.USED_SERIES[i] !== null) areaPts.push(x(i).toFixed(1) + "," + y(S.USED_SERIES[i]).toFixed(1));
+    });
+    for (var j = S.DATES.length - 1; j >= 0; j--) {
+      if (S.FREE_SERIES[j] !== null) areaPts.push(x(j).toFixed(1) + "," + y(S.FREE_SERIES[j]).toFixed(1));
+    }
+    if (areaPts.length >= 4) out += '<polygon points="' + areaPts.join(" ") + '" fill="#e3e6ea" fill-opacity="0.75"/>';
+    ["USED_SERIES", "FREE_SERIES"].forEach(function (key) {
+      var series = S[key];
+      var color = key === "USED_SERIES" ? "#244864" : "#35716f";
+      var seg = [], segs = [];
+      series.forEach(function (v, i) {
+        if (v === null) { if (seg.length) segs.push(seg); seg = []; }
+        else seg.push({ i: i, v: v });
+      });
+      if (seg.length) segs.push(seg);
+      segs.forEach(function (sg) {
+        out += '<polyline points="' + sg.map(function (p) { return x(p.i).toFixed(1) + "," + y(p.v).toFixed(1); }).join(" ") +
+          '" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>';
+        sg.forEach(function (p) {
+          out += '<circle cx="' + x(p.i).toFixed(1) + '" cy="' + y(p.v).toFixed(1) + '" r="3" fill="' + color + '"><title>' +
+            S.esc(S.DATES[p.i] + " · " + S.fmtG(p.v)) + "</title></circle>";
+        });
+      });
+    });
+    out += '<text x="' + x(0).toFixed(1) + '" y="' + (H - 12) + '" font-size="11" fill="#6b7486">09-11 09:00</text>';
+    out += '<text x="' + x(S.DATES.length - 1).toFixed(1) + '" y="' + (H - 12) + '" text-anchor="end" font-size="11" fill="#6b7486">09-12 12:03</text>';
+    out += "</svg>";
+    box.innerHTML = out;
+  }
+  renderTrend();
+  window.addEventListener("resize", renderTrend);
+
+  /* ===== hash 路由（overview / settings） ===== */
+  function route() {
+    var page = (location.hash || "").indexOf("settings") >= 0 ? "settings" : "overview";
+    document.getElementById("page-overview").hidden = page !== "overview";
+    document.getElementById("page-settings").hidden = page !== "settings";
+    document.querySelector('[data-role="page-title"]').textContent = page === "settings" ? "设置" : "总览";
+    Array.prototype.forEach.call(document.querySelectorAll(".nav-item"), function (a) {
+      if (a.dataset.nav === page) a.setAttribute("aria-current", "page");
+      else a.removeAttribute("aria-current");
+    });
+  }
+  window.addEventListener("hashchange", route);
+  route();
+})();
+</script>
+</body>
+</html>

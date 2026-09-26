@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>ISS-104 样板 · 组件与品牌核对</title>
+<link rel="stylesheet" href="sample-candidate.css">
+<style>
+/* 本页专属：并排核对与规则速览版式 */
+.spec-block { margin-bottom: var(--sp8); }
+.spec-block > h2 { margin: 0 0 var(--sp2); font-size: var(--fs-h2); font-weight: 600; }
+.spec-block > p.spec-why { margin: 0 0 var(--sp4); color: var(--muted); font-size: var(--fs-hint); max-width: 88ch; }
+
+/* 品牌并排核对：同一浅灰底，形状对照靠实图不靠色值 */
+.brand-row {
+  display: flex; flex-wrap: wrap; gap: var(--sp6);
+  background: var(--sidebar);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  padding: var(--sp6);
+  align-items: flex-end;
+}
+.brand-cell { display: flex; flex-direction: column; align-items: center; gap: var(--sp2); }
+.brand-cell .bc-cap { color: var(--muted); font-size: var(--fs-hint); text-align: center; }
+.brand-cell .bc-tag { color: var(--text-2); font-size: var(--fs-hint); font-weight: 600; }
+.brand-img { display: block; image-rendering: auto; }
+
+.brand-rules { margin: var(--sp4) 0 0; padding: 0; list-style: none; display: grid; gap: var(--sp2); }
+.brand-rules li {
+  display: flex; gap: var(--sp2); align-items: baseline;
+  font-size: 13px; color: var(--text-2); line-height: 1.5;
+}
+.brand-rules .keep, .brand-rules .drop { flex: none; font-weight: 600; width: 34px; }
+.brand-rules .keep { color: var(--ok); }
+.brand-rules .drop { color: var(--grow); }
+
+/* 字阶实例 */
+.type-row { display: flex; align-items: baseline; gap: var(--sp6); padding: var(--sp2) 0; border-bottom: 1px solid var(--hairline); flex-wrap: wrap; }
+.type-row:last-child { border-bottom: none; }
+.type-sample-28 { font-size: 28px; font-weight: 680; letter-spacing: -0.015em; color: var(--grow); font-variant-numeric: tabular-nums; }
+.type-sample-22 { font-size: 22px; font-weight: 640; letter-spacing: -0.015em; }
+.type-sample-15 { font-size: 15px; font-weight: 600; }
+.type-sample-14 { font-size: 14px; }
+.type-sample-13 { font-size: 13px; font-variant-numeric: tabular-nums; }
+.type-sample-12 { font-size: 12px; color: var(--muted); }
+.type-desc { color: var(--muted); font-size: var(--fs-hint); }
+
+/* 表面层级实例 */
+.surface-demo { background: var(--bg); border-radius: var(--radius-sm); padding: var(--sp4); }
+.surface-demo .l1 {
+  background: var(--card); border: 1px solid var(--hairline); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: var(--sp4);
+}
+.surface-demo .l2 { background: var(--bg); border-radius: var(--radius-sm); padding: var(--sp3) var(--sp4); }
+.surface-demo .cap { color: var(--muted); font-size: var(--fs-hint); margin: var(--sp2) 0 0; }
+
+/* 选中态并排实例 */
+.sel-demo { display: flex; gap: var(--sp6); flex-wrap: wrap; }
+.sel-col h3 { margin: 0 0 var(--sp2); font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.04em; }
+.sel-nav-demo { background: var(--sidebar); width: 120px; padding: var(--sp2); border-radius: var(--radius-sm); display: flex; flex-direction: column; gap: 3px; }
+.sel-nav-demo .on, .sel-nav-demo .off {
+  border-radius: 8px; padding: 6px 10px; font-size: 11px;
+  display: flex; align-items: center; gap: 6px;
+}
+.sel-nav-demo .off { color: var(--nav-idle-fg); }
+.sel-nav-demo .on { background: var(--used); color: var(--nav-active-fg); font-weight: 600; }
+.sel-sub-demo { display: flex; flex-direction: column; gap: var(--sp2); }
+.sel-sub-demo .on, .sel-sub-demo .off {
+  position: relative; border-radius: var(--radius-sm); padding: 5px 12px 5px 18px;
+  font-size: 13px; width: max-content;
+}
+.sel-sub-demo .off { color: var(--nav-idle-fg); }
+.sel-sub-demo .on { background: rgba(52, 93, 127, 0.10); color: var(--trench); font-weight: 600; }
+.sel-sub-demo .on::before {
+  content: ""; position: absolute; left: 6px; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 14px; border-radius: 2px; background: var(--mineral);
+}
+.sel-row-demo { width: 320px; font-size: 13px; }
+.sel-row-demo .r { padding: 8px 10px; border-bottom: 1px solid var(--hairline); }
+.sel-row-demo .r.sel { background: var(--sel); border-radius: 6px; }
+
+/* 空态三型 */
+.empty-demo { display: grid; gap: var(--sp3); }
+.empty-wait {
+  background: var(--bg); border-radius: var(--radius-sm);
+  padding: var(--sp4); max-width: 560px;
+}
+.empty-wait .et { margin: 0 0 var(--sp1); font-size: var(--fs-body); font-weight: 600; }
+.empty-wait .ed { margin: 0 0 var(--sp3); color: var(--muted); font-size: 13px; }
+.empty-err {
+  background: rgba(133, 69, 58, 0.06); border-radius: var(--radius-sm);
+  padding: var(--sp4); max-width: 560px;
+}
+.empty-err .et { margin: 0 0 var(--sp1); font-size: var(--fs-body); font-weight: 600; color: var(--danger); }
+.empty-err .ed { margin: 0 0 var(--sp3); color: var(--text-2); font-size: 13px; }
+.empty-nomatch { max-width: 560px; }
+.empty-nomatch .r { padding: 12px 10px; border-bottom: 1px solid var(--hairline); color: var(--muted); font-size: 13px; }
+:root { --danger: #85453a; }
+</style>
+</head>
+<body>
+<div class="sample-tag" data-role="sample-tag">
+  <strong>组件与品牌核对</strong>
+  <span class="tag-note">ISS-104 候选合同速览 + 24/26/64px 品牌呈现与正式 App 资产并排核对 · 合成数据 · 评审用</span>
+</div>
+
+<div class="page-scroll">
+  <div class="page-inner">
+
+    <!-- ============ 品牌呈现核对 ============ -->
+    <section class="spec-block" aria-label="品牌呈现核对">
+      <h2>品牌呈现：正式 App 图标 vs 界面 brandBasin（24/26/64px）</h2>
+      <p class="spec-why">审计反例 #1：界面 brandBasin 是五个共用中心的椭圆与一个三角缺口，64px 下仍像同心环，与正式图标（象牙白 squircle 底板、非对称水滴轮廓、有深度的阶地）形状不一致。下方为同一底色上的并排实图对照——形状一致性以并排实图核对，不靠色值命中证明。</p>
+      <div class="brand-row">
+        <div class="brand-cell">
+          <img class="brand-img" src="assets/icon.png" alt="正式 App 图标（层叠深潭位图，1024px 源）" width="128" height="128" data-role="brand-img-128">
+          <span class="bc-tag">正式 App 图标</span>
+          <span class="bc-cap">assets/icon.png · 128px 展示（源 1024）</span>
+        </div>
+        <div class="brand-cell">
+          <img class="brand-img" src="assets/icon.png" alt="正式 App 图标 64px 展示" width="64" height="64" data-role="brand-img-64">
+          <span class="bc-tag">正式 · 64px</span>
+          <span class="bc-cap">关于页目标尺寸</span>
+        </div>
+        <div class="brand-cell" data-role="basin-64">
+          <span data-role="basin-slot-64"></span>
+          <span class="bc-tag">brandBasin · 64px</span>
+          <span class="bc-cap">当前关于页呈现：同心环感</span>
+        </div>
+        <div class="brand-cell" data-role="basin-26">
+          <span data-role="basin-slot-26"></span>
+          <span class="bc-tag">brandBasin · 26px</span>
+          <span class="bc-cap">页头锚点（候选：移除）</span>
+        </div>
+        <div class="brand-cell" data-role="basin-24">
+          <span data-role="basin-slot-24"></span>
+          <span class="bc-tag">brandBasin · 24px</span>
+          <span class="bc-cap">侧栏字标（候选：保留）</span>
+        </div>
+      </div>
+      <ul class="brand-rules">
+        <li><span class="keep">保留</span><span><strong>侧栏品牌位</strong>（brandBasin 24px + 9px 字标 + 短刻度）——主窗口唯一品牌位，候选样板即此形态。</span></li>
+        <li><span class="keep">保留</span><span><strong>关于页 64px 图标</strong>——页内唯一品牌位，正式产品建议直接使用正式位图资产（形状议题归 ISS-105 复审，本卡只定位置与数量）。</span></li>
+        <li><span class="drop">移除</span><span><strong>页头 26px 锚点</strong>——与侧栏品牌位相邻重复（审计：相邻重复品牌图形）。</span></li>
+        <li><span class="drop">移除</span><span><strong>页头 180px 刻度带</strong>、<strong>每个区块标题前的三根刻度</strong>、<strong>四卡下装饰横线</strong>——刻度母题收敛为：侧栏品牌位、总览主结论等深线、二级选中态短刻度（“少数位置点到为止”）。</span></li>
+      </ul>
+    </section>
+
+    <!-- ============ 字阶 ============ -->
+    <section class="spec-block" aria-label="字阶规则">
+      <h2>字阶（三级主次，禁止全同权重）</h2>
+      <p class="spec-why">审计实测现状：h1=17px、h2=15px、导航=11px，主标题与大量辅助信息层级差距小；DESIGN 合同字阶目标（22–24/28–32/15–16/14/13/12）在产品中未实装到位。候选对齐既有合同，不发明新刻度。</p>
+      <div class="surface">
+        <div class="type-row"><span class="type-sample-28">+2.3 GiB</span><span class="type-desc">display 28px / 680 —— 主结论数字（每页至多一处），等宽</span></div>
+        <div class="type-row"><span class="type-sample-22">总览</span><span class="type-desc">h1 22px / 640 —— 页标题（现状 17px 提级）</span></div>
+        <div class="type-row"><span class="type-sample-15">最近变化</span><span class="type-desc">h2 15px / 600 —— 区块标题（无刻度前缀）</span></div>
+        <div class="type-row"><span class="type-sample-14">正文说明一句，承载解释与口径。</span><span class="type-desc">body 14px / 400</span></div>
+        <div class="type-row"><span class="type-sample-13">表格数值 13px，等宽右对齐</span><span class="type-desc">table 13px</span></div>
+        <div class="type-row"><span class="type-sample-12">辅助口径与脚注 12px；路径等宽 12px</span><span class="type-desc">hint 12px（微字标 9px 仅品牌位）</span></div>
+      </div>
+    </section>
+
+    <!-- ============ 表面层级 ============ -->
+    <section class="spec-block" aria-label="表面层级规则">
+      <h2>表面层级（L0–L3，嵌套不再套白卡）</h2>
+      <p class="spec-why">审计：内容标签外套一整条白卡、内容本身再套白卡，卡片/标签/嵌套面板普遍依赖边框阴影，同权重白卡叠出“功能面板”观感。候选：每页一张 L1 白卡；L2 用底色块/分隔线；L3 仅浮层。</p>
+      <div class="surface-demo">
+        <div class="l1">
+          <span class="cap" style="margin:0 0 var(--sp2)">L1 · 页面主表面（每页至多一张：白卡 + hairline + 弱阴影）</span>
+          <div class="l2">
+            <span class="cap" style="margin:0">L2 · 区块分组（bg 底块，无边框无阴影；纵向分组用 hairline 分隔线）</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 选中态 ============ -->
+    <section class="spec-block" aria-label="选中态规则">
+      <h2>一级 / 二级选中态（深色实底全站仅一级）</h2>
+      <p class="spec-why">审计：全局导航、设置分区、内容标签均用同等深色块，所处层级不同视觉重量却接近。候选：一级保留用户认可的深潭墨实底；二级改浅品牌底 + 短刻度；表格行选中用 --sel。</p>
+      <div class="surface sel-demo">
+        <div class="sel-col">
+          <h3>一级 · 全局导航（保留）</h3>
+          <div class="sel-nav-demo">
+            <span class="on">总览</span>
+            <span class="off">变化</span>
+            <span class="off">分布</span>
+          </div>
+        </div>
+        <div class="sel-col">
+          <h3>二级 · 分区/内容标签（收敛）</h3>
+          <div class="sel-sub-demo">
+            <span class="on">监控</span>
+            <span class="off">计划与通知</span>
+            <span class="off">高级与诊断</span>
+          </div>
+        </div>
+        <div class="sel-col">
+          <h3>表格行选中（两处一致）</h3>
+          <div class="sel-row-demo">
+            <div class="r sel">开发/项目A/build</div>
+            <div class="r">下载</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 按钮族 ============ -->
+    <section class="spec-block" aria-label="按钮规则">
+      <h2>主次按钮（实心每视口最多一个，归属当前页主任务）</h2>
+      <p class="spec-why">审计：全局“立即扫描”在每页都是最显著实心按钮，当前页面的查询/保存反而较弱；DESIGN 合同明确全局扫描不应压过页面主操作。候选：全局扫描固定为次级描边；实心 36px 主按钮每视口至多一个。</p>
+      <div class="surface" style="display:flex; gap:var(--sp3); flex-wrap:wrap; align-items:center">
+        <button type="button" class="btn btn-primary">保存设置（主 · 36px）</button>
+        <button type="button" class="btn">立即扫描（次 · 32px）</button>
+        <button type="button" class="btn btn-ghost">查看说明（幽灵）</button>
+        <span class="hint">危险/低频保存（如排除列表）用次级描边，不与页主任务争夺实心。</span>
+      </div>
+    </section>
+
+    <!-- ============ 空态 ============ -->
+    <section class="spec-block" aria-label="空态规则">
+      <h2>空态三型（等待 / 错误 / 无匹配，不用错误红承载正常等待）</h2>
+      <p class="spec-why">审计：空库与单快照共用“还不能比较”错误容器，不足以承担清楚的首次使用引导；DESIGN 状态合同要求缺失/等待不伪装成失败。候选分型：等待型（bg 块、给下一步）、错误型（浅红、保留上次有效数据说明 + 重试）、无匹配（行内说明，不占独立框）。</p>
+      <div class="surface empty-demo">
+        <div class="empty-wait" data-role="empty-wait">
+          <p class="et">等待下一个日期的快照</p>
+          <p class="ed">当前只有 1 个有效快照（9月12日 12:03）。差分需要两个不同日期的快照；同日重扫不会产生新的基线。这里不显示假 0 变化。</p>
+          <button type="button" class="btn">先看分布</button>
+        </div>
+        <div class="empty-err" data-role="empty-err">
+          <p class="et">最近变化加载失败（HTTP 500）</p>
+          <p class="ed">上次有效数据 9月12日 12:03 仍可查看；失败不代表无变化。</p>
+          <button type="button" class="btn">重试</button>
+        </div>
+        <div class="empty-nomatch" data-role="empty-nomatch">
+          <div class="r">没有匹配“下载”的目录 —— 调整搜索条件；无匹配与读取失败是两种不同情况。</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 图表 ============ -->
+    <section class="spec-block" aria-label="图表规则">
+      <h2>图表（统一规格，先读数后图形）</h2>
+      <p class="spec-why">审计：图表沿用多处各自定义的字号、留白与坐标布局；现状 340px 大图占据首屏，把变化结论挤到首屏之外。候选：次级图统一 150px 高、11px 轴字、3 条弱网格；标题行内给关键读数；缺失日留空；必须有等价表格。</p>
+      <div class="surface">
+        <div class="panel-hd"><h2>卷容量与走势</h2><span class="hint">09-09 未扫描（留空不补零）</span></div>
+        <div data-role="brand-spark-demo"></div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="sample-data.js"></script>
+<script>
+"use strict";
+(function () {
+  var S = SAMPLE;
+  document.querySelector('[data-role="basin-slot-64"]').innerHTML = S.brandBasinSvg(64);
+  document.querySelector('[data-role="basin-slot-26"]').innerHTML = S.brandBasinSvg(26);
+  document.querySelector('[data-role="basin-slot-24"]').innerHTML = S.brandBasinSvg(24);
+
+  /* 图表规则实例（与 sample-candidate.html 同一规格的迷你走势） */
+  (function () {
+    var el = document.querySelector('[data-role="brand-spark-demo"]');
+    var W = 640, H = 150, L = 44, R = 14, T = 10, B = 24;
+    var vals = S.FREE_SERIES.filter(function (v) { return v !== null; });
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    var pad = (max - min) * 0.15; min -= pad; max += pad;
+    function x(i) { return L + (i * (W - L - R)) / (S.DATES.length - 1); }
+    function y(v) { return T + (1 - (v - min) / (max - min)) * (H - T - B); }
+    function tick(v) { return v >= 100 ? String(Math.round(v)) : v.toFixed(1).replace(/\.0$/, ""); }
+    var out = '<svg class="spark" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="卷剩余走势（GiB）；缺失日期留空、不补零；等价数据见表格">';
+    [0.25, 0.5, 0.75].forEach(function (f) {
+      var gy = T + f * (H - T - B);
+      out += '<line class="spark-grid" x1="' + L + '" y1="' + gy.toFixed(1) + '" x2="' + (W - R) + '" y2="' + gy.toFixed(1) + '"/>';
+      out += '<text x="' + (L - 8) + '" y="' + (gy + 3.5).toFixed(1) + '" text-anchor="end">' + tick(max - f * (max - min)) + "</text>";
+    });
+    var seg = [], segs = [];
+    S.FREE_SERIES.forEach(function (v, i) {
+      if (v === null) { if (seg.length) segs.push(seg); seg = []; }
+      else seg.push({ i: i, v: v });
+    });
+    if (seg.length) segs.push(seg);
+    segs.forEach(function (sg) {
+      var pts = sg.map(function (p) { return x(p.i).toFixed(1) + "," + y(p.v).toFixed(1); });
+      out += '<polyline class="spark-line" points="' + pts.join(" ") + '"/>';
+      if (sg.length >= 2) {
+        out += '<polygon class="spark-area" points="' + x(sg[0].i).toFixed(1) + "," + (H - B).toFixed(1) + " " +
+          pts.join(" ") + " " + x(sg[sg.length - 1].i).toFixed(1) + "," + (H - B).toFixed(1) + '"/>';
+      }
+    });
+    out += '<line class="spark-axis" x1="' + L + '" y1="' + (H - B) + '" x2="' + (W - R) + '" y2="' + (H - B) + '"/>';
+    out += '<text x="' + x(0).toFixed(1) + '" y="' + (H - 6) + '">09-06</text>';
+    out += '<text x="' + x(S.DATES.length - 1).toFixed(1) + '" y="' + (H - 6) + '" text-anchor="end">09-12</text>';
+    out += "</svg>";
+    el.innerHTML = out;
+  })();
+})();
+</script>
+</body>
+</html>

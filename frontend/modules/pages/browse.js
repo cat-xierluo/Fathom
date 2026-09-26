@@ -13,6 +13,9 @@
  * 分区（ISS-094）：页头下横向 tab 条（占用分布/目录浏览器，默认占用分布）。
  * 数据加载逻辑不变——load() 仍一次拉取 trees + browse 渲染两个分区，
  * tab 只切可见性；旭日图点击扇区联动切到「目录浏览器」并定位该路径。
+ *
+ * 快照上下文（ISS-107）：占用分布默认图形上方标出快照 #id、时点与根；
+ * 时点辅助请求失败时如实显示「未知」，不伪造。
  */
 import { fetchJSON, beginRequest, invalidateRequest, revealInFinder } from "../request.js";
 import { fmtBytes, fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
@@ -37,11 +40,33 @@ const SUNBURST_PALETTE = [
 
 let browseTabs = null;  // ISS-094 页内二级导航（占用分布 / 目录浏览器）
 
+/* ISS-107：默认图形的快照上下文——时点 + 根。时点来自 /api/snapshots
+ * 按 trees.snapshot_id 匹配；该辅助请求失败时如实显示「未知」，不伪造
+ * 时间，也不阻塞主图渲染。 */
+function renderSunburstContext(contextEl, t, snapList) {
+  if (!t.snapshot_id) {
+    contextEl.textContent = "尚无快照；完成首次扫描后显示占用分布。";
+    return;
+  }
+  const snap = (snapList || []).find((s) => String(s.id) === String(t.snapshot_id));
+  const when = snap && snap.created_at
+    ? snap.created_at.slice(0, 16).replace("T", " ")
+    : "未知";
+  const rootText = t.root ? t.root : "未知";
+  contextEl.textContent = `快照 #${t.snapshot_id} · ${when} · 根 ${rootText}`;
+}
+
 async function loadTree() {
   const request = beginRequest("tree");
+  const contextEl = document.getElementById("sunburst-context");
   try {
-    const t = await fetchJSON("/api/trees?min_kb=51200");
+    // 快照列表仅用于上下文时点：失败不阻塞树渲染（catch 成 null）。
+    const [t, snapList] = await Promise.all([
+      fetchJSON("/api/trees?min_kb=51200"),
+      fetchJSON("/api/snapshots").catch(() => null),
+    ]);
     if (!request.current()) return;
+    if (contextEl) renderSunburstContext(contextEl, t, snapList);
     if (!t.snapshot_id) {
       showChartMessage("chart-sunburst", "尚无快照；完成首次扫描后显示占用分布。");
       return;
@@ -67,6 +92,8 @@ async function loadTree() {
     });
   } catch (e) {
     if (!request.current()) return;
+    // 主请求失败：上下文如实未知，不显示任何伪造时点。
+    if (contextEl) contextEl.textContent = "快照上下文未知（占用分布加载失败）。";
     showChartMessage("chart-sunburst", e.status === 0
       ? "无法连接本地服务，占用分布暂不可用。"
       : `占用分布加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);

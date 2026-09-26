@@ -746,6 +746,16 @@ async function main() {
       fixture.state.treeSnapshotId === 3 && browse.text.includes("−1.0 MB") &&
         !browse.literal && browse.svg && browse.canvases.every(([w, h]) => w > 0 && h > 0));
     record("delta-zero-rendered-in-browse", browse.text.includes("0.0 B"), browse.text.slice(0, 80));
+    // ISS-107：默认图形标出快照 #id、时点与根（此时代码路径 version=3、快照 #3）。
+    await page.click('#page-browse .page-tab[data-tab="sunburst"]');
+    await page.waitForFunction(() =>
+      (document.querySelector("#sunburst-context")?.textContent || "").includes("快照 #"),
+    null, { timeout: 5000 });
+    const sunContext = await page.$eval("#sunburst-context", (el) => el.textContent);
+    record("browse-sunburst-shows-snapshot-id-time-and-root",
+      sunContext.includes("快照 #3") && sunContext.includes("2026-09-13") &&
+        sunContext.includes("根 /fixture/root"),
+      sunContext);
     const browseShot = path.join(evidenceDir, "browse-after-rescan-1220x820.png");
     await page.screenshot({ path: browseShot });
 
@@ -1490,7 +1500,7 @@ async function main() {
     await waitForCount("snapshots", 1);
     await page.selectOption("#sel-a", "2");
     await page.selectOption("#sel-b", "1");
-    await waitForText(page, "#diff-status", "正在对比快照 #2 → #1");
+    await waitForText(page, "#diff-status", "已对比快照 #2 → #1");
     const delayedSelection = await page.evaluate(() => [
       document.querySelector("#sel-a").value, document.querySelector("#sel-b").value,
     ]);
@@ -1519,13 +1529,13 @@ async function main() {
     // dual 夹具（快照 [2,1]）初始自动对比 #1 → #2；确认按钮从 DOM 移除。
     await setMode("dual");
     await openPage("#/changes");
-    await waitForText(page, "#diff-status", "正在对比快照 #1 → #2");
+    await waitForText(page, "#diff-status", "已对比快照 #1 → #2");
     record("compare-confirm-button-removed",
       await page.evaluate(() => !document.getElementById("btn-diff")));
     // 依次改选两个 select（全程无任何按钮点击）：选齐后结果自动出现。
     await page.selectOption("#sel-a", "2");
     await page.selectOption("#sel-b", "1");
-    await waitForText(page, "#diff-status", "正在对比快照 #2 → #1");
+    await waitForText(page, "#diff-status", "已对比快照 #2 → #1");
     const autoCompared = await page.evaluate(() => ({
       netVisible: !document.getElementById("changes-net").hidden,
       rows: document.querySelectorAll("#changes-body tr.focusable").length,
@@ -1537,7 +1547,7 @@ async function main() {
     // 只切换一个 select：结果自动刷新为新组合；焦点仍留在被操作的 select（不抢焦点）。
     await page.focus("#sel-b");
     await page.selectOption("#sel-b", "2");
-    await waitForText(page, "#diff-status", "正在对比快照 #2 → #2");
+    await waitForText(page, "#diff-status", "已对比快照 #2 → #2");
     const oneSwitch = await page.evaluate(() => ({
       activeElement: document.activeElement ? document.activeElement.id : "",
     }));
@@ -1570,7 +1580,7 @@ async function main() {
       }));
     await page.unroute("**/api/diff*");
     await page.click("#diff-status .diff-retry");
-    await waitForText(page, "#diff-status", "正在对比快照 #1 → #2");
+    await waitForText(page, "#diff-status", "已对比快照 #1 → #2");
     record("retry-button-recovers-comparison",
       fixture.state.lastDiff?.join(",") === "1,2");
     // 键盘路径（原生行为）：处理绑定在原生 change 事件上，键盘改选产生的正是
@@ -1583,11 +1593,53 @@ async function main() {
       sel.value = "2";
       sel.dispatchEvent(new Event("change"));
     });
-    await waitForText(page, "#diff-status", "正在对比快照 #2 → #2");
+    await waitForText(page, "#diff-status", "已对比快照 #2 → #2");
     record("keyboard-focus-select-change-compares",
       fixture.state.lastDiff?.join(",") === "2,2" &&
         await page.evaluate(() =>
           document.activeElement && document.activeElement.id) === "sel-a");
+
+    /* ---------- ISS-107：共享对比上下文 / 搜索宽度 / 完成态 / 等价数据表 ---------- */
+    // 修前反例：切到「增长最多」分区后日期选择器与状态行不可见（藏在比对明细
+    // 分区内）。共享上下文面板上移到 tab 条下方后，任一分区都必须可见。
+    await page.click('#page-changes .page-tab[data-tab="grown"]');
+    await page.waitForFunction(() => {
+      const visible = (sel) => {
+        const el = document.querySelector(sel);
+        return Boolean(el && el.getClientRects().length && el.offsetParent !== null);
+      };
+      return visible("#sel-a") && visible("#sel-b") && visible("#diff-status");
+    }, null, { timeout: 5000 });
+    // 分区内直接改对比快照：选择即比对自动重查，无需返回比对明细。
+    await page.selectOption("#sel-b", "1");
+    await waitForText(page, "#diff-status", "已对比快照 #2 → #1");
+    record("changes-date-context-visible-and-editable-in-grown-tab",
+      fixture.state.lastDiff?.join(",") === "2,1",
+      JSON.stringify({ lastDiff: fixture.state.lastDiff }));
+    // 增长图表的等价可读数据（Top 12 同源表 + Finder 目录证据入口）。
+    const grownTable = await page.evaluate(() => ({
+      text: document.querySelector("#tbl-grown-top")?.textContent || "",
+      svg: Boolean(document.querySelector("#tbl-grown-top [data-reveal] svg")),
+    }));
+    record("grown-chart-has-equivalent-readable-table",
+      grownTable.text.includes("/fixture/root/Build") &&
+        grownTable.text.includes("97.7 MB") && grownTable.text.includes("+1.0 MB") &&
+        grownTable.svg,
+      grownTable.text.slice(0, 120));
+    await page.click('#page-changes .page-tab[data-tab="detail"]');
+    // 成功渲染后状态是完成态——不滞留「正在对比」（修前反例：两行已渲染
+    // 但状态仍「正在对比快照 #1 → #2」）。
+    const statusDone = await page.$eval("#diff-status", (el) => el.textContent);
+    record("diff-status-shows-completed-state-after-render",
+      statusDone.includes("已对比快照") && !statusDone.includes("正在对比"),
+      statusDone);
+    // 搜索输入不被数字输入的 60px 规则截断（修前实测宽 60px）。
+    const searchProbe = await page.$eval("#changes-search",
+      (el) => ({ w: el.getBoundingClientRect().width, type: el.type, ph: el.placeholder }));
+    record("changes-search-input-not-truncated-by-number-rule",
+      searchProbe.w >= 180 && searchProbe.type === "search" &&
+        searchProbe.ph.includes("按路径过滤"),
+      JSON.stringify(searchProbe));
 
     /* ---------- 轮询生命周期：切页不累积，扫描结束即停 ---------- */
     await setMode("scanning-stuck");
@@ -2139,6 +2191,29 @@ async function main() {
         overflow.scrollW <= overflow.docW + 1,
         JSON.stringify(overflow));
     }
+
+    /* ---------- ISS-107：980 最小窗口搜索可编辑 + 快照时点未知如实显示 ---------- */
+    // 修前反例：980 下搜索输入同样被 60px 规则截断，无法编辑常见路径片段。
+    await page.setViewportSize({ width: 980, height: 640 });
+    await openPage("#/changes");
+    await page.waitForSelector("#changes-body tr.focusable, #changes-body tr td.hint",
+      { timeout: 8000 });
+    const search980 = await page.$eval("#changes-search",
+      (el) => ({ w: el.getBoundingClientRect().width, type: el.type }));
+    record("changes-search-input-editable-at-980",
+      search980.w >= 180 && search980.type === "search", JSON.stringify(search980));
+    // 时点辅助请求失败时上下文如实「未知」，不伪造日期（trees 正常、snapshots 500）。
+    await setMode("snapshots500");
+    await openPage("#/browse");
+    await page.waitForSelector("#chart-sunburst canvas", { timeout: 8000 });
+    await waitForText(page, "#sunburst-context", "未知");
+    const sunUnknown = await page.$eval("#sunburst-context", (el) => el.textContent);
+    record("browse-sunburst-context-unknown-when-time-unavailable",
+      sunUnknown.includes("快照 #2") && sunUnknown.includes("未知") &&
+        !/\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(sunUnknown),
+      sunUnknown);
+    await setMode("dual");
+    await page.setViewportSize({ width: 1220, height: 820 });
 
     /* ---------- ISS-002A 三类覆盖说明与系统设置深链 ----------
      * 覆盖三类缺口（denied/vanished/exclude_names）的可解释渲染；验证字段缺失

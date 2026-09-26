@@ -2692,7 +2692,7 @@ async function main() {
     const tpage4Errors = [];
     tpage4.on("pageerror", (e) => tpage4Errors.push(e.message));
     await tpage4.addInitScript(`
-      window.__tauriMock4 = { invokes: [] };
+      window.__tauriMock4 = { invokes: [], emits: [] };
       Object.defineProperty(window, "__TAURI__", { value: {
         core: { invoke: (cmd, args) => {
           window.__tauriMock4.invokes.push({ cmd, args });
@@ -2701,6 +2701,10 @@ async function main() {
               { state: "unconfigured", current_version: "0.3.0" });
           }
           if (cmd === "updater_install") {
+            // ISS-102 pending 模式：invoke 挂起模拟长安装事务，
+            // updater-state 阶段事件由断言手动驱动（同 lib.rs 合同载荷）；
+            // resolve 模式：立即成功，覆盖 invoke 返回渲染路径（事件未到）。
+            if (window.__installMode === "pending") return new Promise(() => {});
             return Promise.resolve({ ok: true, state: "installed",
               current_version: "0.3.0", available_version: "0.4.0" });
           }
@@ -2712,12 +2716,21 @@ async function main() {
           }
           return Promise.resolve();
         } },
-        event: { listen: (name, handler) => {
-          (window.__tauriListeners = window.__tauriListeners || {})[name] = handler;
-          return Promise.resolve(0);
-        } },
+        event: {
+          listen: (name, handler) => {
+            (window.__tauriListeners = window.__tauriListeners || {})[name] = handler;
+            return Promise.resolve(0);
+          },
+          // ISS-102：记录前端发出的桥事件（下载取消应发 updater-cancel-requested）
+          emit: (name, payload) => {
+            window.__tauriMock4.emits.push({ name, payload });
+            return Promise.resolve();
+          },
+        },
       }, configurable: true });
     `);
+    // ISS-102：reduced-motion 下跑完整更新流（进度条无动画依赖，交互不回退）
+    await tpage4.emulateMedia({ reducedMotion: "reduce" });
     await tpage4.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
     // ISS-087：updater-check-btn 在「关于」section 下；切到 about 让其可见。
     await tpage4.evaluate(() => document.querySelector('.settings-nav-item[data-section="about"]')?.click());
@@ -2784,24 +2797,225 @@ async function main() {
       updCancel.layerHidden && updCancel.installInvokes === 0 && updCancel.stillAvailable,
       JSON.stringify(updCancel).slice(0, 160));
 
-    // 5) 确认执行：updater_install 必须携带 confirmed:true；成功后进入已安装态。
+    /* ---------- 5-7 ISS-102 安装事务：阶段/字节进度/取消/终态重试 ----------
+     * pending 模式挂起 updater_install，由断言按 lib.rs 合同手动驱动
+     * updater-state 事件；整段在 reduced-motion 下运行（不回退）。 */
+    const tpage4Emit = async (payload) => {
+      await tpage4.evaluate((p) => {
+        (window.__tauriListeners["updater-state"] || (() => {}))({ payload: p });
+      }, payload);
+      await tpage4.waitForTimeout(80);
+    };
+    const tpage4CancelEmits = () => tpage4.evaluate(() =>
+      (window.__tauriMock4.emits || []).filter((e) => e.name === "updater-cancel-requested").length);
+
+    // 5a) 确认执行：updater_install 携带 confirmed:true；确认层收起后先显示
+    //     过渡说明（不伪造阶段名），阶段事件到达前不冒充 preparing。
+    await tpage4.evaluate(() => { window.__installMode = "pending"; });
+    await tpage4.click("[data-test='updater-install-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-confirm-yes']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-pending-note']")?.textContent || "").includes("已确认"));
+    const updConfirm5a = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      confirmHidden: document.querySelector("[data-test='updater-confirm']")?.hidden === true,
+      installInvoke: (window.__tauriMock4.invokes || [])
+        .find((c) => c && c.cmd === "updater_install"),
+      cancelEmits: (window.__tauriMock4.emits || [])
+        .filter((e) => e.name === "updater-cancel-requested").length,
+    }));
+    record("updater-install-invoked-with-confirmed",
+      updConfirm5a.installInvoke?.args?.confirmed === true &&
+        updConfirm5a.confirmHidden &&
+        updConfirm5a.status.includes("有可用更新") &&  // 阶段未开始不伪造阶段名
+        updConfirm5a.cancelEmits === 0,
+      JSON.stringify(updConfirm5a).slice(0, 200));
+
+    // 5b) preparing：状态行显示准备阶段，取消按钮可用（preparing 可取消）。
+    await tpage4Emit({ state: "preparing", current_version: "0.3.0", available_version: "0.4.0" });
+    const updPreparing = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      pendingGone: !document.querySelector("[data-test='updater-pending-note']"),
+      hasCancel: Boolean(document.getElementById("btn-updater-cancel")),
+    }));
+    record("updater-preparing-phase-shown",
+      updPreparing.status.includes("正在准备升级") && updPreparing.pendingGone && updPreparing.hasCancel,
+      JSON.stringify(updPreparing).slice(0, 160));
+
+    // 5c) downloading 已知总量：字节进度 + 真实百分比 + 取消按钮；
+    //     reduced-motion 下进度条无动画（transition 恒 0）。
+    await tpage4Emit({ state: "downloading", current_version: "0.3.0", available_version: "0.4.0",
+      downloaded: 1572864, total: 8388608, cancellable: true });
+    const updProg1 = await tpage4.evaluate(() => {
+      const p = document.querySelector("[data-test='updater-progress']");
+      const fill = document.querySelector(".updater-progress-fill");
+      return {
+        text: p?.textContent || "",
+        downloaded: p?.getAttribute("data-downloaded"),
+        total: p?.getAttribute("data-total"),
+        percent: p?.getAttribute("data-percent"),
+        hasBar: p?.querySelector(".updater-progress-bar")?.getAttribute("role") === "progressbar",
+        fillTransition: fill ? getComputedStyle(fill).transitionDuration : null,
+        cancelText: document.getElementById("btn-updater-cancel")?.textContent || "",
+      };
+    });
+    record("updater-downloading-byte-progress-known-total",
+      updProg1.downloaded === "1572864" && updProg1.total === "8388608" &&
+        updProg1.percent === "18" && updProg1.hasBar &&
+        updProg1.text.includes("1.5 MB") && updProg1.text.includes("8.0 MB") &&
+        updProg1.text.includes("18%") &&
+        updProg1.fillTransition === "0s" &&  // reduced-motion：无动画依赖
+        updProg1.cancelText.includes("取消下载"),
+      JSON.stringify(updProg1).slice(0, 240));
+
+    // 5d) 未知总量：只显示字节数并明示总大小未知，不渲染进度条、不伪造百分比。
+    await tpage4Emit({ state: "downloading", current_version: "0.3.0", available_version: "0.4.0",
+      downloaded: 2621440, total: null, cancellable: true });
+    const updProg2 = await tpage4.evaluate(() => {
+      const p = document.querySelector("[data-test='updater-progress']");
+      return {
+        text: p?.textContent || "",
+        downloaded: p?.getAttribute("data-downloaded"),
+        hasTotal: p?.hasAttribute("data-total") || false,
+        hasBar: Boolean(p?.querySelector(".updater-progress-bar")),
+      };
+    });
+    record("updater-downloading-unknown-total-no-fake-percent",
+      updProg2.downloaded === "2621440" && !updProg2.hasTotal && !updProg2.hasBar &&
+        updProg2.text.includes("总大小未知") && updProg2.text.includes("2.5 MB") &&
+        !updProg2.text.includes("%"),
+      JSON.stringify(updProg2).slice(0, 200));
+
+    // 5e) 键盘：取消按钮聚焦后 Esc 不触发取消；Enter 触发并携带既有事件名。
+    await tpage4.focus("[data-test='updater-cancel-btn']");
+    await tpage4.keyboard.press("Escape");
+    const escEmits = await tpage4CancelEmits();
+    await tpage4.keyboard.press("Enter");
+    await tpage4.waitForFunction(() => {
+      const btn = document.getElementById("btn-updater-cancel");
+      return btn && btn.disabled && (btn.textContent || "").includes("正在取消");
+    });
+    const updCancelKey = await tpage4.evaluate(() => ({
+      emits: (window.__tauriMock4.emits || [])
+        .filter((e) => e.name === "updater-cancel-requested").length,
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+    }));
+    record("updater-cancel-keyboard-esc-safe-enter-emits",
+      escEmits === 0 && updCancelKey.emits === 1 && updCancelKey.status.includes("正在下载更新"),
+      JSON.stringify({ escEmits, ...updCancelKey }).slice(0, 200));
+
+    // 5f) cancelled 事件：终态原因 + 重试入口（available 区块与安装按钮保留）
+    //     + 取消按钮消失；确认层取消不算下载取消（5a 已断言 cancelEmits=0）。
+    await tpage4Emit({ state: "cancelled", current_version: "0.3.0", available_version: "0.4.0",
+      hint: "下载已取消；旧版本保持运行，可再次安装" });
+    const updCancelled = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      terminal: document.querySelector("[data-test='updater-terminal']")?.textContent || "",
+      hasRetry: Boolean(document.getElementById("btn-updater-install")),
+      hasCancel: Boolean(document.getElementById("btn-updater-cancel")),
+      available: document.querySelector("[data-test='updater-available']")?.textContent || "",
+    }));
+    record("updater-cancelled-shows-retry",
+      updCancelled.status.includes("下载已取消") &&
+        updCancelled.terminal.includes("旧版本保持运行") &&
+        updCancelled.hasRetry && !updCancelled.hasCancel &&
+        updCancelled.available.includes("0.4.0"),
+      JSON.stringify(updCancelled).slice(0, 240));
+
+    // 5g) failed：失败原因 + 可重试（重试点击 → preparing → failed）。
+    await tpage4.click("[data-test='updater-install-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-confirm-yes']");
+    await tpage4Emit({ state: "preparing", current_version: "0.3.0", available_version: "0.4.0" });
+    await tpage4Emit({ state: "failed", kind: "internal",
+      error: "下载/验签失败（已回滚，候选保留，可重试）：演示失败",
+      hint: "升级准备失败；旧版本与旧数据未受影响，可重试" });
+    const updFailed = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      terminal: document.querySelector("[data-test='updater-terminal']")?.textContent || "",
+      terminalCls: document.querySelector("[data-test='updater-terminal']")?.className || "",
+      hasRetry: Boolean(document.getElementById("btn-updater-install")),
+    }));
+    record("updater-failed-shows-error-and-retry",
+      updFailed.status.includes("更新失败") &&
+        updFailed.terminal.includes("演示失败") && updFailed.terminal.includes("可重试") &&
+        updFailed.terminalCls.includes("cfg-error") && updFailed.hasRetry,
+      JSON.stringify(updFailed).slice(0, 240));
+
+    // 5h) 进入安装后禁取消：重试 → preparing → downloading（可取消）→
+    //     installing（按钮消失 + 不可取消说明）；取消拒绝事件（Rust 过界拒绝）
+    //     的 hint 同步呈现；verifying/finalizing 阶段齐全；installed 转重启语境。
+    await tpage4.click("[data-test='updater-install-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-confirm-yes']");
+    await tpage4Emit({ state: "preparing", current_version: "0.3.0", available_version: "0.4.0" });
+    await tpage4Emit({ state: "downloading", current_version: "0.3.0", available_version: "0.4.0",
+      downloaded: 1024, total: 8388608, cancellable: true });
+    const cancelBeforeInstall = await tpage4.evaluate(() =>
+      Boolean(document.getElementById("btn-updater-cancel")));
+    await tpage4Emit({ state: "installing", current_version: "0.3.0", available_version: "0.4.0",
+      cancellable: false, hint: "已进入安装阶段，不可取消；若安装失败将自动回滚到当前版本" });
+    const updInstalling = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      hint: document.querySelector("[data-test='updater-phase-hint']")?.textContent || "",
+      hasCancel: Boolean(document.getElementById("btn-updater-cancel")),
+    }));
+    await tpage4Emit({ state: "installing", cancellable: false,
+      hint: "下载已完成、安装进行中，取消请求被拒绝；失败路径将自动回滚到当前版本" });
+    const updRefused = await tpage4.evaluate(() =>
+      document.querySelector("[data-test='updater-phase-hint']")?.textContent || "");
+    await tpage4Emit({ state: "verifying", current_version: "0.3.0", available_version: "0.4.0" });
+    const updVerifying = await tpage4.evaluate(() =>
+      document.querySelector("[data-test='updater-status-text']")?.textContent || "");
+    await tpage4Emit({ state: "finalizing", current_version: "0.3.0", available_version: "0.4.0" });
+    const updFinalizing = await tpage4.evaluate(() =>
+      document.querySelector("[data-test='updater-status-text']")?.textContent || "");
+    await tpage4Emit({ state: "installed", current_version: "0.3.0", available_version: "0.4.0",
+      hint: "更新已安装；重启应用后生效" });
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("重启后生效"));
+    const updInstallDone = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      installed: document.querySelector("[data-test='updater-installed']")?.textContent || "",
+      hasRestartBtn: Boolean(document.getElementById("btn-updater-restart")),
+      hasCancel: Boolean(document.getElementById("btn-updater-cancel")),
+    }));
+    record("updater-installing-forbids-cancel-with-reason",
+      cancelBeforeInstall &&
+        updInstalling.status.includes("正在安装更新") &&
+        updInstalling.hint.includes("不可取消") && !updInstalling.hasCancel &&
+        updRefused.includes("取消请求被拒绝"),
+      JSON.stringify({ cancelBeforeInstall, ...updInstalling, updRefused }).slice(0, 260));
+    record("updater-verifying-finalizing-phases-shown",
+      updVerifying.includes("正在核验新版本身份") && updFinalizing.includes("正在收尾升级事务"),
+      JSON.stringify({ updVerifying, updFinalizing }).slice(0, 200));
+
+    // 5i) 事务成功（事件 installed）：重启确认层独立呈现。
+    record("updater-installed-event-shows-restart",
+      updInstallDone.status.includes("重启后生效") &&
+        updInstallDone.installed.includes("0.4.0") && updInstallDone.hasRestartBtn &&
+        !updInstallDone.hasCancel,
+      JSON.stringify(updInstallDone).slice(0, 200));
+
+    // 5j) invoke 返回渲染路径（事件未到）：resolve 模式下确认成功，
+    //     返回值 ok:true 直接转 installed 态（与事件幂等）。
+    await tpage4.evaluate(() => { window.__installMode = "resolve"; });
+    await tpage4.click("[data-test='updater-check-btn']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("有可用更新"));
     await tpage4.click("[data-test='updater-install-btn']");
     await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
     await tpage4.click("[data-test='updater-confirm-yes']");
     await tpage4.waitForFunction(() =>
       (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("重启后生效"));
-    const updInstall = await tpage4.evaluate(() => ({
+    const updResolvePath = await tpage4.evaluate(() => ({
       status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
-      installed: document.querySelector("[data-test='updater-installed']")?.textContent || "",
       hasRestartBtn: Boolean(document.getElementById("btn-updater-restart")),
-      installInvoke: (window.__tauriMock4.invokes || [])
-        .find((c) => c && c.cmd === "updater_install"),
     }));
-    record("updater-install-invoked-with-confirmed",
-      updInstall.installInvoke?.args?.confirmed === true &&
-        updInstall.status.includes("重启后生效") &&
-        updInstall.installed.includes("0.4.0") && updInstall.hasRestartBtn,
-      JSON.stringify(updInstall).slice(0, 200));
+    record("updater-install-resolve-path-installed",
+      updResolvePath.status.includes("重启后生效") && updResolvePath.hasRestartBtn,
+      JSON.stringify(updResolvePath).slice(0, 160));
 
     // 6) 重启确认：取消不发 updater_restart、保持已安装态。
     await tpage4.click("[data-test='updater-restart-btn']");

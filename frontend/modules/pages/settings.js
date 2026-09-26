@@ -22,7 +22,7 @@
  *   浏览器/开发态无 Tauri 桥时全部 section 仍可达（不删除/隐藏入口）。
  */
 import { fetchJSON, beginRequest, invalidateRequest, apiPut } from "../request.js";
-import { escapeHtml } from "../format.js";
+import { escapeHtml, fmtBytes } from "../format.js";
 import { icon } from "../../icons.js";
 import { triggerScan, loadStatus } from "../status.js";
 
@@ -1317,11 +1317,18 @@ async function loadAutostart() {
   renderAutostartBody(body, record);
 }
 
-/* ===== 应用更新（ISS-040B）=====
+/* ===== 应用更新（ISS-040B；ISS-102 扩展阶段/字节进度/下载取消）=====
  * 壳内更新协调的前端接线：检查按钮 → 状态行（含当前版本）；available →
  * 版本 + notes + 「下载并安装」确认层（复用 010B autostart 确认层模式）→
- * 安装成功后「重启以完成」独立确认；取消/失败全部回落可恢复态。
+ * 确认后经 updater-state 事件呈现 preparing/downloading/installing/
+ * verifying/finalizing 阶段（ISS-102）；downloading 显示已下载/总大小
+ * 字节进度（total 未知时只显示字节数，不伪造百分比）；下载阶段提供
+ * 「取消下载」（emit 既有 updater-cancel-requested，Rust 侧在 poll 边界
+ * 中止并回滚）；进入 installing 后取消不可触发并说明原因；cancelled/
+ * failed 呈现原因与重试入口（候选保留，可再次「下载并安装」）；安装
+ * 成功后「重启以完成」独立确认；取消/失败全部回落可恢复态。
  * - 不静默：下载安装与重启都需显式确认（confirmed=true 才会在壳内执行）；
+ *   确认层收起（确认前取消）不算下载取消，不发送 updater-cancel-requested；
  *   启动延迟检查（≥10s）只经 updater-state 事件更新状态行，不弹窗不安装。
  * - Tauri 桥可用时经 invoke 调 updater_check/updater_install/updater_restart；
  *   浏览器模式（无桥）如实降级为只读说明，不渲染假入口。
@@ -1330,17 +1337,48 @@ async function loadAutostart() {
  * - DOM 在本文件内联创建（与 autostart 面板同模式），零 emoji，无构建链。 */
 const UPDATER_PANEL_ID = "updater-panel";
 
+/* 检查态标签（updater_check 返回与检查类事件共用）。 */
 const UPDATER_STATE_LABELS = {
   unconfigured: "未配置更新源：应用内更新不可用",
   unreachable: "更新源不可达：当前更新源处于关闭状态，可稍后重试",
   up_to_date: "已是最新版本",
   available: "有可用更新",
-  downloading: "正在下载并安装…",
   installed: "更新已安装，重启后生效",
   failed: "更新检查失败",
 };
 
-let lastUpdaterStatus = null;  // 最近一次检查/安装状态（确认层取消后的回落源）
+/* ISS-102：安装事务阶段标签（updater-state 事件，lib.rs UpdaterInstallPhase
+ * 合同）。preparing/downloading/installing/verifying/finalizing 为进行中，
+ * cancelled/failed 为终态；前端不猜测未登记的阶段（未知事件按状态异常处理
+ * 不覆盖呈现）。verifying/finalizing 目前 Rust 事务中不发独立事件，但阶段
+ * 属于既有合同（任务卡），前端先行呈现，事件到达即显示。 */
+const UPDATER_PHASE_LABELS = {
+  preparing: "正在准备升级（停写、备份数据并落盘升级日志）",
+  downloading: "正在下载更新",
+  installing: "正在安装更新",
+  verifying: "正在核验新版本身份",
+  finalizing: "正在收尾升级事务",
+  cancelled: "下载已取消",
+  failed: "更新失败",
+};
+
+/* 取消边界（与 lib.rs UpdaterInstallPhase::allows_cancel 同合同）：仅
+ * preparing/downloading 受理取消。payload 显式 cancellable=false 优先
+ * （取消拒绝事件），缺省时按阶段推导。 */
+const UPDATER_CANCELLABLE_PHASES = new Set(["preparing", "downloading"]);
+
+/* 进入安装后不可取消的说明（与 lib.rs UPDATER_INSTALL_NOT_CANCELLABLE_HINT
+ * 同源；Rust 侧 installing 事件自带 hint，缺省时前端用本兜底文案）。 */
+const UPDATER_INSTALL_BLOCKED_HINT =
+  "已进入安装阶段，不可取消；若安装失败将自动回滚到当前版本";
+
+/* 取消请求事件名（与 lib.rs UPDATER_CANCEL_EVENT 同合同）。 */
+const UPDATER_CANCEL_EVENT_NAME = "updater-cancel-requested";
+
+let lastUpdaterStatus = null;  // 最近一次检查态（确认层取消后的回落源）
+let updaterInstall = null;     // 最近一次安装事务呈现（updater-state 事件驱动；null=无事务）
+let updaterCancelRequested = false;  // 取消请求已发出（按钮转「正在取消…」，cancelled 后复位）
+let updaterPendingNote = null; // 已确认但首个阶段事件未到达前的过渡说明（不伪造阶段名）
 
 function _ensureUpdaterPanel() {
   const page = document.getElementById("page-settings");
@@ -1353,7 +1391,7 @@ function _ensureUpdaterPanel() {
   panel.innerHTML = `
     <div class="panel-head">
       <h2>应用更新</h2>
-      <p class="hint">检查、下载与安装均需手动确认；启动后也会延迟自动检查一次（仅提示，不安装）。</p>
+      <p class="hint">检查、下载与安装均需手动确认；下载阶段可取消，进入安装后不可取消。启动后也会延迟自动检查一次（仅提示，不安装）。</p>
     </div>
     <div class="perm-panel" data-test="updater-panel-body">
       <p class="hint">应用更新状态加载中…</p>
@@ -1377,7 +1415,84 @@ function updaterStatusLine(status) {
   return `当前版本 ${version} · ${label}${error}`;
 }
 
-function renderUpdaterBody(body, status, extraNote) {
+/** 安装事务进行中的阶段行（ISS-102）：检查态版本优先，事件载荷兜底；
+ * 终态不加「目标」后缀（目标版本已在可用区块呈现）。 */
+function updaterInstallLine(install, status) {
+  const label = UPDATER_PHASE_LABELS[install.state] || "更新进行中";
+  const cur = typeof install.current_version === "string" ? install.current_version
+    : (typeof status?.current_version === "string" ? status.current_version : "未知");
+  const terminal = install.state === "cancelled" || install.state === "failed";
+  const target = install.available_version || status?.available_version;
+  return `当前版本 ${cur} · ${label}${!terminal && target ? `（目标 ${target}）` : ""}`;
+}
+
+/** 取消边界：payload 显式 cancellable 优先，缺省按阶段推导（合同见
+ * UPDATER_CANCELLABLE_PHASES 注释）。终态不可取消。 */
+function updaterPhaseCancellable(install) {
+  if (!install) return false;
+  if (install.state === "cancelled" || install.state === "failed") return false;
+  if (typeof install.cancellable === "boolean") return install.cancellable;
+  return UPDATER_CANCELLABLE_PHASES.has(install.state);
+}
+
+/** 下载字节进度（ISS-102 合同）：downloading 且 downloaded 为有限非负数时
+ * 渲染。total 已知：进度条（role=progressbar）+「已下载 X / Y（P%）」，
+ * 百分比按真实字节比计算（下载量钳制在 total 内防越界）；total 未知
+ * （null/缺失）：只显示字节数并明示「总大小未知」，不渲染进度条、
+ * 不伪造百分比。 */
+function updaterProgressHtml(install) {
+  if (!install || install.state !== "downloading") return "";
+  const downloaded = Number(install.downloaded);
+  if (!Number.isFinite(downloaded) || downloaded < 0) return "";
+  const totalNum = Number(install.total);
+  const hasTotal = Number.isFinite(totalNum) && totalNum > 0;
+  if (!hasTotal) {
+    return `<p class="hint updater-progress" data-test="updater-progress"
+      data-downloaded="${downloaded}">已下载 ${escapeHtml(fmtBytes(downloaded))}（总大小未知，不显示百分比）</p>`;
+  }
+  const clamped = Math.min(downloaded, totalNum);
+  const pct = Math.floor((clamped / totalNum) * 100);
+  return `<div class="updater-progress" data-test="updater-progress"
+      data-downloaded="${clamped}" data-total="${totalNum}" data-percent="${pct}">
+    <div class="updater-progress-bar" role="progressbar" aria-label="更新下载进度"
+      aria-valuemin="0" aria-valuemax="${totalNum}" aria-valuenow="${clamped}"
+      aria-valuetext="已下载 ${escapeHtml(fmtBytes(clamped))}，共 ${escapeHtml(fmtBytes(totalNum))}">
+      <div class="updater-progress-fill" style="width:${pct}%"></div>
+    </div>
+    <p class="hint">已下载 ${escapeHtml(fmtBytes(clamped))} / ${escapeHtml(fmtBytes(totalNum))}（${pct}%）</p>
+  </div>`;
+}
+
+/** 安装事务呈现（ISS-102）：下载进度 + 取消按钮/不可取消说明 + 终态原因
+ * 与重试语境。阶段名由状态行承载（updater-status-text），此处不重复。 */
+function updaterInstallHtml(install, status) {
+  const terminal = install.state === "cancelled" || install.state === "failed";
+  const cancellable = !terminal && updaterPhaseCancellable(install);
+  const hint = terminal
+    ? ""
+    : (typeof install.hint === "string" && install.hint
+      ? install.hint
+      : (cancellable ? "" : UPDATER_INSTALL_BLOCKED_HINT));
+  const cancelBtn = cancellable
+    ? `<button type="button" id="btn-updater-cancel" class="btn" data-test="updater-cancel-btn"
+        aria-label="取消下载更新"${updaterCancelRequested ? " disabled" : ""}>${updaterCancelRequested ? "正在取消…" : "取消下载"}</button>`
+    : "";
+  /* cancelled 的 Rust hint 与本文案同义（「旧版本保持运行，可再次安装」），
+   * 不重复拼接；failed 的 hint 是失败类别的补充恢复提示（与 error 不重复），保留。 */
+  const terminalText = install.state === "cancelled"
+    ? `下载已取消：旧版本保持运行，候选保留，可再次安装。`
+    : `更新失败：${install.error || "未知原因"}${install.hint ? `（${install.hint}）` : ""}`;
+  const terminalBlock = terminal
+    ? `<p class="hint ${install.state === "failed" ? "cfg-error" : ""}" data-test="updater-terminal">${escapeHtml(terminalText)}</p>`
+    : "";
+  return `
+    ${updaterProgressHtml(install)}
+    ${hint ? `<p class="hint" data-test="updater-phase-hint">${escapeHtml(hint)}</p>` : ""}
+    ${terminalBlock}
+    ${cancelBtn ? `<div class="perm-link-row">${cancelBtn}</div>` : ""}`;
+}
+
+function renderUpdaterBody(body, status, install, extraNote) {
   const invoke = tauriInvoke();
   if (!invoke) {
     body.innerHTML = `
@@ -1385,10 +1500,16 @@ function renderUpdaterBody(body, status, extraNote) {
       <p class="hint">版本以安装的应用为准；命令行开发态的版本见 <code>fathom --version</code>。</p>`;
     return;
   }
-  const line = status
-    ? updaterStatusLine(status)
-    : "尚未检查更新；点击「检查更新」获取当前版本与可用更新。";
-  const available = status?.state === "available"
+  const terminal = install && (install.state === "cancelled" || install.state === "failed");
+  const busy = !!install && !terminal;  // 安装事务进行中：检查/安装入口收起
+  const line = install
+    ? updaterInstallLine(install, status)
+    : (status
+      ? updaterStatusLine(status)
+      : "尚未检查更新；点击「检查更新」获取当前版本与可用更新。");
+  /* available 区块：无事务时呈现检查结果；事务终态时保留——cancelled/failed
+   * 的候选仍有效，同一入口即重试（Rust 侧候选保留、独占门已释放）。 */
+  const available = (!install || terminal) && status?.state === "available"
     ? `
     <p class="hint" data-test="updater-available">
       可更新到 <code>${escapeHtml(String(status.available_version || "未知"))}</code>；
@@ -1396,23 +1517,25 @@ function renderUpdaterBody(body, status, extraNote) {
     </p>
     ${status.notes ? `<p class="hint" data-test="updater-notes">更新说明：${escapeHtml(status.notes)}</p>` : ""}`
     : "";
-  const installed = status?.state === "installed"
+  const installed = !install && status?.state === "installed"
     ? `
     <p class="hint" data-test="updater-installed">已安装 <code>${escapeHtml(String(status.available_version || "新版本"))}</code>；重启前保持当前版本运行。</p>`
     : "";
-  const installBtn = status?.state === "available"
+  const installBtn = (!busy && status?.state === "available")
     ? `<button type="button" id="btn-updater-install" class="btn primary" data-test="updater-install-btn">下载并安装</button>`
     : "";
-  const restartBtn = status?.state === "installed"
+  const restartBtn = !install && status?.state === "installed"
     ? `<button type="button" id="btn-updater-restart" class="btn primary" data-test="updater-restart-btn">重启以完成</button>`
     : "";
   body.innerHTML = `
     <p class="hint" data-test="updater-status-text">${escapeHtml(line)}</p>
+    ${install ? updaterInstallHtml(install, status) : ""}
     ${available}
     ${installed}
+    ${updaterPendingNote ? `<p class="hint" data-test="updater-pending-note">${escapeHtml(updaterPendingNote)}</p>` : ""}
     ${extraNote ? `<p class="hint cfg-error" data-test="updater-note">${escapeHtml(extraNote)}</p>` : ""}
     <div class="perm-link-row">
-      <button type="button" id="btn-updater-check" class="btn" data-test="updater-check-btn">检查更新</button>
+      <button type="button" id="btn-updater-check" class="btn" data-test="updater-check-btn"${busy ? " disabled" : ""}>检查更新</button>
       ${installBtn}
       ${restartBtn}
     </div>
@@ -1424,6 +1547,8 @@ function renderUpdaterBody(body, status, extraNote) {
   if (installBtnNode) installBtnNode.addEventListener("click", () => confirmUpdaterInstall(body));
   const restartBtnNode = document.getElementById("btn-updater-restart");
   if (restartBtnNode) restartBtnNode.addEventListener("click", () => confirmUpdaterRestart(body));
+  const cancelBtnNode = document.getElementById("btn-updater-cancel");
+  if (cancelBtnNode) cancelBtnNode.addEventListener("click", () => requestUpdaterCancel(body));
 }
 
 /** 手动检查：按钮防重入；结果做形状校验后渲染（失败也是可恢复状态行）。 */
@@ -1436,22 +1561,24 @@ async function checkUpdater(body) {
   try {
     status = await invoke("updater_check", {});
   } catch (e) {
-    renderUpdaterBody(body, lastUpdaterStatus, `检查请求失败：${e?.message || e}`);
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `检查请求失败：${e?.message || e}`);
     return;
   } finally {
     checkBtn.disabled = false;
   }
   if (!status || typeof status.state !== "string" || !UPDATER_STATE_LABELS[status.state]) {
-    renderUpdaterBody(body, lastUpdaterStatus, "状态返回异常（不是预期的更新状态结构）。");
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, "状态返回异常（不是预期的更新状态结构）。");
     return;
   }
   lastUpdaterStatus = status;
-  renderUpdaterBody(body, status);
+  renderUpdaterBody(body, status, updaterInstall);
   renderAboutVersion();
 }
 
 /** 「下载并安装」确认层：展示版本与后果，确认后才 invoke（confirmed=true）；
- * 取消/失败回落 available 状态，可再次尝试。 */
+ * 取消（确认前收起）不算下载取消——不发送 updater-cancel-requested，
+ * available 状态与入口保持可再次尝试；确认后收起确认层，进度由
+ * updater-state 事件驱动呈现（ISS-102），invoke 返回与事件幂等。 */
 async function confirmUpdaterInstall(body) {
   const layer = document.getElementById("updater-confirm");
   const invoke = tauriInvoke();
@@ -1461,7 +1588,8 @@ async function confirmUpdaterInstall(body) {
   layer.hidden = false;
   layer.innerHTML = `
     <p class="hint">即将下载并安装 <code>${escapeHtml(String(version))}</code>：安装包会经内置公钥验签（不可关闭），
-      安装完成后需重启应用才切换到新版本；安装失败会保持当前版本可继续使用。</p>
+      下载阶段可取消，进入安装后不可取消（失败会自动回滚到当前版本）；
+      安装完成后需重启应用才切换到新版本。</p>
     ${status?.notes ? `<p class="hint">更新说明：${escapeHtml(status.notes)}</p>` : ""}
     <div class="exclude-actions">
       <button type="button" id="updater-confirm-yes" class="btn primary" data-test="updater-confirm-yes">确认下载并安装</button>
@@ -1469,7 +1597,8 @@ async function confirmUpdaterInstall(body) {
     </div>`;
   const no = document.getElementById("updater-confirm-no");
   if (no) no.addEventListener("click", () => {
-    // 取消回落：确认层收起，available 状态与入口保持可再次尝试
+    // 取消回落：确认层收起，available 状态与入口保持可再次尝试；
+    // 不发送 updater-cancel-requested（此时尚无下载事务可取消）。
     layer.hidden = true;
     layer.innerHTML = "";
   });
@@ -1477,25 +1606,65 @@ async function confirmUpdaterInstall(body) {
   if (yes) {
     yes.addEventListener("click", async () => {
       yes.disabled = true;
+      layer.hidden = true;  // 确认完成：层收起，进度转入面板主体（事件驱动）
+      layer.innerHTML = "";
+      // 新一轮事务：清除上一轮终态呈现与取消标记，避免旧终态残留误导
+      updaterInstall = null;
+      updaterCancelRequested = false;
+      // 首个阶段事件到达前的过渡说明（事件到达即清除，不伪造阶段名）
+      updaterPendingNote = "已确认下载并安装；更新开始后此处显示进度。";
+      renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
       let outcome = null;
       try {
         outcome = await invoke("updater_install", { confirmed: true });
       } catch (e) {
-        renderUpdaterBody(body, lastUpdaterStatus, `安装请求失败：${e?.message || e}`);
+        updaterPendingNote = null;
+        renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `安装请求失败：${e?.message || e}`);
         return;
       }
+      updaterPendingNote = null;
       if (outcome && outcome.ok === true) {
-        lastUpdaterStatus = {
-          state: "installed",
-          current_version: outcome.current_version || status?.current_version,
-          available_version: outcome.available_version || version,
-        };
-        renderUpdaterBody(body, lastUpdaterStatus);
+        // 事件 installed 可能尚未到达：按返回值渲染（事件到达后幂等覆盖）
+        if (!updaterInstall || updaterInstall.state !== "installed") {
+          updaterInstall = null;
+          lastUpdaterStatus = {
+            state: "installed",
+            current_version: outcome.current_version || status?.current_version,
+            available_version: outcome.available_version || version,
+          };
+        }
+        renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+      } else if (outcome && (outcome.state === "cancelled" || outcome.state === "failed")) {
+        // 终态：updater-state 事件通常先于 invoke 返回到达；仅当事件未到时
+        // 以返回值补建终态呈现（错误可读，不吞错）
+        if (!updaterInstall || updaterInstall.state !== outcome.state) {
+          updaterInstall = { state: outcome.state, error: outcome?.error || "未知原因" };
+        }
+        renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
       } else {
         const why = outcome && outcome.error ? outcome.error : "未知原因";
-        renderUpdaterBody(body, lastUpdaterStatus, `安装未完成：${why}`);
+        renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `安装未完成：${why}`);
       }
     });
+  }
+}
+
+/** 下载取消（ISS-102）：emit 既有 updater-cancel-requested（与
+ * lib.rs UPDATER_CANCEL_EVENT 同合同），Rust 在下载 poll 边界受理并回滚；
+ * 按钮转「正在取消…」防重复发送，cancelled 事件到达后复位。
+ * emit 失败不吞错：复位按钮并提示可再次尝试。 */
+async function requestUpdaterCancel(body) {
+  const t = window.__TAURI__;
+  const emitFn = t && t.event && typeof t.event.emit === "function" ? t.event.emit : null;
+  if (!emitFn || updaterCancelRequested) return;
+  updaterCancelRequested = true;
+  renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+  try {
+    await emitFn(UPDATER_CANCEL_EVENT_NAME, null);
+  } catch (e) {
+    updaterCancelRequested = false;
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall,
+      `取消请求发送失败：${e?.message || e}；可再次尝试。`);
   }
 }
 
@@ -1525,7 +1694,7 @@ function confirmUpdaterRestart(body) {
         // 进程可能随重启退出而收不到返回值；失败路径回落后可再次尝试
         await invoke("updater_restart", { confirmed: true });
       } catch (e) {
-        renderUpdaterBody(body, lastUpdaterStatus, `重启请求失败：${e?.message || e}`);
+        renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `重启请求失败：${e?.message || e}`);
       }
     });
   }
@@ -1538,20 +1707,39 @@ function loadUpdater() {
   if (!body) return;
   const invoke = tauriInvoke();
   if (!invoke) {
-    renderUpdaterBody(body, null);
+    renderUpdaterBody(body, null, null);
     return;
   }
-  renderUpdaterBody(body, lastUpdaterStatus);
-  // 启动延迟检查（壳内 ≥10s 后 emit）只更新状态行：不弹窗、不安装。
+  renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+  // updater-state 事件（ISS-040B 检查类 + ISS-102 安装事务阶段）：统一分发——
+  // 检查类状态更新 lastUpdaterStatus；安装阶段/终态更新 updaterInstall；
+  // installed 为事务成功终态（清事务呈现，转「重启以完成」语境）；
+  // 未知状态不猜测、不覆盖既有呈现。
   const tauri = window.__TAURI__;
   if (tauri && tauri.event && typeof tauri.event.listen === "function") {
     tauri.event.listen("updater-state", (event) => {
       const payload = event && event.payload;
-      if (payload && typeof payload.state === "string" && UPDATER_STATE_LABELS[payload.state]) {
+      const state = payload && typeof payload.state === "string" ? payload.state : null;
+      if (!state) return;
+      if (state === "installed") {
+        // 事务成功：清安装事务呈现与过渡说明，检查态转 installed
+        lastUpdaterStatus = { ...(lastUpdaterStatus || {}), ...payload };
+        updaterInstall = null;
+        updaterPendingNote = null;
+        updaterCancelRequested = false;
+      } else if (UPDATER_PHASE_LABELS[state]) {
+        // 安装事务阶段/终态：合并载荷（downloading 进度按节流事件推进）
+        updaterInstall = { ...(updaterInstall || {}), ...payload };
+        if (state === "cancelled") updaterCancelRequested = false;
+        if (state === "preparing") updaterPendingNote = null;
+      } else if (UPDATER_STATE_LABELS[state]) {
+        // 检查类事件（unconfigured/unreachable/up_to_date/available/failed）
         lastUpdaterStatus = payload;
-        renderUpdaterBody(body, payload);
-        renderAboutVersion();
+      } else {
+        return;
       }
+      renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+      renderAboutVersion();
     });
   }
 }

@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **727**（ISS-030A +16、ISS-040C +14、ISS-037 repair3 +11、ISS-081 +1：通知语义类固定 `_volume_stat` 受控输入使满盘机器不假红并新增空间告警真实链路用例；ISS-091 +2：设置页权限 API 契约用例；ISS-090 +21：扫描进度流式计数/状态文件/live 判活用例；ISS-096 +7：升级准备兼容 helper 正常退出后实例文件清理聚焦用例），CI 与 `scripts/ci_pytest.sh` 已同步为 **727**（2026-09-26 ISS-096），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **727**（ISS-030A +16、ISS-040C +14、ISS-037 repair3 +11、ISS-081 +1：通知语义类固定 `_volume_stat` 受控输入使满盘机器不假红并新增空间告警真实链路用例；ISS-091 +2：设置页权限 API 契约用例；ISS-090 +21：扫描进度流式计数/状态文件/live 判活用例；ISS-096 +7：升级准备兼容 helper 正常退出后实例文件清理聚焦用例；ISS-097 +12：升级事务持续停写/journal 所有权/中断恢复聚焦用例），CI 与 `scripts/ci_pytest.sh` 已同步为 **739**（2026-09-26 ISS-096/097），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -43,7 +43,7 @@ GitHub CI 设计为在原生 Apple Silicon 与 Intel runner 上分别执行 pyte
 **2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 727（ISS-096 同步）
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 739（ISS-096/097 同步）
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)，断言 39
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
@@ -189,7 +189,7 @@ bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
 
 矩阵各行的父卡归属：三态权限归 ISS-002；系统通知归 ISS-003；tray 交互归 ISS-008；发行包 tray 手点退出、18pt 可辨性、新账户安装/断网/quarantine 下载首启归 ISS-009；后台注册与睡眠/重启归 ISS-010；设置真实重载归 ISS-016；应用内更新归 ISS-040；双架构与 Release 聚合归 ISS-041（Apple 签名腿按 DEC-022 延期）；升级卸载恢复归 ISS-030；外部内测与公开归 ISS-033。
 
-**代码与实测边界（2026-09-26 更正）**：ISS-010B/016B/040B 已提供注册、计划漂移与经确认重装、更新插件和确认流；ISS-040C（2026-09-23）已把生产更新入口接入升级协调（停写/旧 helper 退出/一致备份/进度与取消边界，隔离验证），helper 正常退出自清实例文件的兼容已修（ISS-096，#177）；这些入口不再属于“尚未实现”。2026-09-26 审查确认仍有已登记缺口：升级期间持续停写与 journal 所有权（ISS-097）、安装后失败的旧 bundle 恢复（ISS-098）；真机端到端更新 NOT_VERIFIED。ISS-030A 的 fake 协议不能替代生产入口集成验证。原生 G8/G9 与双架构仍未验收，arm64 本地包实测不得外推。
+**代码与实测边界（2026-09-26 更正）**：ISS-010B/016B/040B 已提供注册、计划漂移与经确认重装、更新插件和确认流；ISS-040C（2026-09-23）已把生产更新入口接入升级协调（停写/旧 helper 退出/一致备份/进度与取消边界，隔离验证），helper 正常退出自清实例文件的兼容已修（ISS-096，#177）；这些入口不再属于“尚未实现”。升级事务持续停写/重入拒绝/journal 所有权已修（ISS-097，#178）；仍有已登记缺口：安装后失败的旧 bundle 恢复（ISS-098）；真机端到端更新 NOT_VERIFIED。ISS-030A 的 fake 协议不能替代生产入口集成验证。原生 G8/G9 与双架构仍未验收，arm64 本地包实测不得外推。
 
 ## 5. 证据格式与收口
 

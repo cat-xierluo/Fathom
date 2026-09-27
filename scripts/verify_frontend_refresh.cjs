@@ -590,11 +590,13 @@ function createFixture() {
         message: state.scanning ? "进行中" : (state.version === 3 ? "成功 · du 耗时 42 秒" : "—"),
         runs: [
           { id: 1, started_at: "2026-09-12T12:00:00", finished_at: "2026-09-12T12:00:42",
-            status: "done", source: "scheduled", phase: "scan", snapshot_id: 2, report_status: "ok",
-            notification_status: "ok", pruned_count: 0, message: "成功 · du 耗时 42 秒" },
+            status: "done", source: "scheduled", phase: "scan", snapshot_id: 2, report_status: "written",
+            notification_status: "submitted", pruned_count: 0,
+            message: "快照 #2；日报已写入；通知已提交" },
           { id: 2, started_at: "2026-09-11T12:00:00", finished_at: "2026-09-11T12:00:51",
-            status: "done", source: "scheduled", phase: "scan", snapshot_id: 1, report_status: "ok",
-            notification_status: "ok", pruned_count: 0, message: "成功 · du 耗时 51 秒" },
+            status: "done", source: "scheduled", phase: "scan", snapshot_id: 1, report_status: "written",
+            notification_status: "submitted", pruned_count: 0,
+            message: "快照 #1；日报已写入；通知已提交" },
         ],
       });
     }
@@ -2642,8 +2644,10 @@ async function main() {
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="schedule"]')?.click());
     await page.waitForSelector("#scan-history table, #scan-history .hint");
     const settingsHistory = await page.locator("#scan-history").textContent();
+    // ISS-109：状态/来源中文映射 + done 行人话摘要（不再是英文枚举/JSON dump）
     record("settings-scan-history-rendered",
-      settingsHistory.includes("2026-09-12") && settingsHistory.includes("done"),
+      settingsHistory.includes("2026-09-12") && settingsHistory.includes("完成")
+        && settingsHistory.includes("计划") && settingsHistory.includes("快照 #2"),
       settingsHistory.slice(0, 80));
 
     /* ---------- 三种视口截图（DESIGN：980×640 / 1220×820 / 1920×1080） ---------- */

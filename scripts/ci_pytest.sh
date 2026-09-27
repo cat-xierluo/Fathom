@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ISS-031 可复现 pytest 入口（CI 与本地同一断言口径）。
 #
-# 本地等价命令（ISS-101 后 766 passed = 753 + 13(tests/test_release_gate.py)；753 = 739 + 14(tests/test_upgrade_restore.py)；739 = 727 + 12(ISS-097)，727 = 720 + 7(ISS-096)）：
+# 本地等价命令（ISS-109 后 771 passed = 766 + 5(tests/test_scan_runs.py)；766 = 753 + 13(tests/test_release_gate.py)；753 = 739 + 14(tests/test_upgrade_restore.py)；739 = 727 + 12(ISS-097)，727 = 720 + 7(ISS-096)）：
 #   .runtime/bin/python -m pytest tests -q
 # CI：FATHOM_PYTHON 指向 setup-python 锁定版本创建的 venv 解释器。
 #
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 766）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 771）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -37,8 +37,8 @@ cd "$(dirname "$0")/.."
 # 与真实 ci.yml 一致（6 实例逐字）+ 矩阵展开与缺 name 回退、解析
 # fail-closed 三反例、候选登记/制品指纹四反例（更换/缺制品/commit 不符/
 # manifest 版本不符）+ manifest 非法 JSON、非 git 目录阻塞、--selftest
-# 全绿（753 → 766）。
-expected="${EXPECTED_PYTEST_PASSED:-766}"
+# 全绿（753 → 771）。
+expected="${EXPECTED_PYTEST_PASSED:-771}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

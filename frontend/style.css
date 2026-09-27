@@ -494,6 +494,8 @@ tr:hover .btn-mini { opacity: 1; }
 .tbl-toggle[open] summary { margin-bottom: 8px; }
 .tbl-mini { font-size: 12px; }
 .tbl-mini th, .tbl-mini td { padding: 4px 8px; }
+/* ISS-109：说明列限宽折行——interrupted 的超时诊断（含完整路径）不再撑破表格 */
+.tbl-mini td.run-message { max-width: 380px; word-break: break-word; }
 
 /* ===== 覆盖三类缺口（ISS-002A · 解释，不求和） =====
  * 覆盖行 / 质量行扩展为「权限受限 / 扫描期间消失 / 排除掩码」三块可解释说明。

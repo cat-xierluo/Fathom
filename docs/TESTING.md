@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **727**（ISS-030A +16、ISS-040C +14、ISS-037 repair3 +11、ISS-081 +1：通知语义类固定 `_volume_stat` 受控输入使满盘机器不假红并新增空间告警真实链路用例；ISS-091 +2：设置页权限 API 契约用例；ISS-090 +21：扫描进度流式计数/状态文件/live 判活用例；ISS-096 +7：升级准备兼容 helper 正常退出后实例文件清理聚焦用例；ISS-097 +12：升级事务持续停写/journal 所有权/中断恢复聚焦用例；ISS-098 +14：恢复材料/三类故障注入/恢复接续聚焦用例；ISS-101 +13：发行门判定聚焦用例），CI 与 `scripts/ci_pytest.sh` 已同步为 **766**（2026-09-27 ISS-101），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；本地 pytest 配置门禁为 **727**（ISS-030A +16、ISS-040C +14、ISS-037 repair3 +11、ISS-081 +1：通知语义类固定 `_volume_stat` 受控输入使满盘机器不假红并新增空间告警真实链路用例；ISS-091 +2：设置页权限 API 契约用例；ISS-090 +21：扫描进度流式计数/状态文件/live 判活用例；ISS-096 +7：升级准备兼容 helper 正常退出后实例文件清理聚焦用例；ISS-097 +12：升级事务持续停写/journal 所有权/中断恢复聚焦用例；ISS-098 +14：恢复材料/三类故障注入/恢复接续聚焦用例；ISS-101 +13：发行门判定聚焦用例），CI 与 `scripts/ci_pytest.sh` 已同步为 **771**（2026-09-27 ISS-109 +5：扫描运行历史展示层人话化/兜底/DB 合同聚焦用例），变更测试数量必须用新任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -23,7 +23,7 @@ PLAYWRIGHT_BIN="$PWD/.runtime/playwright/node_modules/.bin/playwright" \
 PW_INSTALL=1 /bin/bash scripts/ci_browser_checks.sh
 ```
 
-GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（766）和 Rust 1.88 locked build+单测（60，ISS-100 接入）；浏览器/API 检查（39）与前端 refresh 功能回归（179）在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
+GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（771）和 Rust 1.88 locked build+单测（60，ISS-100 接入）；浏览器/API 检查（39）与前端 refresh 功能回归（179）在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
 
 本地/API/CLI 验收必须显式设置完整隔离边界：`FATHOM_RUNTIME_DIR` 派生 data/reports/logs，`FATHOM_SCAN_ROOT` 指定合成根，`FATHOM_RESOURCE_DIR` 指定只读资源，`FATHOM_PORT` 使用已核对的测试端口；CLI 也提供等价覆盖。旧 `FATHOM_DB` 仅作兼容，未指定运行根时其父目录成为完整运行根。`FATHOM_DU_TIMEOUT_S`（ISS-061，默认 14400 秒）设置单次 `du` 采集的安全时限：超时后本次扫描记为 `interrupted` 并保留上次有效快照；值必须是正的有限数，`0`、负数、非数字、`nan`、`inf` 一律在启动时被拒绝（不存在"无限超时"）；夹具里可用极小值（如 `0.001`）构造超时反例。端口占用须非零退出，不停止未知进程；install/uninstall/权限与真实 Finder 动作另属实机验证。
 
@@ -43,7 +43,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（766�
 **2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 766（ISS-101 同步）
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 771（ISS-109 同步）
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 179（ISS-106 同步）
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 60（ISS-100）
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \

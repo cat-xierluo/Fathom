@@ -617,6 +617,13 @@ async function loadSettings() {
   loadUpdater();
 }
 
+/* ISS-109：状态/来源英文枚举的中文展示映射；未登记的值原样展示不吞字 */
+const SCAN_STATUS_LABELS = {
+  done: "完成", failed: "失败", interrupted: "已中断",
+  running: "运行中", cancelled: "已取消",
+};
+const SCAN_SOURCE_LABELS = { scheduled: "计划", cli: "命令行", api: "手动" };
+
 async function loadScanHistory() {
   const target = document.getElementById("scan-history");
   if (!target) return;
@@ -642,10 +649,10 @@ async function loadScanHistory() {
         return `<tr>
           <td>${escapeHtml((run.started_at || "").slice(0, 16).replace("T", " "))}</td>
           <td>${escapeHtml((run.finished_at || "").slice(0, 16).replace("T", " "))}</td>
-          <td>${escapeHtml(run.source || "—")}</td>
-          <td><span class="st ${stCls}">${dot}${escapeHtml(st)}</span></td>
+          <td>${escapeHtml(SCAN_SOURCE_LABELS[run.source] || run.source || "—")}</td>
+          <td><span class="st ${stCls}">${dot}${escapeHtml(SCAN_STATUS_LABELS[st] || st)}</span></td>
           <td>${run.snapshot_id == null ? "—" : "#" + escapeHtml(String(run.snapshot_id))}</td>
-          <td>${escapeHtml(run.message || "")}</td>
+          <td class="run-message">${escapeHtml(run.message || "")}</td>
         </tr>`;
       }).join("")}</tbody></table>
       <p class="hint">${icon("fileText", 12)} 仅展示最近 5 条；历史归档见 reports/。</p>`;

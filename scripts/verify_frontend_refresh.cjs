@@ -754,7 +754,8 @@ async function main() {
       !topbarState.anchor && !topbarState.depthScale &&
         topbarState.h1Size === "22px" && topbarState.h1Text === "总览",
       JSON.stringify(topbarState));
-    // 全局扫描按钮 = 次级描边（白底、无 primary 类）；本视口无实心主按钮
+    // 全局扫描按钮 = 次级描边（白底、无 primary 类）；ISS-106：本视口唯一
+    // 实心主按钮 = 总览主结论区「查看完整对比」（当前页主任务），扫描不与其竞争
     const scanBtnState = await page.evaluate(() => {
       const btn = document.getElementById("btn-scan");
       if (!btn) return null;
@@ -766,7 +767,8 @@ async function main() {
         border: cs.borderTopWidth + " " + cs.borderTopStyle,
         height: cs.height,
         primaries: [...document.querySelectorAll(".btn.primary")]
-          .filter((b) => b.getClientRects().length > 0).length,
+          .filter((b) => b.getClientRects().length > 0).map((b) => b.id || b.textContent.trim()),
+        ctaInConclusion: Boolean(document.querySelector("#overview-conclusion .btn.primary")),
       };
     });
     record("scan-button-secondary-and-no-solid-on-overview",
@@ -774,34 +776,40 @@ async function main() {
         scanBtnState.bg === "rgb(255, 255, 255)" &&
         scanBtnState.border.startsWith("1px") &&
         scanBtnState.height === "32px" &&
-        scanBtnState.primaries === 0,
+        scanBtnState.primaries.length === 1 &&
+        scanBtnState.ctaInConclusion,
       JSON.stringify(scanBtnState));
-    // h2 前三刻度与四卡下装饰横线移除（刻度泛化反例）
+    // h2 前三刻度移除（刻度泛化反例）；ISS-106：等深线母题随主结论区迁移，
+    // 四读数卡容器撤除（并入卷容量读数行），总览等深线仅主结论一处
     const decorState = await page.evaluate(() => ({
       h2Tick: getComputedStyle(document.querySelector(".panel-head h2"), "::before").content,
-      cardRuler: getComputedStyle(document.querySelector(".cards"), "::after").content,
+      cardsGone: !document.querySelector("#page-overview .cards"),
+      contourInConclusion: Boolean(document.querySelector("#overview-conclusion .brand-contour")),
+      contourCount: document.querySelectorAll("#page-overview .brand-contour").length,
     }));
     record("decorative-ticks-removed-from-h2-and-cards",
-      decorState.h2Tick === "none" && decorState.cardRuler === "none",
+      decorState.h2Tick === "none" && decorState.cardsGone &&
+        decorState.contourInConclusion && decorState.contourCount === 1,
       JSON.stringify(decorState));
     // 表面层级：五页主内容各收进单张 L1 白卡（.surface），内部 panel 为
-    // 透明 L2 分组（背景透明；非首组以 hairline 分隔线分界）
+    // 透明 L2 分组（背景透明）。ISS-106：卷容量与最近变化在 .ov-grid 内
+    // 1220 双列并排（无分隔线）；其后「最近扫描」panel 以 hairline 分隔
     const surfaceState = await page.evaluate(() => {
       const transparent = (p) => getComputedStyle(p).backgroundColor === "rgba(0, 0, 0, 0)";
       const panels = [...document.querySelectorAll("#page-overview .surface .panel")];
       const first = panels[0];
-      const rest = panels.slice(1);
+      const scanPanel = document.getElementById("ov-panel-scan");
       return {
         overviewSurfaces: document.querySelectorAll("#page-overview .surface").length,
         panelsTransparent: panels.length >= 3 && panels.every(transparent),
         firstNoDivider: first && getComputedStyle(first).borderTopStyle === "none",
-        restDivided: rest.every((p) => getComputedStyle(p).borderTopWidth === "1px"),
+        scanDivided: Boolean(scanPanel) && getComputedStyle(scanPanel).borderTopWidth === "1px",
         surfaceCard: getComputedStyle(document.querySelector("#page-overview .surface")).backgroundColor,
       };
     });
     record("surface-hierarchy-one-card-per-page",
       surfaceState.overviewSurfaces === 1 && surfaceState.panelsTransparent &&
-        surfaceState.firstNoDivider && surfaceState.restDivided &&
+        surfaceState.firstNoDivider && surfaceState.scanDivided &&
         surfaceState.surfaceCard === "rgb(255, 255, 255)",
       JSON.stringify(surfaceState));
     const overviewShot = path.join(evidenceDir, "overview-values-1220x820.png");
@@ -1750,6 +1758,116 @@ async function main() {
     record("network-error-is-explicit",
       !(await page.locator("#overview-summary").textContent()).includes("需要至少两个快照"));
     await page.unroute("**/api/diff*");
+
+    /* ---------- ISS-106：总览层级重排与五态独立容器 ----------
+     * 主结论区先回答变化（根同口径净变化，禁止父子行求和），等待型
+     * （state-wait）与错误型（state-error）容器互斥且都在首屏；卷容量
+     * 降次级（DOM 在变化表之后、迷你图高 ≤180，不靠缩小字体）。 */
+    await setMode("dual");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='conclusion-headline']");
+    const ovReady = await page.evaluate(() => {
+      const changes = document.getElementById("ov-panel-changes");
+      const volume = document.getElementById("ov-panel-volume");
+      return {
+        wait: Boolean(document.querySelector("[data-test='conclusion-wait']")),
+        error: Boolean(document.querySelector("[data-test='conclusion-error']")),
+        volumeAfterChanges: Boolean(changes && volume &&
+          (changes.compareDocumentPosition(volume) & Node.DOCUMENT_POSITION_FOLLOWING)),
+        chartH: document.getElementById("chart-volume")?.clientHeight || 0,
+      };
+    });
+    record("overview-conclusion-ready-cleans-state-containers",
+      ovReady.wait === false && ovReady.error === false &&
+        ovReady.volumeAfterChanges && ovReady.chartH > 0 && ovReady.chartH <= 180,
+      JSON.stringify(ovReady));
+
+    await setMode("empty");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='conclusion-wait']");
+    const ovEmpty = await page.evaluate(() => ({
+      text: document.querySelector("[data-test='conclusion-wait']")?.textContent || "",
+      errorGone: !document.querySelector("[data-test='conclusion-error']"),
+    }));
+    record("overview-state-empty-waiting-container",
+      ovEmpty.text.includes("尚无快照") && ovEmpty.text.includes("立即扫描") &&
+        ovEmpty.errorGone,
+      ovEmpty.text.slice(0, 80));
+
+    await setMode("single");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='conclusion-wait']");
+    const ovSingle = await page.evaluate(() =>
+      document.querySelector("[data-test='conclusion-wait']")?.textContent || "");
+    record("overview-state-single-waiting-container",
+      ovSingle.includes("基线已建立") && ovSingle.includes("分布现在可用"),
+      ovSingle.slice(0, 80));
+
+    await setMode("error500");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='conclusion-error']");
+    const ovError = await page.evaluate(() => {
+      const el = document.querySelector("[data-test='conclusion-error']");
+      return {
+        text: el?.textContent || "",
+        hasRetry: Boolean(document.querySelector("[data-test='conclusion-retry']")),
+        bg: el ? getComputedStyle(el).backgroundColor : null,
+        top: el ? el.getBoundingClientRect().top : null,
+      };
+    });
+    record("overview-state-error-container-distinct",
+      ovError.hasRetry && ovError.text.includes("HTTP 500") &&
+        ovError.text.includes("上次成功数据") &&
+        ovError.bg !== "rgb(245, 246, 248)" &&  // 与等待态 --bg 底不同容器
+        ovError.bg !== "rgba(0, 0, 0, 0)" &&
+        (ovError.top || 9999) < 640,            // 错误与重试在 980/1220 首屏可见
+      JSON.stringify(ovError));
+    await setMode("dual");
+
+    // 净变化 headline：根同口径差分（net-overlap 夹具行和 = +166、根差 = +100）
+    await setScenario("net-overlap");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='conclusion-headline']");
+    const ovNet = await page.evaluate(() =>
+      document.querySelector("[data-test='conclusion-headline']")?.textContent || "");
+    record("overview-conclusion-net-is-root-diff-not-row-sum",
+      ovNet.includes("+100.0 KB") && !ovNet.includes("166"),
+      ovNet);
+
+    // 无基线（a/b 缺 total_kb）：headline 显示不可知，不伪造 0、不回退行和
+    await setScenario("net-nobaseline");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='conclusion-headline']");
+    const ovNoBase = await page.evaluate(() =>
+      document.querySelector("[data-test='conclusion-headline']")?.textContent || "");
+    record("overview-conclusion-no-baseline-not-zero-or-sum",
+      ovNoBase.includes("不可知") && !ovNoBase.includes("+0.0 B") &&
+        !ovNoBase.includes("2.0 MB"),
+      ovNoBase);
+    await setScenario(null);
+
+    // 980×640 首屏：质量行 / 28px 主结论 / 最近变化表同时可见，
+    // 卷容量走势在其后（反例基线：最近变化 y≈748-759 在首屏外）
+    await page.setViewportSize({ width: 980, height: 640 });
+    await openPage("#/overview");
+    await page.waitForSelector("#overview-summary table");
+    const firstScreen = await page.evaluate(() => {
+      const y = (sel) => document.querySelector(sel)?.getBoundingClientRect().top ?? null;
+      return {
+        quality: y("#overview-quality"),
+        headline: y("[data-test='conclusion-headline']"),
+        table: y("#overview-summary table"),
+        chart: y("#chart-volume"),
+        vh: window.innerHeight,
+      };
+    });
+    record("overview-conclusion-and-table-firstscreen-980",
+      firstScreen.quality !== null && firstScreen.quality < 640 &&
+        firstScreen.headline !== null && firstScreen.headline < 640 &&
+        firstScreen.table !== null && firstScreen.table < 640 &&
+        firstScreen.chart !== null && firstScreen.chart > firstScreen.table,
+      JSON.stringify(firstScreen));
+    await page.setViewportSize({ width: 1220, height: 820 });
 
     /* ---------- 乱序响应：旧成功晚于新失败/新结果，只允许显示当前状态 ---------- */
     // 总览摘要：首访成功被延迟，随后一次 500 先到；迟到成功不得覆盖较新错误。

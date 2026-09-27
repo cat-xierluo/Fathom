@@ -64,8 +64,9 @@
   --fs-body: 14px;     /* 正文 */
   --fs-table: 13px;    /* 表体/按钮/输入框 */
   --fs-hint: 12px;     /* 辅助口径/表头/脚注（9px 仅品牌位字标） */
-  /* ISS-105 间距 token（8pt 栅格） */
-  --sp1: 4px; --sp2: 8px; --sp3: 12px; --sp4: 16px; --sp6: 24px; --sp8: 32px;
+  /* ISS-105 间距 token（8pt 栅格；--sp5 20px 为半步，候选合同 conclusion
+   * padding 用——ISS-104 候选 token 表原文） */
+  --sp1: 4px; --sp2: 8px; --sp3: 12px; --sp4: 16px; --sp5: 20px; --sp6: 24px; --sp8: 32px;
   /* 二级选中态短刻度与浅品牌底（ISS-104 候选：--primary 同源派生用法，非新色） */
   --subsel-bg: rgba(52, 93, 127, 0.10);
 }
@@ -272,13 +273,67 @@ tr:hover .btn-mini { opacity: 1; }
 }
 .diff-retry:hover { border-color: var(--primary); color: var(--primary); }
 
+/* ===== 总览主结论区（ISS-106 · ISS-104 候选 #1/#6） =====
+ * 顺序合同：质量行（数据时间/范围/覆盖）→ 主结论（28px headline，每页唯一
+ * display 刻度；等深线母题全页仅此处）→ 最近变化表（980×640 首屏内）→
+ * 卷容量读数与迷你走势（次级）→ 最近扫描。 */
+.conclusion {
+  position: relative;
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: var(--sp4) var(--sp6);
+  padding: var(--sp4) var(--sp5);
+  margin-bottom: var(--sp6);
+  border-bottom: 1px solid var(--hairline);
+  overflow: hidden;
+}
+.conclusion-main { min-width: 240px; flex: 1; }
+/* 等深线背景在其上：内容面抬一层，弧线只作环境纹理不穿过文字/控件
+ * （候选合同 .conclusion > * 同规则） */
+.conclusion > .conclusion-main,
+.conclusion > .conclusion-actions { position: relative; z-index: 1; }
+.conclusion-kicker { margin: 0 0 2px; color: var(--muted); font-size: var(--fs-hint); }
+.conclusion-headline {
+  margin: 0;
+  font-size: var(--fs-display);
+  font-weight: 680;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.conclusion-headline.delta-grow { color: var(--grow); }
+.conclusion-headline.delta-shrink { color: var(--ok); }
+.conclusion-sub { margin: 6px 0 0; color: var(--text); font-size: var(--fs-body); max-width: 62ch; }
+.conclusion-actions { display: flex; gap: var(--sp2); flex-wrap: wrap; align-items: center; }
+/* 覆盖说明槽：独占 conclusion-main 内一行为（在 sub 之下，不与状态互踩） */
+.conclusion-foot { margin-top: var(--sp2); }
+.conclusion-foot:empty { margin-top: 0; }
+
+/* 五态容器（ISS-106 验收 2）：等待型（bg 块）与错误型（--danger 派生浅红底）
+ * 分离——正常等待（无快照/单快照）不伪装成失败；两者不复用同一容器。
+ * 浅底与 .quality-chip.ok/.warn 同口径（DEC-023 体系内语义色派生，非新色板）。 */
+.state-wait {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: var(--sp3) var(--sp4); border-radius: 8px;
+  background: var(--bg); border: 1px solid var(--hairline);
+  color: var(--text); font-size: var(--fs-body);
+}
+.state-wait .sw-title { font-weight: 600; }
+.state-wait .sw-note { color: var(--muted); font-size: var(--fs-hint); flex-basis: 100%; margin: 0; }
+.state-error {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px;
+  padding: var(--sp3) var(--sp4); border-radius: 8px;
+  background: #f7ece9; border: 1px solid rgba(133, 69, 58, 0.30);
+  color: var(--text); font-size: var(--fs-body);
+}
+.state-error .se-title { color: var(--danger); font-weight: 600; }
+.state-error .se-note { color: var(--muted); font-size: var(--fs-hint); flex-basis: 100%; margin: 0; }
+
 /* ===== 卡片与面板 ===== */
 
 /* 总览主结论背景等深线（R3，候选收敛后等深线母题唯一保留位）：低对比
  * 同心圆自右缘发出、向内渐弱；绝对定位不参与布局、pointer-events 关闭；
- * 显现 200ms（reduced-motion 下关闭） */
-.cards { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp4); margin-bottom: var(--sp4); }
-.cards > .card { position: relative; z-index: 1; }
+ * 显现 200ms（reduced-motion 下关闭）。ISS-106：随主结论区迁移，不再
+ * 挂在四读数卡容器上（四卡已按候选并入卷容量读数行）。 */
 .brand-contour {
   position: absolute; inset: 0;
   overflow: hidden;
@@ -290,8 +345,8 @@ tr:hover .btn-mini { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   .brand-contour { animation: none; }
 }
-/* ISS-105：原 .cards::after 读数刻度横线移除（ISS-104 候选「四卡下装饰
- * 横线」反例——无信息作用的重复装饰）。 */
+/* ISS-106：原 .cards 四卡容器撤除（候选 #1——磁盘剩余/已用/快照数并入
+ * 卷容量读数行）；.card 卡片样式保留供其它潜在网格使用。 */
 .card {
   background: var(--card); border: 1px solid var(--hairline); border-radius: 12px;
   padding: var(--sp3) var(--sp4); box-shadow: var(--shadow);
@@ -301,10 +356,23 @@ tr:hover .btn-mini { opacity: 1; }
 .card-value.small { font-size: 15px; }
 /* 磁盘状态（ISS-084）：已用=深潭墨（数据事实，不警示）；剩余正常态=
  * 深矿物青（体系蓝青）；两者仅在越阈时由 status.js 叠加 .warn 切赭红告警。
- * id 选择器优先级高于 .card-value.warn，故告警覆盖也按 id 写足特异性 */
+ * id 选择器优先级高于 .rv/.card-value.warn，告警覆盖按 id 写足特异性 */
 #card-used { color: var(--used); }
 #card-free { color: var(--ok); }
 #card-free.warn, #card-used.warn, .card-value.warn { color: var(--alert); }
+
+/* 卷容量读数行（ISS-104 候选：读数前置，先读数后图形） */
+.vol-readout {
+  display: flex; flex-wrap: wrap; gap: var(--sp3) var(--sp6);
+  margin-bottom: var(--sp2);
+  align-items: baseline;
+}
+.readout .rl { color: var(--muted); font-size: var(--fs-hint); display: block; }
+.readout .rv { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.readout .rv-ok { color: var(--ok); }
+.readout .rv-used { color: var(--used); }
+.readout .rv-s { font-size: 15px; font-weight: 600; color: var(--text); }
+.readout .rv-time { font-size: 14px; }
 
 /* ===== 表面层级（ISS-105 / ISS-104 候选合同 #5） =====
  * L0 窗口底 --bg → L1 每页一张白卡（.surface：hairline 边 + 弱阴影 +
@@ -337,6 +405,25 @@ tr:hover .btn-mini { opacity: 1; }
 /* 变化页：共享对比上下文与其下分区之间分隔；分区组随 tab 显隐，
  * 顶部间距恒定即可 */
 .surface > .diff-context { padding-bottom: var(--sp4); border-bottom: 1px solid var(--hairline); }
+/* 总览：ov-grid（最近变化 + 卷容量）与其后「最近扫描」panel 之间分隔
+ * （ISS-106：scan panel 的相邻兄弟是 .ov-grid，原 `.panel + .panel`
+ * 相邻选择器不命中） */
+.surface > .ov-grid + .panel { margin-top: var(--sp6); padding-top: var(--sp6); border-top: 1px solid var(--hairline); }
+
+/* 总览双栏（ISS-106）：最近变化（主）与卷容量走势（辅）并排——
+ * 1200px 以下单列时卷容量落在变化表之下，仍以 hairline 分隔；
+ * 双列并排时不加竖向分隔（靠间距分组，候选合同）。 */
+.ov-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp6); }
+.ov-grid > .panel + .panel { margin-top: 0; padding-top: 0; border-top: none; }
+@media (max-width: 1199px) {
+  .ov-grid > .panel + .panel {
+    margin-top: var(--sp6); padding-top: var(--sp6);
+    border-top: 1px solid var(--hairline);
+  }
+}
+@media (min-width: 1200px) {
+  .ov-grid { grid-template-columns: minmax(0, 1.18fr) minmax(0, 1fr); }
+}
 
 .panel-head {
   display: flex; align-items: baseline; justify-content: space-between;
@@ -373,6 +460,9 @@ tr:hover .btn-mini { opacity: 1; }
 .chart { width: 100%; height: 300px; }
 .chart-lg { height: 340px; }
 .chart-sm { height: 180px; }
+/* ISS-106：总览卷容量走势降次级（候选合同次级图 150px）——图表缩高，
+ * 不靠缩小字体（轴字仍 11px 常规） */
+.chart-mini { height: 150px; }
 /* ISS-094：增长/缩减双列容器（.diff-grid/.diff-tables）随分区 tab 化移除——
  * 各分区独占整行后不再需要并排网格；.grow/.shrink 方向色保留（分区 h2）。 */
 .grow { color: var(--grow); }
@@ -1015,7 +1105,6 @@ code {
 .advanced-docs-link a:hover { text-decoration: underline; }
 
 @media (max-width: 900px) {
-  .cards { grid-template-columns: repeat(2, 1fr); }
   .browser-layout { grid-template-columns: 1fr; }
 }
 

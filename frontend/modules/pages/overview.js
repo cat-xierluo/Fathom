@@ -1,16 +1,23 @@
-/* 总览页：状态卡 + 数据时间/范围/质量行 + 卷容量趋势（含表格等价） +
- * 最近变化摘要 + 最近扫描说明。
+/* 总览页：质量行 + 主结论区（变化优先）+ 最近变化摘要 + 卷容量走势（次级，
+ * 读数行 + 迷你图 + 表格等价） + 最近扫描说明。
  *
  * 前端责任（ISS-027 模块合同）：
  * - beginRequest 世代号保证乱序/迟到响应不覆盖较新查询；
  * - 仅 frontend/icons.js 的 SVG 图标；零 emoji。
  *
- * 展示（ISS-028）：
+ * 展示（ISS-028；层级重排与状态独立化归 ISS-106）：
  * - 数据时间 / 范围 / 质量行：根路径、a → b 时间窗口、覆盖状态（full /
  *   partial / missing），缺路径不可知时显式说明，不冒充完整；
- * - 净变化口径：根同口径差分（不带 +/− 时 0 不着变化色），行值不可累加
- *   已在表头脚注明示；
- * - 走势表格等价：走势图 + "以表格查看"折叠（DESIGN：图表有表格替代）。
+ * - 主结论区先回答「本次比上次变化多少」：headline 净变化 = 根同口径差分
+ *   （b.total_kb − a.total_kb，与变化页 renderNetLine 同一口径；grown/shrunk
+ *   行按 fold_changes 可含父子重叠且经 topn/min_delta 截断，禁止逐行求和
+ *   推净变化）；任一侧缺 total_kb（无基线）显示不可知，绝不伪造 0；
+ * - 五态容器（ISS-106 验收 2）：无快照 / 单快照 / 零变化 / 部分覆盖 /
+ *   请求失败各有准确说明与可达下一步——等待型（state-wait，bg 块）不当成
+ *   失败，错误型（state-error，--danger 派生浅底）带重试且位于首屏主结论
+ *   区，不藏在图表下面；部分覆盖以质量徽章 + 覆盖说明块（conclusion-foot）
+ *   与结论同屏；
+ * - 走势表格等价：迷你走势图 + "以表格查看"折叠（DESIGN：图表有表格替代）。
  */
 import { fetchJSON, beginRequest, revealInFinder } from "../request.js";
 import { fmtBytes, fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
@@ -104,13 +111,6 @@ function _renderCoverageClasses(coverage) {
   return `<ul class="cov-classes" data-test="coverage-classes">${items.join("")}</ul>`;
 }
 
-/* 区域错误占位（DESIGN：保持高度，不塌陷） */
-function _regionError(title, detail = "") {
-  return `<div class="region-error" role="status">
-    <span class="re-title">${escapeHtml(title)}</span>${detail ?
-      `<span>${escapeHtml(detail)}</span>` : ""}</div>`;
-}
-
 async function loadQualityLine() {
   const request = beginRequest("overviewQuality");
   const el = document.getElementById("overview-quality");
@@ -169,6 +169,8 @@ async function loadScanNote() {
     } else {
       el.textContent = `扫描状态加载失败（HTTP ${e.status || "?"}）：${e.message}`;
     }
+    // 快照状态不可知时同步清空覆盖说明：不留上一次的过期内容。
+    _renderCoverageNoteBlock(null, { state: "missing" });
     return;
   }
   if (!request.current()) return;
@@ -205,17 +207,24 @@ async function loadScanNote() {
  * full 时只渲染「完整覆盖」；三类缺口按需渲染，每个缺口都带
  * 「意味着什么 / 不意味着什么」文案（详见 COV_NOTES）。
  * 容器 id 由调用方决定：默认 `#overview-coverage-note`（与既有
- * [data-test='coverage-classes'] 复用同一 DOM 节点）。 */
+ * [data-test='coverage-classes'] 复用同一 DOM 节点）。
+ * ISS-106：容器挂主结论区的 #overview-coverage-slot（与质量徽章、
+ * 28px 结论同屏）——部分覆盖说明不再藏在图表或页尾之下；slot 缺失时
+ * 回退追加在 #overview-scan-note 之后（旧结构防御）。 */
 function _ensureCoverageNote() {
   let container = document.getElementById("overview-coverage-note");
   if (container) return container;
-  const scanNote = document.getElementById("overview-scan-note");
-  if (!scanNote || !scanNote.parentNode) return null;
+  const slot = document.getElementById("overview-coverage-slot");
   container = document.createElement("div");
   container.id = "overview-coverage-note";
   container.className = "coverage-note-block";
   container.setAttribute("aria-live", "polite");
-  // 追加在 #overview-scan-note 之后；同一 panel 内，仍属「最近扫描」区块。
+  if (slot) {
+    slot.appendChild(container);
+    return container;
+  }
+  const scanNote = document.getElementById("overview-scan-note");
+  if (!scanNote || !scanNote.parentNode) return null;
   scanNote.parentNode.insertBefore(container, scanNote.nextSibling);
   return container;
 }
@@ -300,63 +309,202 @@ function _renderVolumeTable(rows) {
     <tbody>${body}</tbody></table>`;
 }
 
-async function loadOverviewSummary() {
-  const request = beginRequest("overviewSummary");
+/* ---------- 主结论区 + 最近变化摘要（ISS-106：变化优先、五态独立） ---------- */
+
+/* 根同口径净变化 = b.total_kb − a.total_kb（与变化页 renderNetLine 同一口径：
+ * grown/shrunk 行按 fold_changes 可含父子重叠（DEC-005）且经 topn/min_delta_kb
+ * 截断——逐行求和不等于任何口径的净变化，禁止回退到求和。
+ * 任一侧缺 total_kb（如首扫无基线）返回 null，调用方不得显示 0。 */
+function _computeNet(d) {
+  const prev = Number(d.a && d.a.total_kb), curr = Number(d.b && d.b.total_kb);
+  if (!Number.isFinite(prev) || !Number.isFinite(curr)) return null;
+  return curr - prev;
+}
+
+function _setConclusionActions(html) {
+  const el = document.getElementById("conclusion-actions");
+  if (el) el.innerHTML = html;
+}
+
+/* 就绪态：28px 一级结论（每页唯一 display 刻度）+ 来源一句 + 定位入口。
+ * headline 按根同口径净变化着色（增长赭 / 缩减青 / 零或不可知中性）。 */
+function _renderConclusionReady(d) {
+  const body = document.getElementById("conclusion-body");
+  if (!body) return;
+  const net = _computeNet(d);
+  const measured = (d.grown || []).length + (d.shrunk || []).length;
+  const unrecorded = (d.added || []).length + (d.removed || []).length;
+  let headText, headCls;
+  if (net == null) { headText = "净变化不可知"; headCls = ""; }
+  else if (net > 0) { headText = `最近增长 ${fmtDelta(net)}`; headCls = "delta-grow"; }
+  else if (net < 0) { headText = `最近缩减 ${fmtDelta(net)}`; headCls = "delta-shrink"; }
+  else { headText = "最近无净变化"; headCls = ""; }
+  const span = `${String(d.a?.created_at || "").slice(0, 10)} → ${String(d.b?.created_at || "").slice(0, 10)}`;
+  const kicker = `最近变化 · 已对比快照 #${d.a?.id ?? "?"} → #${d.b?.id ?? "?"}（${span}）`;
+  let sub;
+  if (net == null) {
+    sub = "快照缺少根总量（无基线），净变化不可知；不用列表行求和推算。";
+  } else if (measured) {
+    const srcs = (d.grown || []).slice(0, 2)
+      .map((r) => `${shortPath(r.path, 2)}（${fmtDelta(r.delta_kb)}）`);
+    sub = srcs.length ? `主要来自 ${srcs.join(" 与 ")}` : "存在 ≥1MB 的可测量变化";
+    const shrunkTop = (d.shrunk || [])[0];
+    if (shrunkTop) sub += `；${shortPath(shrunkTop.path, 2)} 释放 ${fmtKB(Math.abs(shrunkTop.delta_kb))}`;
+    sub += "。来源用途未识别时，只描述路径与变化量。";
+    if (unrecorded) sub += `另有 ${unrecorded} 个新增或未记录目录，不计入净变化。`;
+  } else if (unrecorded) {
+    sub = `没有 ≥1MB 的可测量行；另有 ${unrecorded} 个新增或未记录目录，不计入净变化——不能判为整体无变化。`;
+  } else {
+    sub = "对比期间没有 ≥1MB 的目录变化；基线已建立，下次扫描前这里不会显示假数据。";
+  }
+  body.innerHTML =
+    `<p class="conclusion-kicker">${escapeHtml(kicker)}</p>` +
+    `<h2 class="conclusion-headline ${headCls}" data-test="conclusion-headline">${escapeHtml(headText)}</h2>` +
+    `<p class="conclusion-sub" data-test="conclusion-sub">${escapeHtml(sub)}</p>`;
+  // 实心主按钮每视口至多一个（ISS-104 候选 #3）：总览的主任务 = 查看变化
+  _setConclusionActions(
+    `<a class="btn primary" href="#/changes" data-test="cta-view-changes">查看完整对比 →</a>` +
+    `<a class="btn" href="#/browse">查看分布</a>`);
+}
+
+/* 等待型（ISS-104 候选 #10）：无快照 / 单快照是正常等待，不是失败——
+ * bg 块容器，说明 + 可达下一步；扫描运行中由顶栏徽章表达，此处不渲染错误样式 */
+function _renderConclusionWaiting(kind, snap) {
+  const body = document.getElementById("conclusion-body");
+  if (!body) return;
+  const head = kind === "empty" ? "尚无快照" : "基线已建立，等待下一次扫描";
+  const note = kind === "empty"
+    ? "完成首次扫描建立基线后，这里会显示数据时间、范围与最近变化；点击右上角「立即扫描」即可开始，监控范围可在设置中确认。"
+    : `已有快照 #${snap?.id ?? "?"}（${escapeHtml(_shortTs(snap?.created_at))}）。需要另一个不同日期的有效快照才能比较；等待下次扫描自动建立对比，分布现在可用。`;
+  body.innerHTML =
+    `<p class="conclusion-kicker">最近变化</p>` +
+    `<div class="state-wait" data-test="conclusion-wait" role="status">` +
+    `<span class="sw-title">${escapeHtml(head)}</span>` +
+    `<p class="sw-note">${note}</p></div>`;
+  _setConclusionActions(kind === "single"
+    ? `<a class="btn" href="#/browse">查看分布</a>`
+    : `<a class="btn" href="#/settings">检查监控范围</a>`);
+}
+
+/* 错误型：--danger 派生浅红底容器，位于主结论区（首屏），保留上次成功
+ * 数据时间并提供重试——不藏在图表下面，也不与等待态共用容器 */
+function _renderConclusionError(e, snaps) {
+  const body = document.getElementById("conclusion-body");
+  if (!body) return;
+  const title = e.status === 0
+    ? "无法连接本地服务"
+    : `最近变化加载失败（HTTP ${e.status || "?"}）`;
+  const note = e.status === 0
+    ? "最近变化暂不可用。请确认 Fathom 服务正在运行后重试。"
+    : `${e.message}。上次有效数据不代表本次无变化。`;
+  const lastOk = snaps && snaps[0]
+    ? `<p class="se-note">上次成功数据：${escapeHtml(_shortTs(snaps[0].created_at))}（快照 #${snaps[0].id ?? "?"}）</p>`
+    : "";
+  body.innerHTML =
+    `<p class="conclusion-kicker">最近变化</p>` +
+    `<div class="state-error" data-test="conclusion-error" role="status">` +
+    `<span class="se-title">${escapeHtml(title)}</span>` +
+    `<span>${escapeHtml(note)}</span>${lastOk}` +
+    `<button type="button" class="diff-retry" data-test="conclusion-retry">重试</button></div>`;
+  _setConclusionActions("");
+  body.querySelector("[data-test='conclusion-retry']")
+    ?.addEventListener("click", () => loadOverviewChanges());
+}
+
+function _renderSummaryWaiting(kind) {
   const el = document.getElementById("overview-summary");
+  if (!el) return;
+  el.innerHTML = kind === "empty"
+    ? `<p class="hint">还不能比较：尚无快照。完成首次扫描建立基线后，这里会显示最近变化。</p>`
+    : `<p class="hint">还不能比较：基线已建立；需要另一个不同日期的有效快照，分布现在可用。</p>`;
+}
+
+function _renderSummaryError(e) {
+  const el = document.getElementById("overview-summary");
+  if (!el) return;
+  const message = e.status === 0
+    ? "无法连接本地服务，最近变化暂不可用。请确认 Fathom 服务正在运行后重试。"
+    : `最近变化加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}。上次有效数据不代表本次无变化。`;
+  el.innerHTML = `<p class="hint">${escapeHtml(message)}</p>`;
+}
+
+function _renderSummaryTable(d) {
+  const el = document.getElementById("overview-summary");
+  if (!el) return;
+  const span = d.b.created_at.slice(0, 10) + " vs " + d.a.created_at.slice(0, 10);
+  const measured = d.grown.length + d.shrunk.length;
+  const unrecorded = d.added.length + d.removed.length;
+  if (!measured && !unrecorded) {
+    el.innerHTML = `<p class="hint">${escapeHtml(span)} 期间没有 ≥1MB 的目录变化。基线已建立；下次扫描前这里不会显示假数据。</p>`;
+    return;
+  }
+  const summary = !measured
+    ? `没有 ≥1MB 的可测量行，仅发现 ${unrecorded} 个新增或未记录目录；不能判断为“无变化”。`
+    : `对比区间 ${span}：`;
+  let html = `<p class="hint">${escapeHtml(summary)}</p><table class="tbl">
+    <thead><tr><th>方向</th><th>目录</th><th class="num">变化</th><th></th></tr></thead><tbody>`;
+  const rows = [
+    ...d.grown.map((r) => ({ ...r, dir: icon("arrowUpRight", 14), value: fmtDelta(r.delta_kb), cls: "delta-grow" })),
+    ...d.shrunk.map((r) => ({ ...r, dir: icon("arrowDownRight", 14), value: fmtDelta(r.delta_kb), cls: "delta-shrink" })),
+    ...d.added.map((r) => ({ ...r, dir: icon("plus", 14), value: `—（现有 ${fmtKB(r.new_kb)}）`, cls: "delta-none" })),
+    ...d.removed.map((r) => ({ ...r, dir: icon("trash", 14), value: `—（曾有 ${fmtKB(r.old_kb)}）`, cls: "delta-none" })),
+  ].slice(0, 8);
+  rows.forEach((r) => {
+    html += `<tr><td>${r.dir}</td><td class="path" title="${escapeHtml(r.path)}">${escapeHtml(shortPath(r.path, 3))}</td>` +
+      `<td class="num ${r.cls}">${r.value}</td>` +
+      `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td></tr>`;
+  });
+  if (measured && unrecorded) {
+    html += `</tbody></table><p class="hint">另有 ${unrecorded} 个新增或未记录目录，不计作可测量净变化。</p>`;
+  } else {
+    html += "</tbody></table>";
+  }
+  el.innerHTML = html;
+  el.querySelectorAll("[data-reveal]").forEach((b) =>
+    b.addEventListener("click", () => revealInFinder(b.dataset.reveal)));
+}
+
+/* 主结论与摘要共用一次快照 + 一次差分请求（避免双请求竞态），先以快照
+ * 数量分流五态：无快照/单快照直接进入等待型（不发差分请求）；其余拉取
+ * 差分后渲染就绪结论与明细表；请求失败进入错误型（含重试）。 */
+async function loadOverviewChanges() {
+  const request = beginRequest("overviewSummary");
+  let snaps;
   try {
-    const d = await fetchJSON("/api/diff?topn=5");
-    if (!request.current()) return;
-    const span = d.b.created_at.slice(0, 10) + " vs " + d.a.created_at.slice(0, 10);
-    const measured = d.grown.length + d.shrunk.length;
-    const unrecorded = d.added.length + d.removed.length;
-    if (!measured && !unrecorded) {
-      el.innerHTML = `<p class="hint">${escapeHtml(span)} 期间没有 ≥1MB 的目录变化。基线已建立；下次扫描前这里不会显示假数据。</p>`;
-      return;
-    }
-    const summary = !measured
-      ? `${span} 仅发现 ${unrecorded} 个新增或未记录目录，缺少可比基线，不能判断为“无变化”。`
-      : `对比区间 ${span}：`;
-    let html = `<p class="hint">${escapeHtml(summary)}</p><table class="tbl">
-      <thead><tr><th>方向</th><th>目录</th><th class="num">变化</th><th></th></tr></thead><tbody>`;
-    const rows = [
-      ...d.grown.map((r) => ({ ...r, dir: icon("arrowUpRight", 14), value: fmtDelta(r.delta_kb), cls: "delta-grow" })),
-      ...d.shrunk.map((r) => ({ ...r, dir: icon("arrowDownRight", 14), value: fmtDelta(r.delta_kb), cls: "delta-shrink" })),
-      ...d.added.map((r) => ({ ...r, dir: icon("plus", 14), value: `—（现有 ${fmtKB(r.new_kb)}）`, cls: "delta-none" })),
-      ...d.removed.map((r) => ({ ...r, dir: icon("trash", 14), value: `—（曾有 ${fmtKB(r.old_kb)}）`, cls: "delta-none" })),
-    ].slice(0, 8);
-    rows.forEach((r) => {
-      html += `<tr><td>${r.dir}</td><td class="path" title="${escapeHtml(r.path)}">${escapeHtml(shortPath(r.path, 3))}</td>` +
-        `<td class="num ${r.cls}">${r.value}</td>` +
-        `<td><button class="btn-mini" data-reveal="${escapeHtml(r.path)}" title="在 Finder 中显示" aria-label="在 Finder 中显示">${icon("folderOpen", 14)}</button></td></tr>`;
-    });
-    if (measured && unrecorded) {
-      html += `</tbody></table><p class="hint">另有 ${unrecorded} 个新增或未记录目录，不计作可测量净变化。</p>`;
-    } else {
-      html += "</tbody></table>";
-    }
-    el.innerHTML = html;
-    el.querySelectorAll("[data-reveal]").forEach((b) =>
-      b.addEventListener("click", () => revealInFinder(b.dataset.reveal)));
+    snaps = await fetchJSON("/api/snapshots");
   } catch (e) {
     if (!request.current()) return;
-    let message;
-    if (e.status === 409) {
-      message = "还不能比较：需要两个不同日期的有效快照。已有一个快照时，基线已经建立；分布现在可用。";
-    } else if (e.status === 0) {
-      message = "无法连接本地服务，最近变化暂不可用。请确认 Fathom 服务正在运行后重试。";
-    } else {
-      message = `最近变化加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}。上次有效数据不代表本次无变化。`;
-    }
-    el.innerHTML = _regionError(message);
+    _renderConclusionError(e, null);
+    _renderSummaryError(e);
+    return;
   }
+  if (!request.current()) return;
+  if (snaps.length < 2) {
+    const kind = snaps.length === 0 ? "empty" : "single";
+    _renderConclusionWaiting(kind, snaps[0]);
+    _renderSummaryWaiting(kind);
+    return;
+  }
+  let d;
+  try {
+    d = await fetchJSON("/api/diff?topn=5");
+  } catch (e) {
+    if (!request.current()) return;
+    _renderConclusionError(e, snaps);
+    _renderSummaryError(e);
+    return;
+  }
+  if (!request.current()) return;
+  _renderConclusionReady(d);
+  _renderSummaryTable(d);
 }
 
 export const overviewPage = {
   id: "overview",
   load() {
     loadQualityLine();
+    loadOverviewChanges();
     loadVolumeTrend();
-    loadOverviewSummary();
     loadScanNote();
   },
 };

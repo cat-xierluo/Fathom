@@ -52,16 +52,18 @@
 
     <main class="page-container">
 
-      <!-- ===== 总览 ===== -->
+      <!-- ===== 总览（ISS-106：变化优先、状态可见——先回答变化，再给图表证据。
+           顺序 = 质量行（数据时间/范围/覆盖）→ 主结论区（28px 一级结论，
+           等深线母题全页仅此处）→ 最近变化表（980×640 首屏内）→
+           卷容量读数与迷你走势（次级）→ 最近扫描。
+           四张等权读数卡按候选合同撤除，磁盘剩余/已用/快照数并入
+           卷容量读数行；无快照/单快照/零变化/部分覆盖/请求失败五态
+           在主结论区各有独立容器与下一步（等待型不当成失败）。 ===== -->
       <section class="page" id="page-overview">
-        <div class="cards">
-          <!-- 等深线背景（R3 + ISS-085 精修）：低对比同心圆，纯装饰、不参与交互。
-               ISS-085：每圈在右上 -70°~-20° 留 50° 缺口（pathLength=360 归一，
-               dashoffset=20 使空段落在路径角 290°~340°），与深度环字标的缺口
-               同方位——背景读作「一枚巨大的深度环沉在水下」；最内圈换矿物青
-               呼应探针刻度；中心一条测深垂线。原 6 圈弧线在 1220 视口下几乎全部
-               被白色卡片遮挡（弧线横坐标恰落卡片内部），扩到 8 圈并让透明度
-               梯度抬半档，弧线段得以在卡片缝隙露出——仍是低对比环境纹理。 -->
+        <div class="quality-line" id="overview-quality" aria-live="polite" aria-atomic="true"></div>
+        <!-- 主结论区：本次比上次变化多少 + 定位入口；等深线背景（R3 母题）
+             低对比同心圆自右缘发出，纯装饰、不参与交互（ISS-085 缺口语系） -->
+        <div class="conclusion" id="overview-conclusion" data-test="overview-conclusion">
           <div class="brand-contour" aria-hidden="true">
             <svg viewBox="0 0 340 160" preserveAspectRatio="xMaxYMid slice" focusable="false">
               <circle cx="340" cy="80" r="70"  fill="none" stroke="#3e7e7c" stroke-opacity="0.14" stroke-width="1" pathLength="360" stroke-dasharray="310 50" stroke-dashoffset="20"/>
@@ -75,33 +77,45 @@
               <line x1="340" y1="80" x2="340" y2="160" stroke="#345d7f" stroke-opacity="0.05" stroke-width="1"/>
             </svg>
           </div>
-          <div class="card"><p class="card-label">磁盘剩余</p><p class="card-value" id="card-free">--</p></div>
-          <div class="card"><p class="card-label">磁盘已用</p><p class="card-value" id="card-used">--</p></div>
-          <div class="card"><p class="card-label">快照数量</p><p class="card-value" id="card-snaps">--</p></div>
-          <div class="card"><p class="card-label">最近扫描</p><p class="card-value small" id="card-latest">--</p></div>
-        </div>
-        <div class="quality-line" id="overview-quality" aria-live="polite" aria-atomic="true"></div>
-        <!-- ISS-105 表面层级（ISS-104 候选）：总览三区块收进单张 L1 白卡，
-             内部分组用分隔线（L2 不再各自套白卡）；四张读数卡与信息顺序
-             归 ISS-106 总览层级改造，不在本卡改动 -->
-        <div class="surface">
-        <div class="panel">
-          <div class="panel-head"><h2>卷容量趋势</h2><p class="hint">每次快照记录的整卷用量</p></div>
-          <div id="chart-volume" class="chart chart-lg"></div>
-          <details class="tbl-toggle">
-            <summary>以表格查看走势</summary>
-            <div id="overview-volume-table" class="tbl-wrap"></div>
-          </details>
-        </div>
-        <div class="panel">
-          <div class="panel-head">
-            <h2 id="overview-summary-title">最近变化</h2>
-            <a class="hint link" href="#/changes">查看完整对比 →</a>
+          <div class="conclusion-main">
+            <div id="conclusion-body" data-test="conclusion-body">
+              <p class="conclusion-kicker">最近变化</p>
+              <div class="state-wait"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>正在读取最近变化…</div>
+            </div>
+            <!-- ISS-002A 三类覆盖说明挂载槽：与质量徽章/主结论同屏，不藏在图表或页尾之下 -->
+            <div id="overview-coverage-slot" class="conclusion-foot"></div>
           </div>
-          <div id="overview-summary"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>加载中…</div>
-          <p class="hint" id="overview-summary-foot">列表包含父子目录，行值不可相加为净变化；"未记录"不等于新增或删除。</p>
+          <div class="conclusion-actions" id="conclusion-actions"></div>
         </div>
-        <div class="panel">
+        <!-- ISS-105 表面层级：总览内容收进单张 L1 白卡；内部 L2 分组
+             （最近变化 / 卷容量与走势 并排或上下，最近扫描在页脚组） -->
+        <div class="surface">
+        <div class="ov-grid">
+          <div class="panel" id="ov-panel-changes">
+            <div class="panel-head">
+              <h2 id="overview-summary-title">最近变化</h2>
+              <a class="hint link" href="#/changes">查看完整对比 →</a>
+            </div>
+            <div id="overview-summary"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>加载中…</div>
+            <p class="hint" id="overview-summary-foot">列表包含父子目录，行值不可相加为净变化；"未记录"不等于新增或删除。</p>
+          </div>
+          <div class="panel" id="ov-panel-volume">
+            <div class="panel-head"><h2>卷容量与走势</h2><p class="hint">每次快照记录的整卷用量</p></div>
+            <!-- 原四张等权读数卡并入此处（ISS-104 候选 #1）；id 保留供 status.js 填充 -->
+            <div class="vol-readout">
+              <div class="readout"><span class="rl">磁盘剩余</span><span class="rv rv-ok" id="card-free">--</span></div>
+              <div class="readout"><span class="rl">磁盘已用</span><span class="rv rv-used" id="card-used">--</span></div>
+              <div class="readout"><span class="rl">快照</span><span class="rv rv-s" id="card-snaps">--</span></div>
+              <div class="readout"><span class="rl">上次扫描</span><span class="rv rv-s rv-time" id="card-latest">--</span></div>
+            </div>
+            <div id="chart-volume" class="chart chart-mini"></div>
+            <details class="tbl-toggle">
+              <summary>以表格查看走势</summary>
+              <div id="overview-volume-table" class="tbl-wrap"></div>
+            </details>
+          </div>
+        </div>
+        <div class="panel" id="ov-panel-scan">
           <div class="panel-head"><h2>最近扫描</h2></div>
           <div id="overview-scan-note" class="hint-line" aria-live="polite"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>加载中…</div>
         </div>

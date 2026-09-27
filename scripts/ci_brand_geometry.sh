@@ -12,9 +12,15 @@
 #     4. scripts/make_tray_icon.py 菜单栏 template 距离场常量
 #   深潭资产链：原稿/提示词/来源记录在位 + build_app_icon.py 引用原稿
 #   favicon：apple-touch-icon.png 在位 + index.html 两处引用
+#   ISS-105 主窗口品牌位 = 正式图标位图：frontend/assets/brand-icon-*.png
+#   五个尺寸在位且尺寸正确（源自 icon.png 1024 派生，见 build_icons.sh
+#   同款 sips 手法），icons.js brandImg() / app.js 侧栏注入 / index.html
+#   关于区挂载引用在位；像素级渲染验证归 verify_frontend_refresh.cjs
+#   （brand-sidebar / settings-about 位图采样检查）。
 #
 # 修改深度环几何时四处须同步并重跑 make_tray_icon.py；修改深潭 App 图标
-# 时重跑 build_app_icon.py --force 与 build_icons.sh。
+# 时重跑 build_app_icon.py --force 与 build_icons.sh，并按同手法重派生
+# frontend/assets/brand-icon-*.png。
 #
 # bash 3.2 兼容。
 set -euo pipefail
@@ -75,8 +81,30 @@ need "$ROOT/frontend/apple-touch-icon.png" "apple-touch-icon.png 在位" '.'
 need "$ROOT/frontend/index.html" "index.html favicon 引用" 'rel="icon" type="image/svg\+xml" href="favicon\.svg"'
 need "$ROOT/frontend/index.html" "index.html touch icon 引用" 'rel="apple-touch-icon" href="apple-touch-icon\.png"'
 
+# --- ISS-105：主窗口品牌位 = 正式图标位图（frontend/assets，随 frontend/ 进打包链）---
+# 侧栏 24 / 关于 64 显示位 + 2x srcset 资产；尺寸以 sips 实测核对，
+# 防错尺寸文件顶替。像素级渲染验证在 verify_frontend_refresh.cjs。
+for SZ in 24 48 64 128 256; do
+  IMG="$ROOT/frontend/assets/brand-icon-${SZ}.png"
+  if [ ! -f "${IMG}" ]; then
+    echo "[brand-geometry] FAIL：品牌位图 ${SZ}px 缺失 ${IMG}" >&2
+    FAIL=1
+    continue
+  fi
+  W=$(sips -g pixelWidth "${IMG}" 2>/dev/null | awk '/pixelWidth/{print $2}')
+  H=$(sips -g pixelHeight "${IMG}" 2>/dev/null | awk '/pixelHeight/{print $2}')
+  if [ "${W}" != "${SZ}" ] || [ "${H}" != "${SZ}" ]; then
+    echo "[brand-geometry] FAIL：品牌位图 ${SZ}px 实测 ${W}x${H}（应为 ${SZ}x${SZ}）" >&2
+    FAIL=1
+  fi
+done
+need "$ROOT/frontend/icons.js" "icons.js 品牌位图出口 brandImg" 'export function brandImg'
+need "$ROOT/frontend/icons.js" "icons.js 品牌位图资产表" 'assets/brand-icon-24\.png'
+need "$ROOT/frontend/app.js" "app.js 侧栏品牌位图注入" 'brandImg\(24'
+need "$ROOT/frontend/index.html" "index.html 关于区品牌位图挂载" 'data-brand-img data-brand-size="64"'
+
 if [ "${FAIL}" -ne 0 ]; then
   echo "[brand-geometry] FAIL：品牌资产/几何不一致（见上）" >&2
   exit 1
 fi
-echo "[brand-geometry] OK：深度环四处几何 + 层叠深潭资产链 + favicon 引用一致（DEC-023 双形态体系）"
+echo "[brand-geometry] OK：深度环四处几何 + 层叠深潭资产链 + favicon 引用 + 主窗口品牌位图（ISS-105）一致（DEC-023 双形态体系）"

@@ -3,59 +3,67 @@
  * stroke-width 2、round linecap/linejoin；禁止 emoji（DEC-010）。
  * 所有用户可见 SVG 图标只在本文件集中维护（ES module）。
  *
- * 双形态体系（DEC-023 / ISS-045 / ISS-086）：
- *   - brandRing  = 线条「深度环」，用于界面小尺寸（菜单栏 tray 22pt、
+ * 双形态体系（DEC-023 / ISS-045 / ISS-086 / ISS-105）：
+ *   - brandRing = 线条「深度环」，用于界面小尺寸（菜单栏 tray 22pt、
  *                  加载环、详情标题装饰、favicon）。四处几何由
  *                  scripts/ci_brand_geometry.sh 门禁保证同步。
- *   - brandBasin = 实色「层叠深潭」，用于主窗口品牌站位（侧栏顶部 +
- *                  页头）。几何反向自 apps/desktop/src-tauri/icons/icon.png
- *                  （1024×1024 位图）；ISS-088 起各层为自该位图 PIL 采样的
- *                  固定 fill 真彩色板（象牙白底 + 蓝青阶地），不依赖 CSS
- *                  currentColor/opacity 染色。
- * 任何新品牌位复用：先在「主窗口/页头/关于区」用 brandBasin；其余场景
- * 才用 brandRing。混用由 ISS-087 之后的 review 阶段逐项核查。
+ *   - 主窗口品牌位（侧栏 24px / 关于页 64px）自 ISS-105 起改用正式
+ *     应用图标位图（frontend/assets/brand-icon-*.png，源自
+ *     apps/desktop/src-tauri/icons/icon.png 1024 源派生，见
+ *     brandImg()）；不再用 SVG 椭圆叠层冒充同形（ISS-104 并排核对
+ *     结论：brandBasin 呈同心环感，与正式图标非对称水滴轮廓不同）。
+ *     旧 brandBasin 矢量已随替换移除。
  */
+
+/* 正式应用图标位图资产（ISS-105）：key = 像素尺寸。
+ * 来源：apps/desktop/src-tauri/icons/icon.png（1024×1024，DEC-023
+ * 主形态权威源）经 sips Lanczos 派生（同 build_icons.sh 手法），
+ * 落在 frontend/assets/ ——无构建链直接可引用，且随 frontend/
+ * 整目录进入打包链（build_helper.sh --add-data frontend、
+ * api.py StaticFiles 挂载），打包态离线可用。 */
+const BRAND_ASSETS = {
+  24: "assets/brand-icon-24.png",
+  48: "assets/brand-icon-48.png",
+  64: "assets/brand-icon-64.png",
+  128: "assets/brand-icon-128.png",
+  256: "assets/brand-icon-256.png",
+};
+
+/**
+ * 生成正式应用图标位图 <img>（ISS-105 主窗口/关于页品牌位）。
+ * @param {number} size 显示尺寸（像素），须是 BRAND_ASSETS 的键
+ * @param {string} cls 额外 class（默认 brand-mark）
+ *
+ * srcset 提供 2x 资产：高 DPR 屏（macOS WebView 默认 2x）加载双倍
+ * 位图，24/64px 显示尺寸下保持轮廓可辨（DESIGN：64px 起四层结构
+ * 完整，24px 为色块轮廓属已知取舍）。alt 留空 + 挂载点 aria-hidden：
+ * 品牌位是纯装饰，不进可达名。
+ */
+export function brandImg(size = 24, cls = "brand-mark") {
+  const one = BRAND_ASSETS[size];
+  if (!one) return "";
+  const two = BRAND_ASSETS[size * 2];
+  const srcset = two ? ` srcset="${two} 2x"` : "";
+  return `<img class="brand-img${cls ? " " + cls : ""}" src="${one}"${srcset} ` +
+    `width="${size}" height="${size}" alt="" draggable="false">`;
+}
 
 export const ICON_PATHS = {
   /* 深度环：品牌标记（R3 视觉签名，ISS-072）——开放圆环（海沟蓝，
    * currentColor）+ 中心探针与跨刻度缺口的短刻度（矿物青，CSS 类染色）。
    * Fathom = 测深单位；替代 R2 时期的船锚（R3 合同禁写实海洋元素）。
-   * 仅用于界面小尺寸场景（菜单栏 tray 22pt、侧栏字标外的加载环与
+   * 仅用于界面小尺寸场景（菜单栏 tray 22pt、加载环、目录定位与
    * favicon），由 scripts/ci_brand_geometry.sh 门禁保证四处几何同步；
-   * 主窗口品牌站位请用 brandBasin（应用图标本身）。 */
+   * 主窗口/关于页品牌位请用 brandImg() 位图（ISS-105）。 */
   brandRing:
     '<path class="dr-ring" d="M20 9.1A8.5 8.5 0 1 1 14.9 4"/>' +
     '<line class="dr-probe" x1="12" y1="7.5" x2="12" y2="16.5"/>' +
     '<line class="dr-tick" x1="17.2" y1="6.8" x2="19.3" y2="4.7"/>',
-  /* 层叠深潭：DEC-023 双形态体系的「主形态」（ISS-045 / ISS-086 / ISS-088）。
-   * 反向自 apps/desktop/src-tauri/icons/icon.png（1024×1024）的几何——
-   * 实色 4 层嵌套等深卵形（顶部偏窄、底部略宽的水滴/坑口）+ 顶部象牙白
-   * 测深刻痕。ISS-088 真彩化：各层改为自 icon.png PIL 采样的固定 fill
-   * （象牙白底板 + 浅青白/青蓝/深蓝/深潭墨四层阶地），不再依赖 CSS
-   * currentColor/opacity 叠加——旧方案在 24px 下呈模糊单色色团，用户
-   * 实机反馈「应用图标没显示出来」。色板采样记录（1024 图坐标，环形带
-   * 中心多方向均值）：
-   *   bv-base #FCFAF4 象牙白底板（(154,489)/(872,489)/(514,120)）
-   *   bv-l1   #C6DCE4 浅青白阶地（(514,763)/(715,690)/(279,489)/(345,657)）
-   *   bv-l2   #286B88 青蓝阶地  （(514,703)/(680,655)/(407,595)/(399,489) 等 7 点）
-   *   bv-l3   #062743 深蓝阶地  （(514,603)/(613,588)/(427,489) 等 7 点）
-   *   bv-core #00142A 深潭墨核心（(538,513)/(514,504)/(530,505)）
-   *   bv-notch #FCFAF4 象牙白测深刻痕（与底板同色，(514,180)）
-   * 绘制顺序：底板→四层椭圆→notch 最后叠加（icon.png 的刻痕坐在盆
-   * 顶缘之上；旧顺序 notch 垫底会被底层椭圆盖掉大半）。
-   * 与 brandRing 互斥：brandRing = 线条环（小尺寸）；brandBasin =
-   * 层叠面（主窗口）。两套几何由 icons.js 集中维护，便于 ISS-087 复用
-   * 与 DEC-023 双形态合同审计。 */
-  brandBasin:
-    /* bv-base 底板 ry=10.5（ISS-095 几何修正）：原 ry=11.3 时底缘
-     * cy+ry=24.7 超 24 viewBox 底边 0.7 单位被裁平；收至 23.9（留 0.1
-     * 抗锯齿余量）后底缘完整呈现，cy 与内部四层保持同心，视觉几乎不变。 */
-    '<ellipse class="bv-base" fill="#FCFAF4" cx="12" cy="13.4" rx="11" ry="10.5"/>' +
-    '<ellipse class="bv-l1" fill="#C6DCE4" cx="12" cy="13.4" rx="9.2" ry="9.5"/>' +
-    '<ellipse class="bv-l2" fill="#286B88" cx="12" cy="13.4" rx="6.6" ry="7"/>' +
-    '<ellipse class="bv-l3" fill="#062743" cx="12" cy="13.4" rx="4" ry="4.4"/>' +
-    '<ellipse class="bv-core" fill="#00142A" cx="12" cy="13.4" rx="2.1" ry="2.5"/>' +
-    '<path class="bv-notch" fill="#FCFAF4" d="M10.4 1.6 L12 4.4 L13.6 1.6 Z"/>',
+  /* ISS-105：brandBasin（层叠深潭 SVG 椭圆叠层）已移除——主窗口品牌位
+   * （侧栏 24 / 关于 64）改用正式应用图标位图（brandImg()，源自
+   * icon.png 1024 源）；ISS-104 并排核对结论：旧 SVG 呈同心环感，
+   * 与正式图标非对称水滴轮廓不同形，属「采色后冒充同形」反例。
+   * 菜单栏 tray / favicon / 加载环仍为 brandRing 矢量（DEC-023 分工）。 */
   /* 总览：仪表盘 */
   gauge:
     '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>',
@@ -125,8 +133,8 @@ export const ICON_PATHS = {
     '<path d="M13 3h2"/>' +
     '<path d="M15 13a3 3 0 1 0 3 3v-1"/>' +
     '<path d="M18 15v2a4 4 0 0 0 4 4h0"/>',
-  /* ISS-087 设置页左导航：info（关于）——圆环 + 中央 i 字符的几何；
-   * 关于区本身用 brandBasin 作大尺寸应用图标，info 仅作左导航 glyph */
+/* ISS-087 设置页左导航：info（关于）——圆环 + 中央 i 字符的几何；
+   关于区本身用正式图标位图作大尺寸应用图标，info 仅作左导航 glyph */
   info:
     '<circle cx="12" cy="12" r="9"/>' +
     '<line x1="12" y1="11" x2="12" y2="17"/>' +
@@ -139,20 +147,13 @@ export const ICON_PATHS = {
  * @param {number} size 像素尺寸，默认 18
  * @param {string} cls 额外 class
  *
- * 通用图标走 lucide 风格 stroke 模板；brandBasin 是实色 fill 几何（层叠
- * 嵌套 + notch，ISS-088 起各子元素带固定采样 fill 属性），SVG 根须清掉
- * stroke 属性，否则 stroke-width=2 会污染椭圆边缘、与品牌语义不符。
+ * 全部走 lucide 风格 stroke 模板（ISS-105 起品牌位为位图，见
+ * brandImg()，SVG 出口只剩线条图标）。
  */
 export function icon(name, size = 18, cls = "") {
   const paths = ICON_PATHS[name];
   if (!paths) return "";
   const wrap = `<span class="icon${cls ? " " + cls : ""}" style="width:${size}px;height:${size}px" aria-hidden="true">`;
-  if (name === "brandBasin") {
-    return (
-      wrap +
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" stroke="none">${paths}</svg></span>`
-    );
-  }
   return (
     wrap +
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +

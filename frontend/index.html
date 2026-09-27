@@ -480,45 +480,47 @@
                      值与附注）。修前 .about-meta li { display: contents } 把许可证
                      的三节点摊平进两列 grid，附注落入下一行键列，后续各项对角错位
                      （verify-results/ux-ui-audit-20260926/about-grid.json）。 -->
-                <ul class="about-meta" data-test="about-meta">
-                  <li>
-                    <span class="about-meta-key">许可证</span>
-                    <span class="about-meta-val">
-                      <a href="../LICENSE" target="_blank" rel="noopener">Apache-2.0</a>
-                      <span class="hint">（仓库根 LICENSE）</span>
-                    </span>
-                  </li>
-                  <li>
-                    <span class="about-meta-key">第三方声明</span>
-                    <span class="about-meta-val">
-                      <a href="https://github.com/cat-xierluo/Fathom/blob/main/NOTICES" target="_blank" rel="noopener">NOTICES</a>
-                    </span>
-                  </li>
-                  <li>
-                    <span class="about-meta-key">仓库</span>
-                    <span class="about-meta-val">
-                      <a href="https://github.com/cat-xierluo/Fathom" target="_blank" rel="noopener">cat-xierluo/Fathom</a>
-                    </span>
-                  </li>
-                  <li>
-                    <span class="about-meta-key">作者</span>
-                    <span class="about-meta-val">杨卫薪律师 <span class="hint">（Copyright 2026）</span></span>
-                  </li>
-                  <li>
-                    <span class="about-meta-key">GitHub</span>
-                    <span class="about-meta-val">
-                      <a href="https://github.com/cat-xierluo" target="_blank" rel="noopener">github.com/cat-xierluo</a>
-                    </span>
-                  </li>
-                  <li class="about-wechat-row">
-                    <span class="about-meta-key">微信</span>
-                    <span class="about-meta-val about-wechat">
-                      <img class="about-wechat-qr" src="assets/wechat-qr.png" width="72" height="72"
-                           alt="微信二维码" loading="lazy"/>
-                      <span class="hint">ywxlaw</span>
-                    </span>
-                  </li>
-                </ul>
+                <!-- ISS-108 + 09-27 走查裁决：作者信息（键值成组列表）与微信
+                     二维码拆分为两个独立块——列表在左，二维码块在右（Folia
+                     AboutSection 同款布局；窄视口换行不挤压）。 -->
+                <div class="about-author-body">
+                  <ul class="about-meta" data-test="about-meta">
+                    <li>
+                      <span class="about-meta-key">许可证</span>
+                      <span class="about-meta-val">
+                        <a href="../LICENSE" target="_blank" rel="noopener">Apache-2.0</a>
+                        <span class="hint">（仓库根 LICENSE）</span>
+                      </span>
+                    </li>
+                    <li>
+                      <span class="about-meta-key">第三方声明</span>
+                      <span class="about-meta-val">
+                        <a href="https://github.com/cat-xierluo/Fathom/blob/main/NOTICES" target="_blank" rel="noopener">NOTICES</a>
+                      </span>
+                    </li>
+                    <li>
+                      <span class="about-meta-key">仓库</span>
+                      <span class="about-meta-val">
+                        <a href="https://github.com/cat-xierluo/Fathom" target="_blank" rel="noopener">cat-xierluo/Fathom</a>
+                      </span>
+                    </li>
+                    <li>
+                      <span class="about-meta-key">作者</span>
+                      <span class="about-meta-val">杨卫薪律师</span>
+                    </li>
+                    <li>
+                      <span class="about-meta-key">GitHub</span>
+                      <span class="about-meta-val">
+                        <a href="https://github.com/cat-xierluo" target="_blank" rel="noopener">github.com/cat-xierluo</a>
+                      </span>
+                    </li>
+                  </ul>
+                  <div class="about-wechat-card">
+                    <img class="about-wechat-qr" src="assets/wechat-qr.png" width="96" height="96"
+                         alt="微信二维码" loading="lazy"/>
+                    <span class="about-wechat-label">微信 <span class="hint">ywxlaw</span></span>
+                  </div>
+                </div>
                 <!-- 应用更新区（ISS-040B）从原 settings.js 的 updater 面板迁入 -->
                 <div class="about-divider"></div>
                 <div id="settings-about-extra"></div>

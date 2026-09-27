@@ -22,7 +22,7 @@
  *   浏览器/开发态无 Tauri 桥时全部 section 仍可达（不删除/隐藏入口）。
  */
 import { fetchJSON, beginRequest, invalidateRequest, apiPut } from "../request.js";
-import { escapeHtml, fmtBytes } from "../format.js";
+import { escapeHtml, fmtBytes, fmtKB } from "../format.js";
 import { icon } from "../../icons.js";
 import { triggerScan, loadStatus } from "../status.js";
 
@@ -168,18 +168,36 @@ const EXCLUDE_SOURCE_OVERRIDE = {
   env: "扫描排除列表被环境变量 FATHOM_EXCLUDE_NAMES 覆盖，此处保存不会改变当前生效值",
 };
 
+/* ISS-108（ISS-104 候选 #8）：当前值预填输入框——底部不再用长摘要罗列全部
+ * 生效值，用户改哪个字段就在哪个输入框里看到当前值。#config-effective
+ * 只承载加载失败/异常态（正常态保持隐藏）。env/cli 覆盖改为字段级就近标注
+ * （原摘要行的 override 提示语义原样保留，位置移到被覆盖字段下方）。 */
 function renderEffective(cfg) {
-  const target = document.getElementById("config-effective");
-  if (!target) return;
+  if (!cfg) return;
+  const fill = (id, value) => {
+    const input = document.getElementById(id);
+    if (input) input.value = value == null ? "" : String(value);
+  };
+  fill("cfg-scan-root", cfg.scan_root);
+  fill("cfg-min-kb", cfg.min_kb);
+  fill("cfg-scan-time", cfg.scan_time);
+  fill("cfg-free-alert-gb", cfg.free_alert_gb);
   const override = SOURCE_LABELS[cfg.sources?.scan_root];
-  const masks = excludeMasksFromConfig(cfg.exclude_names);
-  target.innerHTML =
-    `当前生效：监控根 <code>${escapeHtml(cfg.scan_root)}</code>` +
-    ` · 计划 <code>${escapeHtml(cfg.scan_time)}</code>` +
-    ` · 入库阈值 <code>${escapeHtml(String(cfg.min_kb))} KB</code>` +
-    ` · 低空间提醒 <code>${escapeHtml(String(cfg.free_alert_gb))} GB</code>` +
-    ` · 排除掩码 <code>${masks.length ? escapeHtml(masks.join(";")) : "（无）"}</code>` +
-    (override ? `<br>${escapeHtml(override)}` : "");
+  const note = document.querySelector('[data-test="cfg-scan-root-override"]');
+  if (note) {
+    note.textContent = override || "";
+    note.hidden = !override;
+  }
+  // 入库阈值可展开说明里的等效读数（5120 KB → 5.0 MB）：帮助不用 KB 思考的用户
+  const equiv = document.querySelector('[data-test="cfg-min-kb-equiv"]');
+  if (equiv) {
+    const kb = Number(cfg.min_kb);
+    equiv.textContent = Number.isFinite(kb) && kb > 0
+      ? `当前值 ${cfg.min_kb} KB 折合约 ${fmtKB(kb)}。`
+      : "";
+  }
+  const effective = document.getElementById("config-effective");
+  if (effective) effective.hidden = true;
 }
 
 /* ---------- ISS-069 排除列表编辑器 ----------
@@ -217,7 +235,7 @@ function _ensureExcludePanel() {
   panel.innerHTML = `
     <div class="panel-head">
       <h2>扫描排除列表</h2>
-      <p class="hint">按名字（fnmatch 通配）跳过整棵子树，例如 <code>node_modules</code>、<code>*.noindex</code>；不含路径分隔符。</p>
+      <p class="hint">按名字跳过整棵子树，例如 <code>node_modules</code>；不含路径分隔符。</p>
     </div>
     <div class="exclude-panel" data-test="exclude-panel-body">
       <ul class="exclude-list" id="exclude-list"></ul>
@@ -229,6 +247,11 @@ function _ensureExcludePanel() {
       <p class="hint cfg-error" id="exclude-inline-error" hidden></p>
       <p class="hint exclude-override" id="exclude-override-note" data-test="exclude-override-note" hidden></p>
       <p class="hint exclude-warning" data-test="exclude-dataset-warning">修改排除列表会形成新的数据集用于后续扫描；旧数据不会被删除，但新数据集与既有历史不可直接对比。</p>
+      <details class="cfg-details" data-test="exclude-rules-details">
+        <summary>支持通配符写法吗？</summary>
+        <p class="cfg-desc">匹配规则与产品其余部分一致（fnmatch 通配）：<code>*</code> 匹配任意字符、<code>?</code> 匹配单个字符，
+          例如 <code>*.noindex</code> 会跳过所有以 .noindex 结尾的名字。掩码只按名字匹配，不含路径分隔符。</p>
+      </details>
       <label class="exclude-confirm-label">
         <input type="checkbox" id="exclude-confirm">
         <span>我已知晓：保存后按新数据集扫描，历史对比可能中断</span>
@@ -410,13 +433,9 @@ function showFeedback(text, kind) {
   feedback.hidden = false;
 }
 
-function clearInputs() {
-  for (const id of ["cfg-scan-root", "cfg-scan-time", "cfg-min-kb", "cfg-free-alert-gb"]) {
-    const input = document.getElementById(id);
-    if (input) input.value = "";
-  }
-}
-
+/* ISS-108：预填模式下不再清空输入框——保存成功后 renderEffective 已用服务端
+ * 返回的生效值重填（清空会制造「输入框为空但当前值存在」的反查负担）。
+ * 留空字段仍按「不修改该项」跳过（防御路径，与既有 PUT 合同一致）。 */
 async function saveConfig(event) {
   event.preventDefault();
   const body = {};
@@ -451,14 +470,16 @@ async function saveConfig(event) {
     renderExcludeEditor(data.config);
     // 计划时间保存后漂移态可能变化（ISS-016B）：随嵌套配置刷新一致性小节。
     renderReloadSection();
-    clearInputs();
     showFeedback(`已保存。${data.hint || ""}`, "ok");
   } catch (e) {
-    // 校验失败/服务故障：生效值不重渲染，旧值保持可辨；输入保留供修改
+    // 校验失败/服务故障：生效值不重渲染、旧值保持可辨——输入框恢复为当前
+    // 生效值（renderEffective(lastConfig)），避免失败后输入框停留无效输入、
+    // 被读成「当前值」（ISS-108：输入框=当前生效值是页面不变量）。
+    if (lastConfig) renderEffective(lastConfig);
     showFeedback(
       e.status === 0
-        ? "保存失败：无法连接本地服务，当前生效值保持不变。"
-        : `保存失败：${e.message} 当前生效值保持不变。`,
+        ? "保存失败：无法连接本地服务，当前生效值保持不变（输入框已恢复为当前生效值）。"
+        : `保存失败：${e.message} 当前生效值保持不变（输入框已恢复为当前生效值）。`,
       "error",
     );
   }
@@ -512,10 +533,12 @@ async function saveScheduleConfig(event) {
     renderReloadSection();
     showFeedback(`已保存。${data.hint || ""}`, "ok");
   } catch (e) {
+    // 与 saveConfig 同口径（ISS-108）：失败后输入框恢复当前生效值，旧值可辨
+    if (lastConfig) renderEffective(lastConfig);
     showFeedback(
       e.status === 0
-        ? "保存失败：无法连接本地服务，当前生效值保持不变。"
-        : `保存失败：${e.message} 当前生效值保持不变。`,
+        ? "保存失败：无法连接本地服务，当前生效值保持不变（输入框已恢复为当前生效值）。"
+        : `保存失败：${e.message} 当前生效值保持不变（输入框已恢复为当前生效值）。`,
       "error",
     );
   }
@@ -534,6 +557,8 @@ async function loadSettings() {
       effective.textContent = e.status === 0
         ? "无法连接本地服务，设置状态暂不可用。"
         : `设置状态加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`;
+      // ISS-108：effective 默认隐藏（预填模式下无摘要），异常态显式示出
+      effective.hidden = false;
     }
     if (tbody) {
       tbody.innerHTML = `<tr><td colspan="2" class="hint">${escapeHtml(e.status === 0
@@ -550,8 +575,9 @@ async function loadSettings() {
     if (!request.current()) return;
     if (effective) {
       effective.textContent = e.status === 0
-        ? "无法连接本地服务，可修改设置暂不可用。"
+        ? "无法连接本地服务，可修改设置暂不可用（输入框为空不代表当前没有配置）。"
         : `可修改设置加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`;
+      effective.hidden = false;
     }
   }
   if (!request.current()) return;

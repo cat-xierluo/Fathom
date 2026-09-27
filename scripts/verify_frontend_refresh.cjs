@@ -568,6 +568,16 @@ function createFixture() {
           current_scan_time: state.config.scan_time,
         } });
       }
+      // ISS-108：scan_root 被环境变量覆盖（sources.scan_root=env，镜像真实
+      // 后端 FATHOM_SCAN_ROOT 在场时的只读来源）——前端须在字段级就近标注
+      // 「保存不会改变当前生效值」（预填模式下摘要行已移除，来源标注唯一
+      // 呈现位就是被覆盖字段的下方）。
+      if (state.scenario === "scan-root-env") {
+        return json(res, 200, {
+          ...state.config,
+          sources: { ...state.config.sources, scan_root: "env" },
+        });
+      }
       return json(res, 200, { ...state.config });
     }
     if (url.pathname.startsWith("/api/scan/status")) {
@@ -1037,16 +1047,29 @@ async function main() {
       document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click();
     });
 
-    /* ---------- 设置页真实配置（ISS-016A） ---------- */
+    /* ---------- 设置页真实配置（ISS-016A；ISS-108 预填模式） ---------- */
     // 夹具取可辨别值（13:30 / 5120 / 3.5 / 21 天 / 8 周）：页面必须显示
     // 服务端值；若回退旧硬编码（12:00 / 10240 / 10 / 35 天 / 12 周）即失败。
-    await waitForText(page, "#config-effective", "13:30");
-    const settingsLiveText = await page.locator("#page-settings").textContent();
+    // ISS-108：当前值预填输入框（不再有底部「当前生效」摘要），等待条件
+    // 与断言都改读输入框 value；高级区的 21 天/8 周仍以文本断言。
+    await page.waitForFunction(() => document.getElementById("cfg-scan-time")?.value === "13:30",
+      null, { timeout: 10000 });
+    const settingsLive = await page.evaluate(() => ({
+      values: {
+        scanRoot: document.getElementById("cfg-scan-root")?.value,
+        scanTime: document.getElementById("cfg-scan-time")?.value,
+        minKb: document.getElementById("cfg-min-kb")?.value,
+        freeAlert: document.getElementById("cfg-free-alert-gb")?.value,
+      },
+      text: document.querySelector("#page-settings").textContent,
+      effectiveHidden: document.getElementById("config-effective")?.hidden,
+    }));
     record("settings-page-shows-server-config",
-      settingsLiveText.includes("13:30") && settingsLiveText.includes("5120") &&
-        settingsLiveText.includes("3.5") && settingsLiveText.includes("21 天每日一份") &&
-        settingsLiveText.includes("8 周") && !settingsLiveText.includes("35 天"),
-      settingsLiveText.slice(0, 120));
+      settingsLive.values.scanRoot === ROOT && settingsLive.values.scanTime === "13:30" &&
+        settingsLive.values.minKb === "5120" && settingsLive.values.freeAlert === "3.5" &&
+        settingsLive.text.includes("21 天每日一份") && settingsLive.text.includes("8 周") &&
+        !settingsLive.text.includes("35 天") && settingsLive.effectiveHidden === true,
+      JSON.stringify(settingsLive.values));
     // ISS-087：旧 settings-page-renders-config 验证 settings-table 含「监控根目录」
     // 与「服务地址」——它们都在「高级与诊断」section；切到 advanced 再断言。
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="advanced"]')?.click());
@@ -1115,6 +1138,153 @@ async function main() {
     const aboutShot = path.join(evidenceDir, "settings-about-1220x820.png");
     await page.screenshot({ path: aboutShot });
 
+    /* ---------- ISS-108：关于资料键值成组对齐 ----------
+     * 修前反例（ux-ui-audit-20260926/about-grid.json）：.about-meta li 的
+     * display:contents 把许可证第三节点（附注）摊平进两列 grid 的下一行键列，
+     * 第三方声明/仓库/作者整体对角错列。修后断言：
+     *  - 每个 li 恰好 key + val 两节点（附注收进 .about-meta-val）；
+     *  - 键列左缘跨行对齐（±2px）；键与值同行（±6px）；
+     *  - 附注不越出本 li（值容器底缘不超 li 底缘）；下一项 key 从本 li 之后开始；
+     *  - 仓库长链接不破版（about 面板无横向溢出）。 */
+    const aboutMetaState = await page.evaluate(() => {
+      const lis = [...document.querySelectorAll(".about-meta > li")];
+      const items = lis.map((li) => {
+        const key = li.querySelector(":scope > .about-meta-key");
+        const val = li.querySelector(":scope > .about-meta-val");
+        const kr = key?.getBoundingClientRect();
+        const vr = val?.getBoundingClientRect();
+        const lr = li.getBoundingClientRect();
+        return {
+          key: key?.textContent.trim() || "",
+          keyX: kr ? Math.round(kr.left * 10) / 10 : null,
+          keyY: kr ? Math.round(kr.top * 10) / 10 : null,
+          valY: vr ? Math.round(vr.top * 10) / 10 : null,
+          valBottom: vr ? Math.round(vr.bottom * 10) / 10 : null,
+          liBottom: Math.round(lr.bottom * 10) / 10,
+          childCount: [...li.children].length,
+        };
+      });
+      const panel = document.querySelector(".about-panel");
+      return {
+        items,
+        noOverflow: panel ? panel.scrollWidth <= panel.clientWidth + 1 : null,
+      };
+    });
+    const meta = aboutMetaState.items;
+    const keyXs = meta.map((m) => m.keyX);
+    record("iss108-about-meta-key-value-paired-per-row",
+      meta.length === 4 &&
+        meta.every((m) => m.childCount === 2) &&
+        Math.max(...keyXs) - Math.min(...keyXs) < 2 &&
+        meta.every((m) => Math.abs(m.keyY - m.valY) < 6) &&
+        meta.every((m) => m.valBottom <= m.liBottom + 1) &&
+        // 许可证附注只加高本行：下一项（第三方声明）的 key 顶缘在本 li 底缘之后
+        meta[1].keyY >= meta[0].liBottom - 1 &&
+        aboutMetaState.noOverflow === true,
+      JSON.stringify(aboutMetaState));
+
+    // 980 视口（两列形态下限之上、ISS-082 响应式区间内）：同构断言 + 长链接不破版
+    await page.setViewportSize({ width: 980, height: 640 });
+    await page.waitForTimeout(120);
+    const aboutMetaState980 = await page.evaluate(() => {
+      const lis = [...document.querySelectorAll(".about-meta > li")];
+      const items = lis.map((li) => {
+        const key = li.querySelector(":scope > .about-meta-key");
+        const val = li.querySelector(":scope > .about-meta-val");
+        const kr = key?.getBoundingClientRect();
+        const vr = val?.getBoundingClientRect();
+        const lr = li.getBoundingClientRect();
+        return {
+          key: key?.textContent.trim() || "",
+          keyX: kr ? Math.round(kr.left * 10) / 10 : null,
+          keyY: kr ? Math.round(kr.top * 10) / 10 : null,
+          valY: vr ? Math.round(vr.top * 10) / 10 : null,
+          valBottom: vr ? Math.round(vr.bottom * 10) / 10 : null,
+          liBottom: Math.round(lr.bottom * 10) / 10,
+          childCount: [...li.children].length,
+        };
+      });
+      const panel = document.querySelector(".about-panel");
+      return {
+        items,
+        noOverflow: panel ? panel.scrollWidth <= panel.clientWidth + 1 : null,
+      };
+    });
+    const meta980 = aboutMetaState980.items;
+    const keyXs980 = meta980.map((m) => m.keyX);
+    record("iss108-about-meta-aligned-at-980-no-overflow",
+      meta980.length === 4 &&
+        meta980.every((m) => m.childCount === 2) &&
+        Math.max(...keyXs980) - Math.min(...keyXs980) < 2 &&
+        meta980.every((m) => Math.abs(m.keyY - m.valY) < 6) &&
+        meta980.every((m) => m.valBottom <= m.liBottom + 1) &&
+        meta980[1].keyY >= meta980[0].liBottom - 1 &&
+        aboutMetaState980.noOverflow === true,
+      JSON.stringify(aboutMetaState980));
+    const aboutShot980 = path.join(evidenceDir, "settings-about-980x640.png");
+    await page.screenshot({ path: aboutShot980 });
+    // 还原 1220 视口（后续用例的坐标/截图基于该基线）
+    await page.setViewportSize({ width: 1220, height: 820 });
+
+    /* ---------- ISS-108：监控区字段预填 + 技术口径默认折叠 ---------- */
+    // 普通监控区默认视野不依赖 settings.json / fnmatch 术语：预填输入框、
+    // 说明就近白话；技术口径收进可展开 details（默认 closed，键盘可达）。
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click());
+    await page.waitForSelector("#config-form");
+    const monitoringTermState = await page.evaluate(() => {
+      const sec = document.getElementById("settings-section-monitoring");
+      const clone = sec.cloneNode(true);
+      clone.querySelectorAll("details").forEach((d) => d.remove());
+      const outsideText = clone.textContent;
+      const detailsEls = [...sec.querySelectorAll("details")];
+      return {
+        outsideHasSettingsJson: outsideText.includes("settings.json"),
+        outsideHasFnmatch: outsideText.includes("fnmatch"),
+        outsideHasCurlySummary: outsideText.includes("当前生效："),
+        detailsCount: detailsEls.length,
+        allClosed: detailsEls.every((d) => !d.open),
+        detailsHaveSettingsJson: detailsEls.some((d) => d.textContent.includes("settings.json")),
+        detailsHaveFnmatch: detailsEls.some((d) => d.textContent.includes("fnmatch")),
+        // 白话说明就位：阈值字段就近说明 + 根目录换数据集确认（默认可见）
+        hasPlainThresholdDesc: outsideText.includes("小于该值的目录不进入统计"),
+        hasDatasetInterruptNote: outsideText.includes("历史对比将中断"),
+        hasKbUnit: Boolean(sec.querySelector(".cfg-input-unit .cfg-unit")),
+      };
+    });
+    record("iss108-monitoring-terminology-collapsed-by-default",
+      monitoringTermState.outsideHasSettingsJson === false &&
+        monitoringTermState.outsideHasFnmatch === false &&
+        monitoringTermState.outsideHasCurlySummary === false &&
+        monitoringTermState.detailsCount >= 3 &&
+        monitoringTermState.allClosed === true &&
+        monitoringTermState.detailsHaveSettingsJson === true &&
+        monitoringTermState.detailsHaveFnmatch === true &&
+        monitoringTermState.hasPlainThresholdDesc === true &&
+        monitoringTermState.hasDatasetInterruptNote === true &&
+        monitoringTermState.hasKbUnit === true,
+      JSON.stringify(monitoringTermState));
+
+    // 展开说明可达（真实点击 summary）：技术口径按需可见
+    await page.click('[data-test="cfg-min-kb-details"] > summary');
+    const detailsOpenState = await page.evaluate(() => {
+      const d = document.querySelector('[data-test="cfg-min-kb-details"]');
+      const r = d ? d.getBoundingClientRect() : null;
+      return {
+        open: d ? d.open : null,
+        text: d ? d.textContent : "",
+        rendered: r ? r.height > 20 : false,
+        equiv: document.querySelector('[data-test="cfg-min-kb-equiv"]')?.textContent || "",
+      };
+    });
+    record("iss108-technical-details-expandable",
+      detailsOpenState.open === true &&
+        detailsOpenState.rendered === true &&
+        detailsOpenState.text.includes("未记录") &&
+        detailsOpenState.equiv.includes("5.0 MB"),
+      JSON.stringify(detailsOpenState));
+    const monitoringShot108 = path.join(evidenceDir, "settings-monitoring-expanded-1220x820.png");
+    await page.screenshot({ path: monitoringShot108 });
+
     // 高级与诊断区：ISS-083 折叠区与服务管理面板挂入；浏览器态全量渲染。
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="advanced"]')?.click());
     await page.waitForSelector("#settings-section-advanced #settings-table");
@@ -1135,31 +1305,34 @@ async function main() {
     const scheduleShot = path.join(evidenceDir, "settings-schedule-1220x820.png");
     await page.screenshot({ path: scheduleShot });
 
-    /* ---------- 计划与通知区独立表单保存（ISS-087） ---------- */
+    /* ---------- 计划与通知区独立表单保存（ISS-087；ISS-108 预填模式） ---------- */
     // scan_time 字段归「计划与通知」section；通过 #btn-schedule-save 单独保存。
+    // ISS-108：保存失败后输入框必须恢复为当前生效值（旧值可辨的页面不变量：
+    // 输入框 = 当前生效值），不再依赖底部摘要行。
     await page.fill("#cfg-scan-time", "25:00");
     await page.click("#btn-schedule-save");
     await waitForText(page, "#config-feedback", "保存失败");
     const scheduleInvalid = await page.evaluate(() => ({
       feedback: document.getElementById("config-feedback").textContent,
-      effective: document.getElementById("config-effective").textContent,
+      scanTime: document.getElementById("cfg-scan-time").value,
     }));
     record("settings-schedule-form-invalid-input-feedback",
       scheduleInvalid.feedback.includes("HH:MM") &&
-        scheduleInvalid.effective.includes("13:30") &&
+        scheduleInvalid.feedback.includes("当前生效值保持不变") &&
+        scheduleInvalid.scanTime === "13:30" &&
         fixture.state.config.scan_time === "13:30",
       JSON.stringify(scheduleInvalid).slice(0, 160));
 
-    // 有效保存：扫描时间 09:15 → drift 文案 + 生效值刷新
+    // 有效保存：扫描时间 09:15 → drift 文案 + 输入框保持生效值
     await page.fill("#cfg-scan-time", "09:15");
     await page.click("#btn-schedule-save");
     await waitForText(page, "#config-feedback", "需重新安装");
     const scheduleApplied = await page.evaluate(() => ({
       feedback: document.getElementById("config-feedback").textContent,
-      effective: document.getElementById("config-effective").textContent,
+      scanTime: document.getElementById("cfg-scan-time").value,
     }));
     record("settings-schedule-form-save-applies-and-hints-reinstall",
-      scheduleApplied.effective.includes("09:15") &&
+      scheduleApplied.scanTime === "09:15" &&
         scheduleApplied.feedback.includes("需重新安装") &&
         fixture.state.config.scan_time === "09:15",
       JSON.stringify(scheduleApplied).slice(0, 160));
@@ -1171,21 +1344,27 @@ async function main() {
     await page.fill("#cfg-min-kb", "2048");
     await page.click("#btn-config-save");
     // 等待 PUT 真正落盘（仅看 feedback 字符串可能被上一个保存的提示命中）：
-    // 用 fixture 计数 +1 与 effective 文本包含 "2048" 双信号。
+    // 用 fixture 计数 +1 与输入框 value 变为 "2048" 双信号（ISS-108：生效值
+    // 经 renderEffective 预填回输入框）。
     await waitForCount("configPut", putBefore + 1);
-    await waitForText(page, "#config-effective", "2048");
+    await page.waitForFunction(() => document.getElementById("cfg-min-kb")?.value === "2048",
+      null, { timeout: 10000 });
     const monitorApplied = await page.evaluate(() => ({
       feedback: document.getElementById("config-feedback").textContent,
-      effective: document.getElementById("config-effective").textContent,
+      minKb: document.getElementById("cfg-min-kb").value,
+      root: document.getElementById("cfg-scan-root").value,
     }));
     record("settings-monitor-form-save-applies-and-hints-reinstall",
-      monitorApplied.effective.includes("2048") &&
+      monitorApplied.minKb === "2048" &&
         monitorApplied.feedback.includes("需重新安装") &&
         fixture.state.config.min_kb === 2048 &&
+        monitorApplied.root === ROOT &&
         (fixture.state.counts.configPut || 0) === putBefore + 1,
       JSON.stringify(monitorApplied).slice(0, 200));
 
     // 恢复默认：仍由监控区 #btn-config-reset 触发，4 个字段都被填入默认值。
+    // ISS-108：预填模式下「未保存」由夹具侧生效值不变（scan_time 仍 09:15）
+    // 证明——恢复默认只改输入框，不发 PUT。
     const putCountBeforeReset = fixture.state.counts.configPut || 0;
     await page.click("#btn-config-reset");
     const resetValues = await page.evaluate(() => ({
@@ -1193,12 +1372,12 @@ async function main() {
       time: document.getElementById("cfg-scan-time").value,
       min: document.getElementById("cfg-min-kb").value,
       free: document.getElementById("cfg-free-alert-gb").value,
-      effective: document.getElementById("config-effective").textContent,
+      feedback: document.getElementById("config-feedback").textContent,
     }));
     record("settings-restore-default-fills-without-saving",
       resetValues.time === "12:00" && resetValues.min === "10240" &&
         resetValues.free === "10" && resetValues.root === "/fixture/home" &&
-        resetValues.effective.includes("09:15") &&
+        fixture.state.config.scan_time === "09:15" &&
         (fixture.state.counts.configPut || 0) === putCountBeforeReset,
       JSON.stringify(resetValues).slice(0, 120));
 
@@ -1258,7 +1437,6 @@ async function main() {
     const unconfirmed = await page.evaluate(() => ({
       feedback: document.querySelector("#config-feedback")?.textContent || "",
       feedbackVisible: !document.querySelector("#config-feedback")?.hidden,
-      effective: document.querySelector("#config-effective")?.textContent || "",
     }));
     record("exclude-editor-blocks-save-without-confirmation",
       afterAdd.rows.includes("node_modules") && afterAdd.inlineError === "" &&
@@ -1268,15 +1446,14 @@ async function main() {
         !(fixture.state.config.exclude_names || "").includes("node_modules"),
       JSON.stringify({ afterAdd, unconfirmed }).slice(0, 240));
 
-    // 勾选确认后保存：走 PUT /api/config，生效值刷新且提示需重装
+    // 勾选确认后保存：走 PUT /api/config，生效值刷新且提示需重装。
+    // ISS-108：等待信号改用「已保存排除列表」反馈（预填模式下摘要行已移除；
+    // 之前的反馈文案均不含该短语，不会误命中）。
     await page.check("#exclude-confirm");
     await page.click("#btn-exclude-save");
-    await page.waitForFunction(
-      () => (document.querySelector("#config-effective")?.textContent || "").includes("node_modules"),
-      null, { timeout: 5000 });
+    await waitForText(page, "#config-feedback", "已保存排除列表");
     const saved = await page.evaluate(() => ({
       feedback: document.querySelector("#config-feedback")?.textContent || "",
-      effective: document.querySelector("#config-effective")?.textContent || "",
       rows: [...document.querySelectorAll("#exclude-panel [data-test='exclude-row']")]
         .map((r) => r.getAttribute("data-mask")),
     }));
@@ -1377,6 +1554,30 @@ async function main() {
       (fixture.state.counts.configPut || 0) === envPutBefore,
       JSON.stringify({ before: envPutBefore, after: fixture.state.counts.configPut || 0 }));
 
+    await setScenario(null);
+
+    /* ---------- ISS-108：scan_root 被环境变量覆盖时的字段级来源标注 ----------
+     * 预填模式下「当前生效」摘要行已移除，配置来源（env 覆盖、保存不会
+     * 改变当前生效值）必须在被覆盖字段下方就近可见，不能随摘要一起消失。 */
+    await setScenario("scan-root-env");
+    await openPage("#/settings");
+    await page.waitForFunction(
+      (root) => document.getElementById("cfg-scan-root")?.value === root,
+      ROOT, { timeout: 10000 });
+    const scanRootEnvState = await page.evaluate(() => {
+      const note = document.querySelector('[data-test="cfg-scan-root-override"]');
+      return {
+        noteHidden: note ? note.hidden : null,
+        noteText: note ? note.textContent : "",
+        inputValue: document.getElementById("cfg-scan-root")?.value,
+      };
+    });
+    record("iss108-scan-root-env-override-labeled-at-field",
+      scanRootEnvState.noteHidden === false &&
+        scanRootEnvState.noteText.includes("FATHOM_SCAN_ROOT") &&
+        scanRootEnvState.noteText.includes("保存不会改变当前生效值") &&
+        scanRootEnvState.inputValue === ROOT,
+      JSON.stringify(scanRootEnvState));
     await setScenario(null);
 
     /* ---------- ISS-069 续作：保存路径自身必须拦住超限列表 ---------- */

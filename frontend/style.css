@@ -82,6 +82,11 @@
  *  2) 侧栏原先 sticky 的约束底边是 app-shell 底边，滚动进入页脚段
  *     时被顶出视口，按钮随滚动位移。壳内元素天然固定后零位移。 */
 html, body { height: 100%; overflow: hidden; }
+/* WKWebView（Tauri 壳）在滚动容器到顶/到底后继续滑动会触发原生层的整页
+ * 弹性回弹——视觉上侧栏/顶栏跟着一起动（Chromium 无此行为，082 夹具拦不住）。
+ * Safari 16+ 支持 overscroll-behavior:none 禁用根弹性滚动（2026-09-27 走查
+ * 反例：设置页上滑侧栏跟动）。对 Chromium 无副作用。 */
+html, body { overscroll-behavior: none; }
 
 body {
   margin: 0;
@@ -944,11 +949,27 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   font-size: 12px;
 }
 .about-meta-val { min-width: 0; }
-/* 微信行（2026-09-27 用户走查裁决，参照 Folia AboutSection）：二维码 + 微信号。
- * 该行改居中对齐——72px 二维码与键文字 baseline 对齐会错位。 */
-.about-wechat-row { align-items: center; }
-.about-wechat { display: inline-flex; align-items: center; gap: 10px; }
-.about-wechat-qr { width: 72px; height: 72px; border-radius: 8px; display: block; }
+/* 关于作者/微信拆分布局（2026-09-27 用户走查裁决，参照 Folia
+ * AboutSection）：作者键值列表在左，微信二维码独立块在右（纵向：码图 +
+ * 标签）；窄视口换行，不挤压键值列。 */
+.about-author-body {
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.about-author-body .about-meta { flex: 1 1 280px; }
+.about-wechat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(16, 24, 40, 0.04);
+}
+.about-wechat-qr { width: 96px; height: 96px; border-radius: 8px; display: block; }
+.about-wechat-label { font-size: var(--fs-hint); color: var(--text); }
 .about-meta a {
   color: var(--primary);
   text-decoration: none;

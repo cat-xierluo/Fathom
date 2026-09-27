@@ -318,31 +318,58 @@
           <!-- 右分区容器：每个 <section> 是一个 IA 分区；
                同一时刻只有一个可见（display 切换不破坏 ISS-082 的滚动合同） -->
           <div class="settings-sections">
-            <!-- 监控：监控范围 + 阈值 + 排除（ISS-069 排除列表编辑器挂此处） -->
+            <!-- 监控：监控范围 + 阈值 + 排除（ISS-069 排除列表编辑器挂此处）。
+                 ISS-108（ISS-104 候选 #8）：当前值预填输入框、说明就近白话；
+                 技术口径（settings.json 位置 / KB 入库含义）收进可展开说明，
+                 默认不占主视野。 -->
             <section class="settings-section surface" data-section="monitoring"
                      id="settings-section-monitoring" aria-labelledby="settings-head-monitoring">
               <div class="panel">
                 <div class="panel-head">
                   <h2 id="settings-head-monitoring">监控设置</h2>
-                  <p class="hint">保存到运行根 settings.json；留空的字段保持不变</p>
+                  <p class="hint">当前值已填入输入框；改动保存后生效</p>
                 </div>
                 <form id="config-form" class="config-form" novalidate>
                   <div class="cfg-row">
                     <label for="cfg-scan-root">监控根目录</label>
-                    <input class="ctl-input cfg-wide" id="cfg-scan-root" type="text"
-                           autocomplete="off" spellcheck="false" placeholder="留空表示不修改">
+                    <div class="cfg-field">
+                      <input class="ctl-input cfg-wide" id="cfg-scan-root" type="text"
+                             autocomplete="off" spellcheck="false" placeholder="例如 /Users/你/项目">
+                      <p class="cfg-override" data-test="cfg-scan-root-override" hidden></p>
+                      <p class="cfg-desc">要追踪容量变化的文件夹。当前版本只监控一个根目录；
+                        更改根目录会形成新数据集，历史对比将中断。</p>
+                    </div>
                   </div>
                   <div class="cfg-row">
-                    <label for="cfg-min-kb">入库阈值（KB）</label>
-                    <input class="ctl-input" id="cfg-min-kb" type="number" min="0" step="any"
-                           autocomplete="off" placeholder="正数">
+                    <label for="cfg-min-kb">入库阈值</label>
+                    <div class="cfg-field">
+                      <span class="cfg-input-unit">
+                        <input class="ctl-input" id="cfg-min-kb" type="number" min="0" step="any"
+                               autocomplete="off" placeholder="如 5120">
+                        <span class="cfg-unit">KB</span>
+                      </span>
+                      <p class="cfg-desc">小于该值的目录不进入统计。</p>
+                      <details class="cfg-details" data-test="cfg-min-kb-details">
+                        <summary>这个阈值影响什么？</summary>
+                        <p class="cfg-desc">输入单位为 KB（1 MB = 1024 KB）。「入库」指写入本地统计数据库：
+                          小于该阈值的目录不进入统计，在变化表中显示为「未记录」——未记录不等于新增或删除。
+                          <span data-test="cfg-min-kb-equiv"></span></p>
+                      </details>
+                    </div>
                   </div>
                   <div class="cfg-actions">
                     <button type="submit" id="btn-config-save" class="btn primary">保存设置</button>
                     <button type="button" id="btn-config-reset" class="btn">恢复默认值</button>
                   </div>
+                  <details class="cfg-details" data-test="cfg-storage-details">
+                    <summary>设置保存在哪里？保存失败会怎样？</summary>
+                    <p class="cfg-desc">保存到本机运行根目录的 settings.json 文件（具体路径见
+                      「高级与诊断 → 运行信息」）。保存失败时当前生效值保持不变，输入框会恢复为当前生效值；
+                      留空的字段不会被修改；被环境变量或启动参数覆盖的字段会单独标注，保存不会改变其当前生效值；
+                      「恢复默认值」只把默认值填入输入框，仍需点击「保存设置」才会写入。</p>
+                  </details>
                 </form>
-                <p id="config-effective" class="hint">配置加载中…</p>
+                <p id="config-effective" class="hint" hidden></p>
                 <p id="config-feedback" class="hint" hidden></p>
               </div>
               <!-- ISS-069 排除列表编辑器挂载点（运行期由 settings.js 注入） -->
@@ -360,13 +387,22 @@
                 <form id="schedule-form" class="config-form" novalidate>
                   <div class="cfg-row">
                     <label for="cfg-scan-time">计划时间</label>
-                    <input class="ctl-input" id="cfg-scan-time" type="text" inputmode="numeric"
-                           autocomplete="off" placeholder="HH:MM">
+                    <div class="cfg-field">
+                      <input class="ctl-input" id="cfg-scan-time" type="text" inputmode="numeric"
+                             autocomplete="off" placeholder="如 21:30">
+                      <p class="cfg-desc">每天在这个时间自动扫描；修改保存后，已安装的后台计划需重新安装才按新时间运行。</p>
+                    </div>
                   </div>
                   <div class="cfg-row">
-                    <label for="cfg-free-alert-gb">低空间提醒阈值（GB）</label>
-                    <input class="ctl-input" id="cfg-free-alert-gb" type="number" min="0" step="any"
-                           autocomplete="off" placeholder="正数">
+                    <label for="cfg-free-alert-gb">低空间提醒阈值</label>
+                    <div class="cfg-field">
+                      <span class="cfg-input-unit">
+                        <input class="ctl-input" id="cfg-free-alert-gb" type="number" min="0" step="any"
+                               autocomplete="off" placeholder="如 10">
+                        <span class="cfg-unit">GB</span>
+                      </span>
+                      <p class="cfg-desc">磁盘剩余空间低于该值时发出提醒；只影响提醒，不改变采集的数据。</p>
+                    </div>
                   </div>
                   <div class="cfg-actions">
                     <button type="submit" id="btn-schedule-save" class="btn primary">保存计划与通知</button>
@@ -426,23 +462,33 @@
                   macOS 目录容量历史追踪工具：记录哪些目录在增长，把最近变化与历史证据放在一起，
                   帮助理解空间去向。所有数据只存在你的机器上。
                 </p>
-                <ul class="about-meta">
+                <!-- ISS-108：每项 = 键 + 值容器两节点成组（.about-meta-val 包住
+                     值与附注）。修前 .about-meta li { display: contents } 把许可证
+                     的三节点摊平进两列 grid，附注落入下一行键列，后续各项对角错位
+                     （verify-results/ux-ui-audit-20260926/about-grid.json）。 -->
+                <ul class="about-meta" data-test="about-meta">
                   <li>
                     <span class="about-meta-key">许可证</span>
-                    <a href="../LICENSE" target="_blank" rel="noopener">Apache-2.0</a>
-                    <span class="hint">（仓库根 LICENSE）</span>
+                    <span class="about-meta-val">
+                      <a href="../LICENSE" target="_blank" rel="noopener">Apache-2.0</a>
+                      <span class="hint">（仓库根 LICENSE）</span>
+                    </span>
                   </li>
                   <li>
                     <span class="about-meta-key">第三方声明</span>
-                    <a href="https://github.com/cat-xierluo/Fathom/blob/main/NOTICES" target="_blank" rel="noopener">NOTICES</a>
+                    <span class="about-meta-val">
+                      <a href="https://github.com/cat-xierluo/Fathom/blob/main/NOTICES" target="_blank" rel="noopener">NOTICES</a>
+                    </span>
                   </li>
                   <li>
                     <span class="about-meta-key">仓库</span>
-                    <a href="https://github.com/cat-xierluo/Fathom" target="_blank" rel="noopener">cat-xierluo/Fathom</a>
+                    <span class="about-meta-val">
+                      <a href="https://github.com/cat-xierluo/Fathom" target="_blank" rel="noopener">cat-xierluo/Fathom</a>
+                    </span>
                   </li>
                   <li class="about-copyright">
                     <span class="about-meta-key">作者</span>
-                    <span>Copyright 2026 maoking</span>
+                    <span class="about-meta-val">Copyright 2026 maoking</span>
                   </li>
                 </ul>
                 <!-- 应用更新区（ISS-040B）从原 settings.js 的 updater 面板迁入 -->

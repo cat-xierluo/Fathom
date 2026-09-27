@@ -847,20 +847,31 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   color: var(--text);
 }
 .about-blurb { margin: 0; font-size: 13px; line-height: 1.6; color: var(--text); }
+/* ISS-108：关于资料键值成组。修前 li { display: contents } 把每个 li 的
+ * 子节点摊平进外层两列 grid——许可证的第三个节点（附注）落入下一行键列，
+ * 后续各项全部对角错位（确定性排版缺陷，与浏览器/打包模式无关）。
+ * 修后每个 li 是独立 grid（键列 96px 下限 + 值列），键列跨行对齐；
+ * 附注收进 .about-meta-val 值容器，只加高本行，不挤占下一项。 */
 .about-meta {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
-  grid-template-columns: minmax(96px, max-content) 1fr;
-  gap: 8px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   font-size: 13px;
 }
-.about-meta li { display: contents; }
+.about-meta li {
+  display: grid;
+  grid-template-columns: minmax(96px, max-content) 1fr;
+  column-gap: 18px;
+  align-items: baseline;
+}
 .about-meta-key {
   color: var(--muted);
   font-size: 12px;
 }
+.about-meta-val { min-width: 0; }
 .about-meta a {
   color: var(--primary);
   text-decoration: none;
@@ -895,17 +906,34 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
    * 项拉满整行（087 遗留，浅底选中时代不显眼；深色选中块使其显形为
    * 「一整条深带 + 右侧小项」的破碎形态）。水平形态改为内容自适应宽。 */
   .settings-nav-item { flex: none; width: auto; min-width: 120px; }
-  .about-meta { grid-template-columns: 1fr; gap: 4px 0; }
-  .about-meta li { display: block; margin-bottom: 8px; }
-  .about-meta-key { display: block; margin-bottom: 2px; }
+  /* ISS-108：窄视口关于资料改单列成组（键上、值下），仍逐项成组不串行 */
+  .about-meta li { grid-template-columns: 1fr; row-gap: 2px; }
 }
 
-/* 可修改设置表单（ISS-016A）：标签定宽对齐，输入复用 ctl-input 令牌 */
-.config-form { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 10px; }
-.cfg-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
-.cfg-row label { width: 150px; color: var(--muted); flex: none; }
-.cfg-row .ctl-input { width: 160px; }
-.cfg-row .ctl-input.cfg-wide { width: min(420px, 100%); }
+/* 可修改设置表单（ISS-016A；ISS-108 按 ISS-104 候选 #8 重排）：
+ * 标签在输入框上方（--fs-table/500），说明就近白话（--fs-hint）；
+ * 当前值预填输入框，底部不再用长摘要反查。单位标记贴近输入框右侧；
+ * 技术口径（settings.json 位置 / fnmatch 语义）收进 .cfg-details 展开。 */
+.config-form { display: flex; flex-direction: column; gap: var(--sp4); margin: 4px 0 10px; }
+.cfg-row { display: flex; flex-direction: column; gap: 6px; }
+.cfg-row > label { font-size: var(--fs-table); font-weight: 500; color: var(--text); }
+.cfg-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; max-width: 480px; }
+.cfg-field > .ctl-input { width: 200px; }
+.cfg-field > .ctl-input.cfg-wide { width: min(420px, 100%); }
+.cfg-input-unit { display: flex; align-items: center; gap: 6px; }
+.cfg-input-unit .ctl-input { width: 160px; }
+.cfg-unit { font-size: var(--fs-hint); color: var(--muted); flex: none; }
+.cfg-desc { margin: 0; font-size: var(--fs-hint); color: var(--muted); line-height: 1.55; }
+.cfg-override { margin: 0; font-size: var(--fs-hint); color: var(--danger); }
+/* 可展开技术说明：summary 是海沟蓝小字链接语言（键盘可达，原生 details） */
+.cfg-details { font-size: var(--fs-hint); }
+.cfg-details > summary {
+  cursor: pointer; color: var(--trench); font-size: var(--fs-hint);
+  width: max-content; max-width: 100%;
+}
+.cfg-details > summary:hover { text-decoration: underline; }
+.cfg-details > summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+.cfg-details[open] > summary { margin-bottom: 4px; }
 .cfg-actions { display: flex; gap: 8px; }
 #config-effective { margin: 8px 0 0; word-break: break-all; }
 #config-feedback { margin: 6px 0 0; }

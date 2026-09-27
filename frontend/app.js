@@ -4,7 +4,7 @@
  * 轮询 polling / Tauri 桥 tauri / 页面控制 router / 状态观测 status。
  * 数据刷新只经 router 的单一刷新入口；Tauri 桥在浏览器中静默降级。
  */
-import { icon, ICON_PATHS } from "./icons.js";
+import { icon, brandImg, ICON_PATHS } from "./icons.js";
 import { setRequestScope } from "./modules/request.js";
 import { state } from "./modules/state.js";
 import { initPages, navigate, PAGE_TITLES } from "./modules/router.js";
@@ -14,8 +14,10 @@ import { listenTrayActions } from "./modules/tauri.js";
 /* ---------- 静态图标注入（icons.js 提供 icon()，无 emoji —— DEC-010） ---------- */
 
 function mountStaticIcons() {
+  /* ISS-105：侧栏品牌位改用正式应用图标位图（主窗口唯一品牌位，
+   * DEC-023 主形态位图系；旧 brandBasin SVG 叠层已随本卡移除） */
   const brand = document.getElementById("brand-icon");
-  if (brand) brand.innerHTML = icon("brandBasin", 24, "brand-mark");
+  if (brand) brand.innerHTML = brandImg(24, "brand-mark");
   document.querySelectorAll("[data-icon]").forEach((el) => {
     el.innerHTML = icon(el.dataset.icon, 18);
   });
@@ -24,22 +26,19 @@ function mountStaticIcons() {
   });
 }
 
-/* ---------- ISS-085/086 装饰挂载（纯装饰，无业务逻辑） ----------
- * 1) [data-dr]：主窗口品牌站位（当前 #page-anchor = brandBasin，ISS-086
- *    修订；早期 ISS-085 用 brandRing，因形态选用判定错而替换）。几何与
- *    配色由 icons.js + style.css .brand-mark 承担；不再需要探针方位旋转
- *    （brandBasin 是层叠面，不是可旋转的探针）。
+/* ---------- 装饰/品牌挂载（纯装饰，无业务逻辑） ----------
+ * 1) [data-brand-img]：品牌位图挂载点（ISS-105）——关于区 about-mark
+ *    标注 data-brand-size=64；位图资产与 srcset 由 icons.js brandImg()
+ *    集中维护。旧 [data-dr] 页头锚点随 ISS-104 候选合同移除（与侧栏
+ *    品牌位相邻重复，审计反例）。
  * 2) [data-dr-spin]：区域加载占位的旋转加载环（几何同 brandRing，ISS-085
  *    加载指示合同保留 —— 加载是测深语义、属深度环小尺寸形态担当的场景，
  *    不进入双形态替换范围）。动画由 style.css .dr-loading 承担；文本由
  *    挂载点的既有 textContent/innerHTML 更新自然接管，环随内容替换消失。 */
 function mountDepthRingDecor() {
-  document.querySelectorAll("[data-dr]").forEach((el) => {
-    /* ISS-088：关于区 about-mark 标注 data-dr-size=64（大尺寸应用图标
-     * 位，64px 容器此前只注入 26px 图标、图标远小于容器）；未标注的
-     * 挂载点（页头 #page-anchor）保持 26px 默认 */
-    const size = Number(el.dataset.drSize) || 26;
-    el.innerHTML = icon(el.dataset.dr, size, "brand-mark");
+  document.querySelectorAll("[data-brand-img]").forEach((el) => {
+    const size = Number(el.dataset.brandSize) || 64;
+    el.innerHTML = brandImg(size, "");
   });
   document.querySelectorAll("[data-dr-spin]").forEach((el) => {
     el.innerHTML =

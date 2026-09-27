@@ -56,7 +56,9 @@ export function initPageTabs({ page, defaultTab }) {
   const root = document.getElementById("page-" + page);
   if (!root) return null;
   const buttons = [...root.querySelectorAll(":scope .page-tabs .page-tab")];
-  const sections = [...root.querySelectorAll(":scope > .page-tab-section")];
+  /* ISS-105：分区可能包在 .surface（每页一张 L1 白卡）内——按后代而非
+   * 直接子元素取，仍限定在本页内防嵌套误取；按钮与分区按 data-tab 对应 */
+  const sections = [...root.querySelectorAll(":scope .page-tab-section")];
   if (!buttons.length || buttons.length !== sections.length) return null;
   const ids = buttons.map((b) => b.dataset.tab);
   if (!ids.includes(defaultTab)) return null;

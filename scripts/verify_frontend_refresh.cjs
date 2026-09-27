@@ -604,12 +604,16 @@ function createFixture() {
       "/app.js": ["frontend/app.js", "application/javascript; charset=utf-8"],
       "/icons.js": ["frontend/icons.js", "application/javascript; charset=utf-8"],
       "/style.css": ["frontend/style.css", "text/css; charset=utf-8"],
-      "/vendor/echarts.min.js": ["frontend/vendor/echarts.min.js", "application/javascript; charset=utf-8"],
+      "/vendor/echarts.min.js": ["frontend/vendor/echarts.min.js", "text/javascript; charset=utf-8"],
     };
-    // ES modules（frontend/modules/）经受限字符集路径直接透出，禁止穿越
+    // ES modules（frontend/modules/）与品牌位图（frontend/assets/，ISS-105）
+    // 经受限字符集路径直接透出，禁止穿越
     const file = staticFiles[url.pathname] ||
       (/^\/modules\/[A-Za-z0-9_][A-Za-z0-9_./-]*\.js$/.test(url.pathname)
         ? [`frontend${url.pathname}`, "application/javascript; charset=utf-8"]
+        : null) ||
+      (/^\/assets\/[A-Za-z0-9_-]+\.png$/.test(url.pathname)
+        ? [`frontend${url.pathname}`, "image/png"]
         : null);
     if (!file) return json(res, 404, { detail: "not found" });
     const data = fs.readFileSync(path.join(REPO, file[0]));
@@ -623,6 +627,43 @@ async function waitForText(page, selector, expected) {
   await page.waitForFunction(
     ({ selector, expected }) => document.querySelector(selector)?.textContent.includes(expected),
     { selector, expected }, { timeout: 10000 });
+}
+
+/* ISS-105 品牌位图像素采样：img 绘入 canvas 后取中心（深潭墨核心）、
+ * 72% 高度处（青蓝阶地带）、顶缘（象牙白底板）与角（squircle 外透明）
+ * 四点 RGBA。同源夹具下 canvas 可读；img 缺失/未加载返回 null。
+ * 断言按「结构」而非仅存在：中心暗、阶地带蓝相（b>r）、角透明。 */
+async function sampleBrandImg(page, selector) {
+  return page.evaluate((sel) => {
+    const img = document.querySelector(sel);
+    if (!img || !(img instanceof HTMLImageElement) || !img.complete || !img.naturalWidth) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const px = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data);
+    const w = canvas.width, h = canvas.height;
+    return {
+      naturalWidth: w,
+      naturalHeight: h,
+      center: px(Math.floor(w / 2), Math.floor(h / 2)),
+      terrace: px(Math.floor(w / 2), Math.floor(h * 0.72)),
+      topEdge: px(Math.floor(w / 2), 2),
+      corner: px(1, 1),
+    };
+  }, selector);
+}
+
+function brandImgStructureOk(s) {
+  if (!s) return false;
+  const [cr, cg, cb] = s.center;
+  const [tr, tg, tb] = s.terrace;
+  const [kr, kg, kb, ka] = s.corner;
+  return s.naturalWidth >= 24 && s.naturalHeight === s.naturalWidth &&
+    cr + cg + cb < 160 &&          // 中心=深潭墨核心（暗）
+    tb > tr + 20 && tb > 60 &&     // 72% 高度=青蓝阶地（蓝相显著）
+    ka === 0;                       // 角=squircle 外透明（正式位图特有）
 }
 
 async function main() {
@@ -683,6 +724,76 @@ async function main() {
       svg: Boolean(document.querySelector("#overview-summary [data-reveal] svg")),
     }));
     record("overview-finder-button-is-svg", !overviewIcon.literal && overviewIcon.svg);
+
+    /* ---------- ISS-105 品牌位图与组件合同（候选合同 + 用户四裁决） ---------- */
+    // 侧栏品牌位 = 正式应用图标位图（24px 显示 + 2x 资产），像素级可辨
+    const sidebarBrand = await sampleBrandImg(page, "#brand-icon img");
+    record("brand-sidebar-bitmap-renders-official-icon",
+      brandImgStructureOk(sidebarBrand), JSON.stringify(sidebarBrand));
+    // 页头锚点品牌位与刻度带移除（与侧栏相邻重复的反例）；h1 升 22px 字阶
+    const topbarState = await page.evaluate(() => {
+      const h1 = document.getElementById("page-title");
+      return {
+        anchor: Boolean(document.getElementById("page-anchor")),
+        depthScale: Boolean(document.querySelector(".depth-scale")),
+        h1Size: h1 ? getComputedStyle(h1).fontSize : null,
+        h1Text: h1 ? h1.textContent : null,
+      };
+    });
+    record("brand-topbar-anchor-and-depth-scale-removed",
+      !topbarState.anchor && !topbarState.depthScale &&
+        topbarState.h1Size === "22px" && topbarState.h1Text === "总览",
+      JSON.stringify(topbarState));
+    // 全局扫描按钮 = 次级描边（白底、无 primary 类）；本视口无实心主按钮
+    const scanBtnState = await page.evaluate(() => {
+      const btn = document.getElementById("btn-scan");
+      if (!btn) return null;
+      const cs = getComputedStyle(btn);
+      return {
+        cls: btn.className,
+        bg: cs.backgroundColor,
+        color: cs.color,
+        border: cs.borderTopWidth + " " + cs.borderTopStyle,
+        height: cs.height,
+        primaries: [...document.querySelectorAll(".btn.primary")]
+          .filter((b) => b.getClientRects().length > 0).length,
+      };
+    });
+    record("scan-button-secondary-and-no-solid-on-overview",
+      scanBtnState && !/\bprimary\b/.test(scanBtnState.cls) &&
+        scanBtnState.bg === "rgb(255, 255, 255)" &&
+        scanBtnState.border.startsWith("1px") &&
+        scanBtnState.height === "32px" &&
+        scanBtnState.primaries === 0,
+      JSON.stringify(scanBtnState));
+    // h2 前三刻度与四卡下装饰横线移除（刻度泛化反例）
+    const decorState = await page.evaluate(() => ({
+      h2Tick: getComputedStyle(document.querySelector(".panel-head h2"), "::before").content,
+      cardRuler: getComputedStyle(document.querySelector(".cards"), "::after").content,
+    }));
+    record("decorative-ticks-removed-from-h2-and-cards",
+      decorState.h2Tick === "none" && decorState.cardRuler === "none",
+      JSON.stringify(decorState));
+    // 表面层级：五页主内容各收进单张 L1 白卡（.surface），内部 panel 为
+    // 透明 L2 分组（背景透明；非首组以 hairline 分隔线分界）
+    const surfaceState = await page.evaluate(() => {
+      const transparent = (p) => getComputedStyle(p).backgroundColor === "rgba(0, 0, 0, 0)";
+      const panels = [...document.querySelectorAll("#page-overview .surface .panel")];
+      const first = panels[0];
+      const rest = panels.slice(1);
+      return {
+        overviewSurfaces: document.querySelectorAll("#page-overview .surface").length,
+        panelsTransparent: panels.length >= 3 && panels.every(transparent),
+        firstNoDivider: first && getComputedStyle(first).borderTopStyle === "none",
+        restDivided: rest.every((p) => getComputedStyle(p).borderTopWidth === "1px"),
+        surfaceCard: getComputedStyle(document.querySelector("#page-overview .surface")).backgroundColor,
+      };
+    });
+    record("surface-hierarchy-one-card-per-page",
+      surfaceState.overviewSurfaces === 1 && surfaceState.panelsTransparent &&
+        surfaceState.firstNoDivider && surfaceState.restDivided &&
+        surfaceState.surfaceCard === "rgb(255, 255, 255)",
+      JSON.stringify(surfaceState));
     const overviewShot = path.join(evidenceDir, "overview-values-1220x820.png");
     await page.screenshot({ path: overviewShot });
 
@@ -945,24 +1056,57 @@ async function main() {
       settingsText.includes("监控根目录") && settingsText.includes(ROOT) &&
         settingsText.includes("服务地址"), settingsText.slice(0, 60));
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click());  // 回到监控供后续用例
+    // ISS-105：设置分区二级选中态 = 浅品牌底 + 海沟蓝 + 短刻度（用户裁决④，
+    // 深色实底全站仅一级导航）；监控分区实心主按钮唯一（保存设置），
+    // 排除列表保存与权限区重扫均为次级描边
+    const settingsSelState = await page.evaluate(() => {
+      const active = document.querySelector('.settings-nav-item[aria-current="true"]');
+      const idle = document.querySelector('.settings-nav-item:not([aria-current])');
+      const visible = (el) => el && el.getClientRects().length > 0;
+      const excludeSave = document.getElementById("btn-exclude-save");
+      const rescan = document.getElementById("btn-rescan");
+      return {
+        activeLabel: active?.textContent.trim() || null,
+        activeBg: active ? getComputedStyle(active).backgroundColor : null,
+        activeColor: active ? getComputedStyle(active).color : null,
+        activeTick: active ? getComputedStyle(active, "::before").content : null,
+        idleBg: idle ? getComputedStyle(idle).backgroundColor : null,
+        excludeSaveCls: excludeSave ? excludeSave.className : null,
+        excludeSaveBg: excludeSave ? getComputedStyle(excludeSave).backgroundColor : null,
+        rescanCls: rescan && visible(rescan) ? rescan.className : null,
+        primaries: [...document.querySelectorAll("#page-settings .btn.primary")]
+          .filter(visible).map((b) => b.id),
+      };
+    });
+    record("settings-nav-selected-light-and-single-solid-primary",
+      settingsSelState.activeLabel === "监控" &&
+        settingsSelState.activeBg === "rgba(52, 93, 127, 0.1)" &&
+        settingsSelState.activeColor === "rgb(52, 93, 127)" &&
+        settingsSelState.activeTick !== "none" &&
+        settingsSelState.idleBg === "rgba(0, 0, 0, 0)" &&
+        settingsSelState.excludeSaveCls === "btn" &&
+        settingsSelState.excludeSaveBg === "rgb(255, 255, 255)" &&
+        (settingsSelState.rescanCls === null || settingsSelState.rescanCls === "btn perm-rescan") &&
+        JSON.stringify(settingsSelState.primaries) === JSON.stringify(["btn-config-save"]),
+      JSON.stringify(settingsSelState));
     const settingsShot = path.join(evidenceDir, "settings-config-1220x820.png");
     await page.screenshot({ path: settingsShot });
 
-    /* ---------- 关于区渲染（ISS-087）：brandBasin + 元信息 + 关于面板 + 检查更新区 ---------- */
+    /* ---------- 关于区渲染（ISS-087 / ISS-105）：品牌位图 + 元信息 + 关于面板 + 检查更新区 ---------- */
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="about"]')?.click());
     await page.waitForSelector('[data-test="about-panel"]');
     const aboutText = await page.locator('[data-test="about-panel"]').textContent();
-    const aboutHasBrandBasin = await page.evaluate(() => {
-      const mark = document.querySelector(".about-mark");
-      return Boolean(mark && mark.querySelector("svg") && mark.querySelector(".bv-l1"));
-    });
-    record("settings-about-shows-brand-basin-and-meta",
+    // ISS-105：64px 品牌位 = 正式应用图标位图（img + srcset 2x），像素级
+    // 验证（中心深潭墨核心 / 青蓝阶地带 / squircle 外角透明），不再检查
+    // SVG 椭圆叠层存在
+    const aboutBrand = await sampleBrandImg(page, ".about-mark img");
+    record("settings-about-shows-brand-bitmap-and-meta",
       aboutText.includes("Fathom") &&
         aboutText.includes("Apache-2.0") &&
         aboutText.includes("cat-xierluo/Fathom") &&
         aboutText.includes("Copyright 2026 maoking") &&
-        aboutHasBrandBasin,
-      aboutText.slice(0, 160));
+        brandImgStructureOk(aboutBrand) && aboutBrand.naturalWidth >= 64,
+      JSON.stringify(aboutBrand));
     // 关于区应包含检查更新面板（来自 settings.js 的 updater 面板，挂 #settings-about-extra）
     const aboutHasUpdater = await page.evaluate(() =>
       Boolean(document.getElementById("updater-panel")));
@@ -1785,6 +1929,32 @@ async function main() {
         JSON.stringify(keyboardActivated.visibleSections) === JSON.stringify(["removed"]) &&
         keyboardActivated.hash === "#/changes/removed",
       JSON.stringify({ keyboardFocused, keyboardActivated }));
+
+    // ISS-105 二级选中态（用户裁决④）：内容页 tab 选中=浅品牌底 + 海沟蓝
+    // 文字 + 3px 矿物青短刻度；非选中不再出现深潭墨实底（深色选中全站
+    // 仅一级导航）。removed 为当前选中态。先把鼠标移出按钮区，避免
+    // hover 态混入非选中项的采样。
+    await page.mouse.move(8, 8);
+    const tabSelState = await page.evaluate(() => {
+      const active = document.querySelector('#page-changes .page-tab[aria-current="true"]');
+      const idle = document.querySelector('#page-changes .page-tab[aria-current="false"], #page-changes .page-tab:not([aria-current])');
+      if (!active || !idle) return null;
+      const acs = getComputedStyle(active);
+      const ics = getComputedStyle(idle);
+      return {
+        activeBg: acs.backgroundColor,
+        activeColor: acs.color,
+        activeTick: getComputedStyle(active, "::before").content,
+        idleBg: ics.backgroundColor,
+      };
+    });
+    record("secondary-tab-selected-light-brand-with-tick",
+      tabSelState !== null &&
+        tabSelState.activeBg === "rgba(52, 93, 127, 0.1)" &&
+        tabSelState.activeColor === "rgb(52, 93, 127)" &&
+        tabSelState.activeTick !== "none" &&
+        tabSelState.idleBg === "rgba(0, 0, 0, 0)",
+      JSON.stringify(tabSelState));
 
     // hash 刷新保持：带段 URL 整页加载后 tab 恢复、路由不回落 overview。
     await openPage("#/changes/grown");

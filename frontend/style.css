@@ -1,13 +1,21 @@
 /* Fathom v0.3 · R3 测深视觉签名（视觉合同见 docs/DESIGN.md「原型第三轮」，ISS-072）
  * 品牌色：低饱和「海沟蓝—矿物青」，仅用于主动作/当前选择/深度环；
- * 等深线与短深度刻度只出现在侧栏品牌区、总览主结论背景与选中态的少量位置；
  * 禁 emoji 与写实海洋元素。
  *
- * ISS-085 深度环基调全局风格化：在 ISS-084 色彩令牌之上只做「形与层次」——
- * 深度环（页头锚点/加载态/目录定位）、短深度刻度（品牌站位/页头刻度带/
- * panel 标题刻度）、选中态深度条（表格行/日报项；导航选中态自 ISS-092
- * 起改为深色背景块，深度条从导航撤出）三种几何的克制分布；
- * 不改任何色彩令牌的值与语义，每处可独立回退。标注「ISS-085」的规则即本卡新增。
+ * ISS-105 组件一致性落地（ISS-104 候选合同 + 用户 2026-09-27 四裁决）：
+ *  - 品牌位：主窗口侧栏 24px 与关于页 64px 改用正式应用图标位图
+ *    （frontend/assets/brand-icon-*.png，icons.js brandImg() 注入）；
+ *    页头锚点/页头刻度带/h2 前刻度/四卡下装饰横线按候选移除；
+ *    tray/favicon/加载环仍为深度环矢量（DEC-023 分工）。
+ *  - 选中态两级：一级导航深潭墨实底保留（全站唯一深色选中态，
+ *    ISS-092 用户认可）；二级（内容页 tab/设置分区）= 浅品牌底
+ *    rgba(52,93,127,.10) + 海沟蓝文字 + 3px 矿物青短刻度。
+ *  - 按钮族：实心主按钮 36px 每视口至多一个（归属当前页主任务）；
+ *    全局扫描与排除列表保存固定次级描边 32px。
+ *  - 字阶 token：display 28 / h1 22 / h2 15 / body 14 / table 13 / hint 12
+ *    （9px 仅品牌位字标、11px 导航标签）；间距 8pt 栅格 --sp*。
+ *  - 表面层级：L0 --bg → L1 每页一张白卡（.surface）→ L2 分组靠
+ *    hairline 分隔线，不再各自套白卡描边 → L3 浮层。
  *
  * 语义色（ISS-084）：全部从 DEC-023 深潭色彩体系派生，低饱和仪器风，
  * 不再使用游离于体系外的鲜红/鲜绿：
@@ -28,6 +36,7 @@
   --card: #ffffff;
   --sidebar: #eceef2;        /* 侧栏材质：与工作区轻微背景差异（R3） */
   --border: #e4e7ec;
+  --hairline: #e9ebef;       /* ISS-105：L1 白卡边线/L2 分组分隔线（ISS-104 候选 token） */
   --text: #1a2233;
   --muted: #6b7486;
   /* 品牌强调（低饱和）：海沟蓝承担主动作/当前选择/深度环主体，
@@ -48,6 +57,17 @@
   --nav-active-fg: #fcfaf4;  /* ISS-092 导航选中深底前景：象牙白，对 --used 对比 9.2:1 */
   --shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
   --sidenav-w: 72px;
+  /* ISS-105 字阶 token（ISS-104 候选合同，对齐 DESIGN「视觉系统目标」既有刻度） */
+  --fs-display: 28px;  /* 主结论数字（每页至多一处，归 ISS-106 总览层级） */
+  --fs-h1: 22px;       /* 页标题 */
+  --fs-h2: 15px;       /* 区块标题（无刻度前缀） */
+  --fs-body: 14px;     /* 正文 */
+  --fs-table: 13px;    /* 表体/按钮/输入框 */
+  --fs-hint: 12px;     /* 辅助口径/表头/脚注（9px 仅品牌位字标） */
+  /* ISS-105 间距 token（8pt 栅格） */
+  --sp1: 4px; --sp2: 8px; --sp3: 12px; --sp4: 16px; --sp6: 24px; --sp8: 32px;
+  /* 二级选中态短刻度与浅品牌底（ISS-104 候选：--primary 同源派生用法，非新色） */
+  --subsel-bg: rgba(52, 93, 127, 0.10);
 }
 
 * { box-sizing: border-box; }
@@ -77,8 +97,9 @@ body {
 }
 .icon svg { width: 100%; height: 100%; display: block; }
 
-/* ISS-085 品牌站位（原单环字标扩展）：深度环 + 微字标 + 短深度刻度，
- * 全部纯装饰；环由 app.js 注入（#brand-icon），配色沿用 brand-mark 规则 */
+/* ISS-105 品牌站位：侧栏（主窗口唯一品牌位）= 正式应用图标位图 24px
+ * + 微字标 + 短深度刻度，全部纯装饰；位图由 app.js 注入（#brand-icon，
+ * icons.js brandImg()，srcset 2x 资产保证高 DPR 轮廓可辨）。 */
 .sidenav-brand {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 4px; margin-bottom: 12px; color: var(--trench);
@@ -87,7 +108,8 @@ body {
   font-size: 9px; font-weight: 600; letter-spacing: 0.22em; text-indent: 0.22em; /* 字距补偿：末字符字距收回使视觉居中 */
   color: var(--trench); user-select: none; line-height: 1;
 }
-/* 短深度刻度（R3 母题）：4 根等距竖刻度，两侧短中间长——测深标尺片段 */
+/* 短深度刻度（R3 母题，候选收敛后刻度母题三处之一）：4 根等距竖刻度，
+ * 两侧短中间长——测深标尺片段 */
 .brand-ruler {
   width: 28px; height: 5px; margin-top: 3px; opacity: 0.55;
   background:
@@ -96,22 +118,9 @@ body {
     linear-gradient(var(--trench), var(--trench)) left 18px top 0 / 1px 5px no-repeat,
     linear-gradient(var(--trench), var(--trench)) right 0 top 0 / 1px 3px no-repeat;
 }
-/* 深度环（R3 品牌标记，小尺寸形态）：开放圆环（海沟蓝，currentColor）+
- * 中心探针与刻度缺口（矿物青，类覆盖）；线条 SVG 语言与 icons.js 一致。
- * ISS-095 死代码清理：原「.brand-mark .dr-probe/.dr-tick 染矿物青」的
- * 防御规则已删——brand-mark 类只出现在 brandBasin 挂载点（app.js 侧栏
- * #brand-icon 与 [data-dr] 页头锚点，全仓库仅 index.html #page-anchor
- * 一处 data-dr），brandBasin 几何只含 bv-* 实色 fill 子元素、无
- * .dr-probe/.dr-tick，该规则永不命中；.dr-anchor 下经 grep 亦无同类
- * 祖先规则（探针/刻度染色只在 .badge-ring / .dr-loading /
- * .detail-dr 三处真实 brandRing 语境，均保留）。 */
-/* 层叠深潭（DEC-023 双形态体系主形态，ISS-086 / ISS-088）：ISS-088 起
- * 各层颜色为 icons.js 内自 icon.png 采样的固定 fill（象牙白底板 bv-base +
- * 浅青白/青蓝/深蓝/深潭墨四层阶地 + 象牙白 notch），不再经由本文件的
- * currentColor/opacity 规则染色——旧方案四层单色叠加在 24px 下呈模糊
- * 色团，无法辨认出应用图标。这里只保留尺寸/位置合同：
- * .dr-anchor 26×26 / .brand-mark 24×24 容器自适应；主窗口品牌站位
- * 不叠加「探针随路由旋转」动画（layer-stack basin 不是探针，无方位语义）。 */
+/* 品牌位图（ISS-105）：正式应用图标（squircle 自带透明圆角），容器只管
+ * 尺寸；不叠加任何染色/动画 */
+#brand-icon .brand-img { display: block; }
 .nav-icon { display: flex; align-items: center; justify-content: center; height: 20px; }
 
 /* ===== 应用壳：侧导航 + 主区（ISS-082：固定壳，内容区独立滚动） ===== */
@@ -159,48 +168,26 @@ body {
 /* ISS-089 分隔规范（设置页页头修正，全站同一条壳规则）：
  * 壳的横向边界（topbar↔内容区）不用线切割——topbar 是内容表面上的
  * 标题行，背景与工作区统一（--bg），下方的圆角卡自带 1px 边框 + 阴影
- * 边界；旧的「白色横带 + 全宽底线」与圆角卡片是两种边界语言，在设置
- * 页（左导航卡 + 右面板卡）上下夹击时最刺眼（用户反馈：上、下都是
- * 纯直线，感觉混乱）。壳的纵向边界（sidenav↔主区）仍用细线，见
- * .sidenav 的 border-right。 */
+ * 边界。壳的纵向边界（sidenav↔主区）仍用细线，见 .sidenav 的 border-right。
+ * ISS-105（ISS-104 候选）：页头锚点品牌位与深度刻度带移除（与侧栏品牌
+ * 位相邻重复，审计反例）；页标题升至 22px 字阶，扫描为次级描边按钮。 */
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 12px 26px;
+  gap: 12px;
+  padding: 12px 24px;
   background: var(--bg);
-  /* ISS-082：壳内天然固定，去掉 sticky */
   flex: none;
 }
-/* ISS-086 页头锚点：当前页标题前的层叠深潭（应用图标本身，DEC-023
- * 主形态）——实色层叠真彩色板（ISS-088 固定 fill）；非装饰探针，无方位
- * 指示（ISS-085 早期设计的「探针随路由旋转 72°」在 brandBasin 下无意义，
- * 已从 app.js 删除 pointAnchorToCurrentPage + PAGE_ANCHOR_ANGLES 与
- * hashchange 监听）。颜色与层叠全部由 icons.js 的固定 fill 承担。 */
-.topbar-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.dr-anchor {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; flex: none;
-}
-.dr-anchor svg { width: 100%; height: 100%; display: block; }
-/* 页头 brandBasin 单独覆写：保持 26×26 容器内层叠深潭的视觉重，与
- * 侧栏 brand-mark 的 24×24 在小尺寸上等比呈现；颜色为 icons.js 内
- * 固定 fill（ISS-088 真彩色板），本文件不再承担染色。 */
-.topbar-heading { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.topbar h1 { margin: 0; font-size: 17px; line-height: 1.15; }
-/* 深度刻度带（仪器读数尺）：长刻度全高、短刻度半高贴底，海沟蓝低透明度 */
-.depth-scale {
-  width: 180px; max-width: 36vw; height: 4px; opacity: 0.32; flex: none;
-  background:
-    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 36px),
-    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 9px);
-  background-size: 100% 100%, 100% 55%;
-  background-position: 0 0, 0 100%;
-  background-repeat: no-repeat;
+.topbar h1 {
+  margin: 0; font-size: var(--fs-h1); font-weight: 640;
+  letter-spacing: -0.015em; line-height: 1.15; min-width: 0;
 }
 .topbar-right { display: flex; align-items: center; gap: 12px; }
 .scan-badge {
-  font-size: 12px; color: var(--muted);
-  background: var(--bg); border: 1px solid var(--border);
-  padding: 4px 10px; border-radius: 999px;
+  font-size: var(--fs-hint); color: var(--muted);
+  background: var(--card); border: 1px solid var(--border);
+  padding: 4px 11px; border-radius: 999px;
+  white-space: nowrap;
 }
 .scan-badge.running { color: var(--primary); border-color: var(--primary); }
 
@@ -239,21 +226,34 @@ body {
 
 /* ISS-082：唯一滚动容器——内容区独立滚动；min-height:0 使 flex 子项
  * 允许收缩，否则 overflow 不生效。overscroll-behavior 阻止滚动链
- * 传出内容区（WebView 中防整页橡皮筋） */
+ * 传出内容区（WebView 中防整页橡皮筋）。ISS-105：工作区内边距对齐
+ * 8pt 栅格 24px（ISS-104 候选） */
 .page-container {
-  padding: 20px 26px 40px; max-width: 1280px; width: 100%; margin: 0 auto;
+  padding: var(--sp6) var(--sp6) 40px; max-width: 1280px; width: 100%; margin: 0 auto;
   flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
 }
 .page.hidden { display: none; }
 
-/* ===== 按钮 ===== */
+/* ===== 按钮族（ISS-105 / ISS-104 候选合同） =====
+ * 次级（默认 .btn）：白底描边 32px——全局扫描、排除列表保存、恢复默认、
+ * 各类行级动作；主（.btn.primary）：海沟蓝实心 36px，每视口至多一个、
+ * 归属当前页主任务（监控分区「保存设置」/计划分区「保存计划与通知」/
+ * 更新流程「下载并安装」）；确认浮层（L3）内的确认动作亦用主按钮。 */
 
 .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: 32px;
   border: 1px solid var(--border); background: var(--card); color: var(--text);
-  padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  padding: 0 12px; border-radius: 8px; cursor: pointer;
+  font-size: var(--fs-table); font-family: inherit; line-height: 1;
 }
-.btn:hover { border-color: var(--primary); color: var(--primary); }
-.btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+.btn:hover { background: var(--bg); border-color: var(--primary); color: var(--primary); }
+.btn:focus-visible { outline-offset: 1px; }
+.btn.primary {
+  height: 36px; padding: 0 18px;
+  font-size: var(--fs-body); font-weight: 590;
+  background: var(--primary); border-color: var(--primary); color: #fff;
+}
 .btn.primary:hover { opacity: 0.9; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-mini {
@@ -274,9 +274,10 @@ tr:hover .btn-mini { opacity: 1; }
 
 /* ===== 卡片与面板 ===== */
 
-/* 总览主结论背景等深线（R3）：低对比同心圆自右缘发出、向内渐弱；
- * 绝对定位不参与布局、pointer-events 关闭；显现 200ms（reduced-motion 下关闭） */
-.cards { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 18px; }
+/* 总览主结论背景等深线（R3，候选收敛后等深线母题唯一保留位）：低对比
+ * 同心圆自右缘发出、向内渐弱；绝对定位不参与布局、pointer-events 关闭；
+ * 显现 200ms（reduced-motion 下关闭） */
+.cards { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp4); margin-bottom: var(--sp4); }
 .cards > .card { position: relative; z-index: 1; }
 .brand-contour {
   position: absolute; inset: 0;
@@ -289,24 +290,13 @@ tr:hover .btn-mini { opacity: 1; }
 @media (prefers-reduced-motion: reduce) {
   .brand-contour { animation: none; }
 }
-/* ISS-085 主结论区深度标尺：卡片带下缘的读数刻度线（短深度刻度，R3 白名单
- * 「总览主结论背景」位置的可见层次）。与页头 .depth-scale 同语言：长刻度
- * 全高、短刻度半高贴底线；低透明度海沟蓝，不与卡片数字竞争 */
-.cards::after {
-  content: ""; display: block; height: 4px; margin-top: 10px; opacity: 0.35;
-  grid-column: 1 / -1;  /* .cards 是 grid：标尺独占卡片带下一行整宽 */
-  background:
-    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 40px),
-    repeating-linear-gradient(to right, var(--trench) 0 1px, transparent 1px 10px);
-  background-size: 100% 100%, 100% 55%;
-  background-position: 0 0, 0 100%;
-  background-repeat: no-repeat;
-}
+/* ISS-105：原 .cards::after 读数刻度横线移除（ISS-104 候选「四卡下装饰
+ * 横线」反例——无信息作用的重复装饰）。 */
 .card {
-  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-  padding: 14px 18px; box-shadow: var(--shadow);
+  background: var(--card); border: 1px solid var(--hairline); border-radius: 12px;
+  padding: var(--sp3) var(--sp4); box-shadow: var(--shadow);
 }
-.card-label { margin: 0; color: var(--muted); font-size: 12px; }
+.card-label { margin: 0; color: var(--muted); font-size: var(--fs-hint); }
 .card-value { margin: 6px 0 0; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .card-value.small { font-size: 15px; }
 /* 磁盘状态（ISS-084）：已用=深潭墨（数据事实，不警示）；剩余正常态=
@@ -316,36 +306,53 @@ tr:hover .btn-mini { opacity: 1; }
 #card-free { color: var(--ok); }
 #card-free.warn, #card-used.warn, .card-value.warn { color: var(--alert); }
 
-.panel {
-  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-  padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow);
-  /* ISS-082：封死面板内宽表格等内容的布局溢出向文档级上串
-   * （否则窄视口下宽表格会把 html 撑出可编程横移的溢出）。
-   * panel 有 padding，无外边距坍塌依赖；面板内无 absolute/fixed
-   * 定位后代，containment 劫持 containing block 无副作用 */
+/* ===== 表面层级（ISS-105 / ISS-104 候选合同 #5） =====
+ * L0 窗口底 --bg → L1 每页一张白卡（.surface：hairline 边 + 弱阴影 +
+ * 圆角 12 + 内边距 24）→ L2 分组（.panel：透明，靠 hairline 分隔线与
+ * 24px 间距分组，不再各自套白卡描边）→ L3 浮层（详情侧栏/确认层）。
+ * .panel 自 ISS-105 起只作为 L2 分组出现在 .surface 内（五页标记已收口，
+ * 设置页注入面板亦然）；containment 上移到 .surface 一层。 */
+.surface {
+  background: var(--card);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  padding: var(--sp6);
   contain: layout;
 }
+.panel {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  margin-bottom: 0;
+}
+/* L2 相邻分组：24px 间距 + hairline 分隔线 */
+.surface > .panel + .panel,
+.surface > .panel.panel-divided,
+.surface > .page-tab-section { margin-top: var(--sp6); }
+.surface > .panel + .panel,
+.surface > .panel.panel-divided { padding-top: var(--sp6); border-top: 1px solid var(--hairline); }
+/* 变化页：共享对比上下文与其下分区之间分隔；分区组随 tab 显隐，
+ * 顶部间距恒定即可 */
+.surface > .diff-context { padding-bottom: var(--sp4); border-bottom: 1px solid var(--hairline); }
+
 .panel-head {
   display: flex; align-items: baseline; justify-content: space-between;
-  flex-wrap: wrap; gap: 10px; margin-bottom: 8px;
+  flex-wrap: wrap; gap: 10px; margin-bottom: var(--sp3);
 }
-.panel-head h2 { margin: 0; font-size: 15px; }
-/* ISS-085 panel 标题刻度：区块标题前的三根短深度刻度（短-长-短），
- * 「每个区块是一次测深读数」的仪器语言；8px 微装饰不构成大面积铺陈 */
-.panel-head h2::before {
-  content: ""; display: inline-block; width: 8px; height: 9px;
-  margin-right: 8px; vertical-align: -1px; opacity: 0.5;
-  background:
-    linear-gradient(var(--trench), var(--trench)) left 0 top 4px / 1px 5px no-repeat,
-    linear-gradient(var(--trench), var(--trench)) left 3.5px top 0 / 1px 9px no-repeat,
-    linear-gradient(var(--trench), var(--trench)) right 0 top 4px / 1px 5px no-repeat;
-}
-.panel-head h3 { font-size: 13px; margin: 6px 0; }
-.hint { margin: 0; color: var(--muted); font-size: 12px; }
+.panel-head h2 { margin: 0; font-size: var(--fs-h2); font-weight: 600; }
+/* ISS-105：原 panel 标题前三根短刻度（.panel-head h2::before）移除——
+ * ISS-104 候选「h2 前刻度」属刻度泛化反例；R3 母题收敛为三处
+ * （侧栏品牌位短刻度/总览等深线/二级选中态短刻度）。 */
+.panel-head h3 { font-size: var(--fs-table); margin: 6px 0; }
+.hint { margin: 0; color: var(--muted); font-size: var(--fs-hint); }
 .hint.link { color: var(--primary); text-decoration: none; cursor: pointer; }
-.controls { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.controls { display: flex; align-items: center; gap: 10px; font-size: var(--fs-table); color: var(--muted); }
 .controls select, .controls input {
-  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+  font-size: var(--fs-table);
   background: var(--card); color: var(--text);
 }
 /* ISS-107：60px 窄宽只作用于数字输入（天数/MB 等短数值）；
@@ -354,8 +361,8 @@ tr:hover .btn-mini { opacity: 1; }
 .controls input[type="number"] { width: 60px; }
 
 /* ISS-107：变化页跨分区共享的对比上下文面板（tab 条之下、各明细分区之上）。
- * 基线/对比选择、状态行与净变化口径在任一分区下都可见、可改。 */
-.diff-context { margin-bottom: 14px; }
+ * 基线/对比选择、状态行与净变化口径在任一分区下都可见、可改。
+ * ISS-105：底距/分隔由 .surface > .diff-context 规则承担（L2 分组）。 */
 .diff-context-row {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
 }
@@ -374,8 +381,8 @@ tr:hover .btn-mini { opacity: 1; }
 /* 总览质量行 / 状态胶囊 / 表格等价切换 */
 .quality-line {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px;
-  margin: -6px 0 14px;
-  color: var(--muted); font-size: 12px;
+  margin: 0 0 var(--sp4);
+  color: var(--muted); font-size: var(--fs-hint);
 }
 .quality-line .path-mono {
   color: var(--text); font-family: ui-monospace, "SF Mono", Menlo, monospace;
@@ -450,8 +457,10 @@ tr.focusable:hover, tr.focusable:focus, tr.focusable.selected {
   background: #f6f7fa;
 }
 tr.focusable:focus { outline: none; box-shadow: inset 0 0 0 2px var(--primary); }
-/* ISS-085 选中态深度条：与导航当前项同一 2px 海沟蓝标线语言 */
-tr.focusable.selected { background: var(--sel); box-shadow: inset 2px 0 0 var(--trench); }
+/* ISS-105：选中行去掉 2px 深度条——候选合同「表格行选中 = --sel 底」，
+ * 深色选中态全站仅一级导航一处；--sel 与 hover 底有明度差，选中语义
+ * 由背景承担（键盘焦点另有 inset 焦点环） */
+tr.focusable.selected { background: var(--sel); }
 
 /* 行操作：hover 或键盘 focus 时可见 */
 .row-actions { display: inline-flex; gap: 4px; justify-content: flex-end; opacity: 0; transition: opacity 0.12s; }
@@ -512,9 +521,13 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
  * 不撑破面板也不把布局溢出传到文档级（ISS-082） */
 .tbl-wrap { overflow-x: auto; }
 
-.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-.tbl th, .tbl td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
-.tbl th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-table); }
+.tbl th, .tbl td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--hairline); }
+/* ISS-105（候选合同）：表头 12px/500、字距微收——与表体 13px 形成层级 */
+.tbl th {
+  color: var(--muted); font-weight: 500; white-space: nowrap;
+  font-size: var(--fs-hint); letter-spacing: 0.02em;
+}
 .tbl td.path {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-size: 12px; word-break: break-all; max-width: 480px;
@@ -548,8 +561,8 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
   padding: 6px 12px; border-radius: 8px; font-size: 13px;
 }
 .report-item:hover { border-color: var(--primary); color: var(--primary); }
-.report-item.active { background: var(--sel); border-color: var(--primary); color: var(--primary);
-  box-shadow: inset 2px 0 0 var(--trench); }  /* ISS-085 选中态深度条 */
+/* ISS-105：选中项去掉 inset 深度条（同表格行——候选合同刻度收敛） */
+.report-item.active { background: var(--sel); border-color: var(--primary); color: var(--primary); }
 .report-view { margin-top: 14px; }
 .report-view pre {
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
@@ -559,7 +572,8 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
 
 /* 变化页：搜索框 / 排序表头 / 净变化行 */
 .ctl-input { border: 1px solid var(--border); border-radius: 6px;
-  padding: 4px 8px; font-size: 13px; background: var(--card); color: var(--text); height: 28px; }
+  padding: 4px 10px; font-size: var(--fs-table); background: var(--card); color: var(--text);
+  height: 32px; }  /* ISS-105：控件高度合同 32px（候选 #12） */
 .ctl-input.search { width: 180px; }
 .th-sort {
   border: none; background: none; padding: 0; margin: 0;
@@ -643,46 +657,59 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
 
 /* 形态取舍：设置页（ISS-087）承载并列功能分区用左导航；内容页承载同一
  * 数据集的不同视图，用页头下横向 tab 条——「翻页」心智且不占纵向宽度。
- * tab 条是卡片语言（圆角 + 边框 + 阴影，ISS-089 分隔规范），sticky 在
- * .page-container（ISS-082 唯一滚动容器）顶部：长内容上滚时 tab 常驻
- * 可达，不引入自身滚动（与设置页 nav 的 sticky 同做法，滚动合同不破）。 */
+ * ISS-105（ISS-104 候选 + 用户裁决④）：tab 条不再是卡片——表面层级
+ * 收敛后它是 L1 白卡上方的独立控件条（bg 底、无描边），选中态与设置
+ * 分区同语言（浅品牌底 + 短刻度，深色实底全站仅一级导航一处）；
+ * sticky 在 .page-container（ISS-082 唯一滚动容器）顶部：长内容上滚时
+ * tab 常驻可达，不引入自身滚动（与设置页 nav 的 sticky 同做法）。 */
 .page-tabs {
   display: flex;
-  gap: 6px;
+  gap: var(--sp2);
   flex-wrap: wrap;  /* 窄视口换行而非横向溢出（布局探针合同） */
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 8px;
-  margin-bottom: 16px;
-  box-shadow: var(--shadow);
+  padding: var(--sp1) 0;
+  margin-bottom: var(--sp4);
+  background: var(--bg);
   position: sticky;
   top: 0;
-  z-index: 5;  /* 盖过上滚经过的内容（卡片不透明底遮挡） */
+  z-index: 5;  /* 盖过上滚经过的内容（bg 不透明底遮挡） */
 }
 .page-tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid transparent;
+  height: 32px;
+  border: none;
   background: transparent;
   border-radius: 8px;
-  padding: 7px 14px;
-  font-size: 13px;
-  color: var(--muted);
+  padding: 0 14px;
+  font-size: var(--fs-table);
+  color: var(--nav-idle-fg);
   cursor: pointer;
 }
 .page-tab:hover {
-  background: var(--bg);
+  background: rgba(16, 24, 40, 0.05);
   color: var(--text);
 }
-/* ISS-092 选中语言（与侧栏/设置导航同 token）：深潭墨实底 + 象牙白字
- * （对比 9.2:1 ≥4.5:1）；hover 保持浅底，与深底选中明确分层；显式补
- * :hover 一档防规则顺序回归（同 .nav-item / .settings-nav-item）。 */
+/* ISS-105 二级选中态（用户裁决④）：浅品牌底（--primary 同源派生）+
+ * 海沟蓝文字 + 左侧 3px 矿物青短刻度——与一级导航深潭墨实底形成明确
+ * 权重差；深色实底选中态全站仅一级导航一处（ISS-092 用户认可，保留）。 */
 .page-tab[aria-current="true"],
 .page-tab[aria-current="true"]:hover {
-  background: var(--used);
-  color: var(--nav-active-fg);
+  background: var(--subsel-bg);
+  color: var(--trench);
+  font-weight: 600;
+}
+.page-tab[aria-current="true"]::before {
+  content: "";
+  position: absolute; left: 6px; top: 50%;
+  transform: translateY(-50%);
+  width: 3px; height: 14px; border-radius: 2px;
+  background: var(--mineral);
+  transition: height 0.2s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-tab[aria-current="true"]::before { transition: none; }
 }
 .page-tab:focus-visible {
   outline: 2px solid var(--primary);
@@ -701,54 +728,67 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
  * 自身滚动，nav 与 sections 都是流式高度，避免与滚动合同冲突 */
 .settings-layout {
   display: flex;
-  gap: 18px;
+  gap: var(--sp4);
   align-items: flex-start;
 }
+/* ISS-105（候选合同表面层级）：左导航不再是白卡——L0 bg 底圆角块
+ * 承载控件集合（同字段组语言）；右分区（.settings-section.surface）
+ * 是该视口唯一的 L1 白卡 */
 .settings-nav {
   /* 固定窄列（与侧栏的图标列宽度语言不同：这里是文字标签的导航） */
   width: 180px;
   flex: none;
-  background: var(--card);
-  border: 1px solid var(--border);
+  background: var(--bg);
   border-radius: 12px;
-  padding: 10px 8px;
+  padding: var(--sp2);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp1);
   /* ISS-082：fixed 壳内；不与 .page-container 争滚动 */
   position: sticky;
   top: 0;
   align-self: flex-start;
 }
 .settings-nav-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 9px 10px;
-  border: 1px solid transparent;
+  padding: 8px 12px;
+  border: none;
   background: transparent;
   border-radius: 8px;
   text-align: left;
-  font-size: 13px;
-  /* ISS-095：非选中与侧栏 nav-item 同口径改 --nav-idle-fg（白卡上 5.84:1，
-   * --muted 原在侧栏 4.05:1 不达标；两处导航统一收紧到 ≥4.5:1） */
+  font-size: var(--fs-table);
+  /* ISS-095：非选中与侧栏 nav-item 同口径 --nav-idle-fg（对 bg 底/白卡
+   * 均 ≥4.5:1） */
   color: var(--nav-idle-fg);
   cursor: pointer;
-  /* 选中态视觉见下方 ISS-092 规则：深潭墨实底 + 象牙白（与 sidenav 一致） */
 }
 .settings-nav-item:hover {
-  background: var(--bg);
+  background: rgba(16, 24, 40, 0.05);
   color: var(--text);
 }
-/* ISS-092 设置页左导航选中态与侧栏同语言：深潭墨实底 + 象牙白文字/图标
- * （对比 9.2:1 ≥4.5:1）；hover 保持浅底（上方规则），与深底选中明确分层。
- * 显式补 :hover 一档防规则顺序回归；移除 085 的 inset 深度条——深色块
- * 已承担唯一指示，深底再叠同族色线是冗余（侧栏 nav-item 同理，见上）。 */
+/* ISS-105 二级选中态（用户裁决④）：设置分区与内容页 tab 同语言——浅品牌
+ * 底 + 海沟蓝文字 + 3px 矿物青短刻度；深潭墨实底全站仅一级导航一处
+ * （ISS-092 用户认可的方向保留在侧栏）。 */
 .settings-nav-item[aria-current="true"],
 .settings-nav-item[aria-current="true"]:hover {
-  background: var(--used);
-  color: var(--nav-active-fg);
+  background: var(--subsel-bg);
+  color: var(--trench);
+  font-weight: 600;
+}
+.settings-nav-item[aria-current="true"]::before {
+  content: "";
+  position: absolute; left: 5px; top: 50%;
+  transform: translateY(-50%);
+  width: 3px; height: 14px; border-radius: 2px;
+  background: var(--mineral);
+  transition: height 0.2s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-nav-item[aria-current="true"]::before { transition: none; }
 }
 .settings-nav-icon {
   display: inline-flex;
@@ -765,23 +805,27 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp4);
 }
 .settings-section[hidden] { display: none; }
 .settings-section > .panel { margin-bottom: 0; }
-/* settings-section 容器里由 settings.js 注入的动态 panel 紧跟前一个 panel；
- * 这里用 .panel + .panel 的相邻兄弟选择器收紧间距 */
+/* settings-section 容器里由 settings.js 注入的动态 panel 与首组之间用
+ * hairline 分隔线分组（ISS-105 表面层级：L2 不再各自套白卡） */
 .settings-section > .panel + .panel,
 .settings-section > #settings-monitor-extra > .panel,
 .settings-section > #settings-schedule-extra > .panel,
-.settings-section > #settings-advanced-extra > .panel { margin-top: 14px; }
+.settings-section > #settings-advanced-extra > .panel + .panel {
+  margin-top: var(--sp6);
+  padding-top: var(--sp6);
+  border-top: 1px solid var(--hairline);
+}
 
-/* 关于区（ISS-087）：应用图标 brandBasin + 标题 + 元信息 */
-.about-panel { display: flex; flex-direction: column; gap: 14px; }
+/* 关于区（ISS-087 / ISS-105）：应用图标位图 64px + 标题 + 元信息 */
+.about-panel { display: flex; flex-direction: column; gap: var(--sp4); }
 .about-head {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: var(--sp4);
 }
 .about-mark {
   display: inline-flex;
@@ -790,13 +834,13 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   width: 64px;
   height: 64px;
   flex: none;
-  /* 应用图标（DEC-023 主形态）：层叠深潭实色，颜色为 icons.js brandBasin
-   * 固定 fill 真彩色板（ISS-088），容器只管尺寸 */
+  /* 应用图标（DEC-023 主形态位图系，ISS-105）：正式图标位图由 app.js
+   * 经 [data-brand-img] 注入（icons.js brandImg，srcset 2x），容器只管尺寸 */
 }
-.about-mark svg { width: 100%; height: 100%; display: block; }
+.about-mark img { width: 100%; height: 100%; display: block; }
 .about-titles { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.about-titles h2 { margin: 0; font-size: 18px; font-weight: 600; }
-.about-version { margin: 0; font-size: 13px; color: var(--muted); }
+.about-titles h2 { margin: 0; font-size: var(--fs-h2); font-weight: 600; }
+.about-version { margin: 0; font-size: var(--fs-table); color: var(--muted); }
 .about-version [data-test="about-version-num"] {
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
   font-weight: 600;

@@ -234,7 +234,9 @@ function _ensureExcludePanel() {
         <span>我已知晓：保存后按新数据集扫描，历史对比可能中断</span>
       </label>
       <div class="exclude-actions">
-        <button type="button" id="btn-exclude-save" class="btn primary">${icon("filter")}保存排除列表</button>
+        <!-- ISS-105（用户裁决 + ISS-104 候选）：排除列表为低频高危操作，
+             保存降为次级描边，不与「保存设置」争夺每视口唯一实心主按钮 -->
+        <button type="button" id="btn-exclude-save" class="btn">${icon("filter")}保存排除列表</button>
       </div>
     </div>`;
   // ISS-087：排除列表编辑器归「监控」section，挂在 #settings-monitor-extra 容器下；
@@ -750,7 +752,9 @@ async function loadPermissions() {
     <p class="perm-note">授权变更或排除列表调整后，本应用不会自动重新扫描；
       点击下方按钮复用既有扫描入口与状态反馈，不另起轮询。</p>
     <div class="perm-link-row">
-      <button type="button" id="btn-rescan" class="btn primary perm-rescan"
+      <!-- ISS-105：与「保存设置」同分区共存，降为次级描边——实心主按钮
+           每视口至多一个（监控分区主任务是保存设置） -->
+      <button type="button" id="btn-rescan" class="btn perm-rescan"
               data-test="perm-rescan-btn">${icon("activity", 14)} 重新扫描</button>
       <span id="perm-rescan-status" class="hint" data-test="perm-rescan-status" hidden></span>
     </div>`;

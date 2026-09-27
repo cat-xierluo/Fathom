@@ -307,3 +307,67 @@ def test_partial_write_failure_can_persist_failed_state(client, monkeypatch):
     state = client.get("/api/scan/status").json()
     assert state["status"] == "done"
     assert any("prune interrupted" in item for item in state["result"]["warnings"])
+
+
+class TestRunMessageHumanize:
+    """ISS-109：/api/scan/status 的 runs[].message 展示层人话化；DB 合同不变。
+
+    实机（v0.3.4，生产库）发现：done 行 message 在 DB 是 result JSON，
+    设置页「扫描运行历史」说明列直接呈现原始 JSON dump；interrupted 的
+    超时诊断（含完整路径）又会撑破表格列宽。转换只在 API 输出层发生。
+    """
+
+    @staticmethod
+    def _done_message(**overrides) -> str:
+        payload = {
+            "snapshot_id": 9, "report": "/tmp/fake-report.md",
+            "report_status": "written", "notification_status": "submitted",
+            "pruned": 0, "warnings": [], "source": "scheduled",
+        }
+        payload.update(overrides)
+        return json.dumps(payload, ensure_ascii=False)
+
+    def test_done_json_message_becomes_summary(self, client):
+        """实机复现反例：done 行 JSON dump → 展示层为事实摘要；interrupted 原样。"""
+        _insert_run("interrupted", _iso(7200), _iso(3600),
+                    "du 超过 14400 秒安全时限；已产出 336523 条记录")
+        _insert_run("done", _iso(3600), _iso(0), self._done_message())
+        runs = client.get("/api/scan/status?history=5").json()["runs"]
+        assert runs[0]["message"] == "快照 #9；日报已写入；通知已提交"
+        assert runs[1]["message"].startswith("du 超过 14400 秒安全时限")
+
+    def test_done_message_with_pruned_and_warnings(self, client):
+        _insert_run("done", _iso(60), _iso(30), self._done_message(
+            snapshot_id=3, pruned=2, warnings=["w1", "w2"]))
+        runs = client.get("/api/scan/status?history=1").json()["runs"]
+        assert runs[0]["message"] == ("快照 #3；日报已写入；通知已提交；"
+                                      "清理 2 条旧快照；警告 2 条")
+
+    def test_done_non_json_falls_back_to_row_columns(self):
+        """旧记录 message 非 JSON 时用行内结构化列拼摘要（纯函数口径）。"""
+        assert scan_coordinator.humanize_run_message(
+            "完成（旧版纯文本）", status="done",
+            snapshot_id=7, report_status="written",
+            notification_status="submitted", pruned_count=1,
+        ) == "快照 #7；日报已写入；通知已提交；清理 1 条旧快照"
+
+    def test_non_done_and_unparsable_pass_through(self):
+        interrupted = "du 超过 14400 秒安全时限；du 最后输出路径：/Users/x/Library"
+        assert scan_coordinator.humanize_run_message(
+            interrupted, status="interrupted") == interrupted
+        assert scan_coordinator.humanize_run_message(
+            "纯文本完成", status="done") == "纯文本完成"
+        assert scan_coordinator.humanize_run_message(None, status="failed") == ""
+
+    def test_db_contract_unchanged_and_result_still_parses(self, client):
+        """DB 里 message 仍是 result JSON：latest_scan_state 的解析合同不破坏。"""
+        _insert_run("done", _iso(60), _iso(30), self._done_message(snapshot_id=5))
+        state = client.get("/api/scan/status").json()
+        assert state["status"] == "done"
+        assert state["result"]["snapshot_id"] == 5
+        conn = db.connect()
+        try:
+            row = conn.execute("SELECT message FROM scan_runs").fetchone()
+            assert json.loads(row["message"])["snapshot_id"] == 5
+        finally:
+            conn.close()

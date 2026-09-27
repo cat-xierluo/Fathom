@@ -713,7 +713,19 @@ def api_scan_status(history: int = Query(0, ge=0, le=100)):
                 "ORDER BY r.id DESC LIMIT ?",
                 (history,),
             ).fetchall()
-            state["runs"] = [dict(r) for r in rows]
+            runs = []
+            for r in rows:
+                run = dict(r)
+                # ISS-109：done 行的 message 在 DB 是 result JSON，展示层转人话摘要
+                run["message"] = scan_coordinator.humanize_run_message(
+                    run.get("message"), status=run.get("status"),
+                    snapshot_id=run.get("snapshot_id"),
+                    report_status=run.get("report_status"),
+                    notification_status=run.get("notification_status"),
+                    pruned_count=run.get("pruned_count"),
+                )
+                runs.append(run)
+            state["runs"] = runs
         return state
     finally:
         conn.close()

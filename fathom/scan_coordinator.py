@@ -390,6 +390,58 @@ def run_scan(*, source: str, root: Path | None = None) -> tuple[int, dict]:
     return session.run_id, session.execute()
 
 
+def humanize_run_message(message: str | None, *, status: str | None,
+                         snapshot_id: object = None,
+                         report_status: str | None = None,
+                         notification_status: str | None = None,
+                         pruned_count: object = None) -> str:
+    """把 scan_runs.message 转为可读摘要，仅供 API 展示（ISS-109）。
+
+    done 行的 message 在 DB 中是 result JSON（latest_scan_state 依赖该合同），
+    直接展示会成为原始 JSON dump。本函数在 API 输出层转换：done 且能解析出
+    结构化字段时拼接事实摘要（快照/日报/通知/清理条数），否则原样返回——
+    interrupted/failed 的 message 本就是人话。不改 DB 内容。
+    """
+    if status != "done" or not message:
+        return message or ""
+    result: object = None
+    try:
+        result = json.loads(message)
+    except ValueError:
+        result = None
+    if not isinstance(result, dict):
+        # 旧记录无 JSON message 时退回行内结构化列
+        result = {
+            "snapshot_id": snapshot_id,
+            "report_status": report_status,
+            "notification_status": notification_status,
+            "pruned": pruned_count,
+        }
+    parts = []
+    snap = result.get("snapshot_id")
+    if snap is not None:
+        parts.append(f"快照 #{snap}")
+    report = result.get("report_status")
+    if report == "written":
+        parts.append("日报已写入")
+    elif report:
+        parts.append(f"日报状态 {report}")
+    notification = result.get("notification_status")
+    if notification == "submitted":
+        parts.append("通知已提交")
+    elif notification:
+        parts.append(f"通知状态 {notification}")
+    pruned = result.get("pruned")
+    if pruned:
+        parts.append(f"清理 {pruned} 条旧快照")
+    warnings = result.get("warnings") or []
+    if warnings:
+        parts.append(f"警告 {len(warnings)} 条")
+    if not parts:
+        return message
+    return "；".join(parts)
+
+
 def latest_scan_state(conn) -> dict:
     """最近一次扫描状态 + live 进度（ISS-090）。
 

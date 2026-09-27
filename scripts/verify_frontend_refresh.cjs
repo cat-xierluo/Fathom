@@ -1087,8 +1087,9 @@ async function main() {
       settingsText.includes("监控根目录") && settingsText.includes(ROOT) &&
         settingsText.includes("服务地址"), settingsText.slice(0, 60));
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click());  // 回到监控供后续用例
-    // ISS-105：设置分区二级选中态 = 浅品牌底 + 海沟蓝 + 短刻度（用户裁决④，
-    // 深色实底全站仅一级导航）；监控分区实心主按钮唯一（保存设置），
+    // ISS-105：设置分区二级选中态 = 浅品牌底 + 海沟蓝（用户裁决④，深色实底
+    // 全站仅一级导航；2026-09-27 用户走查裁决：去除短刻度竖线，::before
+    // 负向断言）。监控分区实心主按钮唯一（保存设置），
     // 排除列表保存与权限区重扫均为次级描边
     const settingsSelState = await page.evaluate(() => {
       const active = document.querySelector('.settings-nav-item[aria-current="true"]');
@@ -1113,7 +1114,7 @@ async function main() {
       settingsSelState.activeLabel === "监控" &&
         settingsSelState.activeBg === "rgba(52, 93, 127, 0.1)" &&
         settingsSelState.activeColor === "rgb(52, 93, 127)" &&
-        settingsSelState.activeTick !== "none" &&
+        settingsSelState.activeTick === "none" &&
         settingsSelState.idleBg === "rgba(0, 0, 0, 0)" &&
         settingsSelState.excludeSaveCls === "btn" &&
         settingsSelState.excludeSaveBg === "rgb(255, 255, 255)" &&
@@ -2250,9 +2251,9 @@ async function main() {
       JSON.stringify({ keyboardFocused, keyboardActivated }));
 
     // ISS-105 二级选中态（用户裁决④）：内容页 tab 选中=浅品牌底 + 海沟蓝
-    // 文字 + 3px 矿物青短刻度；非选中不再出现深潭墨实底（深色选中全站
-    // 仅一级导航）。removed 为当前选中态。先把鼠标移出按钮区，避免
-    // hover 态混入非选中项的采样。
+    // 文字（2026-09-27 用户走查裁决：去除短刻度竖线，::before 负向断言）；
+    // 非选中不再出现深潭墨实底（深色选中全站仅一级导航）。removed 为当前
+    // 选中态。先把鼠标移出按钮区，避免 hover 态混入非选中项的采样。
     await page.mouse.move(8, 8);
     const tabSelState = await page.evaluate(() => {
       const active = document.querySelector('#page-changes .page-tab[aria-current="true"]');
@@ -2267,11 +2268,11 @@ async function main() {
         idleBg: ics.backgroundColor,
       };
     });
-    record("secondary-tab-selected-light-brand-with-tick",
+    record("secondary-tab-selected-light-brand-no-tick",
       tabSelState !== null &&
         tabSelState.activeBg === "rgba(52, 93, 127, 0.1)" &&
         tabSelState.activeColor === "rgb(52, 93, 127)" &&
-        tabSelState.activeTick !== "none" &&
+        tabSelState.activeTick === "none" &&
         tabSelState.idleBg === "rgba(0, 0, 0, 0)",
       JSON.stringify(tabSelState));
 

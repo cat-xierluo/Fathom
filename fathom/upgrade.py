@@ -106,6 +106,25 @@ ISS-098 恢复合同（安装后失败的真实旧 bundle 与数据恢复）：
   （新 helper 身份核验 + 数据库校验通过后，连同 ``.migrated-corrupt-*``
   残骸）；恢复成功路径材料保留（journal 已清、停写结束；下次 prepare
   落盘新材料前先清旧残留）。
+
+ISS-110 外部同服务实例合同（prepare 前置拒绝，零信号零痕迹）：
+
+- **问题**：壳 + launchd 常驻服务并存时，``helper-instance.json`` 记录的
+  存活实例可能**非本壳 helper 所有**（壳 helper 已让位于常驻服务）。既有
+  ②会把该 pid 当旧 helper 请求退出（触碰用户资产），或在退出确认超时后
+  于 journal 落盘之后才中止——升级入口静默、半途状态落盘。
+- **合同**：壳的生产调用形态总是声明本壳 helper pid
+  （``UpgradeCoordinator(expected_helper_pid=...)``，壳经
+  ``upgrade-prepare --expected-helper-pid`` 传透；本壳无 helper 时传 0）。
+  prepare 在**写 journal 之前**检测：instance 身份匹配且记录 pid 存活、
+  且不等于期望 pid（含期望 0 = 本壳无 helper）→
+  ``UpgradeRefused(kind="external_service_instance")`` 明确拒绝，错误文案
+  带手动 DMG 安装指引——零信号（绝不向外部实例发退出请求）、零副作用
+  （无 journal、无备份、instance 原样）、停写租约从未取得。
+- **兼容**：``expected_helper_pid=None``（旧调用方/直接 CLI 诊断）不做该
+  检测，既有②语义照旧。instance 缺失/损坏/身份不符/记录 pid 不存活时
+  前置检测一律放行——分别交由既有分支（无实例、internal 拒绝、陈旧
+  清理）处理，本检测只回答「是否有非本壳所有的存活同服务实例」。
 """
 
 from __future__ import annotations
@@ -690,6 +709,7 @@ class UpgradeCoordinator:
         hooks: dict | None = None,
         helper_exit_timeout_s: float = HELPER_EXIT_TIMEOUT_S,
         helper_dir: Path | str | None = None,
+        expected_helper_pid: int | None = None,
     ):
         self.paths = paths
         self.from_version = str(from_version)
@@ -699,6 +719,12 @@ class UpgradeCoordinator:
         # ISS-098：现役 helper onedir 根（恢复材料来源）；None = 本次尝试
         # 不落盘旧 bundle 副本（开发态/旧调用方），rollback 走材料缺失分支。
         self.helper_dir = Path(helper_dir) if helper_dir else None
+        # ISS-110：壳声明的本壳 helper pid（壳生产形态总是传；本壳无
+        # helper 时 0）。None = 未声明（旧调用方/直接 CLI）——不做外部
+        # 同服务实例前置检测（兼容合同，见模块说明）。
+        self.expected_helper_pid = (
+            int(expected_helper_pid) if expected_helper_pid is not None else None
+        )
         # ISS-097：本实例（一次 prepare 尝试）的事务 ID——journal 所有权判据。
         self.txn_id = uuid.uuid4().hex
         self.steps_done: list[str] = []
@@ -725,6 +751,42 @@ class UpgradeCoordinator:
             hook(pid)
 
     # --------------------------------------------------------- journal
+    def _preflight_external_instance(self) -> None:
+        """ISS-110：外部同服务实例前置检测（run_prepare 第一步，写 journal
+        之前——零信号、零副作用）。
+
+        只在壳声明了期望 helper pid（``expected_helper_pid`` 非 None）时
+        生效：instance 身份匹配且记录 pid 存活、pid != 期望（期望 0 = 本壳
+        无 helper，任何存活实例都非本壳所有）→ ``external_service_instance``
+        明确拒绝，文案带手动 DMG 安装指引。缺失/损坏/身份不符/pid 不存活
+        一律放行（分别交既有分支处理，见模块说明 ISS-110 合同）。"""
+        if self.expected_helper_pid is None:
+            return
+        try:
+            instance = read_instance(self.paths)
+        except (OSError, ValueError):
+            return  # 损坏/不可读：不是「外部占用」证据，交既有分支保守中止
+        if instance is None:
+            return
+        if (instance.get("service") != SERVICE_IDENTITY
+                or instance.get("protocol_version") != __protocol_version__):
+            return
+        pid = int(instance.get("pid") or 0)
+        port = int(instance.get("port") or 0)
+        if pid <= 0 or pid == self.expected_helper_pid:
+            return
+        if not self._pid_alive(pid):
+            return  # 陈旧记录（进程已死）：不是占用，交②既有清理分支
+        raise UpgradeRefused(
+            f"检测到另一独立的 Fathom 服务实例正在运行（pid={pid}，端口 "
+            f"{port}；非本应用窗口管理，常见于 launchd 常驻服务）。为不终止"
+            "你的常驻服务，本次应用内升级未开始——当前版本与数据均未受影响"
+            "，也没有写入任何升级状态。可退出该常驻服务后重试应用内升级；"
+            "或手动安装：下载新版 DMG，将应用拖入「应用程序」覆盖旧版"
+            "（数据保留，无需先卸载）。",
+            kind="external_service_instance",
+        )
+
     def _journal_write(self, phase: str) -> None:
         write_journal(self.paths, {
             "service": SERVICE_IDENTITY,
@@ -876,6 +938,9 @@ class UpgradeCoordinator:
     def run_prepare(self) -> dict:
         """执行①-④（停写→旧 helper 退出→一致备份→journal 落盘）。
 
+        ISS-110：第 0 步外部同服务实例前置检测（壳声明期望 pid 时）——
+        在 schema 预检与任何状态落盘之前明确拒绝，零信号零痕迹。
+
         ISS-098：③一致备份之后、④journal 收口之前插入 ③b 恢复材料落盘
         （旧 helper 副本 + manifest，磁盘预算不足即拒绝——N+1 替换之前的
         最后一道可零副作用退出的关口；``helper_dir`` 为 None 时跳过）。
@@ -889,6 +954,7 @@ class UpgradeCoordinator:
         """
         self.steps_done = []
         try:
+            self._preflight_external_instance()
             self._preflight_schema()
             self._step1_quiesce()
             self._refuse_if_txn_active()

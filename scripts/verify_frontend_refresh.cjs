@@ -190,6 +190,9 @@ function createFixture() {
       const rows = snapshots();
       return json(res, 200, {
         root: ROOT,
+        // ISS-111：版本随状态总览下发（真实后端 = fathom.__version__）；
+        // 取可辨别夹具值，关于页若仍显示「未知」即回填失败。
+        app_version: "9.9.9-fixture",
         snapshot_count: rows.length,
         // ISS-067：/api/status 的 latest_snapshot 对应后端 `SELECT *`，是完整行；
         // /api/snapshots 则是显式列清单——两条独立合同，不能共用同一形状。
@@ -579,6 +582,32 @@ function createFixture() {
         });
       }
       return json(res, 200, { ...state.config });
+    }
+    if (url.pathname === "/api/permissions") {
+      // ISS-111：设置「权限」分区数据源。fda 三态由 scenario 驱动
+      // （fda-denied / fda-unknown），默认 granted；notification/coverage
+      // 与真实端点同形（coverage 引用当前模式 latest 快照，空库为 null）。
+      const fdaStatus = state.scenario === "fda-denied" ? "denied"
+        : state.scenario === "fda-unknown" ? "unknown" : "granted";
+      const latest = snapshots()[0] || null;
+      return json(res, 200, {
+        fda: {
+          status: fdaStatus,
+          probe_path: "/fixture/home/Library/Containers",
+          entries: fdaStatus === "granted" ? 911 : null,
+          ...(fdaStatus === "unknown" ? { detail: "NotFoundError" } : {}),
+        },
+        notification: {
+          run_id: 1, run_status: "done", finished_at: "2026-09-12T12:00:42",
+          notification_status: "submitted",
+        },
+        coverage: latest ? {
+          snapshot_id: latest.id, created_at: latest.created_at,
+          dir_count: latest.dir_count ?? null,
+          denied_count: latest.denied_count ?? null,
+          vanished_count: latest.vanished_count ?? null,
+        } : null,
+      });
     }
     if (url.pathname.startsWith("/api/scan/status")) {
       // 历史记录（ISS-028 m3 设置页）
@@ -997,23 +1026,28 @@ async function main() {
     await openPage("#/settings");
 
     /* ---------- ISS-087 设置页 IA：左导航 + 右 section ---------- */
-    // 默认 = 监控：监控区可见，其余三区隐藏；nav 4 项与 aria-current 唯一。
+    // 默认 = 监控：监控区可见，其余各区隐藏；nav 5 项（ISS-111 新增权限）与
+    // aria-current 唯一。
     const navInitial = await page.evaluate(() => {
       const buttons = [...document.querySelectorAll(".settings-nav-item")];
       return {
         labels: buttons.map((b) => b.dataset.section),
+        texts: buttons.map((b) => b.querySelector(".settings-nav-label")?.textContent || ""),
         active: buttons.find((b) => b.getAttribute("aria-current") === "true")?.dataset.section || null,
         visible: [...document.querySelectorAll(".settings-section")]
           .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.section),
       };
     });
-    record("settings-ia-nav-4-sections-default-monitoring",
-      JSON.stringify(navInitial.labels) === JSON.stringify(["monitoring", "schedule", "advanced", "about"]) &&
+    record("settings-ia-nav-5-sections-default-monitoring",
+      JSON.stringify(navInitial.labels) ===
+        JSON.stringify(["monitoring", "schedule", "permissions", "advanced", "about"]) &&
+        navInitial.texts[2] === "权限" &&
         navInitial.active === "monitoring" &&
         JSON.stringify(navInitial.visible) === JSON.stringify(["monitoring"]),
       JSON.stringify(navInitial));
 
     // 键盘可达：方向键 ↑/↓ 在 nav 项之间循环切换；Enter 激活 section。
+    // ISS-111 后顺序 = monitoring → schedule → permissions → advanced → about。
     await page.focus('[data-section="monitoring"]');
     await page.keyboard.press("ArrowDown");
     const afterArrowDown = await page.evaluate(() =>
@@ -1026,9 +1060,9 @@ async function main() {
     const afterUp = await page.evaluate(() =>
       document.activeElement?.dataset.section || null);
     record("settings-ia-nav-arrow-keys-cycle",
-      afterArrowDown === "schedule" && afterWrap === "about" && afterUp === "advanced",
+      afterArrowDown === "schedule" && afterWrap === "advanced" && afterUp === "permissions",
       JSON.stringify({ afterArrowDown, afterWrap, afterUp }));
-    // Enter 激活：focus 在 advanced，Enter 应让 advanced section 可见
+    // Enter 激活：ArrowUp 后 focus 在 permissions，Enter 应让 permissions 可见
     await page.keyboard.press("Enter");
     const enterActivate = await page.evaluate(() => {
       const visible = [...document.querySelectorAll(".settings-section")]
@@ -1037,9 +1071,12 @@ async function main() {
         .find((b) => b.getAttribute("aria-current") === "true")?.dataset.section;
       return { visible, active };
     });
+    // ISS-111 后 nav 顺序 = monitoring → schedule → permissions → advanced →
+    // about：三次 ArrowDown 后焦点在 advanced，ArrowUp 回到 permissions，
+    // Enter 应激活 permissions（按钮原生键盘行为）。
     record("settings-ia-nav-enter-activates-section",
-      JSON.stringify(enterActivate.visible) === JSON.stringify(["advanced"]) &&
-        enterActivate.active === "advanced",
+      JSON.stringify(enterActivate.visible) === JSON.stringify(["permissions"]) &&
+        enterActivate.active === "permissions",
       JSON.stringify(enterActivate));
     // URL hash 持久化：进入关于区后 location.hash 应含 #settings/about
     // nav 用 position:sticky 浮在 page-container 顶部，但 Enter 触发激活后
@@ -1052,6 +1089,16 @@ async function main() {
     const hashAfterAbout = await page.evaluate(() => location.hash);
     record("settings-ia-hash-persist-on-about-section",
       hashAfterAbout === "#settings/about", hashAfterAbout);
+    // ISS-111（用户走查缺陷追加）：关于页版本号从 /api/status 的 app_version
+    // 回填——夹具 status 带 app_version=9.9.9-fixture，未点「检查更新」时
+    // 不再显示「未知」。
+    await page.waitForFunction(
+      () => document.querySelector('[data-test="about-version-num"]')?.textContent === "9.9.9-fixture",
+      null, { timeout: 5000 });
+    const aboutVersionText = await page.evaluate(() =>
+      document.querySelector('[data-test="about-version-num"]')?.textContent || "");
+    record("about-version-filled-from-status-app-version",
+      aboutVersionText === "9.9.9-fixture", aboutVersionText);
     // 回到监控区作后续用例
     await page.evaluate(() => {
       document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click();
@@ -2901,57 +2948,145 @@ async function main() {
       JSON.stringify(deeplinkInvoke));
     await tpage2.close();
 
-    /* ---------- ISS-091 设置页：监控分区「权限与覆盖」事实卡 ----------
-     * 用户反馈 2026-09-24（权限受限/扫描件消失，设置页要有权限按钮）的落地验证：
-     * 1) 浏览器态（默认 page，无 Tauri 桥）：partial-all 夹具 denied=6 /
-     *    vanished=4 / dir_count=40 → 数字与占比 6/40（15.0%）如实呈现，
-     *    解释含「完全磁盘访问」与「属正常」；深链按钮隐藏、降级路径文字
-     *    可见，不渲染假 <a>。监控是默认 section（ISS-087），无需切 nav；
-     *    排除列表编辑器（ISS-069）与新卡同容器并存。
-     * 2) mock 桥（tpage6）：按钮可见、fallback 隐藏，点击后 invoke 收到
-     *    cmd=plugin:opener|open_url 且 url 指向 Privacy_AllFiles（与
-     *    ISS-002A 深链同命令同目标）。 */
+    /* ---------- ISS-111 设置页「权限」分区：三卡 + 三态渲染 + 深链 ----------
+     * 091 监控卡数据迁入新分区（原卡移除、原位留交叉说明）。数据源 =
+     * GET /api/permissions（夹具：fda 默认 granted、notification=submitted、
+     * coverage 引用当前模式 latest 快照）。
+     * 1) 浏览器态（默认 page，无 Tauri 桥）：切到 permissions 分区——
+     *    三张权限卡存在；FDA 徽章=已授权 + partial-all 的 denied=6 /
+     *    vanished=4 / 6/40（15.0%）如实呈现；深链按钮隐藏、降级路径文字
+     *    可见，不渲染假 <a>；通知徽章=已提交；后台计划卡点击「前往」
+     *    切到 schedule 分区。
+     * 2) scenario=fda-denied / fda-unknown：徽章=未授权（--danger）/未知
+     *    （--muted），unknown 不伪造已授权。
+     * 3) 监控分区：交叉说明行 + 前往按钮在位、旧 #monitor-permissions-card
+     *    不存在；点击前往按钮切回 permissions。
+     * 4) mock 桥（tpage6）：FDA/通知深链按钮可见、fallback 隐藏，点击后
+     *    invoke 收到 cmd=plugin:opener|open_url，url 分别指向
+     *    Privacy_AllFiles 与 preference.notifications。 */
     await setMode("partial-all");
     await openPage("#/settings");
-    await page.waitForSelector("#monitor-permissions-card [data-test='mperm-denied']");
-    const mpermBrowser = await page.evaluate(() => {
-      const card = document.getElementById("monitor-permissions-card");
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForSelector("#perm-fda-card [data-test='perm-fda-denied']");
+    const permHubBrowser = await page.evaluate(() => {
+      const fda = document.getElementById("perm-fda-card");
+      const notif = document.getElementById("perm-notif-card");
+      const sched = document.getElementById("perm-schedule-card");
+      const badgeCls = (sel) => document.querySelector(`#perm-${sel}-card [data-test='perm-${sel}-badge']`)?.className || "";
       return {
-        inMonitoring: !!card &&
-          card.closest(".settings-section[data-section='monitoring']") !== null,
-        denied: card?.querySelector("[data-test='mperm-denied']")?.textContent || "",
-        vanished: card?.querySelector("[data-test='mperm-vanished']")?.textContent || "",
-        deniedLabel: card?.querySelector("[data-test='mperm-denied']")
+        threeCards: !!fda && !!notif && !!sched,
+        fdaBadge: fda?.querySelector("[data-test='perm-fda-badge']")?.textContent || "",
+        fdaBadgeCls: badgeCls("fda"),
+        denied: fda?.querySelector("[data-test='perm-fda-denied']")?.textContent || "",
+        vanished: fda?.querySelector("[data-test='perm-fda-vanished']")?.textContent || "",
+        deniedLabel: fda?.querySelector("[data-test='perm-fda-denied']")
           ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
-        note: [...(card?.querySelectorAll(".perm-note") || [])]
+        fdaNote: [...(fda?.querySelectorAll(".perm-note") || [])]
           .map((p) => p.textContent).join(" | "),
-        openBtnVisible: !document.getElementById("btn-mperm-open-prefs")?.hidden,
-        fallbackVisible: !card?.querySelector("[data-test='mperm-path-fallback']")?.hidden,
-        fallbackText: card?.querySelector("[data-test='mperm-path-fallback']")?.textContent || "",
-        fakeAnchorCount: [...(card?.querySelectorAll("a") || [])].filter((a) =>
-          a.getAttribute("href")?.startsWith("x-apple.systempreferences")).length,
-        excludePanelStillThere: !!document.getElementById("exclude-panel"),
+        notifBadge: notif?.querySelector("[data-test='perm-notif-badge']")?.textContent || "",
+        notifBadgeCls: badgeCls("notif"),
+        notifNote: [...(notif?.querySelectorAll(".perm-note") || [])]
+          .map((p) => p.textContent).join(" | "),
+        fdaOpenBtnVisible: !fda?.querySelector("[data-test='perm-fda-open-btn']")?.hidden,
+        fdaFallbackVisible: !fda?.querySelector("[data-test='perm-fda-path-fallback']")?.hidden,
+        fdaFallbackText: fda?.querySelector("[data-test='perm-fda-path-fallback']")?.textContent || "",
+        notifOpenBtnVisible: !notif?.querySelector("[data-test='perm-notif-open-btn']")?.hidden,
+        notifFallbackVisible: !notif?.querySelector("[data-test='perm-notif-path-fallback']")?.hidden,
+        notifFallbackText: notif?.querySelector("[data-test='perm-notif-path-fallback']")?.textContent || "",
+        fakeAnchorCount: [...(document.getElementById("permissions-hub-panel")?.querySelectorAll("a") || [])]
+          .filter((a) => a.getAttribute("href")?.startsWith("x-apple.systempreferences")).length,
+        scheduleGotoBtn: !!sched?.querySelector("[data-test='perm-schedule-goto-btn']"),
       };
     });
-    record("mperm-monitoring-card-shows-denied-vanished-ratio",
-      mpermBrowser.inMonitoring &&
-        mpermBrowser.denied === "6" && mpermBrowser.vanished === "4" &&
-        mpermBrowser.deniedLabel.includes("6 / 40") &&
-        mpermBrowser.deniedLabel.includes("15.0%") &&
-        mpermBrowser.note.includes("完全磁盘访问") &&
-        mpermBrowser.note.includes("属正常") &&
-        mpermBrowser.excludePanelStillThere,
-      JSON.stringify(mpermBrowser).slice(0, 200));
-    record("mperm-browser-fallback-hides-button-shows-path",
-      !mpermBrowser.openBtnVisible && mpermBrowser.fallbackVisible &&
-        mpermBrowser.fallbackText.includes("系统设置") &&
-        mpermBrowser.fallbackText.includes("隐私与安全性") &&
-        mpermBrowser.fallbackText.includes("完全磁盘访问") &&
-        mpermBrowser.fakeAnchorCount === 0,
-      JSON.stringify(mpermBrowser).slice(0, 160));
-    const settingsMonitorPermShot = path.join(evidenceDir, "settings-monitor-permissions-1220x820.png");
-    await page.screenshot({ path: settingsMonitorPermShot });
+    record("perm-hub-three-cards-render",
+      permHubBrowser.threeCards && permHubBrowser.scheduleGotoBtn &&
+        permHubBrowser.fdaBadge.includes("已授权") && permHubBrowser.fdaBadgeCls.includes("ok") &&
+        permHubBrowser.notifBadge.includes("已提交") && permHubBrowser.notifBadgeCls.includes("ok"),
+      JSON.stringify({ fda: permHubBrowser.fdaBadge, notif: permHubBrowser.notifBadge }).slice(0, 160));
+    record("perm-fda-granted-badge-with-coverage-numbers",
+      permHubBrowser.denied === "6" && permHubBrowser.vanished === "4" &&
+        permHubBrowser.deniedLabel.includes("6 / 40") &&
+        permHubBrowser.deniedLabel.includes("15.0%") &&
+        // granted 态白话说明指向「可读取保护位置」；「授权后需重新扫描才
+        // 生效」是 denied 态文案，由 perm-fda-denied-badge 用例单独钉住。
+        permHubBrowser.fdaNote.includes("保护位置"),
+      JSON.stringify({ d: permHubBrowser.denied, l: permHubBrowser.deniedLabel }).slice(0, 160));
+    record("perm-notif-submitted-badge-and-note",
+      permHubBrowser.notifBadge.includes("已提交") &&
+        permHubBrowser.notifNote.includes("系统通知已提交"),
+      permHubBrowser.notifNote.slice(0, 100));
+    record("perm-hub-browser-fallback-hides-button-shows-path",
+      !permHubBrowser.fdaOpenBtnVisible && permHubBrowser.fdaFallbackVisible &&
+        permHubBrowser.fdaFallbackText.includes("系统设置") &&
+        permHubBrowser.fdaFallbackText.includes("完全磁盘访问") &&
+        !permHubBrowser.notifOpenBtnVisible && permHubBrowser.notifFallbackVisible &&
+        permHubBrowser.notifFallbackText.includes("通知") &&
+        permHubBrowser.fakeAnchorCount === 0,
+      JSON.stringify(permHubBrowser).slice(0, 200));
+    const permHubShot = path.join(evidenceDir, "settings-permissions-hub-1220x820.png");
+    await page.screenshot({ path: permHubShot });
 
+    // 后台计划卡交叉引导：点击「前往计划与通知」→ schedule 分区可见
+    await page.click("[data-test='perm-schedule-goto-btn']");
+    const gotoSchedule = await page.evaluate(() =>
+      [...document.querySelectorAll(".settings-section")]
+        .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.section));
+    record("perm-schedule-card-goto-activates-schedule-section",
+      JSON.stringify(gotoSchedule) === JSON.stringify(["schedule"]),
+      JSON.stringify(gotoSchedule));
+
+    // FDA denied / unknown 三态（scenario 驱动 /api/permissions.fda.status）
+    await setScenario("fda-denied");
+    await openPage("#/settings");
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForFunction(() =>
+      document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent.includes("未授权"));
+    const fdaDenied = await page.evaluate(() => ({
+      badge: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent || "",
+      cls: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.className || "",
+      note: [...document.querySelectorAll("#perm-fda-card .perm-note")]
+        .map((p) => p.textContent).join(" | "),
+    }));
+    record("perm-fda-denied-badge-uses-danger-token",
+      fdaDenied.badge.includes("未授权") && fdaDenied.cls.includes("danger") &&
+        !fdaDenied.cls.includes("ok") && fdaDenied.note.includes("重新扫描才生效"),
+      JSON.stringify(fdaDenied).slice(0, 160));
+
+    await setScenario("fda-unknown");
+    await openPage("#/settings");
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForFunction(() =>
+      document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent.includes("未知"));
+    const permUnknown = await page.evaluate(() => ({
+      badge: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent || "",
+      cls: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.className || "",
+    }));
+    record("perm-fda-unknown-badge-not-fabricated",
+      permUnknown.badge.includes("未知") && permUnknown.cls.includes("miss") &&
+        !permUnknown.cls.includes("ok") && !permUnknown.cls.includes("danger"),
+      JSON.stringify(permUnknown));
+    await setScenario(null);
+
+    // 监控分区交叉说明：旧卡移除、一行说明 + 前往按钮在位（点击切回权限区）
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click());
+    await page.waitForSelector("[data-test='perm-crossref-note']");
+    const crossref = await page.evaluate(() => ({
+      note: document.querySelector("[data-test='perm-crossref-note']")?.textContent || "",
+      gotoBtn: !!document.getElementById("btn-goto-permissions"),
+      oldCardGone: !document.getElementById("monitor-permissions-card"),
+    }));
+    record("perm-monitoring-crossref-replaces-old-card",
+      crossref.note.includes("权限」分区") && crossref.gotoBtn && crossref.oldCardGone,
+      JSON.stringify(crossref));
+    await page.click("#btn-goto-permissions");
+    const backToPermissions = await page.evaluate(() =>
+      [...document.querySelectorAll(".settings-section")]
+        .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.section));
+    record("perm-crossref-goto-activates-permissions-section",
+      JSON.stringify(backToPermissions) === JSON.stringify(["permissions"]),
+      JSON.stringify(backToPermissions));
+
+    // mock 桥：FDA/通知深链按钮被驱动（与 002A 同命令同 URL 形态）
     const tpage6 = await browser.newPage({ viewport: { width: 1220, height: 820 } });
     const tpage6Errors = [];
     tpage6.on("pageerror", (e) => tpage6Errors.push(e.message));
@@ -2966,87 +3101,91 @@ async function main() {
       }, configurable: true });
     `);
     await tpage6.goto(`${base}/#/settings`, { waitUntil: "networkidle" });
-    await tpage6.waitForSelector("#monitor-permissions-card [data-test='mperm-open-prefs-btn']");
-    const mpermTauri = await tpage6.evaluate(() => {
-      const card = document.getElementById("monitor-permissions-card");
-      return {
-        openBtnVisible: !document.getElementById("btn-mperm-open-prefs")?.hidden,
-        fallbackHidden: card?.querySelector("[data-test='mperm-path-fallback']")?.hidden,
-        denied: card?.querySelector("[data-test='mperm-denied']")?.textContent || "",
-      };
-    });
-    await tpage6.click("#btn-mperm-open-prefs");
+    await tpage6.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await tpage6.waitForSelector("#perm-fda-card [data-test='perm-fda-open-btn']");
+    const permHubTauri = await tpage6.evaluate(() => ({
+      fdaOpenBtnVisible: !document.querySelector("[data-test='perm-fda-open-btn']")?.hidden,
+      fdaFallbackHidden: document.querySelector("[data-test='perm-fda-path-fallback']")?.hidden,
+      notifOpenBtnVisible: !document.querySelector("[data-test='perm-notif-open-btn']")?.hidden,
+      denied: document.querySelector("[data-test='perm-fda-denied']")?.textContent || "",
+    }));
+    await tpage6.click("[data-test='perm-fda-open-btn']");
     await tpage6.waitForFunction(() => (window.__tauriMock6.invokes || []).some(
       (c) => c && c.cmd === "plugin:opener|open_url"));
     // settings 页加载会先推送 tray 状态，不能断言 invokes[0]；在全部记录中定位。
-    const mpermInvoke = await tpage6.evaluate(() => (window.__tauriMock6.invokes || [])
+    const hubFdaInvoke = await tpage6.evaluate(() => (window.__tauriMock6.invokes || [])
       .find((c) => c && c.cmd === "plugin:opener|open_url"));
-    record("mperm-tauri-mock-deeplink-invokes-opener",
-      mpermTauri.openBtnVisible && mpermTauri.fallbackHidden &&
-        mpermTauri.denied === "6" &&
-        mpermInvoke?.cmd === "plugin:opener|open_url" &&
-        mpermInvoke?.args?.url === "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
-      JSON.stringify({ t: mpermTauri, i: mpermInvoke }));
-    record("mperm-tauri-mock-no-page-errors", tpage6Errors.length === 0,
+    record("perm-hub-tauri-mock-fda-deeplink-invokes-opener",
+      permHubTauri.fdaOpenBtnVisible && permHubTauri.fdaFallbackHidden &&
+        permHubTauri.denied === "6" &&
+        hubFdaInvoke?.cmd === "plugin:opener|open_url" &&
+        hubFdaInvoke?.args?.url === "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+      JSON.stringify({ t: permHubTauri, i: hubFdaInvoke }));
+    await tpage6.click("[data-test='perm-notif-open-btn']");
+    await tpage6.waitForFunction(() => (window.__tauriMock6.invokes || []).some(
+      (c) => c && c.args?.url === "x-apple.systempreferences:com.apple.preference.notifications"));
+    const hubNotifInvoke = await tpage6.evaluate(() => (window.__tauriMock6.invokes || [])
+      .find((c) => c && c.args?.url === "x-apple.systempreferences:com.apple.preference.notifications"));
+    record("perm-hub-tauri-mock-notif-deeplink-invokes-opener",
+      permHubTauri.notifOpenBtnVisible &&
+        hubNotifInvoke?.cmd === "plugin:opener|open_url" &&
+        hubNotifInvoke?.args?.url === "x-apple.systempreferences:com.apple.preference.notifications",
+      JSON.stringify(hubNotifInvoke));
+    record("perm-hub-tauri-mock-no-page-errors", tpage6Errors.length === 0,
       tpage6Errors.join("; "));
     await tpage6.close();
 
-    /* ---------- ISS-095 权限卡：占比 >100% 的倍数文案 + 空库「尚未扫描」 ----------
+    /* ---------- ISS-095 占比口径迁入权限分区：>100% 倍数文案 + 空库引导 ----------
      * 1) denied-over 夹具（denied=25 / dir_count=2；du stderr 行数可超目录数）：
-     *    标签显示「25 / 2（受限行数为目录数的 12.5 倍）」，不再出现 >100%
-     *    的百分比读数（旧形态「（1250.0%）」会被读成「1250% 的目录受限」）；
-     *    数字事实与解释文字不受影响。
-     * 2) empty 夹具（无快照）：卡片体显示「尚未扫描」引导文案，不渲染
+     *    权限分区 FDA 卡标签显示「25 / 2（受限行数为目录数的 12.5 倍）」，
+     *    不再出现 >100% 的百分比读数。
+     * 2) empty 夹具（无快照）：FDA 卡显示「尚未扫描」引导文案，不渲染
      *    数字事实（denied/vanished 均不出现）。
      * 两组都在浏览器态（默认 page）走真实 UI 验证；setMode 重置竞态，
      * 后续用例（ISS-016B）自带 setMode("dual")，不被污染。 */
     await setMode("denied-over");
     await openPage("#/settings");
-    await page.waitForSelector("#monitor-permissions-card [data-test='mperm-denied']");
-    const mpermOver = await page.evaluate(() => {
-      const card = document.getElementById("monitor-permissions-card");
-      return {
-        denied: card?.querySelector("[data-test='mperm-denied']")?.textContent || "",
-        label: card?.querySelector("[data-test='mperm-denied']")
-          ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
-        note: ([...(card?.querySelectorAll(".perm-note") || [])]
-          .map((p) => p.textContent).join(" | ")),
-      };
-    });
-    record("mperm-denied-over-dir-count-uses-multiple-not-percent",
-      mpermOver.denied === "25" &&
-        mpermOver.label.includes("25 / 2") &&
-        mpermOver.label.includes("受限行数为目录数的 12.5 倍") &&
-        !mpermOver.label.includes("%") &&
-        mpermOver.note.includes("完全磁盘访问"),
-      JSON.stringify(mpermOver).slice(0, 160));
-    const mpermOverShot = path.join(evidenceDir, "settings-mperm-denied-over-1220x820.png");
-    await page.screenshot({ path: mpermOverShot });
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForSelector("#perm-fda-card [data-test='perm-fda-denied']");
+    const permOver = await page.evaluate(() => ({
+      denied: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")?.textContent || "",
+      label: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")
+        ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
+    }));
+    record("perm-fda-denied-over-uses-multiple-not-percent",
+      permOver.denied === "25" &&
+        permOver.label.includes("25 / 2") &&
+        permOver.label.includes("受限行数为目录数的 12.5 倍") &&
+        !permOver.label.includes("%"),
+      JSON.stringify(permOver).slice(0, 160));
+    const permOverShot = path.join(evidenceDir, "settings-perm-hub-denied-over-1220x820.png");
+    await page.screenshot({ path: permOverShot });
 
     await setMode("empty");
     await openPage("#/settings");
-    /* 空库态先用「加载中…」占位（同为 p.hint），必须等 fetch 完成后的
-     * 最终文案再断言，避免读到占位文本假绿。否定条件针对数字事实元素：
+    /* 空库态先用「权限状态加载中…」占位（同为 p.hint），必须等 fetch 完成
+     * 后的最终文案再断言，避免读到占位文本假绿。否定条件针对数字事实元素：
      * 引导文案本身合法包含「读取受限/扫描期间消失」字样，不能按字面排除。 */
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
     await page.waitForFunction(() => {
-      const el = document.querySelector("#monitor-permissions-card [data-test='mperm-card-body']");
+      const el = document.querySelector("#perm-fda-card [data-test='perm-fda-body']");
       return el && el.textContent.includes("尚未扫描");
     });
-    const mpermEmpty = await page.evaluate(() => {
-      const body = document.querySelector("#monitor-permissions-card [data-test='mperm-card-body']");
+    const permEmpty = await page.evaluate(() => {
+      const body = document.querySelector("#perm-fda-card [data-test='perm-fda-body']");
       return {
         text: body?.textContent || "",
-        hasFacts: !!body?.querySelector("[data-test='mperm-facts']"),
-        hasDenied: !!body?.querySelector("[data-test='mperm-denied']"),
-        hasVanished: !!body?.querySelector("[data-test='mperm-vanished']"),
+        hasFacts: !!body?.querySelector("[data-test='perm-fda-facts']"),
+        hasDenied: !!body?.querySelector("[data-test='perm-fda-denied']"),
+        hasVanished: !!body?.querySelector("[data-test='perm-fda-vanished']"),
       };
     });
-    record("mperm-empty-library-shows-not-yet-scanned-hint",
-      mpermEmpty.text.includes("尚未扫描") &&
-        !mpermEmpty.hasFacts && !mpermEmpty.hasDenied && !mpermEmpty.hasVanished,
-      mpermEmpty.text.trim().slice(0, 80));
-    const mpermEmptyShot = path.join(evidenceDir, "settings-mperm-empty-1220x820.png");
-    await page.screenshot({ path: mpermEmptyShot });
+    record("perm-fda-empty-library-shows-not-yet-scanned-hint",
+      permEmpty.text.includes("尚未扫描") &&
+        !permEmpty.hasFacts && !permEmpty.hasDenied && !permEmpty.hasVanished,
+      permEmpty.text.trim().slice(0, 80));
+    const permEmptyShot = path.join(evidenceDir, "settings-perm-hub-empty-1220x820.png");
+    await page.screenshot({ path: permEmptyShot });
 
     /* ---------- ISS-016B mock 桥：drift 重装入 口复用 010B 确认层 ----------
      * 形状化 mock：autostart_status 返回三态真值（两标签 enabled）、
@@ -3694,8 +3833,8 @@ async function main() {
       failed: failed.length,
       evidence: [overviewShot, changesShot, browseShot, bigfilesShot, settingsShot,
         bigfilesTruncatedShot, bigfilesExpiredShot, bigfilesFailedShot,
-        bigfilesPermShot, bigfilesNoMatchShot, settingsMonitorPermShot,
-        mpermOverShot, mpermEmptyShot,
+        bigfilesPermShot, bigfilesNoMatchShot, permHubShot,
+        permOverShot, permEmptyShot,
         packagedDefaultShot, packagedOpenShot,
         ...viewportScreens],
       checks,

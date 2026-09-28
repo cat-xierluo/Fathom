@@ -317,6 +317,14 @@
               <span class="settings-nav-icon" data-icon="clock"></span>
               <span class="settings-nav-label">计划与通知</span>
             </button>
+            <!-- ISS-111：权限分区——各权限状态可见 + 一键深链授权（放在
+                 「计划与通知」之后、「高级与诊断」之前：前两者是用户级
+                 日常设置，高级与诊断/关于是排障与元信息，权限随用户级组） -->
+            <button type="button" class="settings-nav-item" data-section="permissions"
+                    data-test="settings-nav-permissions">
+              <span class="settings-nav-icon" data-icon="shield"></span>
+              <span class="settings-nav-label">权限</span>
+            </button>
             <button type="button" class="settings-nav-item" data-section="advanced"
                     data-test="settings-nav-advanced">
               <span class="settings-nav-icon" data-icon="stethoscope"></span>
@@ -388,15 +396,22 @@
               </div>
               <!-- ISS-069 排除列表编辑器挂载点（运行期由 settings.js 注入） -->
               <div id="settings-monitor-extra"></div>
+              <!-- ISS-111：原监控分区末尾的「权限与覆盖」卡（ISS-091）数据已
+                   迁入「权限」分区，原位置留一行交叉说明，避免两处重复。 -->
+              <div class="panel perm-crossref">
+                <p class="hint" data-test="perm-crossref-note">最近扫描的读取受限与消失目录情况已移至「权限」分区。</p>
+                <button type="button" class="btn perm-crossref-btn" id="btn-goto-permissions"
+                        data-test="perm-crossref-goto-btn">前往权限分区</button>
+              </div>
             </section>
 
-            <!-- 计划与通知：扫描计划 + 保存确认 + 通知阈值 + 扫描运行历史 + 权限/覆盖 + 后台自启 -->
+            <!-- 计划与通知：扫描计划 + 保存确认 + 通知阈值 + 扫描运行历史 + 授权状态 + 后台自启 -->
             <section class="settings-section surface" data-section="schedule"
                      id="settings-section-schedule" aria-labelledby="settings-head-schedule" hidden>
               <div class="panel">
                 <div class="panel-head">
                   <h2 id="settings-head-schedule">计划与通知</h2>
-                  <p class="hint">扫描时间与低空间提醒阈值；后台自启与权限深链亦归此处</p>
+                  <p class="hint">扫描时间与低空间提醒阈值</p>
                 </div>
                 <form id="schedule-form" class="config-form" novalidate>
                   <div class="cfg-row">
@@ -430,6 +445,22 @@
                   <div id="scan-history" class="hint-line"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>加载中…</div>
                 </div>
               </div>
+            </section>
+
+            <!-- 权限（ISS-111）：各权限当前状态 + 一键深链授权。三项卡由
+                 settings.js 注入 #settings-permissions-extra（与既有面板同模式）：
+                 完全磁盘访问（只读探测三态 + 最近扫描受限/消失引用）、通知
+                 （最近一次扫描 notification_status）、后台计划（交叉引导，
+                 不重复实现）。深链经既有 opener 权限；浏览器态降级为路径文字。 -->
+            <section class="settings-section surface" data-section="permissions"
+                     id="settings-section-permissions" aria-labelledby="settings-head-permissions" hidden>
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 id="settings-head-permissions">权限</h2>
+                  <p class="hint">各权限的当前状态与授权入口；macOS 不允许应用自提权，授权需你在系统设置完成</p>
+                </div>
+              </div>
+              <div id="settings-permissions-extra"></div>
             </section>
 
             <!-- 高级与诊断：ISS-083 折叠区原样迁入；运行信息表 + 服务管理面板在此 section 下 -->

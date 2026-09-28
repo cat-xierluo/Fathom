@@ -14,6 +14,8 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - POST /api/reveal           在 Finder 中显示根内路径（受 reveal 边界约束）
 - GET  /api/config           当前生效用户设置（值/来源/默认值，ISS-016A）
 - PUT  /api/config           保存用户设置（需写令牌；不注册/不重载 launchd）
+- GET  /api/permissions      权限状态总览（FDA 只读探测三态 + 最近通知状态 +
+                            最近快照受限/消失引用，ISS-111）
 
 本地边界合同（ISS-022，仅覆盖当前单实例 loopback 服务；发行端口/服务发现归 ISS-029）：
 
@@ -230,6 +232,9 @@ def api_status():
         st = os.statvfs(config.DEFAULT_ROOT)
         db_size = config.DB_PATH.stat().st_size if config.DB_PATH.exists() else 0
         return {
+            # ISS-111（用户走查缺陷追加）：版本在构建时已知，随状态总览下发，
+            # 关于页不再依赖「检查更新」才显示版本号。
+            "app_version": __version__,
             "root": str(config.DEFAULT_ROOT),
             "snapshot_count": count,
             "latest_snapshot": latest_row,
@@ -727,6 +732,83 @@ def api_scan_status(history: int = Query(0, ge=0, le=100)):
                 runs.append(run)
             state["runs"] = runs
         return state
+    finally:
+        conn.close()
+
+
+# ---------- 权限状态（ISS-111：设置「权限」分区唯一数据源） ----------
+
+def _fda_scandir(path: Path) -> int:
+    """对 FDA 探测路径做一次只读目录列举，返回条目数。
+
+    独立成函数仅为契约测试可注入（真实 os.scandir 无法在隔离环境稳定
+    构造 PermissionError）；生产路径不做任何注入。
+    """
+    with os.scandir(path) as it:
+        return sum(1 for _ in it)
+
+
+def _probe_fda_status() -> dict:
+    """完全磁盘访问（TCC）只读探测：对已知受保护目录列举一次。
+
+    三态合同（不伪造）：
+    - granted：能列出条目——当前进程可读取该受保护位置；
+    - denied ：PermissionError——macOS TCC 拦截只读列举的典型表现；
+    - unknown：其余任何异常（路径不存在/IO 错误/平台差异），如实上报
+      异常类别，不猜成 granted/denied。
+    探测是纯只读 os.scandir：无写入、无提权、不调用系统设置；本应用
+    不代改系统权限（macOS 也不允许应用自提权）。
+    """
+    probe_path = Path.home() / "Library" / "Containers"
+    try:
+        entries = _fda_scandir(probe_path)
+        return {"status": "granted", "probe_path": str(probe_path), "entries": entries}
+    except PermissionError:
+        return {"status": "denied", "probe_path": str(probe_path), "entries": None}
+    except Exception as exc:  # noqa: BLE001 - 任何探测异常都降级 unknown，不让端点 5xx
+        return {"status": "unknown", "probe_path": str(probe_path), "entries": None,
+                "detail": type(exc).__name__}
+
+
+@app.get("/api/permissions")
+def api_permissions():
+    """权限状态总览（ISS-111）：设置页「权限」分区数据源。
+
+    - fda：TCC 保护路径只读探测三态（见 _probe_fda_status）；
+    - notification：最近一次扫描运行的 notification_status（scan_runs /
+      scan_run_details 既有数据原样转出，无记录为 null=未登记，不推断）；
+    - coverage：最近快照的受限/消失计数引用（ISS-091 数据迁入「权限」
+      分区）；只引用计数与快照元数据，占比由前端按 ISS-095 口径计算。
+    Host/Origin/写边界约束由 local_boundary_guard 全局中间件统一施加，
+    与 /api/status 完全相同（GET 只读，无需写令牌）。深链 URL 不经 API
+    下发：由前端持有（与 ISS-002A/091 既有 opener 常量同源）。
+    """
+    conn = _get_conn()
+    try:
+        notif = conn.execute(
+            "SELECT r.id AS run_id, r.status AS run_status, r.finished_at, "
+            "d.notification_status FROM scan_runs r "
+            "LEFT JOIN scan_run_details d ON d.run_id = r.id "
+            "ORDER BY r.id DESC LIMIT 1"
+        ).fetchone()
+        latest = _latest_snapshots(conn, 1)
+        snap = latest[0] if latest else None
+        return {
+            "fda": _probe_fda_status(),
+            "notification": {
+                "run_id": notif["run_id"] if notif else None,
+                "run_status": notif["run_status"] if notif else None,
+                "finished_at": notif["finished_at"] if notif else None,
+                "notification_status": notif["notification_status"] if notif else None,
+            },
+            "coverage": {
+                "snapshot_id": snap["id"] if snap else None,
+                "created_at": snap["created_at"] if snap else None,
+                "dir_count": snap["dir_count"] if snap else None,
+                "denied_count": snap["denied_count"] if snap else None,
+                "vanished_count": snap["vanished_count"] if snap else None,
+            },
+        }
     finally:
         conn.close()
 

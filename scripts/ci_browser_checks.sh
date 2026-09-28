@@ -20,18 +20,24 @@
 #   - PW_INSTALL=1 且提供 PLAYWRIGHT_BIN 时下载 chromium（仅 CI 冷环境）。
 #
 # 断言口径：两套结果 JSON 均必须 ok=true、failed=0、passed 等于各自期望
-# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 179，
+# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 188，
 # ISS-108 增补 5 项至 172 后，ISS-106 总览层级/五态容器再增 7 项=179：
 # ready 清态与次级图 1 + 空库等待 1 + 单快照等待 1 + 错误容器 1 +
 # 净变化根差分 1 + 无基线不伪造零 1 + 980 首屏坐标 1；
-# 既有 3 项总览断言（扫描主按钮/装饰刻度/表面层级）原地更新不改变计数）；
+# 既有 3 项总览断言（扫描主按钮/装饰刻度/表面层级）原地更新不改变计数；
+# ISS-111 再增 9 项=188：原 091 监控权限卡 6 项断言（浏览器数字占比/
+# 降级/mock 深链/无页错误/denied-over 倍数/空库引导）原地改写为权限分区
+# 版本（6 → 14：三卡与徽章 1、granted 数字占比 1、通知徽章 1、降级 1、
+# 后台计划引导 1、denied 三态 1、unknown 三态 1、监控交叉说明 1、交叉
+# 前往 1、mock FDA 深链 1、mock 通知深链 1、无页错误 1、denied-over 1、
+# 空库 1），另增关于页版本从 status 回填 1 项）；
 # verify 脚本自身任一检查失败都会以非零退出（pipefail 直通，不走门禁
 # 兜底），计数门禁只拦空跑与静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 expected="${EXPECTED_BROWSER_PASSED:-39}"
-expected_refresh="${EXPECTED_REFRESH_PASSED:-179}"
+expected_refresh="${EXPECTED_REFRESH_PASSED:-188}"
 
 if [ ! -x .runtime/bin/python ]; then
   requested_python="${FATHOM_PYTHON:-python3}"

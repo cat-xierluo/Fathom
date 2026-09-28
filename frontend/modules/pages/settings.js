@@ -15,9 +15,10 @@
  * 服务自身零系统写入口——drift 态的重装只经 010B autostart 确认层执行。
  *
  * 信息架构（ISS-087）：左导航 + 右 section 的二分区布局——
- *   监控 / 计划与通知 / 高级与诊断 / 关于 四个 section 互斥可见；
+ *   监控 / 计划与通知 / 权限 / 高级与诊断 / 关于 五个 section 互斥可见；
  *   ISS-083 折叠区原封迁入「高级与诊断」，ISS-040B 检查更新区迁入「关于」，
- *   ISS-002A 权限与覆盖、ISS-010B 后台自启、ISS-028 m3 扫描运行历史归入「计划与通知」。
+ *   ISS-002A 权限与覆盖、ISS-010B 后台自启、ISS-028 m3 扫描运行历史归入「计划与通知」；
+ *   ISS-111「权限」分区：各权限状态可见 + 一键深链授权（091 监控卡数据迁入）。
  *   默认 section = 监控；URL hash 可选持久化（`#settings/about` 等）。
  *   浏览器/开发态无 Tauri 桥时全部 section 仍可达（不删除/隐藏入口）。
  */
@@ -27,6 +28,7 @@ import { icon } from "../../icons.js";
 import { triggerScan, loadStatus } from "../status.js";
 
 let lastConfig = null;  // 最近一次生效配置（页面内存；保存/恢复默认的对照源）
+let lastStatusAppVersion = null;  // 最近一次 /api/status 的 app_version（ISS-111 版本回填源）
 
 /* ---------- ISS-087：左导航 + 右 section 切换 ----------
  * 设计参照 Folia/Fomo 设置页：左侧导航项 + 右侧动态 section；
@@ -37,10 +39,14 @@ let lastConfig = null;  // 最近一次生效配置（页面内存；保存/恢�
  * - 键盘可达：Tab 进入 nav 项，方向键 ↑/↓ 切换，Enter/Space 激活；
  *   原生 button 元素承担焦点与键盘行为，role/aria 由 markup 静态提供
  */
-const SETTINGS_SECTIONS = ["monitoring", "schedule", "advanced", "about"];
+/* ISS-111：权限分区排在「计划与通知」之后、「高级与诊断」之前——
+ * 监控/计划与通知/权限同属用户级日常设置（授权操作是用户裁决的主入口），
+ * 高级与诊断（排障）与关于（元信息）靠后。 */
+const SETTINGS_SECTIONS = ["monitoring", "schedule", "permissions", "advanced", "about"];
 const SETTINGS_SECTION_LABELS = {
   monitoring: "监控",
   schedule: "计划与通知",
+  permissions: "权限",
   advanced: "高级与诊断",
   about: "关于",
 };
@@ -568,6 +574,11 @@ async function loadSettings() {
     return;
   }
   if (!request.current()) return;
+  // ISS-111：版本在构建时已知——status 一到就回填关于页版本号，
+  // 不再依赖用户点「检查更新」；更新检查返回值仍可覆盖（两源一致）。
+  lastStatusAppVersion = typeof s.app_version === "string" && s.app_version
+    ? s.app_version : null;
+  renderAboutVersion();
   let c = null;
   try {
     c = await fetchJSON("/api/config");
@@ -609,8 +620,8 @@ async function loadSettings() {
   loadScanHistory();
   // 加载"权限与覆盖"小节（ISS-002A；可独立失败，不影响主配置）
   loadPermissions();
-  // 加载「权限与覆盖」事实卡（ISS-091，监控分区末尾；可独立失败）
-  loadMonitorPermissions();
+  // 加载「权限」分区三项权限卡（ISS-111；可独立失败，不影响主配置）
+  loadPermissionHub();
   // 加载"后台自启"开关（ISS-010B；可独立失败，不影响主配置）
   loadAutostart();
   // 加载"应用更新"区（ISS-040B；可独立失败，不影响主配置）
@@ -834,51 +845,54 @@ async function loadPermissions() {
   }
 }
 
-/* ===== 权限与覆盖事实卡（ISS-091，2026-09-24 用户反馈）=====
- * 「监控」分区末尾新增：把最近一次有效快照的受限（denied_count）与
- * 消失（vanished_count）事实直接呈现在监控区，并引导用户去系统设置为
- * Fathom 开启完全磁盘访问。与 ISS-002A 面板（计划与通知 section，授权
- * 状态推导 + 重扫入口）互补：本卡不推导状态，只呈现数字与固定解释。
- * - 数据：GET /api/status 的 latest_snapshot（dir_count/denied_count/
- *   vanished_count；占比 = denied ÷ dir_count，分母是本次 du 统计到的
- *   目录总数，不是磁盘全部目录，denied 是 stderr 行数故比值可 >100%，
- *   >100% 时改用倍数表述——见 _mpermRatioText，ISS-095）。
- * - macOS 不允许应用自行申请完全磁盘访问：本应用不代改系统权限，按钮
- *   只做深链引导（plugin:opener|open_url，与 ISS-002A 同命令同目标）；
- *   浏览器态按钮隐藏、降级为路径文字，不渲染假 <a>。
- * - 字段缺失防御与 ISS-002A 同口径（?? 0）；空库显示「尚未扫描」。 */
-const MONITOR_PERM_CARD_ID = "monitor-permissions-card";
+/* ===== 权限分区（ISS-111，承接 ISS-091 卡数据）=====
+ * 设置页新增「权限」分区：各权限当前状态可见 + 一键深链授权。用户裁决：
+ * 「应该有一个权限管理的页面……在这个页面里面点击让我去授权，和当前已
+ * 授予权限的显示」。
+ * 三张权限项卡（数据源 = GET /api/permissions）：
+ * - 完全磁盘访问：后端对 TCC 保护路径只读探测的 granted/denied/unknown
+ *   三态（探测异常如实 unknown，不伪造）；辅助呈现最近扫描的受限/消失
+ *   计数与占比（ISS-091 监控卡数据迁入本分区，原卡移除、原位留交叉
+ *   说明——见 index.html）；深链 = 系统设置完全磁盘访问页。
+ * - 通知：最近一次扫描的 notification_status（submitted/failed/未登记
+ *   如实展示，不推断）；深链 = 系统设置通知页。
+ * - 后台计划：交叉引用「计划与通知」分区的既有 autostart 状态（一行
+ *   链接式引导，不重复实现）。
+ * 通用合同：
+ * - macOS 不允许应用自提权：每卡一句白话说明，授权动作只在系统设置完成，
+ *   本应用不代改系统权限；
+ * - 深链按钮复用 091 的 opener 模式（plugin:opener|open_url，与
+ *   ISS-002A 同命令）；浏览器态（无 Tauri 桥）按钮隐藏、降级为路径文字，
+ *   不渲染假 <a href>；
+ * - 状态徽章配色用既有语义 token：granted→--ok、denied→--danger、
+ *   unknown→--muted（.quality-chip 既有 ok/miss 类 + ISS-111 新增 danger
+ *   浅底派生，无新色板）；零 emoji；
+ * - 占比文案沿用 ISS-095 口径（_permRatioText：denied 是 du stderr 行数、
+ *   可超目录总数，比值 >100% 时改用倍数表述）。 */
+const PERM_HUB_PANEL_ID = "permissions-hub-panel";
 
-function _ensureMonitorPermCard() {
-  const page = document.getElementById("page-settings");
-  if (!page) return null;
-  let card = document.getElementById(MONITOR_PERM_CARD_ID);
-  if (card) return card;
-  card = document.createElement("div");
-  card.id = MONITOR_PERM_CARD_ID;
-  card.className = "panel";
-  card.innerHTML = `
-    <div class="panel-head">
-      <h2>权限与覆盖</h2>
-      <p class="hint">最近一次扫描的受限与消失目录事实；本应用不代改系统权限</p>
-    </div>
-    <div class="perm-panel" data-test="mperm-card-body">
-      <p class="hint">权限与覆盖信息加载中…</p>
-    </div>`;
-  // ISS-091：本卡归「监控」section 末尾（#settings-monitor-extra，排除
-  // 列表编辑器之后）；容器缺失时回退整页末尾（与 ISS-069/002A 同兜底）。
-  const host = document.getElementById("settings-monitor-extra");
-  if (host) host.appendChild(card);
-  else page.appendChild(card);
-  return card;
-}
+/* 通知页深链：与 FDA 深链同走 opener 权限（ISS-068 ACL 已备
+ * x-apple.systempreferences:*）。浏览器态降级显示路径文字。 */
+const NOTIFS_DEEP_LINK = "x-apple.systempreferences:com.apple.preference.notifications";
+const NOTIFS_PATH_TEXT = "系统设置 › 通知";
+
+/* 状态徽章语义映射：unknown/未登记是真实探测结论，不是加载失败。 */
+const PERM_FDA_BADGES = {
+  granted: { text: "已授权", cls: "ok" },
+  denied: { text: "未授权", cls: "danger" },
+  unknown: { text: "未知", cls: "miss" },
+};
+const PERM_NOTIF_BADGES = {
+  submitted: { text: "已提交", cls: "ok" },
+  failed: { text: "失败", cls: "danger" },
+};
 
 /** denied 占比文案：分母 dir_count<=0（异常快照/防御值）时不显示，只留数字。
  * ISS-095：denied 是 du stderr 的受限行数、可超过目录总数（比值 >100%），
  * 此时「（1250.0%）」会被读成「1250% 的目录受限」——语义错误；改用
  * 「受限行数为目录数的 X.X 倍」表述。比值 ≤100%（含 denied=0）维持
- * 「（N%）」形态不变。 */
-function _mpermRatioText(denied, dirCount) {
+ * 「（N%）」形态不变。（ISS-111 自原监控卡 _mpermRatioText 原样迁入。） */
+function _permRatioText(denied, dirCount) {
   if (!Number.isFinite(dirCount) || dirCount <= 0) return "";
   if (denied > dirCount) {
     return `${denied} / ${dirCount}（受限行数为目录数的 ${(denied / dirCount).toFixed(1)} 倍）`;
@@ -886,63 +900,116 @@ function _mpermRatioText(denied, dirCount) {
   return `${denied} / ${dirCount}（${((denied / dirCount) * 100).toFixed(1)}%）`;
 }
 
-async function loadMonitorPermissions() {
-  const card = _ensureMonitorPermCard();
-  if (!card) return;
-  const body = card.querySelector("[data-test='mperm-card-body']");
-  if (!body) return;
-  const request = beginRequest("settingsMonitorPermissions");
-  let statusData = null;
-  try {
-    statusData = await fetchJSON("/api/status");
-    if (!request.current()) return;
-  } catch (e) {
-    if (!request.current()) return;
-    body.innerHTML = `<p class="hint">${escapeHtml(e.status === 0
-      ? "无法连接本地服务，权限与覆盖信息暂不可用。"
-      : `权限与覆盖信息加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`)}</p>`;
-    return;
-  }
-  const latest = statusData?.latest_snapshot;
-  const tauri = window.__TAURI__;
-  const tauriAvailable = !!(tauri && tauri.core && typeof tauri.core.invoke === "function");
-  if (!latest) {
-    body.innerHTML =
-      `<p class="hint">尚未扫描：完成首次扫描后，这里会显示读取受限与扫描期间消失目录的情况。</p>`;
-    return;
-  }
-  const denied = Number(latest.denied_count ?? 0) || 0;
-  const vanished = Number(latest.vanished_count ?? 0) || 0;
-  const dirCount = Number(latest.dir_count ?? 0) || 0;
-  const ratio = _mpermRatioText(denied, dirCount);
-  body.innerHTML = `
-    <div class="perm-facts" data-test="mperm-facts">
-      <div class="perm-fact">
-        <span class="perm-fact-num" data-test="mperm-denied" data-sev="${denied > 0 ? "warn" : "ok"}">${escapeHtml(String(denied))}</span>
-        <span class="perm-fact-label">读取受限（处）${ratio ? ` · ${escapeHtml(ratio)}` : ""}</span>
+function _ensurePermHubPanel() {
+  const host = document.getElementById("settings-permissions-extra");
+  if (!host) return null;
+  let panel = document.getElementById(PERM_HUB_PANEL_ID);
+  if (panel) return panel;
+  panel = document.createElement("div");
+  panel.id = PERM_HUB_PANEL_ID;
+  panel.innerHTML = `
+    <div class="panel perm-item" id="perm-fda-card" data-test="perm-fda-card">
+      <div class="panel-head">
+        <h2>完全磁盘访问</h2>
+        <span class="quality-chip miss" data-test="perm-fda-badge">${icon("shield", 12)} 检测中…</span>
       </div>
-      <div class="perm-fact">
-        <span class="perm-fact-num" data-test="mperm-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>
-        <span class="perm-fact-label">扫描期间消失（个）</span>
+      <div class="perm-panel" data-test="perm-fda-body">
+        <p class="hint">权限状态加载中…</p>
       </div>
     </div>
-    <p class="perm-note">受限 = du 无法读取某些目录（如受系统保护的位置），为 Fathom 开启「完全磁盘访问」可减少受限；消失 = 扫描期间目录被移动或删除，属正常现象，不代表数据被清理。</p>
+    <div class="panel perm-item" id="perm-notif-card" data-test="perm-notif-card">
+      <div class="panel-head">
+        <h2>通知</h2>
+        <span class="quality-chip miss" data-test="perm-notif-badge">${icon("activity", 12)} 检测中…</span>
+      </div>
+      <div class="perm-panel" data-test="perm-notif-body">
+        <p class="hint">通知状态加载中…</p>
+      </div>
+    </div>
+    <div class="panel perm-item" id="perm-schedule-card" data-test="perm-schedule-card">
+      <div class="panel-head">
+        <h2>后台计划</h2>
+      </div>
+      <div class="perm-panel" data-test="perm-schedule-body">
+        <p class="hint">定时扫描与开机自启的开启状态在「计划与通知」分区查看与调整；这里不重复实现。</p>
+        <div class="perm-link-row">
+          <button type="button" class="btn" data-test="perm-schedule-goto-btn">${icon("clock", 14)} 前往计划与通知</button>
+        </div>
+      </div>
+    </div>`;
+  host.appendChild(panel);
+  const gotoBtn = panel.querySelector("[data-test='perm-schedule-goto-btn']");
+  if (gotoBtn) {
+    gotoBtn.addEventListener("click", () => {
+      activateSettingsSection("schedule", { persistHash: true });
+    });
+  }
+  return panel;
+}
+
+/** FDA 三态的白话说明（授权动作只在系统设置完成；授权后需重扫）。 */
+function _permFdaExplain(status) {
+  if (status === "granted") {
+    return "当前可读取系统保护位置（如用户目录下的 Containers），扫描不受此类限制。";
+  }
+  if (status === "denied") {
+    return "系统拒绝了部分受保护位置的读取，扫描会在这些目录受限；为 Fathom 开启「完全磁盘访问」可减少受限。授权后需重新扫描才生效。";
+  }
+  return "本次探测未得出结论（保护路径不存在或读取异常）。状态未知时不猜测，可稍后重试。";
+}
+
+/** FDA 卡：三态徽章 + 白话说明 + 091 受限/消失事实 + 深链（含降级）。 */
+function renderPermFda(body, fda, coverage) {
+  const invoke = tauriInvoke();
+  const tauriAvailable = !!invoke;
+  const badgeNode = document.querySelector("#perm-fda-card [data-test='perm-fda-badge']");
+  const badge = PERM_FDA_BADGES[fda?.status] || PERM_FDA_BADGES.unknown;
+  if (badgeNode) {
+    badgeNode.className = `quality-chip ${badge.cls}`;
+    badgeNode.innerHTML = `${icon("shield", 12)} ${escapeHtml(badge.text)}`;
+  }
+  // 091 数据迁入：最近快照的受限/消失计数与占比；空库显示「尚未扫描」。
+  let factsHtml;
+  if (coverage && coverage.snapshot_id != null) {
+    const denied = Number(coverage.denied_count ?? 0) || 0;
+    const vanished = Number(coverage.vanished_count ?? 0) || 0;
+    const dirCount = Number(coverage.dir_count ?? 0) || 0;
+    const ratio = _permRatioText(denied, dirCount);
+    factsHtml = `
+      <div class="perm-facts" data-test="perm-fda-facts">
+        <div class="perm-fact">
+          <span class="perm-fact-num" data-test="perm-fda-denied" data-sev="${denied > 0 ? "warn" : "ok"}">${escapeHtml(String(denied))}</span>
+          <span class="perm-fact-label">读取受限（处）${ratio ? ` · ${escapeHtml(ratio)}` : ""}</span>
+        </div>
+        <div class="perm-fact">
+          <span class="perm-fact-num" data-test="perm-fda-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>
+          <span class="perm-fact-label">扫描期间消失（个）</span>
+        </div>
+      </div>
+      <p class="perm-note">受限 = du 无法读取某些目录（如受系统保护的位置）；消失 = 扫描期间目录被移动或删除，属正常现象，不代表数据被清理。</p>`;
+  } else {
+    factsHtml =
+      `<p class="hint" data-test="perm-fda-not-yet">尚未扫描：完成首次扫描后，这里会显示读取受限与扫描期间消失目录的情况。</p>`;
+  }
+  body.innerHTML = `
+    <p class="perm-note">${escapeHtml(_permFdaExplain(fda?.status))}</p>
+    ${factsHtml}
     <div class="perm-link-row">
-      <button type="button" id="btn-mperm-open-prefs" class="perm-link"
-              data-test="mperm-open-prefs-btn"${tauriAvailable ? "" : " hidden"}>
-        ${icon("externalLink", 14)} 打开系统隐私设置
+      <button type="button" id="btn-perm-fda-open" class="perm-link"
+              data-test="perm-fda-open-btn"${tauriAvailable ? "" : " hidden"}>
+        ${icon("externalLink", 14)} 打开系统设置 → 完全磁盘访问
       </button>
-      <span class="perm-link-fallback" data-test="mperm-path-fallback"${tauriAvailable ? " hidden" : ""}>
+      <span class="perm-link-fallback" data-test="perm-fda-path-fallback"${tauriAvailable ? " hidden" : ""}>
         ${escapeHtml(PREFS_PATH_TEXT)}
       </span>
     </div>`;
-  const openBtn = document.getElementById("btn-mperm-open-prefs");
-  if (openBtn && tauriAvailable) {
+  const openBtn = document.getElementById("btn-perm-fda-open");
+  if (openBtn && invoke) {
     openBtn.addEventListener("click", async () => {
       openBtn.disabled = true;
       try {
         // 与 ISS-002A 深链同命令同目标：tauri-plugin-opener 1.x 的 open_url
-        await tauri.core.invoke("plugin:opener|open_url", { url: PREFS_DEEP_LINK });
+        await invoke("plugin:opener|open_url", { url: PREFS_DEEP_LINK });
       } catch (e) {
         // 跳转失败不静默吞错：弹路径文字作为降级（与 ISS-002A 同形态）
         alert("无法打开系统设置。请手动前往 " + PREFS_PATH_TEXT + "。");
@@ -951,6 +1018,78 @@ async function loadMonitorPermissions() {
       }
     });
   }
+}
+
+/** 通知卡：最近一次扫描的 notification_status 如实展示 + 通知页深链。 */
+function renderPermNotif(body, notif) {
+  const invoke = tauriInvoke();
+  const tauriAvailable = !!invoke;
+  const status = notif?.notification_status;
+  const badge = PERM_NOTIF_BADGES[status] || { text: "未登记", cls: "miss" };
+  const badgeNode = document.querySelector("#perm-notif-card [data-test='perm-notif-badge']");
+  if (badgeNode) {
+    badgeNode.className = `quality-chip ${badge.cls}`;
+    badgeNode.innerHTML = `${icon("activity", 12)} ${escapeHtml(badge.text)}`;
+  }
+  const run = notif?.run_id != null ? `#${notif.run_id}` : "";
+  let explain;
+  if (status === "submitted") {
+    explain = `最近一次扫描${run}完成时，系统通知已提交。`;
+  } else if (status === "failed") {
+    explain = `最近一次扫描${run}的系统通知提交失败；可核对系统通知设置后重试扫描。`;
+  } else if (status) {
+    explain = `最近一次扫描${run}的通知状态为「${status}」（如实展示，不推断）。`;
+  } else {
+    explain = "最近一次扫描未登记通知状态（可能尚未产生扫描运行）。";
+  }
+  body.innerHTML = `
+    <p class="perm-note">${escapeHtml(explain)} 通知经系统通知中心投递；如未看到通知，可在系统设置的通知页允许 Fathom。</p>
+    <div class="perm-link-row">
+      <button type="button" id="btn-perm-notif-open" class="perm-link"
+              data-test="perm-notif-open-btn"${tauriAvailable ? "" : " hidden"}>
+        ${icon("externalLink", 14)} 打开系统设置 → 通知
+      </button>
+      <span class="perm-link-fallback" data-test="perm-notif-path-fallback"${tauriAvailable ? " hidden" : ""}>
+        ${escapeHtml(NOTIFS_PATH_TEXT)}
+      </span>
+    </div>`;
+  const openBtn = document.getElementById("btn-perm-notif-open");
+  if (openBtn && invoke) {
+    openBtn.addEventListener("click", async () => {
+      openBtn.disabled = true;
+      try {
+        await invoke("plugin:opener|open_url", { url: NOTIFS_DEEP_LINK });
+      } catch (e) {
+        alert("无法打开系统设置。请手动前往 " + NOTIFS_PATH_TEXT + "。");
+      } finally {
+        openBtn.disabled = false;
+      }
+    });
+  }
+}
+
+async function loadPermissionHub() {
+  const panel = _ensurePermHubPanel();
+  if (!panel) return;
+  const fdaBody = panel.querySelector("[data-test='perm-fda-body']");
+  const notifBody = panel.querySelector("[data-test='perm-notif-body']");
+  if (!fdaBody || !notifBody) return;
+  const request = beginRequest("permHub");
+  let data = null;
+  try {
+    data = await fetchJSON("/api/permissions");
+    if (!request.current()) return;
+  } catch (e) {
+    if (!request.current()) return;
+    const msg = e.status === 0
+      ? "无法连接本地服务，权限状态暂不可用。"
+      : `权限状态加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`;
+    fdaBody.innerHTML = `<p class="hint">${escapeHtml(msg)}</p>`;
+    notifBody.innerHTML = `<p class="hint">${escapeHtml(msg)}</p>`;
+    return;
+  }
+  renderPermFda(fdaBody, data?.fda, data?.coverage);
+  renderPermNotif(notifBody, data?.notification);
 }
 
 /* ===== 后台自启（ISS-010B）=====
@@ -1782,13 +1921,12 @@ function loadUpdater() {
 }
 
 /* ISS-087：注入应用版本号到「关于」section 的 #about-version-num 节点；
- * 版本源 = fathom.__version__，由打包态或 /api/status 注入——本卡不修改
- * backend 接线，仅在 settings 模块自身可拿到的字面量场景使用：
+ * 版本源 = fathom.__version__（ISS-111 起随 /api/status 的 app_version
+ * 下发），由两处回填，更新检查返回值优先（两源一致时相同）：
  *  - 打包态：version 实际由 loadUpdater 通过 updater_check 返回 current_version 渲染
- *  - 浏览器/开发态：lastUpdaterStatus 不会更新；版本占位显示「未知」，不伪造数字
- * 兜底：若 #about-version-num 存在且 lastUpdaterStatus 已返回 current_version，
- * 即时回填（loadUpdater 早于本函数的首次调用，但 await 链已串行——这里用
- * 幂等回填确保任何顺序都可见）。 */
+ *  - 任意态：loadSettings 拉到 /api/status 后立即回填 lastStatusAppVersion——
+ *    版本在构建时已知，不再依赖用户点「检查更新」
+ * 兜底：两源都未到达时保留「未知」占位，不伪造数字。 */
 function renderAboutVersion() {
   const node = document.querySelector('[data-test="about-version-num"]');
   if (!node) return;
@@ -1797,7 +1935,13 @@ function renderAboutVersion() {
     node.textContent = fromUpdater;
     return;
   }
-  // 浏览器/开发态或 updater 尚未响应：保留「未知」字面量占位，避免硬编码误导。
+  // ISS-111：/api/status 的 app_version 已到即可回填（页面加载即拉取，
+  // 无需进入关于分区后再点检查更新）。
+  if (typeof lastStatusAppVersion === "string" && lastStatusAppVersion.length > 0) {
+    node.textContent = lastStatusAppVersion;
+    return;
+  }
+  // 两源都未到达：保留「未知」字面量占位，避免硬编码误导。
   if (!node.textContent || node.textContent === "—") {
     node.textContent = "未知";
   }
@@ -1818,6 +1962,11 @@ export const settingsPage = {
       ?.addEventListener("click", resetToDefaults);
     document.getElementById("schedule-form")
       ?.addEventListener("submit", saveScheduleConfig);
+    // ISS-111：监控分区末尾交叉说明的「前往权限分区」按钮（index.html 静态）
+    document.getElementById("btn-goto-permissions")
+      ?.addEventListener("click", () => {
+        activateSettingsSection("permissions", { persistHash: true });
+      });
   },
-  leave() { ["settings", "scanHistory", "settingsPermissions", "settingsAutostart", "settingsUpdater"].forEach(invalidateRequest); },
+  leave() { ["settings", "scanHistory", "settingsPermissions", "permHub", "settingsAutostart", "settingsUpdater"].forEach(invalidateRequest); },
 };

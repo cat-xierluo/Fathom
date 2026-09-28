@@ -104,3 +104,10 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 扫描回归包含真实 du、小目录阈值、同日覆盖、差分、保留及失败前不写入；安全浏览器夹具使用合成临时根和结构化 `DuResult`，不会扫描生产 HOME。折叠回归已移除恒真断言，并覆盖 `topn=1` 的父子替换、独立高排名目录、根路径、相似前缀、尾斜杠、正负变化与大输入复杂度。早期隔离反例与页面实测见 2026-09-12 项目内部审查记录（未随公开库分发），隔离操作见 [TESTING](TESTING.md)。
 
 不把现有单元测试、其他分支的提交说明或 cargo build 作为安装、系统通知、权限、tray 与定时任务已经可靠的证据。
+
+
+## macOS 主窗口滚动边界（ISS-114 候选）
+
+`apps/desktop/src-tauri/src/scroll_boundary.rs` 隔离平台限位：setup 在首次 helper 导航前，对 main WebView 通过 `with_webview` 主线程闭包应用原生回弹 mask=0。调用前检查 selector 与 ABI；不支持时输出诊断并保留窗口正常运行，不启用全局 macOSPrivateApi 配置。页面 `.page-container` 同时采用 `overscroll-behavior:none`，阻止内部容器自身的越界反馈，普通内容滚动保留。
+
+该 native selector 属于 WebKit 私有 SPI，适用性需运行时检查及系统版本实测；本模块不改变 helper、扫描或更新事务。生命周期与视觉证据须分开：初始化 mask 读回及导航保持证明接线，真实物理手势证明用户可见效果。

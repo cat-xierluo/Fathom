@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前期望值以脚本及 CI 为准：pytest **814**、API/浏览器 **39**、前端 refresh **200**（ISS-115 后 198 项，ISS-116 增加 2 项）、Rust 单测 **65**。变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；ISS-114 与主干集成候选的期望值为 pytest **814**、API/浏览器 **39**、前端 refresh **208**、Rust 单测 **67**。前端/Rust 计数已在合并候选本地复跑，Python 与云端 CI 结果以任务卡为准。变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -23,7 +23,7 @@ PLAYWRIGHT_BIN="$PWD/.runtime/playwright/node_modules/.bin/playwright" \
 PW_INSTALL=1 /bin/bash scripts/ci_browser_checks.sh
 ```
 
-GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（814）和 Rust 1.88 locked build+单测（65）；浏览器/API 检查（39）与前端 refresh 功能回归（200）在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
+GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（814）和 Rust 1.88 locked build+单测（67）；浏览器/API 检查（39）与前端 refresh 功能回归（208）在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
 
 本地/API/CLI 验收必须显式设置完整隔离边界：`FATHOM_RUNTIME_DIR` 派生 data/reports/logs，`FATHOM_SCAN_ROOT` 指定合成根，`FATHOM_RESOURCE_DIR` 指定只读资源，`FATHOM_PORT` 使用已核对的测试端口；CLI 也提供等价覆盖。旧 `FATHOM_DB` 仅作兼容，未指定运行根时其父目录成为完整运行根。`FATHOM_DU_TIMEOUT_S`（ISS-061，默认 14400 秒）设置单次 `du` 采集的安全时限：超时后本次扫描记为 `interrupted` 并保留上次有效快照；值必须是正的有限数，`0`、负数、非数字、`nan`、`inf` 一律在启动时被拒绝（不存在"无限超时"）；夹具里可用极小值（如 `0.001`）构造超时反例。端口占用须非零退出，不停止未知进程；install/uninstall/权限与真实 Finder 动作另属实机验证。
 
@@ -44,8 +44,8 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（814�
 
 ```bash
 /bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 814（ISS-116 同步）
-/bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 200（ISS-116 同步）
-/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 65（ISS-113 同步）
+/bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 208（ISS-114 与主干集成）
+/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 67（ISS-114 与主干集成）
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
   rustup run stable cargo check --target x86_64-apple-darwin --locked --offline \
   --manifest-path apps/desktop/src-tauri/Cargo.toml  # ≈ cargo locked offline (x86_64)：交叉 check，非原生 build
@@ -200,3 +200,11 @@ bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
 纯规划/文档 PR：检查 Markdown 链接、源文件引用、任务编号唯一、依赖无环、READY 条件、路线/任务/设计一致；核对现状语句与代码。不得因为描述了目标就把对应功能标完成。
 
 持续集成入口已由 ISS-031 建立；云端 CI 已恢复实跑（2026-09-26），额度再耗尽时的本地替代门禁见 §1.1，最近一次候选验收见任务卡证据。**发行门已把普通 CI 结果绑定进发行判定（ISS-101，#184）**：release.yml 前置 `release-gate` job（同完整 SHA 的 CI run success + 必需 job 恰为 ci.yml 当前清单且逐个 success + tag↔单一版本源一致 + 候选登记/制品指纹比对，全部 fail-closed），四类负向输入（同 SHA 失败/缺失、其他 SHA 成功、错 tag）已真实 runner 验证且构建 job 被拦截（探针 run 见 PR #184）；`probe_mode/probe_commit/probe_unbound` 为隔离探针 dispatch 入口（只跑门，绝不 build/upload/触碰 Release）。发布前仍需发行 workflow 对固定 tag 执行双架构 helper 冻结、更新签名和 draft Release 聚合；Apple 签名、公证、staple 按 DEC-022 延期；公开发布保持人工门。
+
+
+## 原生滚动边界验证（ISS-114）
+
+1. 使用临时运行根、合成扫描根、候选资源根和独立端口启动实际 Tauri 主入口；不替换 /Applications 产物，不连接生产数据库。核对 helper 身份和隔离路径后再操作。
+2. 检查原生初始化诊断：selector/ABI 可用时回弹 mask 被设为 0；不支持的路径应安全诊断，不影响窗口启动。该证据证明接线，不能证明物理回弹已消失。
+3. 五页在短/长内容和 980×640 下测试正常上下滚动、顶部/底部越界输入、侧栏/顶栏命中区、页面切换、详情与模态返回、键盘及图表。比较外框、主导航、顶栏、内容四层位置，手势中观察，不只在回弹结束后截图。
+4. 浏览器 wheel/scrollTop/坐标回归与原生 mask 探针均为辅助证据。物理触控板或鼠标连续手势未完成时标记 NOT_VERIFIED，父卡限位验收保持未关闭；不可把 Chromium 通过重新扩大为所有 macOS 输入已通过。

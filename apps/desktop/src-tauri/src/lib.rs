@@ -35,6 +35,8 @@ use tauri::{
 
 mod autostart;
 mod helper;
+#[cfg(target_os = "macos")]
+mod scroll_boundary;
 
 use helper::{
     default_runtime_dir, exhausted_status_json, locate_helper, spawn_helper, HelperEvent,
@@ -1817,6 +1819,16 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            // ISS-114：主 WebView 创建后、helper 首次导航前初始化原生滚动边界。
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(err) = scroll_boundary::install(&window) {
+                    eprintln!("[scroll-boundary] 初始化调度失败：{err}");
+                }
+            } else {
+                eprintln!("[scroll-boundary] 主窗口不存在，跳过原生边界初始化");
+            }
+
             // helper 句柄先初始化（runtime_dir 用环境变量或默认）
             let runtime_dir: PathBuf = std::env::var("FATHOM_RUNTIME_DIR")
                 .ok()

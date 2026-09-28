@@ -473,10 +473,14 @@ function createFixture() {
           error_message: "find 退出 1，3 行权限受限",
         });
       }
+      // ISS-114：真实长列表使两个窗口尺寸均产生内容滚动，不修改页面尺寸/样式。
+      const files = state.scenario === "scroll-long-list"
+        ? Array.from({ length: 48 }, (_, index) => ({ ...fileRow, path: `${ROOT}/Build/archive-${index}.img` }))
+        : [fileRow];
       // 默认 OK
       return json(res, 200, {
-        state: "ok", files: [fileRow], scope,
-        stats: stats(),
+        state: "ok", files, scope,
+        stats: stats({ find_output_lines: files.length }),
         truncated: false, raw_truncated: false,
         expired: false, cached: false, cache_age_s: null,
         error_message: null,
@@ -789,6 +793,70 @@ async function main() {
       }
       throw new Error(`等待夹具调用超时：${name} >= ${count}`);
     };
+
+    /* ---------- ISS-114：内容正常滚动，首尾边界不带动应用壳 ---------- */
+    // Chromium 能验证 CSS/布局和 wheel 滚动链；不能替代 macOS WKWebView
+    // 原生回弹或物理触控板实测。native mask 由真实桌面入口独立验收。
+    const readScrollBoundary = () => page.evaluate(() => {
+      const container = document.querySelector(".page-container");
+      const rect = (selector) => {
+        const r = document.querySelector(selector).getBoundingClientRect();
+        return { x: r.x, y: r.y, width: r.width, height: r.height };
+      };
+      return {
+        top: container.scrollTop,
+        max: container.scrollHeight - container.clientHeight,
+        documentTop: document.scrollingElement.scrollTop,
+        windowY: window.scrollY,
+        shell: rect(".app-shell"), sidebar: rect(".sidenav"), header: rect(".topbar"),
+        policy: getComputedStyle(container).overscrollBehaviorY,
+        rootPolicy: getComputedStyle(document.documentElement).overscrollBehaviorY,
+        bodyPolicy: getComputedStyle(document.body).overscrollBehaviorY,
+      };
+    });
+    const shellStayed = (before, after) => after.documentTop === 0 && after.windowY === 0 &&
+      ["shell", "sidebar", "header"].every((part) =>
+        ["x", "y", "width", "height"].every((axis) =>
+          Math.abs(before[part][axis] - after[part][axis]) < 1));
+    await setScenario("scroll-long-list");
+    for (const size of [{ width: 980, height: 640 }, { width: 1220, height: 820 }]) {
+      await page.setViewportSize(size);
+      await openPage("#/bigfiles");
+      await page.waitForFunction(() => document.querySelectorAll("#tbl-bigfiles tbody [data-reveal]").length === 48);
+      await page.waitForFunction(() => {
+        const el = document.querySelector(".page-container");
+        return el.scrollHeight > el.clientHeight + 10;
+      });
+      await page.$eval(".page-container", (el) => { el.scrollTop = 0; });
+      const initial = await readScrollBoundary();
+      const label = `${size.width}x${size.height}`;
+      record(`iss114-${label}-content-and-root-reject-overscroll`,
+        initial.policy === "none" && initial.rootPolicy === "none" && initial.bodyPolicy === "none",
+        JSON.stringify(initial));
+      const bounds = await page.locator(".page-container").boundingBox();
+      await page.mouse.move(bounds.x + bounds.width - 35, bounds.y + bounds.height / 2);
+      await page.mouse.wheel(0, 180);
+      await page.waitForTimeout(250);
+      const normal = await readScrollBoundary();
+      record(`iss114-${label}-wheel-scrolls-content-with-fixed-shell`,
+        normal.top > initial.top && normal.top <= normal.max && shellStayed(initial, normal),
+        JSON.stringify(normal));
+      await page.$eval(".page-container", (el) => { el.scrollTop = 0; });
+      await page.mouse.wheel(0, -1600);
+      await page.waitForTimeout(250);
+      const top = await readScrollBoundary();
+      record(`iss114-${label}-top-boundary-keeps-shell-in-viewport`,
+        top.top === 0 && shellStayed(initial, top), JSON.stringify(top));
+      await page.$eval(".page-container", (el) => { el.scrollTop = el.scrollHeight; });
+      await page.mouse.wheel(0, 1600);
+      await page.waitForTimeout(250);
+      const bottom = await readScrollBoundary();
+      record(`iss114-${label}-bottom-boundary-keeps-shell-in-viewport`,
+        bottom.max > 0 && Math.abs(bottom.top - bottom.max) <= 1 && shellStayed(initial, bottom),
+        JSON.stringify(bottom));
+    }
+
+    await setScenario(null);
 
     /* ---------- 总览基线 ---------- */
     await openPage("#/overview");

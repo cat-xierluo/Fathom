@@ -996,6 +996,7 @@ name = "fathom-desktop"
 version = "0.3.5"
 dependencies = [
  "glob",
+ "objc2",
  "serde",
  "serde_json",
  "tauri",

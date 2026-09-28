@@ -76,17 +76,14 @@
 * { box-sizing: border-box; }
 
 /* ISS-082：应用壳固定布局。文档级滚动归零（html/body 不可滚），
- * 只有 .page-container 内容区独立滚动——消除两类实机反例：
+ * 只有 .page-container 内容区独立滚动，约束以下布局问题：
  *  1) app-shell(100vh) 之外还有页脚，文档恒比视口高一截，
  *     短内容页也能滚出内容范围出现空白（含 WebView 橡皮筋放大）；
  *  2) 侧栏原先 sticky 的约束底边是 app-shell 底边，滚动进入页脚段
- *     时被顶出视口，按钮随滚动位移。壳内元素天然固定后零位移。 */
-/* WKWebView（Tauri 壳）滚动弹性根治（09-27 走查反例：设置页上滑侧栏跟动）：
- * wry 0.55 只在 iOS 禁 bounce（setBounces(false)），macOS 无开关——文档根只要
- * 在 WK 视口下可滚（哪怕 1px），原生根滚动器就会整页弹性回弹，视觉上侧栏/
- * 顶栏跟着动。html/body 钉死为 fixed（inset:0）使根布局永不溢出 → 根滚动器
- * 无可弹内容；内部滚动与 sticky 全在 .page-container，不受影响。Chromium
- * 无副作用（082 夹具合同不变）。 */
+ *     时被顶出视口，按钮随文档滚动位移。 */
+/* ISS-114：固定根布局避免文档滚动，CSS none 约束支持该属性的引擎。
+ * WKWebView 原生回弹由桌面壳另作能力检测和初始化；此布局规则本身
+ * 不能证明 macOS 物理手势不会带动整个 WebView。 */
 html, body {
   position: fixed;
   inset: 0;
@@ -241,12 +238,12 @@ body {
 }
 
 /* ISS-082：唯一滚动容器——内容区独立滚动；min-height:0 使 flex 子项
- * 允许收缩，否则 overflow 不生效。overscroll-behavior 阻止滚动链
- * 传出内容区（WebView 中防整页橡皮筋）。ISS-105：工作区内边距对齐
+ * 允许收缩，否则 overflow 不生效。none 同时禁止滚动链和内容边界
+ * 回弹，保留区内正常滚动；原生壳边界另行设置。ISS-105：工作区内边距对齐
  * 8pt 栅格 24px（ISS-104 候选） */
 .page-container {
   padding: var(--sp6) var(--sp6) 40px; max-width: 1280px; width: 100%; margin: 0 auto;
-  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: none;
 }
 .page.hidden { display: none; }
 

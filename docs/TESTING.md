@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；ISS-114 与主干集成候选的期望值为 pytest **814**、API/浏览器 **39**、前端 refresh **208**、Rust 单测 **67**。前端/Rust 计数已在合并候选本地复跑，Python 与云端 CI 结果以任务卡为准。变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前主干期望值为 pytest **814**、API/浏览器 **39**、前端 refresh **208**、Rust 单测 **67**。[ISS-114 合并候选 CI](https://github.com/cat-xierluo/Fathom/actions/runs/36416710137) 六项通过，本地也按这些计数复跑；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -38,14 +38,14 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（814�
 
 云端 job 在步骤前被 billing 拒绝时只记 `NOT_RUN`。本地 arm64 通过不能替代原生 x86_64；普通测试不能替代下文的 Tauri GUI、隔离安装、签名、公证、stapling 或真实更新门禁。额度恢复后重新启用普通 CI。
 
-**2026-09-26 现状更正**：账户额度已恢复，CI 已启用实跑——当前 main 全绿（[run 36255706181](https://github.com/cat-xierluo/Fathom/actions/runs/36255706181)：双架构 pytest 753、API/浏览器 39 + 前端 refresh 160、双架构 cargo locked build+单测 60、品牌几何，ISS-100 接入后口径）；下述停用历史与本地替代链保留为历史与回退路径，额度例外不再适用于测试红灯。
+**2026-09-28 现状**：账户额度已恢复，CI 已启用实跑；主干合并前的 [ISS-114 run 36416710137](https://github.com/cat-xierluo/Fathom/actions/runs/36416710137) 六项全绿（双架构 pytest 814、API/浏览器 39 + 前端 refresh 208、双架构 cargo locked build+单测 67、品牌几何）。下述停用记录与本地替代链仅保留为历史和额度再次耗尽时的回退路径，额度例外不适用于测试红灯。
 
-**2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
+**2026-09-15 至 09-26 历史状态**：`CI` workflow 曾因额度停用（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发），当时 push/PR 不创建 run，`gh pr checks` 为空属预期。现已恢复实跑；下列本地替代链用于额度故障时按主干同一计数复跑，与云端作业对应：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 814（ISS-116 同步）
-/bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 208（ISS-114 与主干集成）
-/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 67（ISS-114 与主干集成）
+/bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 208
+/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 67
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
   rustup run stable cargo check --target x86_64-apple-darwin --locked --offline \
   --manifest-path apps/desktop/src-tauri/Cargo.toml  # ≈ cargo locked offline (x86_64)：交叉 check，非原生 build

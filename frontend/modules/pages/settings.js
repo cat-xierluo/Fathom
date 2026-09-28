@@ -853,7 +853,7 @@ async function loadPermissions() {
  * 三张权限项卡（数据源 = GET /api/permissions）：
  * - 完全磁盘访问：后端对 TCC 保护路径只读探测的 granted/denied/unknown
  *   三态（探测异常如实 unknown，不伪造）；辅助呈现最近扫描的受限/校验未确认
- *   计数与占比（ISS-091 监控卡数据迁入本分区，原卡移除、原位留交叉
+ *   计数（ISS-091 监控卡数据迁入本分区，原卡移除、原位留交叉
  *   说明——见 index.html）；深链 = 系统设置完全磁盘访问页。
  * - 通知：最近一次扫描的 notification_status（submitted/failed/未登记
  *   如实展示，不推断）；深链 = 系统设置通知页。
@@ -868,8 +868,8 @@ async function loadPermissions() {
  * - 状态徽章配色用既有语义 token：granted→--ok、denied→--danger、
  *   unknown→--muted（.quality-chip 既有 ok/miss 类 + ISS-111 新增 danger
  *   浅底派生，无新色板）；零 emoji；
- * - 占比文案沿用 ISS-095 口径（_permRatioText：denied 是 du stderr 行数、
- *   可超目录总数，比值 >100% 时改用倍数表述）。 */
+ * - denied 是 du stderr 权限错误行数，与已记录目录数不是同一单位，不展示
+ *   相除所得百分比或倍数。 */
 const PERM_HUB_PANEL_ID = "permissions-hub-panel";
 
 /* 通知页深链：与 FDA 深链同走 opener 权限（ISS-068 ACL 已备
@@ -887,19 +887,6 @@ const PERM_NOTIF_BADGES = {
   submitted: { text: "已提交", cls: "ok" },
   failed: { text: "失败", cls: "danger" },
 };
-
-/** denied 占比文案：分母 dir_count<=0（异常快照/防御值）时不显示，只留数字。
- * ISS-095：denied 是 du stderr 的受限行数、可超过目录总数（比值 >100%），
- * 此时「（1250.0%）」会被读成「1250% 的目录受限」——语义错误；改用
- * 「受限行数为目录数的 X.X 倍」表述。比值 ≤100%（含 denied=0）维持
- * 「（N%）」形态不变。（ISS-111 自原监控卡 _mpermRatioText 原样迁入。） */
-function _permRatioText(denied, dirCount) {
-  if (!Number.isFinite(dirCount) || dirCount <= 0) return "";
-  if (denied > dirCount) {
-    return `${denied} / ${dirCount}（受限行数为目录数的 ${(denied / dirCount).toFixed(1)} 倍）`;
-  }
-  return `${denied} / ${dirCount}（${((denied / dirCount) * 100).toFixed(1)}%）`;
-}
 
 function _ensurePermHubPanel() {
   const host = document.getElementById("settings-permissions-extra");
@@ -974,8 +961,6 @@ function renderPermFda(body, fda, coverage) {
   if (coverage && coverage.snapshot_id != null) {
     const denied = Number(coverage.denied_count ?? 0) || 0;
     const vanished = Number(coverage.vanished_count ?? 0) || 0;
-    const dirCount = Number(coverage.dir_count ?? 0) || 0;
-    const ratio = _permRatioText(denied, dirCount);
     const scanTime = coverage.created_at
       ? escapeHtml(String(coverage.created_at).slice(0, 16).replace("T", " "))
       : "时间未知";
@@ -984,7 +969,7 @@ function renderPermFda(body, fda, coverage) {
       <div class="perm-facts" data-test="perm-fda-facts">
         <div class="perm-fact">
           <span class="perm-fact-num" data-test="perm-fda-denied" data-sev="${denied > 0 ? "warn" : "ok"}">${escapeHtml(String(denied))}</span>
-          <span class="perm-fact-label">读取受限错误（条）${ratio ? ` · 错误行数 / 已记录目录数 ${escapeHtml(ratio)}` : ""}</span>
+          <span class="perm-fact-label">读取受限错误（条）</span>
         </div>
         <div class="perm-fact">
           <span class="perm-fact-num" data-test="perm-fda-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>

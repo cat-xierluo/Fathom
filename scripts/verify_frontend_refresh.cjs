@@ -128,8 +128,8 @@ function createFixture() {
                 dir_count: 12 }, snapshot(1, "2026-09-12T10:00:00")];
     }
     if (state.mode === "denied-over") {
-      // ISS-095：denied 是 du stderr 的受限行数、可超过目录总数——
-      // 25/2 = 12.5 倍，权限卡占比文案应改用倍数表述而非「（1250.0%）」。
+      // denied 是 du stderr 权限错误行数，可超过已记录目录数；不能拿
+      // 两种计数相除推断受限覆盖率或显示倍数。
       return [{ ...latest, denied_count: 25, collection_status: "partial",
                 dir_count: 2 }, snapshot(1, "2026-09-12T10:00:00")];
     }
@@ -3016,7 +3016,7 @@ async function main() {
      * coverage 引用当前模式 latest 快照）。
      * 1) 浏览器态（默认 page，无 Tauri 桥）：切到 permissions 分区——
      *    三张权限卡存在；FDA 徽章=探测可读 + partial-all 的 denied=6 /
-     *    vanished=4 / 6/40（15.0%）如实呈现；深链按钮隐藏、降级路径文字
+     *    vanished=4，如实呈现原始计数，不显示 6/40 比值；深链按钮隐藏、降级路径文字
      *    可见，不渲染假 <a>；通知徽章=已提交；后台计划卡点击「前往」
      *    切到 schedule 分区。
      * 2) scenario=fda-denied / fda-unknown：徽章=探测受限（--danger）/未知
@@ -3067,10 +3067,9 @@ async function main() {
         permHubBrowser.fdaBadge.includes("探测可读") && permHubBrowser.fdaBadgeCls.includes("ok") &&
         permHubBrowser.notifBadge.includes("已提交") && permHubBrowser.notifBadgeCls.includes("ok"),
       JSON.stringify({ fda: permHubBrowser.fdaBadge, notif: permHubBrowser.notifBadge }).slice(0, 160));
-    record("perm-fda-granted-badge-with-coverage-numbers",
+    record("perm-fda-granted-badge-with-raw-counts",
       permHubBrowser.denied === "6" && permHubBrowser.vanished === "4" &&
-        permHubBrowser.deniedLabel.includes("6 / 40") &&
-        permHubBrowser.deniedLabel.includes("15.0%") &&
+        permHubBrowser.deniedLabel.trim() === "读取受限错误（条）" &&
         permHubBrowser.vanishedLabel.includes("目录状态未确认") &&
         permHubBrowser.fdaNote.includes("当前服务可读取探测位置") &&
         permHubBrowser.fdaNote.includes("不能保证扫描范围内所有路径都可读"),
@@ -3080,8 +3079,7 @@ async function main() {
         permHubBrowser.fdaNote.includes("授权变更不会改写旧快照") &&
         permHubBrowser.fdaNote.includes("du 输出的权限错误行数") &&
         permHubBrowser.fdaNote.includes("两类计数可能指向同一路径，不能相加成不同目录数") &&
-        permHubBrowser.deniedLabel.includes("读取受限错误（条）") &&
-        permHubBrowser.deniedLabel.includes("错误行数 / 已记录目录数"),
+        permHubBrowser.deniedLabel.trim() === "读取受限错误（条）",
       permHubBrowser.fdaNote.slice(0, 180));
     record("perm-notif-submitted-badge-and-note",
       permHubBrowser.notifBadge.includes("已提交") &&
@@ -3132,10 +3130,15 @@ async function main() {
     const permUnknown = await page.evaluate(() => ({
       badge: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent || "",
       cls: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.className || "",
+      denied: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")?.textContent || "",
+      deniedLabel: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")
+        ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
     }));
     record("perm-fda-unknown-badge-not-fabricated",
       permUnknown.badge.includes("未知") && permUnknown.cls.includes("miss") &&
-        !permUnknown.cls.includes("ok") && !permUnknown.cls.includes("danger"),
+        !permUnknown.cls.includes("ok") && !permUnknown.cls.includes("danger") &&
+        permUnknown.denied === "6" &&
+        permUnknown.deniedLabel.trim() === "读取受限错误（条）",
       JSON.stringify(permUnknown));
     await setScenario(null);
 
@@ -3207,10 +3210,10 @@ async function main() {
       tpage6Errors.join("; "));
     await tpage6.close();
 
-    /* ---------- ISS-095 占比口径迁入权限分区：>100% 倍数文案 + 空库引导 ----------
+    /* ---------- ISS-115 比值移除：高错误行数/零行数/空库 ----------
      * 1) denied-over 夹具（denied=25 / dir_count=2；du stderr 行数可超目录数）：
-     *    权限分区 FDA 卡标签显示「25 / 2（受限行数为目录数的 12.5 倍）」，
-     *    不再出现 >100% 的百分比读数。
+     *    权限分区只显示 25 条，不显示百分比、倍数或除法。
+     *    dual 夹具 denied=0 / dir_count=3 时也只显示原始 0 条。
      * 2) empty 夹具（无快照）：FDA 卡显示「尚未扫描」引导文案，不渲染
      *    数字事实（denied/vanished 均不出现）。
      * 两组都在浏览器态（默认 page）走真实 UI 验证；setMode 重置竞态，
@@ -3224,14 +3227,22 @@ async function main() {
       label: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")
         ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
     }));
-    record("perm-fda-denied-over-uses-multiple-not-percent",
-      permOver.denied === "25" &&
-        permOver.label.includes("25 / 2") &&
-        permOver.label.includes("受限行数为目录数的 12.5 倍") &&
-        !permOver.label.includes("%"),
-      JSON.stringify(permOver).slice(0, 160));
     const permOverShot = path.join(evidenceDir, "settings-perm-hub-denied-over-1220x820.png");
     await page.screenshot({ path: permOverShot });
+
+    await setMode("dual");
+    await openPage("#/settings");
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForSelector("#perm-fda-card [data-test='perm-fda-denied']");
+    const permZero = await page.evaluate(() => ({
+      denied: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")?.textContent || "",
+      label: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")
+        ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
+    }));
+    record("perm-fda-denied-over-and-zero-show-counts-without-ratio",
+      permOver.denied === "25" && permOver.label.trim() === "读取受限错误（条）" &&
+        permZero.denied === "0" && permZero.label.trim() === "读取受限错误（条）",
+      JSON.stringify({ over: permOver, zero: permZero }).slice(0, 180));
 
     await setMode("empty");
     await openPage("#/settings");

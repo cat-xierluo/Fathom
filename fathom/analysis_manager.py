@@ -513,8 +513,18 @@ class AnalysisManager:
             )
         conn = db.connect(self._db_path)
         try:
-            facts = self._build_facts(
-                conn, preview.a_snapshot_id, preview.b_snapshot_id)
+            try:
+                facts = self._build_facts(
+                    conn, preview.a_snapshot_id, preview.b_snapshot_id)
+            except AnalysisError as exc:
+                if exc.reason_code == "snapshot_not_found":
+                    # 所选 a/b 已被替换/淘汰：对预览而言是「范围失效」，
+                    # 不是快照查询错误——要求重新预览。
+                    raise AnalysisError(
+                        "preview_stale",
+                        "所选区间快照已被替换或淘汰，请重新生成预览",
+                    ) from exc
+                raise
         finally:
             conn.close()
         if facts.facts_digest != preview.facts_digest:
@@ -530,7 +540,8 @@ class AnalysisManager:
         """执行预览：只收 preview_id + request_digest + idempotency_key。
 
         返回 ``(job 视图, 是否幂等重放)``。重复 execute（同 key 同 digest）
-        返回同一 job；不同请求忙时 409；先原子占位再 spawn。
+        返回同一 job（含完成后重放与并发双击的短暂重查）；不同请求忙时
+        409；先原子占位再 spawn。
         """
         if not isinstance(idempotency_key, str) or not idempotency_key.strip() \
                 or len(idempotency_key) > 200:
@@ -540,6 +551,9 @@ class AnalysisManager:
                 status_code=400,
             )
         idempotency_key = idempotency_key.strip()
+
+        # 先答「功能是否开放」（403），再答「资源是否存在」（404）。
+        self._enabled_or_403()
 
         existing = self._find_job_by_idempotency(idempotency_key)
         if existing is not None:
@@ -559,7 +573,24 @@ class AnalysisManager:
 
         # 租约外粗检（快速失败）；租约内复检才是权威（防 TOCTOU）。
         refuse_if_upgrade_txn()
-        lease = AnalysisLease.acquire(self._lock_path, source="analysis")
+        try:
+            lease = AnalysisLease.acquire(self._lock_path, source="analysis")
+        except AnalysisBusy:
+            # 并发双击：胜者取得租约后毫秒级插入 starting 行；败者短暂
+            # 重查幂等表即可返回同一 job。有界 1 秒，超时按忙 409（不排队）。
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                time.sleep(0.05)
+                existing = self._find_job_by_idempotency(idempotency_key)
+                if existing is not None:
+                    if existing["request_digest"] != request_digest:
+                        raise AnalysisError(
+                            "idempotency_conflict", "该幂等键已被不同请求使用")
+                    return existing, True
+            raise AnalysisError(
+                "analysis_busy",
+                "已有分析在进行中；请等待其结束，不会排队或自动重试",
+            ) from None
         try:
             return self._start_job_under_lease(lease, preview, idempotency_key,
                                                request_digest)
@@ -1066,13 +1097,19 @@ class AnalysisManager:
             snap = conn.execute("SELECT * FROM snapshots WHERE id=?",
                                 (sid,)).fetchone()
             if snap is None:
+                # 同日**后继**（created_at 晚于被删快照、同数据集）存在
+                # → 该位置被同日替换（create_snapshot 同日落盘行为）；
+                # 无后继 → 按保留策略淘汰。基线早于被删快照，不算替换。
                 same_day = conn.execute(
                     "SELECT COUNT(*) c FROM snapshots WHERE root IS ? "
                     "AND min_kb IS ? AND exclude_names IS ? "
-                    "AND substr(created_at,1,10) = ?",
+                    "AND substr(created_at,1,10) = substr(?,1,10) "
+                    "AND (created_at > ? OR (created_at = ? AND id > ?))",
                     (row["dataset_root"], row["dataset_min_kb"],
                      str(row["dataset_exclude_names"] or ""),
-                     str(row[created_column])[:10]),
+                     str(row[created_column]),
+                     str(row[created_column]), str(row[created_column]),
+                     sid),
                 ).fetchone()["c"]
                 reason = "snapshot_replaced" if same_day else "snapshot_pruned"
                 return True, reason

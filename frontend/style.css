@@ -560,6 +560,10 @@ tr:hover .btn-mini { opacity: 1; }
   background: var(--bg); border: 1px solid var(--border);
   padding: 4px 10px; border-radius: 6px;
 }
+/* ISS-118：与 .perm-link[hidden] 同源镜像——降级路径文字的 display:inline-flex
+ * 同样覆盖 UA 默认 [hidden]，Tauri（桥/打包）可用态下 hidden 属性落到 fallback
+ * 却仍渲染，与深链按钮双可见；属性选择器补回互斥，未 hidden 态不受影响。 */
+.perm-link-fallback[hidden] { display: none; }
 .perm-note { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .perm-rescan { display: inline-flex; align-items: center; gap: 6px; }
 

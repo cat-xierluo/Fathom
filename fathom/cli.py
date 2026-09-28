@@ -567,6 +567,29 @@ def cmd_upgrade_detect(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agent_supervisor(args: argparse.Namespace) -> int:
+    """看门 shim 的隐藏子命令（ISS-035B 冻结包接缝）。
+
+    PyInstaller 冻结 helper 下 ``sys.executable -c`` 不可用；
+    analysis_manager 的 ``production_shim_argv_factory`` 在 ``sys.frozen``
+    时以 ``fathom-helper _agent-supervisor <deadline> <grace> <fd> --
+    <目标argv…>`` 启动进程看门。执行体与开发态 ``-c`` 形态是同一份
+    ``agent_runtime._SUPERVISOR_SOURCE``（单一实现）。非产品功能面：
+    不注册进共享 argparse（main 顶部直通分发），仅供 runner 的 shim
+    注入使用。"""
+    from . import agent_runtime  # 延迟导入：本子命令不触碰任何运行配置
+    return agent_runtime.run_supervisor_command(list(args.supervisor_args))
+
+
+class _SupervisorArgs:
+    """直通分发时的最小 args 载荷（替代 argparse Namespace）。"""
+
+    __slots__ = ("supervisor_args",)
+
+    def __init__(self, supervisor_args: list[str]) -> None:
+        self.supervisor_args = supervisor_args
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fathom", description="Fathom ：目录大小历史追踪")
     parser.add_argument("--version", action="store_true",
@@ -654,6 +677,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--app", dest="app_path", default=None,
                    help="可选的安装目录路径；缺失时视为半升级态")
     p.set_defaults(func=cmd_upgrade_detect)
+
+    # ISS-035B 冻结包接缝：看门 shim 子命令**不注册**进共享 argparse——
+    # 注册即使 help 抑制也会把名字暴露进用法 choices；生产形态
+    # （fathom-helper _agent-supervisor …）在下方 main 顶部直通分发。
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list[:1] == ["_agent-supervisor"]:
+        # 直通分发：不经共享 argparse，也不触碰任何运行配置——损坏的
+        # settings.json 不得阻断 CLI 的有界回收。
+        return cmd_agent_supervisor(
+            _SupervisorArgs(supervisor_args=args_list[1:]))
 
     args = parser.parse_args(argv)
     if args.version:

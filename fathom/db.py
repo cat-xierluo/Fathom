@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE snapshots (
@@ -59,9 +59,64 @@ _SCHEMA_STATEMENTS = (
     )""",
 )
 
+# v7（ISS-035B）：分析生命周期与可信解读两表。故意不建对 snapshots 的
+# 外键——快照被保留策略/同日替换删除时，生命周期记录与已保存证据必须
+# 存活，由读取层把「a/b 原依据缺失」评估为 expired（带原因），绝不级联
+# 删除用户可撤销的证据。
+#
+# agent_analyses 只保存成功且验证通过的解读（失败/取消只有 run 行，
+# 无半写正文）；可信正文与 succeeded 状态转换在同一事务提交（manager）。
+_ANALYSIS_TABLE_STATEMENTS = (
+    """CREATE TABLE analysis_runs (
+        job_id             TEXT NOT NULL PRIMARY KEY,
+        a_snapshot_id      INTEGER NOT NULL,
+        b_snapshot_id      INTEGER NOT NULL,
+        request_digest     TEXT NOT NULL,
+        facts_digest       TEXT NOT NULL,
+        prompt_version     TEXT NOT NULL,
+        idempotency_key    TEXT NOT NULL UNIQUE,
+        runtime_id         TEXT NOT NULL,
+        runtime_executable TEXT NOT NULL,
+        runtime_version    TEXT,
+        settings_revision  INTEGER NOT NULL,
+        consent_revision   INTEGER NOT NULL,
+        status             TEXT NOT NULL,
+        reason_code        TEXT,
+        owner_id           TEXT NOT NULL,
+        created_at         TEXT NOT NULL,
+        started_at         TEXT,
+        finished_at        TEXT,
+        duration_ms        INTEGER,
+        revoked_at         TEXT
+    )""",
+    """CREATE TABLE agent_analyses (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id                   TEXT NOT NULL UNIQUE REFERENCES analysis_runs(job_id),
+        a_snapshot_id            INTEGER NOT NULL,
+        b_snapshot_id            INTEGER NOT NULL,
+        a_created_at             TEXT NOT NULL,
+        b_created_at             TEXT NOT NULL,
+        dataset_root             TEXT NOT NULL,
+        dataset_min_kb           INTEGER,
+        dataset_exclude_names    TEXT NOT NULL DEFAULT '',
+        request_digest           TEXT NOT NULL,
+        facts_digest             TEXT NOT NULL,
+        prompt_version           TEXT NOT NULL,
+        adapter_contract_version INTEGER NOT NULL,
+        runtime_id               TEXT NOT NULL,
+        runtime_version          TEXT,
+        model                    TEXT,
+        result_json              TEXT NOT NULL,
+        facts_json               TEXT NOT NULL,
+        manifest_json            TEXT NOT NULL,
+        created_at               TEXT NOT NULL
+    )""",
+)
+
 # Kept as a readable schema reference for tests and diagnostics.
 # 语句保持 v2 形态：全新库由迁移链 0→…→SCHEMA_VERSION 逐级建表并补列，
-# 保证"全新建库"与"旧库升级"到达完全相同的最终结构。
+# 保证"全新建库"与"旧库升级"到达完全相同的最终结构；v7 起分析两表由
+# 迁移链末端（_migrate_v6）追加，同样两条路径同构。
 SCHEMA = ";\n\n".join(_SCHEMA_STATEMENTS) + ";\n"
 
 # v3（ISS-021）为 snapshots 增加口径/质量元数据；两列均可空——
@@ -133,15 +188,51 @@ _EXPECTED_TABLE_INFO = {
     ),
 }
 
+# v7 形态 = v6 基础 + 分析两表；v6 及更早版本的期望结构不含它们，
+# 供迁移链中间状态校验（v7 表在 _migrate_v6 中创建）。
+_ANALYSIS_TABLE_INFO = {
+    "analysis_runs": (
+        ("job_id", "TEXT", 1, 1), ("a_snapshot_id", "INTEGER", 1, 0),
+        ("b_snapshot_id", "INTEGER", 1, 0), ("request_digest", "TEXT", 1, 0),
+        ("facts_digest", "TEXT", 1, 0), ("prompt_version", "TEXT", 1, 0),
+        ("idempotency_key", "TEXT", 1, 0), ("runtime_id", "TEXT", 1, 0),
+        ("runtime_executable", "TEXT", 1, 0), ("runtime_version", "TEXT", 0, 0),
+        ("settings_revision", "INTEGER", 1, 0), ("consent_revision", "INTEGER", 1, 0),
+        ("status", "TEXT", 1, 0), ("reason_code", "TEXT", 0, 0),
+        ("owner_id", "TEXT", 1, 0), ("created_at", "TEXT", 1, 0),
+        ("started_at", "TEXT", 0, 0), ("finished_at", "TEXT", 0, 0),
+        ("duration_ms", "INTEGER", 0, 0), ("revoked_at", "TEXT", 0, 0),
+    ),
+    "agent_analyses": (
+        ("id", "INTEGER", 0, 1), ("job_id", "TEXT", 1, 0),
+        ("a_snapshot_id", "INTEGER", 1, 0), ("b_snapshot_id", "INTEGER", 1, 0),
+        ("a_created_at", "TEXT", 1, 0), ("b_created_at", "TEXT", 1, 0),
+        ("dataset_root", "TEXT", 1, 0), ("dataset_min_kb", "INTEGER", 0, 0),
+        ("dataset_exclude_names", "TEXT", 1, 0),
+        ("request_digest", "TEXT", 1, 0), ("facts_digest", "TEXT", 1, 0),
+        ("prompt_version", "TEXT", 1, 0),
+        ("adapter_contract_version", "INTEGER", 1, 0),
+        ("runtime_id", "TEXT", 1, 0), ("runtime_version", "TEXT", 0, 0),
+        ("model", "TEXT", 0, 0), ("result_json", "TEXT", 1, 0),
+        ("facts_json", "TEXT", 1, 0), ("manifest_json", "TEXT", 1, 0),
+        ("created_at", "TEXT", 1, 0),
+    ),
+}
+_EXPECTED_TABLE_INFO_V7 = dict(_EXPECTED_TABLE_INFO, **_ANALYSIS_TABLE_INFO)
+
 
 def _expected_table_info(
     version: int,
 ) -> dict[str, tuple[tuple[str, str, int, int], ...]]:
-    """指定版本下每张表的期望列结构（v6 增加路径分类计数）。
+    """指定版本下每张表的期望列结构（v7 增加分析两表，v6 增加路径分类计数）。
 
     v4/v5 保留各自结构，用于迁移链中间状态校验；v3 及更早同理。
+    v6 形态不含分析两表——它们由 6→7 迁移步骤创建。
     """
     if version >= SCHEMA_VERSION:
+        return _EXPECTED_TABLE_INFO_V7
+    if version >= 6:
+        # v6 形态：v6 快照结构 + 无分析两表（它们由 6→7 步骤创建）。
         return _EXPECTED_TABLE_INFO
     if version >= 5:
         return dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V5)
@@ -162,11 +253,17 @@ _EXPECTED_FOREIGN_KEYS = {
     "scan_run_details": (
         ("scan_runs", "run_id", "id", "NO ACTION", "CASCADE", "NONE"),
     ),
+    "analysis_runs": (),
+    "agent_analyses": (
+        # 故意不级联：analysis_runs 行删除（保留策略）须先显式删除关联
+        # agent_analyses 行，避免「清生命周期顺手删证据」的隐式通道。
+        ("analysis_runs", "job_id", "job_id", "NO ACTION", "NO ACTION", "NONE"),
+    ),
 }
 
 _EXPECTED_WITHOUT_ROWID = {"snapshots": 0, "entries": 1, "volume_stats": 0, "scan_runs": 0,
-                           "scan_run_details": 0}
-_EXPECTED_AUTOINCREMENT = {"snapshots", "scan_runs"}
+                           "scan_run_details": 0, "analysis_runs": 0, "agent_analyses": 0}
+_EXPECTED_AUTOINCREMENT = {"snapshots", "scan_runs", "agent_analyses"}
 
 _V1_TABLES = frozenset({"snapshots", "entries", "volume_stats", "scan_runs"})
 
@@ -314,17 +411,20 @@ def _snapshot_column_names(conn: sqlite3.Connection) -> set[str]:
 
 
 def _detect_schema_version(conn: sqlite3.Connection) -> int:
-    """根据 snapshots 实际列结构推断 schema 版本。
+    """根据实际结构推断 schema 版本。
 
     旧启发式「scan_run_details 存在即 v2」在后续版本引入新列后失效——
-    snapshots 才是版本演化的承载列。检测路径与 _migrate_v3/v4/v5 的幂等
-    检查一致：两分类列 → 6；exclude_names → 5；vanished_count → 4；
-    min_kb+collection_status → 3；
+    snapshots 才是版本演化的承载列；v7 的承载结构是分析两表（snapshots
+    列在 v6/v7 间无差异），故先查表存在性：
+    analysis_runs+agent_analyses → 7；两分类列 → 6；exclude_names → 5；
+    vanished_count → 4；min_kb+collection_status → 3；
     scan_run_details 表存在 → 2；只有 v1 表 → 1；空库 → 0。
     """
     tables = _user_tables(conn)
     if not tables:
         return 0
+    if {"analysis_runs", "agent_analyses"} <= tables:
+        return 7
     if "snapshots" in tables:
         cols = _snapshot_column_names(conn)
         if {"confirmed_missing_count", "path_unverified_count"} <= cols:
@@ -402,11 +502,31 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
     """追加路径状态分类，旧行保持 NULL，不猜测历史原因。"""
     columns = _snapshot_column_names(conn)
     if {"confirmed_missing_count", "path_unverified_count"} <= columns:
-        _validate_schema(conn, allow_missing=False, version=6)
+        # 与 v2/v3/v4 的幂等分支同口径：按实际结构推断版本校验，不硬编码——
+        # v7 起实际结构可能已是更高版本（如 user_version 被手动清零的 v7 库）。
+        _validate_schema(conn, allow_missing=False, version=_detect_schema_version(conn))
         return
     _validate_schema(conn, allow_missing=False, version=5)
     for ddl in _SNAPSHOT_ALTER_V6:
         conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+
+
+def _migrate_v6(conn: sqlite3.Connection) -> None:
+    """v6→v7（ISS-035B）：追加分析生命周期（analysis_runs）与可信解读
+    （agent_analyses）两表。
+
+    与既有迁移同口径：幂等——两表已齐全（如 user_version 被手动回退）时
+    只做结构校验，不重复建表；CREATE TABLE 在迁移事务内执行，任何失败
+    随事务回滚（含建到一半的表），既有数据不受影响。两表为空表创建，
+    不迁移任何历史行——分析功能此前未上线，不存在待迁移数据。"""
+    tables = _user_tables(conn)
+    if {"analysis_runs", "agent_analyses"} <= tables:
+        _validate_schema(conn, allow_missing=False,
+                         version=_detect_schema_version(conn))
+        return
+    _validate_schema(conn, allow_missing=False, version=6)
+    for statement in _ANALYSIS_TABLE_STATEMENTS:
+        conn.execute(statement)
 
 
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
@@ -416,6 +536,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     3: _migrate_v3,
     4: _migrate_v4,
     5: _migrate_v5,
+    6: _migrate_v6,
 }
 
 

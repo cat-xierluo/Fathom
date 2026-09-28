@@ -70,8 +70,9 @@ def test_partial_known_v0_schema_is_completed(tmp_path):
         assert db.schema_version(conn) == db.SCHEMA_VERSION
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
+        # v7（ISS-035B）起最终结构含分析两表（迁移链末端追加）。
         assert tables == {"snapshots", "entries", "volume_stats", "scan_runs",
-                          "scan_run_details"}
+                          "scan_run_details", "analysis_runs", "agent_analyses"}
         assert conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 1
     finally:
         conn.close()
@@ -241,6 +242,9 @@ def test_current_schema_rejects_broken_entries_invariants(tmp_path, fault):
                 " WITHOUT ROWID" if fault != "without_rowid" else "",
             )
         conn.execute(statement)
+    # v7 起当前结构含分析两表（ISS-035B）。
+    for statement in db._ANALYSIS_TABLE_STATEMENTS:
+        conn.execute(statement)
     conn.execute(f"PRAGMA user_version={db.SCHEMA_VERSION}")
     conn.commit()
     conn.close()
@@ -281,7 +285,7 @@ def test_v3_database_migrates_vanished_count_with_default_zero(tmp_path):
 
     conn = db.connect(path)
     try:
-        assert db.schema_version(conn) == db.SCHEMA_VERSION == 6
+        assert db.schema_version(conn) == db.SCHEMA_VERSION == 7
         rows = conn.execute(
             "SELECT id, vanished_count, exclude_names FROM snapshots ORDER BY id"
         ).fetchall()
@@ -406,7 +410,7 @@ class TestISS066ExcludeNamesMigration:
 
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == db.SCHEMA_VERSION == 6
+            assert db.schema_version(conn) == db.SCHEMA_VERSION == 7
             cols = {row[1] for row in conn.execute(
                 "PRAGMA table_info(snapshots)")}
             assert "exclude_names" in cols
@@ -478,7 +482,7 @@ class TestISS066ExcludeNamesMigration:
             cols = [row[1] for row in second.execute(
                 "PRAGMA table_info(snapshots)")]
             assert cols.count("exclude_names") == 1
-            assert db.schema_version(second) == db.SCHEMA_VERSION == 6
+            assert db.schema_version(second) == db.SCHEMA_VERSION == 7
         finally:
             second.close()
 
@@ -509,11 +513,11 @@ class TestISS116V6Migration:
         self._v5(path)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 6
+            assert db.schema_version(conn) == 7
             row = conn.execute("SELECT vanished_count, confirmed_missing_count, "
                                "path_unverified_count FROM snapshots").fetchone()
             assert tuple(row) == (4, None, None)
-            assert db._detect_schema_version(conn) == 6
+            assert db._detect_schema_version(conn) == 7
         finally:
             conn.close()
         backups = list(tmp_path.glob("v5.db.backup-v5-*.sqlite3"))
@@ -551,7 +555,7 @@ class TestISS116V6Migration:
         self._v5(path, user_version=0)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 6
+            assert db.schema_version(conn) == 7
             row = conn.execute("SELECT confirmed_missing_count, path_unverified_count "
                                "FROM snapshots").fetchone()
             assert tuple(row) == (None, None)
@@ -570,9 +574,159 @@ class TestISS116V6Migration:
             raw.close()
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 6
+            assert db.schema_version(conn) == 7
             names = [r[1] for r in conn.execute("PRAGMA table_info(snapshots)")]
             assert names.count("confirmed_missing_count") == 1
             assert names.count("path_unverified_count") == 1
+        finally:
+            conn.close()
+
+
+class TestISS035BV7Migration:
+    """v6→v7（ISS-035B）：分析两表追加；v0–v6 旧库兼容与失败回滚不放松。"""
+
+    @staticmethod
+    def _v6(path: Path, *, user_version: int = 6) -> None:
+        conn = sqlite3.connect(path)
+        try:
+            for statement in db._SCHEMA_STATEMENTS:
+                conn.execute(statement)
+            for ddl in (*db._SNAPSHOT_ALTER_V3, *db._SNAPSHOT_ALTER_V4,
+                        *db._SNAPSHOT_ALTER_V5, *db._SNAPSHOT_ALTER_V6):
+                conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+            conn.execute(f"PRAGMA user_version={user_version}")
+            conn.execute(
+                "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+                "du_seconds, total_kb, min_kb, collection_status, vanished_count, "
+                "exclude_names, confirmed_missing_count, path_unverified_count) "
+                "VALUES ('2026-09-28T12:00:00', '/synthetic/root', 2, 1, 0.1, 42, "
+                "1024, 'full', 4, 'skip.me', 0, 0)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_v6_to_v7_appends_analysis_tables_with_backup(self, tmp_path):
+        path = tmp_path / "v6.db"
+        self._v6(path)
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 7
+            assert db._detect_schema_version(conn) == 7
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'")}
+            assert {"analysis_runs", "agent_analyses"} <= tables
+            # 既有行原样保留，不迁移不重写。
+            row = conn.execute("SELECT total_kb, min_kb FROM snapshots").fetchone()
+            assert tuple(row) == (42, 1024)
+            # 空表创建：分析功能此前未上线，不存在待迁移数据。
+            assert conn.execute("SELECT COUNT(*) FROM analysis_runs").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM agent_analyses").fetchone()[0] == 0
+        finally:
+            conn.close()
+        backups = list(tmp_path.glob("v6.db.backup-v6-*.sqlite3"))
+        assert len(backups) == 1
+        raw = sqlite3.connect(backups[0])
+        try:
+            assert raw.execute("PRAGMA user_version").fetchone()[0] == 6
+            names = {r[0] for r in raw.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            assert "analysis_runs" not in names and "agent_analyses" not in names
+        finally:
+            raw.close()
+
+    def test_v6_migration_failure_rolls_back_partial_tables(self, tmp_path, monkeypatch):
+        path = tmp_path / "v6-fail.db"
+        self._v6(path)
+
+        real = db._migrate_v6
+
+        def fail_after_first(conn):
+            conn.execute(db._ANALYSIS_TABLE_STATEMENTS[0])
+            raise sqlite3.OperationalError("injected v7 failure")
+
+        monkeypatch.setitem(db._MIGRATIONS, 6, fail_after_first)
+        with pytest.raises(db.MigrationError, match="原库已回滚"):
+            db.connect(path)
+        raw = sqlite3.connect(path)
+        try:
+            assert raw.execute("PRAGMA user_version").fetchone()[0] == 6
+            names = {r[0] for r in raw.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            # 建到一半的表随事务回滚，不留半成品。
+            assert "analysis_runs" not in names and "agent_analyses" not in names
+            assert raw.execute("SELECT total_kb FROM snapshots").fetchone()[0] == 42
+        finally:
+            raw.close()
+        # 修复后（真实迁移函数）可重试接续。
+        monkeypatch.setitem(db._MIGRATIONS, 6, real)
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 7
+        finally:
+            conn.close()
+
+    def test_v7_shape_with_v6_user_version_is_idempotent(self, tmp_path):
+        path = tmp_path / "idempotent-v7.db"
+        self._v6(path)
+        raw = sqlite3.connect(path)
+        try:
+            for statement in db._ANALYSIS_TABLE_STATEMENTS:
+                raw.execute(statement)
+            raw.commit()
+        finally:
+            raw.close()
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 7
+            names = [r[1] for r in conn.execute("PRAGMA table_info(analysis_runs)")]
+            assert names.count("job_id") == 1
+        finally:
+            conn.close()
+
+    def test_v7_shape_with_zero_user_version_is_detected_not_rebuilt(self, tmp_path):
+        path = tmp_path / "mismatch-v7.db"
+        self._v6(path, user_version=0)
+        raw = sqlite3.connect(path)
+        try:
+            for statement in db._ANALYSIS_TABLE_STATEMENTS:
+                raw.execute(statement)
+            raw.commit()
+        finally:
+            raw.close()
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 7
+            assert conn.execute("SELECT total_kb FROM snapshots").fetchone()[0] == 42
+        finally:
+            conn.close()
+
+    def test_agent_analyses_fk_not_cascaded(self, tmp_path):
+        """删除 analysis_runs 行不级联删证据：显式先删关联行才可能删除。"""
+        conn = db.connect(tmp_path / "fk.db")
+        try:
+            conn.execute(
+                "INSERT INTO analysis_runs(job_id, a_snapshot_id, b_snapshot_id, "
+                "request_digest, facts_digest, prompt_version, idempotency_key, "
+                "runtime_id, runtime_executable, settings_revision, "
+                "consent_revision, status, owner_id, created_at) "
+                "VALUES ('j-1', 1, 2, 'rd', 'fd', 'pv', 'ik', 'claude-code', "
+                "'/bin/x', 0, 0, 'succeeded', 'o', '2026-09-28T00:00:00')")
+            conn.execute(
+                "INSERT INTO agent_analyses(job_id, a_snapshot_id, b_snapshot_id, "
+                "a_created_at, b_created_at, dataset_root, dataset_min_kb, "
+                "dataset_exclude_names, request_digest, facts_digest, "
+                "prompt_version, adapter_contract_version, runtime_id, "
+                "result_json, facts_json, manifest_json, created_at) "
+                "VALUES ('j-1', 1, 2, 't1', 't2', '/r', 1024, '', 'rd', 'fd', "
+                "'pv', 1, 'claude-code', '{}', '{}', '{}', '2026-09-28T00:00:00')")
+            conn.commit()
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute("DELETE FROM analysis_runs WHERE job_id='j-1'")
+                conn.commit()
+            conn.execute("PRAGMA foreign_keys=ON")
+            assert conn.execute(
+                "SELECT COUNT(*) FROM agent_analyses").fetchone()[0] == 1
         finally:
             conn.close()

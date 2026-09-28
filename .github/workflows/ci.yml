@@ -44,9 +44,9 @@ env:
   # (tests/test_upgrade_restore.py 安装后失败的真实旧 bundle 与数据恢复
   # 聚焦测试)；739 = 727 + 12(ISS-097
   # 升级事务聚焦测试)，727 = 720 + 7(ISS-096)，720 已含 ISS-030A/040B/040C/
-  # 037/081/090/091 批次）：781 pytest、39 API/浏览器检查、191 前端
+  # 037/081/090/091 批次）：781 pytest、39 API/浏览器检查、193 前端
   # refresh（ISS-100 起随浏览器 job 执行；ISS-111 权限分区断言 179 → 188，
-  # ISS-115 权限错误行/历史快照 188 → 191）、
+  # ISS-115 权限错误行/历史快照 188 → 191，复审校验歧义 191 → 193）、
   # cargo locked offline build +
   # 单测 60（ISS-100 起随 cargo job 执行；ISS-098 只更新既有 argv 断言、
   # 数量不变）。
@@ -56,7 +56,7 @@ env:
   PLAYWRIGHT_VERSION: "1.61.1"
   EXPECTED_PYTEST_PASSED: "781"
   EXPECTED_BROWSER_PASSED: "39"
-  EXPECTED_REFRESH_PASSED: "191"
+  EXPECTED_REFRESH_PASSED: "193"
   EXPECTED_CARGO_PASSED: "60"
 
 jobs:

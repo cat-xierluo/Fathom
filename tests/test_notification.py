@@ -273,7 +273,8 @@ class TestISS065VanishedInNotify:
             _diff(), None, collection_status="partial",
             denied_count=0, vanished_count=4,
         )
-        assert "部分覆盖（另有 4 个目录在扫描期间已消失）" in body
+        assert "部分覆盖（另有 4 个目录状态未确认，可能移动、清理或无法访问）" in body
+        assert "已消失" not in body
         assert "权限受限" not in body
         assert "瞬时读取错误" not in body
 
@@ -292,7 +293,7 @@ class TestISS065VanishedInNotify:
             _diff(), None, collection_status="partial",
             denied_count=2, vanished_count=5,
         )
-        assert "部分覆盖（2 条读取受限记录；另有 5 个目录在扫描期间已消失）" in body
+        assert "部分覆盖（2 条读取受限记录；另有 5 个目录状态未确认，可能移动、清理或无法访问）" in body
 
     def test_first_snapshot_with_vanished_carries_note(self):
         """首扫通知含 vanished_count：与 ISS-003A partial 机制联动。"""
@@ -301,7 +302,7 @@ class TestISS065VanishedInNotify:
             denied_count=0, vanished_count=3,
         )
         assert "首次快照已建立" in body
-        assert "部分覆盖（另有 3 个目录在扫描期间已消失）" in body
+        assert "部分覆盖（另有 3 个目录状态未确认，可能移动、清理或无法访问）" in body
 
     def test_full_status_never_includes_vanished_clause(self):
         """full 不加 partial 说明；vanished_count 即使非零也不冒充缺口。"""

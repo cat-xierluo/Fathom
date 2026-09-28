@@ -706,7 +706,7 @@ function _ensurePermissionsPanel() {
 /* 最近快照的覆盖说明（ISS-002A）：不能由扫描结果反推当前授权。
  *   full       → 最近扫描范围完整
  *   partial+denied      → du 报告了读取受限错误行
- *   partial+vanished    → 部分目录在扫描期间消失（采集范围存在不可控变化）
+ *   partial+vanished    → du 输出后校验未确认路径仍存在
  *   partial+excluded    → 扫描集已自定义（排除掩码生效）
  *   partial+none        → 部分覆盖（具体缺口未上报）
  *   missing   → 尚未扫描或覆盖未知
@@ -726,7 +726,7 @@ function _explainCoverage(coverage) {
   }
   if (coverage.vanished > 0) {
     return {
-      text: `最近扫描：${coverage.vanished} 个目录在扫描期间消失`,
+      text: `最近扫描：${coverage.vanished} 个目录状态未确认`,
       cls: "warn",
     };
   }
@@ -852,7 +852,7 @@ async function loadPermissions() {
  * 授予权限的显示」。
  * 三张权限项卡（数据源 = GET /api/permissions）：
  * - 完全磁盘访问：后端对 TCC 保护路径只读探测的 granted/denied/unknown
- *   三态（探测异常如实 unknown，不伪造）；辅助呈现最近扫描的受限/消失
+ *   三态（探测异常如实 unknown，不伪造）；辅助呈现最近扫描的受限/校验未确认
  *   计数与占比（ISS-091 监控卡数据迁入本分区，原卡移除、原位留交叉
  *   说明——见 index.html）；深链 = 系统设置完全磁盘访问页。
  * - 通知：最近一次扫描的 notification_status（submitted/failed/未登记
@@ -959,7 +959,7 @@ function _permFdaExplain(status) {
   return "本次探测未得出结论（保护路径不存在或读取异常）。状态未知时不猜测，可稍后重试。";
 }
 
-/** FDA 卡：三态徽章 + 白话说明 + 091 受限/消失事实 + 深链（含降级）。 */
+/** FDA 卡：三态徽章 + 白话说明 + 091 受限/校验未确认事实 + 深链。 */
 function renderPermFda(body, fda, coverage) {
   const invoke = tauriInvoke();
   const tauriAvailable = !!invoke;
@@ -969,7 +969,7 @@ function renderPermFda(body, fda, coverage) {
     badgeNode.className = `quality-chip ${badge.cls}`;
     badgeNode.innerHTML = `${icon("shield", 12)} ${escapeHtml(badge.text)}`;
   }
-  // 最近快照的受限错误行数与消失目录数；与当前授权探测分开呈现。
+  // 最近快照的受限错误行数与校验未确认路径数；与当前授权探测分开。
   let factsHtml;
   if (coverage && coverage.snapshot_id != null) {
     const denied = Number(coverage.denied_count ?? 0) || 0;
@@ -988,13 +988,13 @@ function renderPermFda(body, fda, coverage) {
         </div>
         <div class="perm-fact">
           <span class="perm-fact-num" data-test="perm-fda-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>
-          <span class="perm-fact-label">扫描期间消失（个）</span>
+          <span class="perm-fact-label">目录状态未确认（个）</span>
         </div>
       </div>
-      <p class="perm-note">受限数字是 du 输出的权限错误行数，同一路径可能出现多条；消失数字是扫描期间不再存在的目录数。两者都不能推出受影响空间大小。</p>`;
+      <p class="perm-note">受限数字是 du 输出的权限错误行数，同一路径可能出现多条；目录状态未确认表示 du 输出后校验时未能确认路径仍存在，可能已移动、被清理或无法访问，不能认定已删除。两类计数可能指向同一路径，不能相加成不同目录数，也不能推出受影响空间大小。</p>`;
   } else {
     factsHtml =
-      `<p class="hint" data-test="perm-fda-not-yet">尚未扫描：完成首次扫描后，这里会显示读取受限与扫描期间消失目录的情况。</p>`;
+      `<p class="hint" data-test="perm-fda-not-yet">尚未扫描：完成首次扫描后，这里会显示读取受限与目录状态未确认的情况。</p>`;
   }
   body.innerHTML = `
     <p class="perm-note">${escapeHtml(_permFdaExplain(fda?.status))}</p>

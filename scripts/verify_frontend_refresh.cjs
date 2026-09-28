@@ -96,9 +96,16 @@ function createFixture() {
               snapshot(1, "2026-09-12T10:00:00")];
     }
     if (state.mode === "partial-vanished") {
-      // ISS-002A：扫描期间消失 N 处；字段 ISS-066 落地后由 API 暴露
+      // du 输出后校验未确认仍存在；原因可能是移动、清理或权限受限。
       return [{ ...latest, vanished_count: 4, collection_status: "partial",
                 dir_count: 20 }, snapshot(1, "2026-09-12T10:00:00")];
+    }
+    if (state.mode === "partial-vanished-inaccessible") {
+      // ISS-115 反例：校验时 os.path.isdir/exists 遇 PermissionError 也会
+      // 返回 false；API 只持久化 vanished_count，前端不能断言目录已消失。
+      return [{ ...latest, root: "/fixture/permission-protected-root",
+                vanished_count: 4, collection_status: "partial", dir_count: 20 },
+              snapshot(1, "2026-09-12T10:00:00")];
     }
     if (state.mode === "partial-excluded") {
       // ISS-002A：排除掩码 N 项；exclude_names 数组
@@ -2797,36 +2804,64 @@ async function main() {
     }));
     record("coverage-three-classes-rendered",
       covAll.classes.includes("6 条读取受限记录") &&
-        covAll.classes.includes("扫描期间消失") && covAll.classes.includes("4") &&
+        covAll.classes.includes("4 个目录状态未确认") &&
         covAll.classes.includes("排除掩码") && covAll.classes.includes("3") &&
         // 文案不冒充影响/删除（合同禁止「数量=影响」「未记录=删除」表述）
         !covAll.classes.includes("数量=影响") && !covAll.classes.includes("未记录=删除") &&
         !covAll.classes.includes("数量等于影响"),
       covAll.classes.slice(0, 160));
-    // 受限行数与消失目录数在同一快照中各自保留原始单位。
+    // 受限错误行与校验未确认路径在同一快照中各自保留原始单位。
     record("coverage-scan-note-shows-all-three-counts",
       covAll.scanNote.includes("6 条读取受限记录") &&
         covAll.coverageNote.includes("6 条读取受限记录") &&
-        covAll.coverageNote.includes("4 处扫描期间消失") &&
+        covAll.coverageNote.includes("4 个目录状态未确认") &&
         covAll.coverageNote.includes("3 项排除掩码"),
       `scan=${covAll.scanNote.slice(0, 80)} | cov=${covAll.coverageNote.slice(0, 80)}`);
 
-    // 2) 仅 vanished（ISS-066 字段已暴露，denied=0）：只见消失 chip
+    // 2) 仅 vanished（ISS-066 字段已暴露，denied=0）：只见未确认 chip
     await setMode("partial-vanished");
     await openPage("#/overview");
     await page.waitForSelector("[data-test='coverage-classes']");
     const covVanished = await page.evaluate(() =>
       document.querySelector("[data-test='coverage-classes']")?.textContent || "");
     record("coverage-vanished-only-class-shown",
-      covVanished.includes("扫描期间消失") && covVanished.includes("4") &&
+      covVanished.includes("4 个目录状态未确认") &&
         !covVanished.includes("读取受限记录") && !covVanished.includes("排除掩码"),
       covVanished.slice(0, 120));
     const vanishedQuality = await page.locator("#overview-quality").textContent();
     record("coverage-vanished-only-no-zero-unread-directories",
       vanishedQuality.includes("部分覆盖") &&
-        vanishedQuality.includes("扫描期间有目录消失") &&
+        vanishedQuality.includes("4 个目录状态未确认") &&
         !vanishedQuality.includes("未读取") && !vanishedQuality.includes("0 个"),
       vanishedQuality.slice(0, 120));
+    await setMode("partial-vanished-inaccessible");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-classes']");
+    const permissionAmbiguousOverview = await page.evaluate(() => ({
+      quality: document.getElementById("overview-quality")?.textContent || "",
+      detail: document.getElementById("overview-coverage-note")?.textContent || "",
+    }));
+    record("coverage-permission-error-path-not-declared-disappeared",
+      permissionAmbiguousOverview.quality.includes("目录状态未确认") &&
+        permissionAmbiguousOverview.detail.includes("可能已移动、被清理，也可能因权限无法访问") &&
+        !Object.values(permissionAmbiguousOverview).join(" ").includes("已消失"),
+      JSON.stringify(permissionAmbiguousOverview).slice(0, 180));
+    await openPage("#/settings");
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForSelector("#perm-fda-card [data-test='perm-fda-vanished']");
+    await page.waitForFunction(() =>
+      document.querySelector("#permissions-panel [data-test='perm-auth-chip']")
+        ?.textContent.includes("目录状态未确认"));
+    const permissionAmbiguousSettings = await page.evaluate(() => ({
+      fda: document.querySelector("#perm-fda-card [data-test='perm-fda-body']")?.textContent || "",
+      schedule: document.querySelector("#permissions-panel [data-test='perm-auth-chip']")?.textContent || "",
+    }));
+    record("perm-fda-permission-error-path-not-declared-disappeared",
+      permissionAmbiguousSettings.fda.includes("目录状态未确认（个）") &&
+        permissionAmbiguousSettings.fda.includes("可能已移动、被清理或无法访问") &&
+        permissionAmbiguousSettings.schedule.includes("目录状态未确认") &&
+        !Object.values(permissionAmbiguousSettings).join(" ").includes("已消失"),
+      JSON.stringify(permissionAmbiguousSettings).slice(0, 180));
 
     // 3) 仅 excluded（exclude_names 数组）：只见排除掩码 chip
     await setMode("partial-excluded");
@@ -2836,7 +2871,7 @@ async function main() {
       document.querySelector("[data-test='coverage-classes']")?.textContent || "");
     record("coverage-excluded-only-class-shown",
       covExcluded.includes("排除掩码") && covExcluded.includes("2") &&
-        !covExcluded.includes("读取受限记录") && !covExcluded.includes("扫描期间消失"),
+        !covExcluded.includes("读取受限记录") && !covExcluded.includes("目录状态未确认"),
       covExcluded.slice(0, 120));
 
     // 4) 字段缺失防御（vanished_count / exclude_names 不在快照里）：
@@ -2852,7 +2887,7 @@ async function main() {
     }));
     record("coverage-vanished-and-excluded-defended-to-zero",
       covDefended.classes.includes("6 条读取受限记录") &&
-        !covDefended.classes.includes("扫描期间消失") &&
+        !covDefended.classes.includes("目录状态未确认") &&
         !covDefended.classes.includes("排除掩码"),
       covDefended.classes.slice(0, 120));
     // 缺失字段按 0 处理，不凭空出现消失/排除掩码计数。
@@ -2878,7 +2913,7 @@ async function main() {
     record("coverage-full-shows-only-complete",
       covFull.quality.includes("覆盖完整") && covFull.classes === "" &&
         covFull.note.includes("完整覆盖") &&
-        !covFull.quality.includes("读取受限记录") && !covFull.quality.includes("扫描期间消失") &&
+        !covFull.quality.includes("读取受限记录") && !covFull.quality.includes("目录状态未确认") &&
         !covFull.note.includes("读取受限记录"),
       JSON.stringify({ q: covFull.quality.slice(0, 60), n: covFull.note.slice(0, 60) }));
 
@@ -3008,6 +3043,8 @@ async function main() {
         vanished: fda?.querySelector("[data-test='perm-fda-vanished']")?.textContent || "",
         deniedLabel: fda?.querySelector("[data-test='perm-fda-denied']")
           ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
+        vanishedLabel: fda?.querySelector("[data-test='perm-fda-vanished']")
+          ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
         fdaNote: [...(fda?.querySelectorAll(".perm-note") || [])]
           .map((p) => p.textContent).join(" | "),
         notifBadge: notif?.querySelector("[data-test='perm-notif-badge']")?.textContent || "",
@@ -3034,6 +3071,7 @@ async function main() {
       permHubBrowser.denied === "6" && permHubBrowser.vanished === "4" &&
         permHubBrowser.deniedLabel.includes("6 / 40") &&
         permHubBrowser.deniedLabel.includes("15.0%") &&
+        permHubBrowser.vanishedLabel.includes("目录状态未确认") &&
         permHubBrowser.fdaNote.includes("当前服务可读取探测位置") &&
         permHubBrowser.fdaNote.includes("不能保证扫描范围内所有路径都可读"),
       JSON.stringify({ d: permHubBrowser.denied, l: permHubBrowser.deniedLabel }).slice(0, 160));
@@ -3041,6 +3079,7 @@ async function main() {
       permHubBrowser.fdaNote.includes("最近扫描：2026-09-13 10:00") &&
         permHubBrowser.fdaNote.includes("授权变更不会改写旧快照") &&
         permHubBrowser.fdaNote.includes("du 输出的权限错误行数") &&
+        permHubBrowser.fdaNote.includes("两类计数可能指向同一路径，不能相加成不同目录数") &&
         permHubBrowser.deniedLabel.includes("读取受限错误（条）") &&
         permHubBrowser.deniedLabel.includes("错误行数 / 已记录目录数"),
       permHubBrowser.fdaNote.slice(0, 180));
@@ -3198,7 +3237,7 @@ async function main() {
     await openPage("#/settings");
     /* 空库态先用「权限状态加载中…」占位（同为 p.hint），必须等 fetch 完成
      * 后的最终文案再断言，避免读到占位文本假绿。否定条件针对数字事实元素：
-     * 引导文案本身合法包含「读取受限/扫描期间消失」字样，不能按字面排除。 */
+     * 引导文案本身合法包含「读取受限/目录路径校验」字样，不能按字面排除。 */
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
     await page.waitForFunction(() => {
       const el = document.querySelector("#perm-fda-card [data-test='perm-fda-body']");

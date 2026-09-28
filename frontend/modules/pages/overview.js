@@ -38,7 +38,7 @@ function _shortTs(iso) {
  * 返回结构含三类缺口计数（ISS-002A）：
  *   state: missing | partial | full
  *   denied:      du stderr 权限错误行数（denied_count，?? 0 防御缺失字段）
- *   vanished:    扫描期间消失位置数（vanished_count，字段 ISS-066 落地后才存在）
+ *   vanished:    du 输出后校验时未能确认仍存在的目录路径数（vanished_count）
  *   excluded:    排除掩码项数（exclude_names 数组长度；缺字段 0）
  * denied 不等于不同目录数；三类计数不求和不推比例。 */
 function _coverage(snapshot) {
@@ -69,9 +69,9 @@ const COV_NOTES = {
     doesnt: "同一路径可能出现多条记录；行数不等于未读取的目录数，也不代表影响大小。",
   },
   vanished: {
-    label: "扫描期间消失",
-    means: "目录在 du 输出时是目录，扫描结束前被系统清理。",
-    doesnt: "扫描期间的事实以读取时为准；未记录不构成删除证据。",
+    label: "目录状态未确认",
+    means: "du 输出后，校验时未能确认这些目录路径仍存在。",
+    doesnt: "可能已移动、被清理，也可能因权限无法访问；不能认定已删除或据此计算影响空间。",
   },
   excluded: {
     label: "排除掩码",
@@ -93,7 +93,7 @@ function _renderCoverageClasses(coverage) {
       const note = COV_NOTES[k];
       const chipCls = k === "excluded" ? "quality-chip miss" : "quality-chip warn";
       const chipIcon = k === "excluded" ? "filter" : "alert";
-      const unit = k === "denied" ? "条读取受限记录" : k === "excluded" ? "项" : "处";
+      const unit = k === "denied" ? "条读取受限记录" : k === "excluded" ? "项" : "个";
       // 计数前置；denied 是错误行数，vanished 是目录数，excluded 是掩码数。
       // 验收契约要求「计数在前、类目在后」，避免读成「类目 N」被误当影响大小。
       return `<li class="cov-class">
@@ -141,7 +141,7 @@ async function loadQualityLine() {
   const covChip = cov.state === "full"
     ? `<span class="quality-chip ok">${icon("alert", 12)} 覆盖完整</span>`
     : cov.state === "partial"
-      ? `<span class="quality-chip warn">${icon("alert", 12)} 部分覆盖${cov.denied > 0 ? `（${cov.denied} 条读取受限记录）` : cov.vanished > 0 ? "（扫描期间有目录消失）" : ""}</span>`
+      ? `<span class="quality-chip warn">${icon("alert", 12)} 部分覆盖${cov.denied > 0 ? `（${cov.denied} 条读取受限记录）` : cov.vanished > 0 ? `（${cov.vanished} 个目录状态未确认）` : ""}</span>`
       : `<span class="quality-chip miss">${icon("alert", 12)} 覆盖未知</span>`;
   const rangeChip = snaps.length >= 2
     ? `<span>${escapeHtml(_shortTs(snaps[1].created_at))} → ${escapeHtml(_shortTs(latest.created_at))}</span>`

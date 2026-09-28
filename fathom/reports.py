@@ -284,15 +284,14 @@ def render_markdown(
             f"- 注意：本次采集为部分覆盖，du 输出 {new_meta['denied_count']} 条读取受限记录；"
             "同一路径可能产生多条错误，无法据此判断未统计目录数量或空间大小"
         )
-    # ISS-065：扫描期间消失的目录单独计数（不进 denied_count）；du 列到时
-    # 存在、校验时已被系统清理——既是测量期事实（KB 数保留）也是部分覆盖
-    # 的一种，与 denied/transient 并列展示，不冒充完整覆盖也不夸大。
+    # vanished_count 是 du 输出后校验未确认路径仍存在的数量；os.path.isdir/
+    # exists 对权限错误也可能返回 False，不能据此断言目录已消失或被清理。
     vanished_count = new_meta["vanished_count"] if "vanished_count" in new_meta.keys() else 0
     if vanished_count:
         lines.append(
-            f"- 注意：另有 {vanished_count} 个目录在扫描期间已消失"
-            "（记录时存在、校验时不在，如云同步缓存/临时被系统清理），"
-            "它们的累计大小作为测量期事实保留，但本次未对其重新扫描"
+            f"- 注意：另有 {vanished_count} 个目录状态未确认：du 输出后校验时"
+            "未能确认路径仍存在（可能移动、被清理或无法访问）；保留 du 当时的测量值，"
+            "不能据此认定已删除或推算未统计空间"
         )
     # ISS-066：本次采集生效的 du -I 排除掩码（非空时如实列出）。
     exclude_names = _row_exclude_names(new_meta)

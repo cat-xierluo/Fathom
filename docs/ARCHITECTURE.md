@@ -1,6 +1,6 @@
 # Fathom 当前架构
 
-**原始事实基线：main `31396a08ed90a37f787614d6f32024e30836c3aa`，2026-09-22 代码与任务证据交叉核对；2026-09-28 主干 ISS-116 已补核路径状态分类、schema 与相关 API，本分支另列 ISS-114 原生滚动候选。** 历史验证边界见文末；目标方案不代表已实现能力，候选的最终测试与合并状态以任务卡为准。
+**原始事实基线：main `31396a08ed90a37f787614d6f32024e30836c3aa`，2026-09-22 代码与任务证据交叉核对；2026-09-28 主干已补核 ISS-116 路径状态分类、schema 与相关 API，以及 ISS-114 原生滚动限位。** 历史验证边界见文末；目标方案不代表已实现能力，实机与发行验收状态以任务卡为准。
 
 ## 入口与边界
 
@@ -107,7 +107,7 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 不把现有单元测试、其他分支的提交说明或 cargo build 作为安装、系统通知、权限、tray 与定时任务已经可靠的证据。
 
 
-## macOS 主窗口滚动边界（ISS-114 候选）
+## macOS 主窗口滚动边界（ISS-114）
 
 `apps/desktop/src-tauri/src/scroll_boundary.rs` 隔离平台限位：setup 在首次 helper 导航前，对 main WebView 通过 `with_webview` 主线程闭包应用原生回弹 mask=0。调用前检查 selector 与 ABI；不支持时输出诊断并保留窗口正常运行，不启用全局 macOSPrivateApi 配置。页面 `.page-container` 同时采用 `overscroll-behavior:none`，阻止内部容器自身的越界反馈，普通内容滚动保留。
 

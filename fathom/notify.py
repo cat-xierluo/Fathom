@@ -89,9 +89,12 @@ def _partial_note(
         return ""
     clauses: list[str] = []
     if denied_count:
-        clauses.append(f"{denied_count} 处权限受限")
+        clauses.append(f"{denied_count} 条读取受限记录")
     if vanished_count:
-        clauses.append(f"另有 {vanished_count} 个目录在扫描期间已消失")
+        clauses.append(
+            f"另有 {vanished_count} 个目录状态未确认，"
+            "可能移动、清理或无法访问"
+        )
     if not clauses:
         clauses.append("瞬时读取错误")
     return "部分覆盖（" + "；".join(clauses) + "）"

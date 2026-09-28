@@ -691,7 +691,7 @@ function _ensurePermissionsPanel() {
   panel.innerHTML = `
     <div class="panel-head">
       <h2>权限与覆盖</h2>
-      <p class="hint">三类授权/覆盖状态由最近一次采集推导；本应用不代改系统权限。</p>
+      <p class="hint">以下只说明最近一次扫描的覆盖情况；当前完全磁盘访问的探测结果见「权限」分区。</p>
     </div>
     <div class="perm-panel" data-test="permissions-panel-body">
       <p class="hint">权限与覆盖信息加载中…</p>
@@ -703,36 +703,36 @@ function _ensurePermissionsPanel() {
   return panel;
 }
 
-/* 把覆盖判定结果翻译为"授权状态"说明（ISS-002A）：
- *   full       → 已授权扫描范围完整
- *   partial+denied      → 可能未授权或部分目录受限（部分授权）
- *   partial+vanished    → 部分目录在扫描期间消失（采集范围存在不可控变化）
+/* 最近快照的覆盖说明（ISS-002A）：不能由扫描结果反推当前授权。
+ *   full       → 最近扫描范围完整
+ *   partial+denied      → du 报告了读取受限错误行
+ *   partial+vanished    → du 输出后校验未确认路径仍存在
  *   partial+excluded    → 扫描集已自定义（排除掩码生效）
  *   partial+none        → 部分覆盖（具体缺口未上报）
  *   missing   → 尚未扫描或覆盖未知
- * 数字是缺口位置数，不冒充影响大小；不含"数量=影响"或"未记录=删除"表述。 */
-function _explainAuthorization(coverage) {
+ * denied 是 stderr 行数，不冒充不同目录数或影响大小。 */
+function _explainCoverage(coverage) {
   if (coverage.state === "full") {
-    return { text: "已授权：扫描范围完整", cls: "ok" };
+    return { text: "最近扫描：范围完整", cls: "ok" };
   }
   if (coverage.state === "missing") {
     return { text: "尚未扫描或覆盖未知", cls: "miss" };
   }
   if (coverage.denied > 0) {
     return {
-      text: `可能未授权或部分目录受限：${coverage.denied} 个目录本次被拒绝读取`,
+      text: `最近扫描：${coverage.denied} 条读取受限记录`,
       cls: "warn",
     };
   }
   if (coverage.vanished > 0) {
     return {
-      text: `采集范围存在不可控变化：${coverage.vanished} 个目录在扫描期间已消失`,
+      text: `最近扫描：${coverage.vanished} 个目录状态未确认`,
       cls: "warn",
     };
   }
   if (coverage.excluded > 0) {
     return {
-      text: `扫描集已自定义：${coverage.excluded} 项排除掩码生效（与默认不同）`,
+      text: `最近扫描：${coverage.excluded} 项排除掩码生效（与默认不同）`,
       cls: "warn",
     };
   }
@@ -775,13 +775,14 @@ async function loadPermissions() {
   }
   const latest = statusData?.latest_snapshot;
   const coverage = _coverage(latest);
-  const auth = _explainAuthorization(coverage);
+  const auth = _explainCoverage(coverage);
   const tauri = window.__TAURI__;
   const tauriAvailable = !!(tauri && tauri.core && typeof tauri.core.invoke === "function");
   body.innerHTML = `
     <p class="perm-state">
       <span class="quality-chip ${auth.cls}" data-test="perm-auth-chip">${icon("shield", 12)} ${escapeHtml(auth.text)}</span>
     </p>
+    ${latest?.created_at ? `<p class="perm-note">快照时间：${escapeHtml(String(latest.created_at).slice(0, 16).replace("T", " "))}；授权变更不会更新已有快照。</p>` : ""}
     <p class="perm-note">本应用不代改系统权限，授权由你在系统设置完成；
       在浏览器模式下不会自动跳转系统设置，下方显示的是应进入的路径。</p>
     <div class="perm-link-row">
@@ -851,8 +852,8 @@ async function loadPermissions() {
  * 授予权限的显示」。
  * 三张权限项卡（数据源 = GET /api/permissions）：
  * - 完全磁盘访问：后端对 TCC 保护路径只读探测的 granted/denied/unknown
- *   三态（探测异常如实 unknown，不伪造）；辅助呈现最近扫描的受限/消失
- *   计数与占比（ISS-091 监控卡数据迁入本分区，原卡移除、原位留交叉
+ *   三态（探测异常如实 unknown，不伪造）；辅助呈现最近扫描的受限/校验未确认
+ *   计数（ISS-091 监控卡数据迁入本分区，原卡移除、原位留交叉
  *   说明——见 index.html）；深链 = 系统设置完全磁盘访问页。
  * - 通知：最近一次扫描的 notification_status（submitted/failed/未登记
  *   如实展示，不推断）；深链 = 系统设置通知页。
@@ -867,8 +868,8 @@ async function loadPermissions() {
  * - 状态徽章配色用既有语义 token：granted→--ok、denied→--danger、
  *   unknown→--muted（.quality-chip 既有 ok/miss 类 + ISS-111 新增 danger
  *   浅底派生，无新色板）；零 emoji；
- * - 占比文案沿用 ISS-095 口径（_permRatioText：denied 是 du stderr 行数、
- *   可超目录总数，比值 >100% 时改用倍数表述）。 */
+ * - denied 是 du stderr 权限错误行数，与已记录目录数不是同一单位，不展示
+ *   相除所得百分比或倍数。 */
 const PERM_HUB_PANEL_ID = "permissions-hub-panel";
 
 /* 通知页深链：与 FDA 深链同走 opener 权限（ISS-068 ACL 已备
@@ -878,27 +879,14 @@ const NOTIFS_PATH_TEXT = "系统设置 › 通知";
 
 /* 状态徽章语义映射：unknown/未登记是真实探测结论，不是加载失败。 */
 const PERM_FDA_BADGES = {
-  granted: { text: "已授权", cls: "ok" },
-  denied: { text: "未授权", cls: "danger" },
+  granted: { text: "探测可读", cls: "ok" },
+  denied: { text: "探测受限", cls: "danger" },
   unknown: { text: "未知", cls: "miss" },
 };
 const PERM_NOTIF_BADGES = {
   submitted: { text: "已提交", cls: "ok" },
   failed: { text: "失败", cls: "danger" },
 };
-
-/** denied 占比文案：分母 dir_count<=0（异常快照/防御值）时不显示，只留数字。
- * ISS-095：denied 是 du stderr 的受限行数、可超过目录总数（比值 >100%），
- * 此时「（1250.0%）」会被读成「1250% 的目录受限」——语义错误；改用
- * 「受限行数为目录数的 X.X 倍」表述。比值 ≤100%（含 denied=0）维持
- * 「（N%）」形态不变。（ISS-111 自原监控卡 _mpermRatioText 原样迁入。） */
-function _permRatioText(denied, dirCount) {
-  if (!Number.isFinite(dirCount) || dirCount <= 0) return "";
-  if (denied > dirCount) {
-    return `${denied} / ${dirCount}（受限行数为目录数的 ${(denied / dirCount).toFixed(1)} 倍）`;
-  }
-  return `${denied} / ${dirCount}（${((denied / dirCount) * 100).toFixed(1)}%）`;
-}
 
 function _ensurePermHubPanel() {
   const host = document.getElementById("settings-permissions-extra");
@@ -947,18 +935,18 @@ function _ensurePermHubPanel() {
   return panel;
 }
 
-/** FDA 三态的白话说明（授权动作只在系统设置完成；授权后需重扫）。 */
+/** FDA 三态的白话说明：只描述当前服务对一个保护位置的探测。 */
 function _permFdaExplain(status) {
   if (status === "granted") {
-    return "当前可读取系统保护位置（如用户目录下的 Containers），扫描不受此类限制。";
+    return "当前服务可读取探测位置（如用户目录下的 Containers）；这不能保证扫描范围内所有路径都可读。";
   }
   if (status === "denied") {
-    return "系统拒绝了部分受保护位置的读取，扫描会在这些目录受限；为 Fathom 开启「完全磁盘访问」可减少受限。授权后需重新扫描才生效。";
+    return "当前服务读取探测位置遭拒。请核对 Fathom 的「完全磁盘访问」；授权变更后重启后台服务并重新扫描，才能获得新结果。";
   }
   return "本次探测未得出结论（保护路径不存在或读取异常）。状态未知时不猜测，可稍后重试。";
 }
 
-/** FDA 卡：三态徽章 + 白话说明 + 091 受限/消失事实 + 深链（含降级）。 */
+/** FDA 卡：三态徽章 + 白话说明 + 091 受限/校验未确认事实 + 深链。 */
 function renderPermFda(body, fda, coverage) {
   const invoke = tauriInvoke();
   const tauriAvailable = !!invoke;
@@ -968,28 +956,30 @@ function renderPermFda(body, fda, coverage) {
     badgeNode.className = `quality-chip ${badge.cls}`;
     badgeNode.innerHTML = `${icon("shield", 12)} ${escapeHtml(badge.text)}`;
   }
-  // 091 数据迁入：最近快照的受限/消失计数与占比；空库显示「尚未扫描」。
+  // 最近快照的受限错误行数与校验未确认路径数；与当前授权探测分开。
   let factsHtml;
   if (coverage && coverage.snapshot_id != null) {
     const denied = Number(coverage.denied_count ?? 0) || 0;
     const vanished = Number(coverage.vanished_count ?? 0) || 0;
-    const dirCount = Number(coverage.dir_count ?? 0) || 0;
-    const ratio = _permRatioText(denied, dirCount);
+    const scanTime = coverage.created_at
+      ? escapeHtml(String(coverage.created_at).slice(0, 16).replace("T", " "))
+      : "时间未知";
     factsHtml = `
+      <p class="perm-note">最近扫描：${scanTime}。以下是当时的记录；授权变更不会改写旧快照，请重新扫描后比较。</p>
       <div class="perm-facts" data-test="perm-fda-facts">
         <div class="perm-fact">
           <span class="perm-fact-num" data-test="perm-fda-denied" data-sev="${denied > 0 ? "warn" : "ok"}">${escapeHtml(String(denied))}</span>
-          <span class="perm-fact-label">读取受限（处）${ratio ? ` · ${escapeHtml(ratio)}` : ""}</span>
+          <span class="perm-fact-label">读取受限错误（条）</span>
         </div>
         <div class="perm-fact">
           <span class="perm-fact-num" data-test="perm-fda-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>
-          <span class="perm-fact-label">扫描期间消失（个）</span>
+          <span class="perm-fact-label">目录状态未确认（个）</span>
         </div>
       </div>
-      <p class="perm-note">受限 = du 无法读取某些目录（如受系统保护的位置）；消失 = 扫描期间目录被移动或删除，属正常现象，不代表数据被清理。</p>`;
+      <p class="perm-note">受限数字是 du 输出的权限错误行数，同一路径可能出现多条；目录状态未确认表示 du 输出后校验时未能确认路径仍存在，可能已移动、被清理或无法访问，不能认定已删除。两类计数可能指向同一路径，不能相加成不同目录数，也不能推出受影响空间大小。</p>`;
   } else {
     factsHtml =
-      `<p class="hint" data-test="perm-fda-not-yet">尚未扫描：完成首次扫描后，这里会显示读取受限与扫描期间消失目录的情况。</p>`;
+      `<p class="hint" data-test="perm-fda-not-yet">尚未扫描：完成首次扫描后，这里会显示读取受限与目录状态未确认的情况。</p>`;
   }
   body.innerHTML = `
     <p class="perm-note">${escapeHtml(_permFdaExplain(fda?.status))}</p>

@@ -20,7 +20,7 @@
 #   - PW_INSTALL=1 且提供 PLAYWRIGHT_BIN 时下载 chromium（仅 CI 冷环境）。
 #
 # 断言口径：两套结果 JSON 均必须 ok=true、failed=0、passed 等于各自期望
-# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 193，
+# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 198，
 # ISS-108 增补 5 项至 172 后，ISS-106 总览层级/五态容器再增 7 项=179：
 # ready 清态与次级图 1 + 空库等待 1 + 单快照等待 1 + 错误容器 1 +
 # 净变化根差分 1 + 无基线不伪造零 1 + 980 首屏坐标 1；
@@ -40,13 +40,19 @@
 # 「安装（需重启）」确认层取消不发 updater_install 且 ready 保持 1、
 # 确认安装 confirmed:true → preparing/installing → installed「重启以完成」
 # 1；浏览器降级断言原地补「无自动下载开关」（计数不变））；
+# ISS-115 再增 3 项=196：130 条错误行不冒充目录、仅路径校验未确认时不显示
+# 0 个未读、当前探测与历史快照时间/计数分开展示。
+# ISS-115 复审再增 2 项=198：无法访问路径也可能被归入 vanished，
+# 总览与权限页均不能据此断言目录已消失。
+# ISS-115 再将现有 3 项权限卡断言改为只验原始条数（低于/高于分母与零值），
+# 移除行数/目录数的比例或倍数展示；检查总数为 198。
 # verify 脚本自身任一检查失败都会以非零退出（pipefail 直通，不走门禁
 # 兜底），计数门禁只拦空跑与静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 expected="${EXPECTED_BROWSER_PASSED:-39}"
-expected_refresh="${EXPECTED_REFRESH_PASSED:-193}"
+expected_refresh="${EXPECTED_REFRESH_PASSED:-198}"
 
 if [ ! -x .runtime/bin/python ]; then
   requested_python="${FATHOM_PYTHON:-python3}"

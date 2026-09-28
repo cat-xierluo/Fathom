@@ -502,7 +502,7 @@ class TestFourMissingCases:
 
             md = self._report(conn, sid2)
             assert "## 未记录的目录" in md and str(secret) in md
-            assert "部分覆盖" in md and "权限无法统计" in md
+            assert "部分覆盖" in md and "条读取受限记录" in md
             assert "已删除" not in md
         finally:
             conn.close()
@@ -538,12 +538,12 @@ class TestISS065VanishedInReport:
     """ISS-065：日报对 vanished 如实呈现（不进 denied、不冒充完整覆盖）。
 
     vanished 与 denied/transient 并列为部分覆盖的一种，日报顶部说明行
-    须独立显示消失目录数；零时不再显示（避免空话）。日报 ID 与基线
+    须独立显示未确认路径数；零时不再显示（避免空话）。日报 ID 与基线
     关系不动，ISS-021 数据集身份约定保持（不变 root/min_kb 口径）。
     """
 
     def test_vanished_count_in_markdown_explains_scan_coverage(self):
-        """vanished_count > 0：日报注明消失目录数与原因，不冒充完整覆盖。"""
+        """vanished_count > 0：日报不把可能的权限错误写成确定消失。"""
         conn = db.connect()
         try:
             a1 = _insert_snapshot(
@@ -557,14 +557,17 @@ class TestISS065VanishedInReport:
             )
             out = reports.write_daily_report(conn, a2, notify_after_write=False)
             md = out.read_text(encoding="utf-8")
-            assert "另有 7 个目录在扫描期间已消失" in md
-            assert "记录时存在、校验时不在" in md
+            assert "另有 7 个目录状态未确认" in md
+            assert "du 输出后校验时未能确认路径仍存在" in md
+            assert "可能移动、被清理或无法访问" in md
+            assert "不能据此认定已删除" in md
+            assert "扫描期间已消失" not in md
             assert "本次采集为完整覆盖" not in md
         finally:
             conn.close()
 
     def test_zero_vanished_count_omits_note(self):
-        """vanished_count=0：日报不显示消失目录说明（避免空话）。"""
+        """vanished_count=0：日报不显示未确认路径说明（避免空话）。"""
         conn = db.connect()
         try:
             a1 = _insert_snapshot(
@@ -578,8 +581,7 @@ class TestISS065VanishedInReport:
             )
             out = reports.write_daily_report(conn, a2, notify_after_write=False)
             md = out.read_text(encoding="utf-8")
-            assert "扫描期间已消失" not in md
-            assert "扫描期间消失" not in md
+            assert "目录状态未确认" not in md
         finally:
             conn.close()
 
@@ -598,8 +600,10 @@ class TestISS065VanishedInReport:
             )
             out = reports.write_daily_report(conn, a2, notify_after_write=False)
             md = out.read_text(encoding="utf-8")
-            assert "3 个目录因权限无法统计" in md
-            assert "扫描期间已消失" not in md
+            assert "du 输出 3 条读取受限记录" in md
+            assert "无法据此判断未统计目录数量或空间大小" in md
+            assert "运行终端" not in md
+            assert "目录状态未确认" not in md
         finally:
             conn.close()
 
@@ -618,8 +622,8 @@ class TestISS065VanishedInReport:
             )
             out = reports.write_daily_report(conn, a2, notify_after_write=False)
             md = out.read_text(encoding="utf-8")
-            assert "2 个目录因权限无法统计" in md
-            assert "另有 5 个目录在扫描期间已消失" in md
+            assert "du 输出 2 条读取受限记录" in md
+            assert "另有 5 个目录状态未确认" in md
         finally:
             conn.close()
 

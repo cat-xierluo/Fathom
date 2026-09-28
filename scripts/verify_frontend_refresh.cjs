@@ -57,7 +57,10 @@ function createFixture() {
     // ISS-069：初始已有一项排除掩码（来源 settings），前端应原样渲染该值；
     // 硬编码空列表或默认掩码的回归会被前端检查捕获。
     exclude_names: ["*.noindex"],
-    sources: { scan_root: "default", scan_time: "settings", min_kb: "settings", free_alert_gb: "settings", exclude_names: "settings" },
+    // ISS-113：自动下载更新默认开（真实后端未持久化时 effective 值 true、
+    // 来源 default）；前端按该值分流 available 呈现与开关初始勾选。
+    auto_download_updates: true,
+    sources: { scan_root: "default", scan_time: "settings", min_kb: "settings", free_alert_gb: "settings", exclude_names: "settings", auto_download_updates: "default" },
     defaults: { scan_root: "/fixture/home", scan_time: "12:00", min_kb: 10240, free_alert_gb: 10 },  // ISS-073 夹具卫生：真实 effective_settings_view().defaults 无 exclude_names 键（ISS-069 曾多写），前端 resetToDefaults 也只消费这 4 键
     policies: { keep_daily_days: 21, keep_weekly_weeks: 8, du_timeout_s: 14400, bigfile_default_days: 7, bigfile_default_mb: 100 },
     settings_path: "/fixture/runtime/settings.json",
@@ -89,10 +92,23 @@ function createFixture() {
       return [{ ...latest, denied_count: 6, collection_status: "partial",
                 dir_count: 12 }, snapshot(1, "2026-09-12T10:00:00")];
     }
+    if (state.mode === "partial-denied-130") {
+      // ISS-115：真实历史规模的反例；130 是 du stderr 权限错误行数。
+      return [{ ...latest, denied_count: 130, vanished_count: 44,
+                collection_status: "partial", dir_count: 500 },
+              snapshot(1, "2026-09-12T10:00:00")];
+    }
     if (state.mode === "partial-vanished") {
-      // ISS-002A：扫描期间消失 N 处；字段 ISS-066 落地后由 API 暴露
+      // du 输出后校验未确认仍存在；原因可能是移动、清理或权限受限。
       return [{ ...latest, vanished_count: 4, collection_status: "partial",
                 dir_count: 20 }, snapshot(1, "2026-09-12T10:00:00")];
+    }
+    if (state.mode === "partial-vanished-inaccessible") {
+      // ISS-115 反例：校验时 os.path.isdir/exists 遇 PermissionError 也会
+      // 返回 false；API 只持久化 vanished_count，前端不能断言目录已消失。
+      return [{ ...latest, root: "/fixture/permission-protected-root",
+                vanished_count: 4, collection_status: "partial", dir_count: 20 },
+              snapshot(1, "2026-09-12T10:00:00")];
     }
     if (state.mode === "partial-excluded") {
       // ISS-002A：排除掩码 N 项；exclude_names 数组
@@ -107,6 +123,12 @@ function createFixture() {
                 collection_status: "partial", dir_count: 40 },
               snapshot(1, "2026-09-12T10:00:00")];
     }
+    if (state.mode === "partial-classified") {
+      return [{ ...latest, denied_count: 6, vanished_count: 4,
+                confirmed_missing_count: 1, path_unverified_count: 3,
+                collection_status: "partial", dir_count: 20 },
+              snapshot(1, "2026-09-12T10:00:00")];
+    }
     if (state.mode === "partial-no-fields") {
       // ISS-002A：vanished_count 与 exclude_names 字段缺失，验证 ?? 0 / 防御
       // 注意：denied_count=6 触发 partial，但 vanished/excluded 必须被防御为 0
@@ -115,8 +137,8 @@ function createFixture() {
                 dir_count: 12 }, snapshot(1, "2026-09-12T10:00:00")];
     }
     if (state.mode === "denied-over") {
-      // ISS-095：denied 是 du stderr 的受限行数、可超过目录总数——
-      // 25/2 = 12.5 倍，权限卡占比文案应改用倍数表述而非「（1250.0%）」。
+      // denied 是 du stderr 权限错误行数，可超过已记录目录数；不能拿
+      // 两种计数相除推断受限覆盖率或显示倍数。
       return [{ ...latest, denied_count: 25, collection_status: "partial",
                 dir_count: 2 }, snapshot(1, "2026-09-12T10:00:00")];
     }
@@ -129,6 +151,7 @@ function createFixture() {
   const SNAPSHOTS_ENDPOINT_COLUMNS = [
     "id", "created_at", "root", "total_kb", "dir_count", "denied_count",
     "min_kb", "collection_status", "vanished_count", "exclude_names",
+    "confirmed_missing_count", "path_unverified_count",
     "total_bytes", "free_bytes",
   ];
   const snapshotsForSnapshotsEndpoint = () => snapshots().map((s) => {
@@ -483,10 +506,16 @@ function createFixture() {
         // 形状校验镜像 fathom/config.py 的合同；scan_root 的存在性/目录校验
         // 依赖真实文件系统，夹具根是合成路径，只校验键与数值形状（后端
         // pytest 已覆盖完整校验矩阵）。
-        const allowed = ["scan_root", "scan_time", "min_kb", "free_alert_gb", "exclude_names"];
+        const allowed = ["scan_root", "scan_time", "min_kb", "free_alert_gb", "exclude_names", "auto_download_updates"];
         const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
         if (unknown.length) {
           return json(res, 400, { detail: `未知的配置项：${unknown.join(", ")}` });
+        }
+        // ISS-113：镜像 fathom/config.py 的 _validated_bool——严格布尔，
+        // 1/0/"false" 等 JSON 近亲一律 400（宽接收会静默改变用户意图）。
+        if (body.auto_download_updates != null
+            && typeof body.auto_download_updates !== "boolean") {
+          return json(res, 400, { detail: "auto_download_updates 必须是布尔值（true/false）" });
         }
         if (body.scan_time != null && !/^([01]\d|2[0-3]):([0-5]\d)$/.test(String(body.scan_time).trim())) {
           return json(res, 400, { detail: "scan_time 必须是 HH:MM 格式（00:00–23:59）" });
@@ -533,6 +562,14 @@ function createFixture() {
           } else {
             state.config[key] = body[key];
           }
+        }
+        // ISS-113：auto_download_updates 一经 PUT 即为 settings 来源（镜像
+        // 后端 effective_settings_view 的 sources 语义）。
+        if (body.auto_download_updates !== undefined) {
+          state.config.sources = {
+            ...state.config.sources,
+            auto_download_updates: "settings",
+          };
         }
         // ISS-016B：镜像后端——注册时间夹具恒 12:00，按保存后的 scan_time
         // 重算漂移态（差 1 分钟也是 drift），随嵌套 config 与顶层字段一起返回。
@@ -610,6 +647,8 @@ function createFixture() {
           dir_count: latest.dir_count ?? null,
           denied_count: latest.denied_count ?? null,
           vanished_count: latest.vanished_count ?? null,
+          confirmed_missing_count: latest.confirmed_missing_count ?? null,
+          path_unverified_count: latest.path_unverified_count ?? null,
         } : null,
       });
     }
@@ -2650,16 +2689,32 @@ async function main() {
     // 部分覆盖：denied_count > 0、collection_status=partial
     await setMode("partial");
     await openPage("#/overview");
-    await waitForText(page, "#overview-quality", "部分目录未读取");
+    await waitForText(page, "#overview-quality", "部分覆盖");
     const partialQuality = await page.locator("#overview-quality").textContent();
     record("state-matrix-partial-quality-shown",
-      partialQuality.includes("部分目录未读取") && partialQuality.includes("6 个"),
+      partialQuality.includes("部分覆盖") && partialQuality.includes("6 条读取受限记录") &&
+        !partialQuality.includes("6 个目录"),
       partialQuality.slice(0, 80));
     await waitForText(page, "#overview-scan-note", "读取受限");
     const partialScanNote = await page.locator("#overview-scan-note").textContent();
     record("state-matrix-partial-scan-note-shown",
-      partialScanNote.includes("读取受限") && partialScanNote.includes("6 个目录读取受限"),
+      partialScanNote.includes("6 条读取受限记录") && !partialScanNote.includes("6 个目录读取受限"),
       partialScanNote.slice(0, 80));
+    await setMode("partial-denied-130");
+    await openPage("#/overview");
+    await waitForText(page, "#overview-quality", "130 条读取受限记录");
+    const historicalCoverage = await page.evaluate(() => ({
+      quality: document.getElementById("overview-quality")?.textContent || "",
+      scan: document.getElementById("overview-scan-note")?.textContent || "",
+      detail: document.getElementById("overview-coverage-note")?.textContent || "",
+    }));
+    record("coverage-denied-130-stays-error-lines",
+      historicalCoverage.quality.includes("130 条读取受限记录") &&
+        historicalCoverage.scan.includes("130 条读取受限记录") &&
+        historicalCoverage.detail.includes("130 条读取受限记录") &&
+        historicalCoverage.detail.includes("同一路径可能出现多条") &&
+        !Object.values(historicalCoverage).join(" ").includes("130 个目录"),
+      JSON.stringify(historicalCoverage).slice(0, 180));
 
     // 首扫无日报：单快照 + 报告为空
     await setMode("single");
@@ -2842,32 +2897,95 @@ async function main() {
       coverageNote: document.getElementById("overview-coverage-note")?.textContent || "",
     }));
     record("coverage-three-classes-rendered",
-      covAll.classes.includes("权限受限") && covAll.classes.includes("6") &&
-        covAll.classes.includes("扫描期间消失") && covAll.classes.includes("4") &&
+      covAll.classes.includes("6 条读取受限记录") &&
+        covAll.classes.includes("4 个目录状态未确认") &&
         covAll.classes.includes("排除掩码") && covAll.classes.includes("3") &&
         // 文案不冒充影响/删除（合同禁止「数量=影响」「未记录=删除」表述）
         !covAll.classes.includes("数量=影响") && !covAll.classes.includes("未记录=删除") &&
         !covAll.classes.includes("数量等于影响"),
       covAll.classes.slice(0, 160));
-    // 追加后的并存形态：旧串「6 个目录读取受限」仍在 #overview-scan-note（既有契约），
-    // 新三类计数提示在独立区块 #overview-coverage-note 内出现。
+    // 受限错误行与校验未确认路径在同一快照中各自保留原始单位。
     record("coverage-scan-note-shows-all-three-counts",
-      covAll.scanNote.includes("6 个目录读取受限") &&
-        covAll.coverageNote.includes("6 处权限受限") &&
-        covAll.coverageNote.includes("4 处扫描期间消失") &&
+      covAll.scanNote.includes("6 条读取受限记录") &&
+        covAll.coverageNote.includes("6 条读取受限记录") &&
+        covAll.coverageNote.includes("4 个目录状态未确认") &&
         covAll.coverageNote.includes("3 项排除掩码"),
       `scan=${covAll.scanNote.slice(0, 80)} | cov=${covAll.coverageNote.slice(0, 80)}`);
 
-    // 2) 仅 vanished（ISS-066 字段已暴露，denied=0）：只见消失 chip
+    // 2) 仅 vanished（ISS-066 字段已暴露，denied=0）：只见未确认 chip
     await setMode("partial-vanished");
     await openPage("#/overview");
     await page.waitForSelector("[data-test='coverage-classes']");
     const covVanished = await page.evaluate(() =>
       document.querySelector("[data-test='coverage-classes']")?.textContent || "");
     record("coverage-vanished-only-class-shown",
-      covVanished.includes("扫描期间消失") && covVanished.includes("4") &&
-        !covVanished.includes("权限受限") && !covVanished.includes("排除掩码"),
+      covVanished.includes("4 个目录状态未确认") &&
+        !covVanished.includes("读取受限记录") && !covVanished.includes("排除掩码"),
       covVanished.slice(0, 120));
+    const vanishedQuality = await page.locator("#overview-quality").textContent();
+    record("coverage-vanished-only-no-zero-unread-directories",
+      vanishedQuality.includes("部分覆盖") &&
+        vanishedQuality.includes("4 个目录状态未确认") &&
+        !vanishedQuality.includes("未读取") && !vanishedQuality.includes("0 个"),
+      vanishedQuality.slice(0, 120));
+    await setMode("partial-vanished-inaccessible");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-classes']");
+    const permissionAmbiguousOverview = await page.evaluate(() => ({
+      quality: document.getElementById("overview-quality")?.textContent || "",
+      detail: document.getElementById("overview-coverage-note")?.textContent || "",
+    }));
+    record("coverage-permission-error-path-not-declared-disappeared",
+      permissionAmbiguousOverview.quality.includes("目录状态未确认") &&
+        permissionAmbiguousOverview.detail.includes("可能已移动、被清理，也可能因权限无法访问") &&
+        !Object.values(permissionAmbiguousOverview).join(" ").includes("已消失"),
+      JSON.stringify(permissionAmbiguousOverview).slice(0, 180));
+    await openPage("#/settings");
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForSelector("#perm-fda-card [data-test='perm-fda-vanished']");
+    await page.waitForFunction(() =>
+      document.querySelector("#permissions-panel [data-test='perm-auth-chip']")
+        ?.textContent.includes("目录状态未确认"));
+    const permissionAmbiguousSettings = await page.evaluate(() => ({
+      fda: document.querySelector("#perm-fda-card [data-test='perm-fda-body']")?.textContent || "",
+      schedule: document.querySelector("#permissions-panel [data-test='perm-auth-chip']")?.textContent || "",
+    }));
+    record("perm-fda-permission-error-path-not-declared-disappeared",
+      permissionAmbiguousSettings.fda.includes("目录状态未确认（个）") &&
+        permissionAmbiguousSettings.fda.includes("可能已移动、被清理或无法访问") &&
+        permissionAmbiguousSettings.schedule.includes("目录状态未确认") &&
+        !Object.values(permissionAmbiguousSettings).join(" ").includes("已消失"),
+      JSON.stringify(permissionAmbiguousSettings).slice(0, 180));
+
+    await setMode("partial-classified");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-classes']");
+    const classifiedOverview = await page.evaluate(() => ({
+      quality: document.getElementById("overview-quality")?.textContent || "",
+      detail: document.getElementById("overview-coverage-note")?.textContent || "",
+    }));
+    record("coverage-classified-path-states-separate-from-legacy",
+      classifiedOverview.detail.includes("1 个目录校验时路径不存在") &&
+        classifiedOverview.detail.includes("3 个目录状态无法确认") &&
+        !classifiedOverview.detail.includes("4 个目录状态未确认"),
+      JSON.stringify(classifiedOverview).slice(0, 200));
+    await openPage("#/settings");
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForSelector("#perm-fda-card [data-test='perm-fda-path-unverified']");
+    const classifiedSettings = await page.evaluate(() => {
+      const fda = document.getElementById("perm-fda-card");
+      return {
+        missing: fda?.querySelector("[data-test='perm-fda-confirmed-missing']")?.textContent || "",
+        unverified: fda?.querySelector("[data-test='perm-fda-path-unverified']")?.textContent || "",
+        old: !!fda?.querySelector("[data-test='perm-fda-vanished']"),
+        note: fda?.textContent || "",
+      };
+    });
+    record("perm-fda-classified-counts-without-legacy-guess",
+      classifiedSettings.missing === "1" && classifiedSettings.unverified === "3" &&
+        !classifiedSettings.old && classifiedSettings.note.includes("不能据此认定谁删除") &&
+        classifiedSettings.note.includes("不能相加成不同目录数"),
+      JSON.stringify(classifiedSettings).slice(0, 200));
 
     // 3) 仅 excluded（exclude_names 数组）：只见排除掩码 chip
     await setMode("partial-excluded");
@@ -2877,7 +2995,7 @@ async function main() {
       document.querySelector("[data-test='coverage-classes']")?.textContent || "");
     record("coverage-excluded-only-class-shown",
       covExcluded.includes("排除掩码") && covExcluded.includes("2") &&
-        !covExcluded.includes("权限受限") && !covExcluded.includes("扫描期间消失"),
+        !covExcluded.includes("读取受限记录") && !covExcluded.includes("目录状态未确认"),
       covExcluded.slice(0, 120));
 
     // 4) 字段缺失防御（vanished_count / exclude_names 不在快照里）：
@@ -2892,15 +3010,14 @@ async function main() {
       coverageNote: document.getElementById("overview-coverage-note")?.textContent || "",
     }));
     record("coverage-vanished-and-excluded-defended-to-zero",
-      covDefended.classes.includes("权限受限") && covDefended.classes.includes("6") &&
-        !covDefended.classes.includes("扫描期间消失") &&
+      covDefended.classes.includes("6 条读取受限记录") &&
+        !covDefended.classes.includes("目录状态未确认") &&
         !covDefended.classes.includes("排除掩码"),
       covDefended.classes.slice(0, 120));
-    // 追加后的并存形态：旧串「6 个目录读取受限」仍在 scan-note（既有契约），
-    // 新 coverage-note 只渲染权限受限 chip，不冒充消失/排除掩码计数。
+    // 缺失字段按 0 处理，不凭空出现消失/排除掩码计数。
     record("coverage-scan-note-defends-missing-fields",
-      covDefended.scanNote.includes("6 个目录读取受限") &&
-        covDefended.coverageNote.includes("权限受限") &&
+      covDefended.scanNote.includes("6 条读取受限记录") &&
+        covDefended.coverageNote.includes("读取受限记录") &&
         !covDefended.coverageNote.includes("消失") &&
         !covDefended.coverageNote.includes("排除掩码"),
       `scan=${covDefended.scanNote.slice(0, 80)} | cov=${covDefended.coverageNote.slice(0, 80)}`);
@@ -2920,8 +3037,8 @@ async function main() {
     record("coverage-full-shows-only-complete",
       covFull.quality.includes("覆盖完整") && covFull.classes === "" &&
         covFull.note.includes("完整覆盖") &&
-        !covFull.quality.includes("权限受限") && !covFull.quality.includes("扫描期间消失") &&
-        !covFull.note.includes("权限受限"),
+        !covFull.quality.includes("读取受限记录") && !covFull.quality.includes("目录状态未确认") &&
+        !covFull.note.includes("读取受限记录"),
       JSON.stringify({ q: covFull.quality.slice(0, 60), n: covFull.note.slice(0, 60) }));
 
     /* ---------- ISS-002A 设置页：浏览器降级渲染路径文字 ----------
@@ -3000,7 +3117,8 @@ async function main() {
     }));
     record("permissions-tauri-mock-shows-button-and-warning",
       permTauri.openBtnVisible && permTauri.fallbackHidden &&
-        permTauri.authChip.includes("可能未授权") &&
+        permTauri.authChip.includes("最近扫描：6 条读取受限记录") &&
+        permTauri.note.includes("授权变更不会更新已有快照") &&
         permTauri.note.includes("不代改系统权限"),
       JSON.stringify(permTauri).slice(0, 200));
     await tpage2.click("#btn-open-system-prefs");
@@ -3021,12 +3139,12 @@ async function main() {
      * GET /api/permissions（夹具：fda 默认 granted、notification=submitted、
      * coverage 引用当前模式 latest 快照）。
      * 1) 浏览器态（默认 page，无 Tauri 桥）：切到 permissions 分区——
-     *    三张权限卡存在；FDA 徽章=已授权 + partial-all 的 denied=6 /
-     *    vanished=4 / 6/40（15.0%）如实呈现；深链按钮隐藏、降级路径文字
+     *    三张权限卡存在；FDA 徽章=探测可读 + partial-all 的 denied=6 /
+     *    vanished=4，如实呈现原始计数，不显示 6/40 比值；深链按钮隐藏、降级路径文字
      *    可见，不渲染假 <a>；通知徽章=已提交；后台计划卡点击「前往」
      *    切到 schedule 分区。
-     * 2) scenario=fda-denied / fda-unknown：徽章=未授权（--danger）/未知
-     *    （--muted），unknown 不伪造已授权。
+     * 2) scenario=fda-denied / fda-unknown：徽章=探测受限（--danger）/未知
+     *    （--muted），unknown 不伪造可读。
      * 3) 监控分区：交叉说明行 + 前往按钮在位、旧 #monitor-permissions-card
      *    不存在；点击前往按钮切回 permissions。
      * 4) mock 桥（tpage6）：FDA/通知深链按钮可见、fallback 隐藏，点击后
@@ -3049,6 +3167,8 @@ async function main() {
         vanished: fda?.querySelector("[data-test='perm-fda-vanished']")?.textContent || "",
         deniedLabel: fda?.querySelector("[data-test='perm-fda-denied']")
           ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
+        vanishedLabel: fda?.querySelector("[data-test='perm-fda-vanished']")
+          ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
         fdaNote: [...(fda?.querySelectorAll(".perm-note") || [])]
           .map((p) => p.textContent).join(" | "),
         notifBadge: notif?.querySelector("[data-test='perm-notif-badge']")?.textContent || "",
@@ -3068,17 +3188,23 @@ async function main() {
     });
     record("perm-hub-three-cards-render",
       permHubBrowser.threeCards && permHubBrowser.scheduleGotoBtn &&
-        permHubBrowser.fdaBadge.includes("已授权") && permHubBrowser.fdaBadgeCls.includes("ok") &&
+        permHubBrowser.fdaBadge.includes("探测可读") && permHubBrowser.fdaBadgeCls.includes("ok") &&
         permHubBrowser.notifBadge.includes("已提交") && permHubBrowser.notifBadgeCls.includes("ok"),
       JSON.stringify({ fda: permHubBrowser.fdaBadge, notif: permHubBrowser.notifBadge }).slice(0, 160));
-    record("perm-fda-granted-badge-with-coverage-numbers",
+    record("perm-fda-granted-badge-with-raw-counts",
       permHubBrowser.denied === "6" && permHubBrowser.vanished === "4" &&
-        permHubBrowser.deniedLabel.includes("6 / 40") &&
-        permHubBrowser.deniedLabel.includes("15.0%") &&
-        // granted 态白话说明指向「可读取保护位置」；「授权后需重新扫描才
-        // 生效」是 denied 态文案，由 perm-fda-denied-badge 用例单独钉住。
-        permHubBrowser.fdaNote.includes("保护位置"),
+        permHubBrowser.deniedLabel.trim() === "读取受限错误（条）" &&
+        permHubBrowser.vanishedLabel.includes("目录状态未确认") &&
+        permHubBrowser.fdaNote.includes("当前服务可读取探测位置") &&
+        permHubBrowser.fdaNote.includes("不能保证扫描范围内所有路径都可读"),
       JSON.stringify({ d: permHubBrowser.denied, l: permHubBrowser.deniedLabel }).slice(0, 160));
+    record("perm-fda-old-snapshot-separate-from-current-probe",
+      permHubBrowser.fdaNote.includes("最近扫描：2026-09-13 10:00") &&
+        permHubBrowser.fdaNote.includes("授权变更不会改写旧快照") &&
+        permHubBrowser.fdaNote.includes("du 输出的权限错误行数") &&
+        permHubBrowser.fdaNote.includes("两类计数可能指向同一路径，不能相加成不同目录数") &&
+        permHubBrowser.deniedLabel.trim() === "读取受限错误（条）",
+      permHubBrowser.fdaNote.slice(0, 180));
     record("perm-notif-submitted-badge-and-note",
       permHubBrowser.notifBadge.includes("已提交") &&
         permHubBrowser.notifNote.includes("系统通知已提交"),
@@ -3108,7 +3234,7 @@ async function main() {
     await openPage("#/settings");
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
     await page.waitForFunction(() =>
-      document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent.includes("未授权"));
+      document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent.includes("探测受限"));
     const fdaDenied = await page.evaluate(() => ({
       badge: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent || "",
       cls: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.className || "",
@@ -3116,8 +3242,8 @@ async function main() {
         .map((p) => p.textContent).join(" | "),
     }));
     record("perm-fda-denied-badge-uses-danger-token",
-      fdaDenied.badge.includes("未授权") && fdaDenied.cls.includes("danger") &&
-        !fdaDenied.cls.includes("ok") && fdaDenied.note.includes("重新扫描才生效"),
+      fdaDenied.badge.includes("探测受限") && fdaDenied.cls.includes("danger") &&
+        !fdaDenied.cls.includes("ok") && fdaDenied.note.includes("重启后台服务并重新扫描"),
       JSON.stringify(fdaDenied).slice(0, 160));
 
     await setScenario("fda-unknown");
@@ -3128,10 +3254,15 @@ async function main() {
     const permUnknown = await page.evaluate(() => ({
       badge: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent || "",
       cls: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.className || "",
+      denied: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")?.textContent || "",
+      deniedLabel: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")
+        ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
     }));
     record("perm-fda-unknown-badge-not-fabricated",
       permUnknown.badge.includes("未知") && permUnknown.cls.includes("miss") &&
-        !permUnknown.cls.includes("ok") && !permUnknown.cls.includes("danger"),
+        !permUnknown.cls.includes("ok") && !permUnknown.cls.includes("danger") &&
+        permUnknown.denied === "6" &&
+        permUnknown.deniedLabel.trim() === "读取受限错误（条）",
       JSON.stringify(permUnknown));
     await setScenario(null);
 
@@ -3203,10 +3334,10 @@ async function main() {
       tpage6Errors.join("; "));
     await tpage6.close();
 
-    /* ---------- ISS-095 占比口径迁入权限分区：>100% 倍数文案 + 空库引导 ----------
+    /* ---------- ISS-115 比值移除：高错误行数/零行数/空库 ----------
      * 1) denied-over 夹具（denied=25 / dir_count=2；du stderr 行数可超目录数）：
-     *    权限分区 FDA 卡标签显示「25 / 2（受限行数为目录数的 12.5 倍）」，
-     *    不再出现 >100% 的百分比读数。
+     *    权限分区只显示 25 条，不显示百分比、倍数或除法。
+     *    dual 夹具 denied=0 / dir_count=3 时也只显示原始 0 条。
      * 2) empty 夹具（无快照）：FDA 卡显示「尚未扫描」引导文案，不渲染
      *    数字事实（denied/vanished 均不出现）。
      * 两组都在浏览器态（默认 page）走真实 UI 验证；setMode 重置竞态，
@@ -3220,20 +3351,28 @@ async function main() {
       label: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")
         ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
     }));
-    record("perm-fda-denied-over-uses-multiple-not-percent",
-      permOver.denied === "25" &&
-        permOver.label.includes("25 / 2") &&
-        permOver.label.includes("受限行数为目录数的 12.5 倍") &&
-        !permOver.label.includes("%"),
-      JSON.stringify(permOver).slice(0, 160));
     const permOverShot = path.join(evidenceDir, "settings-perm-hub-denied-over-1220x820.png");
     await page.screenshot({ path: permOverShot });
+
+    await setMode("dual");
+    await openPage("#/settings");
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForSelector("#perm-fda-card [data-test='perm-fda-denied']");
+    const permZero = await page.evaluate(() => ({
+      denied: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")?.textContent || "",
+      label: document.querySelector("#perm-fda-card [data-test='perm-fda-denied']")
+        ?.parentElement?.querySelector(".perm-fact-label")?.textContent || "",
+    }));
+    record("perm-fda-denied-over-and-zero-show-counts-without-ratio",
+      permOver.denied === "25" && permOver.label.trim() === "读取受限错误（条）" &&
+        permZero.denied === "0" && permZero.label.trim() === "读取受限错误（条）",
+      JSON.stringify({ over: permOver, zero: permZero }).slice(0, 180));
 
     await setMode("empty");
     await openPage("#/settings");
     /* 空库态先用「权限状态加载中…」占位（同为 p.hint），必须等 fetch 完成
      * 后的最终文案再断言，避免读到占位文本假绿。否定条件针对数字事实元素：
-     * 引导文案本身合法包含「读取受限/扫描期间消失」字样，不能按字面排除。 */
+     * 引导文案本身合法包含「读取受限/目录路径校验」字样，不能按字面排除。 */
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
     await page.waitForFunction(() => {
       const el = document.querySelector("#perm-fda-card [data-test='perm-fda-body']");
@@ -3369,12 +3508,15 @@ async function main() {
       JSON.stringify({ registerArgs: registerInvoke?.args, statusCount3, afterRegister }).slice(0, 200));
     await tpage3.close();
 
-    /* ---------- ISS-040B 应用更新：浏览器降级 + mock 桥全流程 ----------
-     * 浏览器模式（无桥）：只读降级说明，不渲染检查按钮/假入口。
-     * mock 桥：unconfigured 态状态行（含当前版本、无安装入口）；available 态
-     * 版本+notes+确认层；取消回落（不发 updater_install）；确认后
-     * updater_install 携 confirmed:true；安装成功进入「重启以完成」独立确认，
-     * 取消不发 updater_restart、再确认才携带 confirmed:true 调用。 */
+    /* ---------- ISS-040B 应用更新 + ISS-113 无感化：浏览器降级 + mock 桥全流程 ----------
+     * 浏览器模式（无桥）：只读降级说明，不渲染检查按钮/自动下载开关/假入口。
+     * mock 桥：unconfigured 态状态行（含当前版本、无安装入口）；available +
+     * 自动下载开（默认）→ 版本 + 后台下载去向一句话 + notes 收进「了解详情」；
+     * 开关关闭（PUT /api/config 落 false）→ 回 040B 现状「下载并安装」确认层
+     * 全流程（取消回落不发 updater_install；确认后 confirmed:true；阶段/字节
+     * 进度/取消边界/终态重试；安装成功「重启以完成」独立确认）；开关拨回开 →
+     * downloading 事件驱动后台下载呈现、取消/重试下载、downloaded（ready）→
+     * 「安装（需重启）」确认（复用 updater_install + confirmed:true）→ installed。 */
     await setMode("dual");
     await openPage("#/settings");
     // ISS-087：updater-panel 在「关于」section 下；切到 about 让其可见。
@@ -3384,10 +3526,12 @@ async function main() {
       note: document.querySelector("[data-test='updater-browser-note']")?.textContent || "",
       hasCheckBtn: Boolean(document.getElementById("btn-updater-check")),
       hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+      hasAutoToggle: Boolean(document.getElementById("updater-auto-download")),
     }));
     record("updater-browser-mode-readonly-degrade",
       updaterBrowser.note.includes("桌面应用的设置页") &&
-        !updaterBrowser.hasCheckBtn && !updaterBrowser.hasInstallBtn,
+        !updaterBrowser.hasCheckBtn && !updaterBrowser.hasInstallBtn &&
+        !updaterBrowser.hasAutoToggle,
       JSON.stringify(updaterBrowser).slice(0, 160));
 
     const tpage4 = await browser.newPage({ viewport: { width: 1220, height: 820 } });
@@ -3453,7 +3597,9 @@ async function main() {
         !updUnconf.hasInstall && JSON.stringify(updUnconf.checkArgs) === "{}",
       JSON.stringify(updUnconf).slice(0, 200));
 
-    // 2) available：版本 + notes + 「下载并安装」入口。
+    // 2) available + 自动下载开（默认）：状态一句话 + 版本 + 后台下载去向；
+    //    notes 收进「了解详情」折叠区（默认收起）；无手动「下载并安装」入口
+    //    （下载由壳后台进行）；自动下载开关在场且按配置勾选。
     await tpage4.evaluate(() => {
       window.__updaterCheck = { state: "available", current_version: "0.3.0",
         available_version: "0.4.0", notes: "演示版本说明" };
@@ -3465,12 +3611,38 @@ async function main() {
       status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
       available: document.querySelector("[data-test='updater-available']")?.textContent || "",
       notes: document.querySelector("[data-test='updater-notes']")?.textContent || "",
+      notesInsideDetails: Boolean(
+        document.querySelector("[data-test='updater-details'] [data-test='updater-notes']")),
+      detailsOpen: document.querySelector("[data-test='updater-details']")?.open ?? null,
       hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+      hasAutoToggle: Boolean(document.getElementById("updater-auto-download")),
+      autoToggleChecked: !!document.getElementById("updater-auto-download")?.checked,
     }));
-    record("updater-available-shows-version-and-notes",
+    record("updater-available-auto-hint-collapses-notes",
       updAvail.status.includes("0.3.0") && updAvail.available.includes("0.4.0") &&
-        updAvail.notes.includes("演示版本说明") && updAvail.hasInstallBtn,
-      JSON.stringify(updAvail).slice(0, 200));
+        updAvail.available.includes("后台下载") &&
+        updAvail.notes.includes("演示版本说明") && updAvail.notesInsideDetails &&
+        updAvail.detailsOpen === false &&
+        !updAvail.hasInstallBtn && updAvail.hasAutoToggle && updAvail.autoToggleChecked,
+      JSON.stringify(updAvail).slice(0, 240));
+
+    // 2b) ISS-113 自动下载开关关闭：经既有 PUT /api/config 落 false（夹具
+    //     生效值可查），available 呈现回 040B 现状——「下载并安装」手动入口
+    //     出现（后续 3-7 走现状全流程）。
+    await tpage4.click("#updater-auto-download");
+    await tpage4.waitForSelector("#btn-updater-install");
+    const fixtureCfg1 = (await fixtureState()).config;
+    const updToggleOff = await tpage4.evaluate(() => ({
+      toggleChecked: !!document.getElementById("updater-auto-download")?.checked,
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      available: document.querySelector("[data-test='updater-available']")?.textContent || "",
+    }));
+    record("updater-auto-toggle-off-falls-back-to-manual-install",
+      fixtureCfg1.auto_download_updates === false && !updToggleOff.toggleChecked &&
+        updToggleOff.hasInstallBtn && updToggleOff.status.includes("有可用更新") &&
+        updToggleOff.available.includes("确认"),
+      JSON.stringify({ fixture: fixtureCfg1.auto_download_updates, ...updToggleOff }).slice(0, 240));
 
     // 3) 确认层：版本可审，确认/取消都在。
     await tpage4.click("[data-test='updater-install-btn']");
@@ -3747,6 +3919,138 @@ async function main() {
     record("updater-restart-confirmed-invoke",
       restartInvoke?.args?.confirmed === true && tpage4Errors.length === 0,
       JSON.stringify(restartInvoke));
+
+    /* ---------- 8-11 ISS-113 自动下载（开关开）：后台下载 → 取消/重试 →
+     * downloaded（ready）→ 「安装（需重启）」确认（复用 updater_install +
+     * confirmed:true，六步合同不变）→ installed。下载阶段事件与取消语义
+     * 复用 ISS-102 呈现（壳后台预下载与事务内下载同载荷）。 ---------- */
+    // 8a) 开关拨回开：PUT true 落盘；重新检查回 available 后手动入口消失。
+    await tpage4.click("[data-test='updater-check-btn']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("有可用更新"));
+    await tpage4.waitForSelector("#btn-updater-install");  // 开关仍关：现状入口在
+    await tpage4.click("#updater-auto-download");
+    await tpage4.waitForFunction(() => !document.getElementById("btn-updater-install"));
+    const fixtureCfg2 = (await fixtureState()).config;
+
+    // 8b) downloading 事件（后台预下载载荷）：字节进度百分比 + 取消入口；
+    //     点击取消发 updater-cancel-requested；cancelled 终态后自动语境的
+    //     重试入口是「重试下载」，不出现手动「下载并安装」。
+    await tpage4Emit({ state: "downloading", current_version: "0.3.0", available_version: "0.4.0",
+      downloaded: 1024, total: 8388608, cancellable: true });
+    await tpage4Emit({ state: "downloading", current_version: "0.3.0", available_version: "0.4.0",
+      downloaded: 4194304, total: 8388608, cancellable: true });
+    const autoDl = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      percent: document.querySelector("[data-test='updater-progress']")?.getAttribute("data-percent") || "",
+      hasCancel: Boolean(document.getElementById("btn-updater-cancel")),
+    }));
+    await tpage4.click("[data-test='updater-cancel-btn']");
+    await tpage4.waitForFunction(() => (window.__tauriMock4.emits || [])
+      .some((e) => e.name === "updater-cancel-requested"));
+    await tpage4Emit({ state: "cancelled", current_version: "0.3.0", available_version: "0.4.0",
+      hint: "下载已取消；旧版本保持运行，可再次安装" });
+    const autoCancelled = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      terminal: document.querySelector("[data-test='updater-terminal']")?.textContent || "",
+      hasRetryDownload: Boolean(document.getElementById("btn-updater-retry-download")),
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+    }));
+    record("updater-auto-downloading-progress-and-cancel",
+      fixtureCfg2.auto_download_updates === true &&
+        autoDl.status.includes("正在下载更新") && autoDl.percent === "50" && autoDl.hasCancel &&
+        autoCancelled.status.includes("下载已取消") &&
+        autoCancelled.terminal.includes("旧版本保持运行") &&
+        autoCancelled.hasRetryDownload && !autoCancelled.hasInstallBtn,
+      JSON.stringify({ fixture: fixtureCfg2.auto_download_updates, autoDl, autoCancelled }).slice(0, 280));
+
+    // 8c) 重试下载 = 重新检查（壳内由开关再触发后台下载）；available 回自动
+    //     语境（无手动入口、无重试按钮）。
+    const checksBeforeRetry = await tpage4.evaluate(() =>
+      (window.__tauriMock4.invokes || []).filter((c) => c && c.cmd === "updater_check").length);
+    await tpage4.click("[data-test='updater-retry-download-btn']");
+    await tpage4.waitForFunction((before) =>
+      (window.__tauriMock4.invokes || []).filter((c) => c && c.cmd === "updater_check").length > before,
+      checksBeforeRetry);
+    const retryRes = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+      hasRetryDownload: Boolean(document.getElementById("btn-updater-retry-download")),
+    }));
+    record("updater-retry-download-rechecks-and-awaits-auto",
+      retryRes.status.includes("有可用更新") && !retryRes.hasInstallBtn &&
+        !retryRes.hasRetryDownload,
+      JSON.stringify(retryRes).slice(0, 200));
+
+    // 8d) downloaded（ready）：状态一句话 + ready 区块 + 「安装（需重启）」；
+    //     确认层取消不发 updater_install，ready 保持。
+    const installsBeforeReady = await tpage4.evaluate(() =>
+      (window.__tauriMock4.invokes || []).filter((c) => c && c.cmd === "updater_install").length);
+    await tpage4Emit({ state: "downloaded", current_version: "0.3.0", available_version: "0.4.0",
+      hint: "新版本已下载并验签；经你确认后安装，完成后重启应用生效" });
+    const readyState = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      ready: document.querySelector("[data-test='updater-ready']")?.textContent || "",
+      hasReadyBtn: Boolean(document.getElementById("btn-updater-install-ready")),
+      hasCancel: Boolean(document.getElementById("btn-updater-cancel")),
+    }));
+    await tpage4.click("[data-test='updater-install-ready-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    const readyLayer = await tpage4.evaluate(() => ({
+      text: document.querySelector("[data-test='updater-confirm']")?.textContent || "",
+      hasYes: Boolean(document.getElementById("updater-confirm-yes")),
+      hasNo: Boolean(document.getElementById("updater-confirm-no")),
+    }));
+    await tpage4.click("[data-test='updater-ready-confirm-no']");
+    await tpage4.waitForFunction(() =>
+      document.querySelector("[data-test='updater-confirm']")?.hidden === true);
+    const afterReadyNo = await tpage4.evaluate((before) => ({
+      installs: (window.__tauriMock4.invokes || [])
+        .filter((c) => c && c.cmd === "updater_install").length - before,
+      hasReadyBtn: Boolean(document.getElementById("btn-updater-install-ready")),
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+    }), installsBeforeReady);
+    record("updater-downloaded-ready-confirm-cancel-keeps-ready",
+      readyState.status.includes("已下载就绪") && readyState.status.includes("0.4.0") &&
+        readyState.ready.includes("已下载并验签") && readyState.hasReadyBtn &&
+        !readyState.hasCancel &&
+        readyLayer.text.includes("0.4.0") && readyLayer.text.includes("验签") &&
+        readyLayer.text.includes("重启") && readyLayer.hasYes && readyLayer.hasNo &&
+        afterReadyNo.installs === 0 && afterReadyNo.hasReadyBtn &&
+        afterReadyNo.status.includes("已下载就绪"),
+      JSON.stringify({ readyState, layer: readyLayer.text.slice(0, 60), afterReadyNo }).slice(0, 320));
+
+    // 8e) 确认安装：updater_install 携 confirmed:true（pending 模式事件驱动）；
+    //     preparing → installing（ready 入口消失）→ installed →「重启以完成」。
+    await tpage4.evaluate(() => { window.__installMode = "pending"; });
+    await tpage4.click("[data-test='updater-install-ready-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-ready-confirm-yes']");
+    await tpage4.waitForFunction(() => (window.__tauriMock4.invokes || [])
+      .some((c) => c && c.cmd === "updater_install"));
+    const readyInstallInvoke = await tpage4.evaluate(() => (window.__tauriMock4.invokes || [])
+      .find((c) => c && c.cmd === "updater_install"));
+    await tpage4Emit({ state: "preparing", current_version: "0.3.0", available_version: "0.4.0" });
+    await tpage4Emit({ state: "installing", current_version: "0.3.0", available_version: "0.4.0",
+      cancellable: false, hint: "已进入安装阶段，不可取消；若安装失败将自动回滚到当前版本" });
+    const readyInstalling = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      hasReadyBtn: Boolean(document.getElementById("btn-updater-install-ready")),
+    }));
+    await tpage4Emit({ state: "installed", current_version: "0.3.0", available_version: "0.4.0",
+      hint: "更新已安装；重启应用后生效" });
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("重启后生效"));
+    const readyInstalled = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      hasRestartBtn: Boolean(document.getElementById("btn-updater-restart")),
+    }));
+    record("updater-ready-install-confirmed-to-installed",
+      readyInstallInvoke?.args?.confirmed === true &&
+        readyInstalling.status.includes("正在安装更新") && !readyInstalling.hasReadyBtn &&
+        readyInstalled.status.includes("重启后生效") && readyInstalled.hasRestartBtn &&
+        tpage4Errors.length === 0,
+      JSON.stringify({ args: readyInstallInvoke?.args, readyInstalling, readyInstalled }).slice(0, 240));
     await tpage4.close();
 
     /* ---------- ISS-083 设置页信息架构收敛：打包态隐藏技术细节 ----------

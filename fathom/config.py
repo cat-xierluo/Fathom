@@ -362,9 +362,14 @@ HELPER_INSTANCE_FILENAME = "helper-instance.json"
 
 SETTINGS_FILENAME = "settings.json"
 DEFAULT_SCAN_TIME = "12:00"
+# ISS-113：应用更新无感化——检查发现新版本后是否自动开始后台下载。
+# 默认开启；仅显式 false 关闭（settings.json 落 false 才算关闭，缺省键
+# 一律按默认 true）。桌面壳（Rust）以 std 文件 I/O 只读同一 settings.json
+# 取该值，不引入第二份设置存储；Python 侧不消费该值（下载协调在壳内）。
+DEFAULT_AUTO_DOWNLOAD_UPDATES = True
 _SCAN_TIME_PATTERN = re.compile(r"\A([01]\d|2[0-3]):([0-5]\d)\Z")
 _SETTING_KEYS = ("scan_root", "scan_time", "min_kb", "free_alert_gb",
-                 "exclude_names")
+                 "exclude_names", "auto_download_updates")
 # ISS-066：du ``-I mask`` 按名字（fnmatch）跳过整棵子树；超过该数就退回
 # 逐项路径排除或考虑拆分运行根（防御性上限，避免配置层把 du argv 撑爆）。
 MAX_EXCLUDE_NAMES = 50
@@ -385,6 +390,7 @@ class UserSettings:
     min_kb: float | None = None
     free_alert_gb: float | None = None
     exclude_names: str | None = None  # 规范串（排序去重后 ``;`` 拼接），无配置 = ""
+    auto_download_updates: bool | None = None  # ISS-113；None = 未持久化 → 默认 True
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -393,6 +399,7 @@ class UserSettings:
             "min_kb": self.min_kb,
             "free_alert_gb": self.free_alert_gb,
             "exclude_names": self.exclude_names,
+            "auto_download_updates": self.auto_download_updates,
         }
 
 
@@ -419,6 +426,14 @@ def _validated_positive_number(raw: object, name: str) -> float:
     if not math.isfinite(value) or value <= 0:
         raise ConfigurationError(f"{name} 必须是正的有限数值：{raw!r}")
     return value
+
+
+def _validated_bool(raw: object, name: str) -> bool:
+    """严格布尔（ISS-113）：``1``/``0``/``"false"`` 等 JSON 可表达的近亲
+    一律拒绝——开关语义只有真开/真关两态，宽接收会静默改变用户意图。"""
+    if not isinstance(raw, bool):
+        raise ConfigurationError(f"{name} 必须是布尔值（true/false）：{raw!r}")
+    return raw
 
 
 def _validated_scan_root(raw: object) -> str:
@@ -511,6 +526,8 @@ def parse_user_settings(data: Mapping[str, object]) -> UserSettings:
         "min_kb": lambda raw: _validated_positive_number(raw, "min_kb"),
         "free_alert_gb": lambda raw: _validated_positive_number(raw, "free_alert_gb"),
         "exclude_names": _validated_exclude_names,
+        "auto_download_updates": lambda raw: _validated_bool(
+            raw, "auto_download_updates"),
     }
     for key, validate in validators.items():
         raw = data.get(key)
@@ -643,6 +660,9 @@ def refresh_user_settings(
             min_kb=settings.min_kb,
             free_alert_gb=settings.free_alert_gb,
             exclude_names=_canonicalize_exclude_names(env_items),
+            # ISS-113：排除集被环境变量覆盖只影响 exclude_names，其余已
+            # 持久化项（含 auto_download_updates）原样透传，不得静默回落默认。
+            auto_download_updates=settings.auto_download_updates,
         )
     _USER_SETTINGS = settings
     env_scan_root = env.get("FATHOM_SCAN_ROOT", "").strip()
@@ -689,6 +709,8 @@ def effective_settings_view() -> dict[str, object]:
         "min_kb": "settings" if settings.min_kb is not None else "default",
         "free_alert_gb": "settings" if settings.free_alert_gb is not None else "default",
         "exclude_names": exclude_names_source,
+        "auto_download_updates": (
+            "settings" if settings.auto_download_updates is not None else "default"),
     }
     return {
         "scan_root": str(_ACTIVE.scan_root),
@@ -696,12 +718,17 @@ def effective_settings_view() -> dict[str, object]:
         "min_kb": MIN_DIR_KB,
         "free_alert_gb": FREE_ALERT_GB,
         "exclude_names": EXCLUDE_NAMES,
+        "auto_download_updates": (
+            settings.auto_download_updates
+            if settings.auto_download_updates is not None
+            else DEFAULT_AUTO_DOWNLOAD_UPDATES),
         "sources": sources,
         "defaults": {
             "scan_root": str(_ACTIVE.home_dir),
             "scan_time": DEFAULT_SCAN_TIME,
             "min_kb": _DEFAULT_MIN_KB,
             "free_alert_gb": _DEFAULT_FREE_ALERT_GB,
+            "auto_download_updates": DEFAULT_AUTO_DOWNLOAD_UPDATES,
         },
         "policies": {
             "keep_daily_days": KEEP_DAILY_DAYS,

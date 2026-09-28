@@ -513,9 +513,9 @@ tr:hover .btn-mini { opacity: 1; }
 /* ISS-109：说明列限宽折行——interrupted 的超时诊断（含完整路径）不再撑破表格 */
 .tbl-mini td.run-message { max-width: 380px; word-break: break-word; }
 
-/* ===== 覆盖三类缺口（ISS-002A · 解释，不求和） =====
- * 覆盖行 / 质量行扩展为「权限受限 / 扫描期间消失 / 排除掩码」三块可解释说明。
- * 数字是缺口位置数，不是影响大小；不冒充完整也不冒充删除证据。 */
+/* ===== 覆盖缺口（解释，不求和） =====
+ * 读取受限是错误行数；路径状态依快照版本显示旧口径或两类新计数，
+ * 排除掩码另列。数字不代表影响大小，也不构成删除证据。 */
 .cov-classes {
   display: flex; flex-direction: column; gap: 6px;
   margin: 4px 0 0; padding: 0; list-style: none;
@@ -1161,3 +1161,10 @@ code {
 }
 .updater-progress-fill { height: 100%; background: var(--primary); }
 .updater-progress .hint { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
+
+/* ISS-113 关于页更新区精简：默认两行内（状态一句话 + 动作行）。「自动
+ * 下载更新」开关复用 .exclude-confirm-label 既有开关形态，收在动作行
+ * 行尾（margin-left:auto），与检查/安装按钮同排；长说明由
+ * [data-test=updater-details] 的 .cfg-details 折叠承载（零新色板、零
+ * 动画依赖，键盘可达为原生 checkbox/details）。 */
+.updater-auto-label { margin-left: auto; flex: none; white-space: nowrap; }

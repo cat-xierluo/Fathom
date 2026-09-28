@@ -1,16 +1,14 @@
 """ISS-091：GET /api/status 的 latest_snapshot 权限/覆盖字段契约。
 
 设置页「权限与覆盖」事实卡（监控分区末尾）直接消费
-``latest_snapshot.dir_count / denied_count / vanished_count`` 三个字段
-（denied 占比 = denied_count ÷ dir_count，分母是本次 du 统计到的目录
-总数）。本文件不改 API——字段自 ISS-021/024/066 起已随 ``SELECT *``
+``latest_snapshot`` 的覆盖字段。本文件锁定新旧快照的可空分类口径，
+不从权限错误行数和目录数推导无意义的比例。字段自 ISS-021/024/066 起随 ``SELECT *``
 整行返回——只把消费契约锁进回归：未来任何人改 ``_latest_snapshots``
 的列选择或快照 schema 时，删列会在这里先红，而不是静默让设置页
 显示 0。
 
 覆盖：
-1. denied>0 的合成快照：三个字段名与数值逐项一致（含 dir_count>0
-   时占比可计算的口径）；
+1. denied>0 的合成快照：三个旧字段名与数值逐项一致；
 2. 空库：latest_snapshot 为 null、vanished_count 顶层兜底 0（前端
    「尚未扫描」分支依赖）；
 3. v4 之前的旧列缺失由 db 迁移保证 NOT NULL DEFAULT，这里不再用
@@ -83,10 +81,8 @@ def test_status_latest_snapshot_carries_coverage_fields(client):
     assert latest["dir_count"] == 1200
     assert latest["denied_count"] == 6
     assert latest["vanished_count"] == 4
-    # 占比分母口径：denied_count 与 dir_count 同为一次 du 运行的计数
-    # （dir_count=len(sizes)，不受 min_kb 入库阈值过滤），比值可 >100%。
-    ratio = latest["denied_count"] / latest["dir_count"]
-    assert ratio == pytest.approx(6 / 1200)
+    assert latest["confirmed_missing_count"] is None
+    assert latest["path_unverified_count"] is None
 
 
 def test_status_empty_db_returns_null_latest_snapshot(client):
@@ -95,3 +91,41 @@ def test_status_empty_db_returns_null_latest_snapshot(client):
     assert body["snapshot_count"] == 0
     assert body["latest_snapshot"] is None
     assert body["vanished_count"] == 0
+    assert body["confirmed_missing_count"] is None
+    assert body["path_unverified_count"] is None
+
+
+def test_classified_counts_flow_through_all_snapshot_apis(client):
+    conn = db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb, min_kb, collection_status, vanished_count, "
+            "confirmed_missing_count, path_unverified_count) "
+            "VALUES ('2026-09-28T12:00:00', ?, 5, 6, 1.0, 100, 0, "
+            "'partial', 4, 1, 3)", (str(config.DEFAULT_ROOT),)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    status = client.get("/api/status").json()
+    latest = status["latest_snapshot"]
+    assert (latest["vanished_count"], latest["confirmed_missing_count"],
+            latest["path_unverified_count"]) == (4, 1, 3)
+    assert (status["confirmed_missing_count"], status["path_unverified_count"]) == (1, 3)
+    row = client.get("/api/snapshots").json()[0]
+    assert (row["confirmed_missing_count"], row["path_unverified_count"]) == (1, 3)
+    coverage = client.get("/api/permissions").json()["coverage"]
+    assert (coverage["confirmed_missing_count"], coverage["path_unverified_count"]) == (1, 3)
+
+
+def test_legacy_snapshot_stays_unclassified_in_all_apis(client):
+    _seed_snapshot(str(config.DEFAULT_ROOT), dir_count=5,
+                   denied_count=6, vanished_count=4)
+    latest = client.get("/api/status").json()["latest_snapshot"]
+    row = client.get("/api/snapshots").json()[0]
+    coverage = client.get("/api/permissions").json()["coverage"]
+    for payload in (latest, row, coverage):
+        assert payload["vanished_count"] == 4
+        assert payload["confirmed_missing_count"] is None
+        assert payload["path_unverified_count"] is None

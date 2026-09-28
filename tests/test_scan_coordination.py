@@ -933,7 +933,7 @@ class TestISS003ANotificationSemantics:
     def test_partial_scan_notification_notes_coverage_gap(
         self, tmp_path, monkeypatch, _notification_recorder
     ):
-        """partial：首扫与对比两态正文都注明"部分覆盖（N 处权限受限）"。"""
+        """partial：首扫与对比两态正文都注明读取受限错误行数。"""
         _runtime_obj, root = self._runtime(tmp_path, monkeypatch)
 
         def fake_du(target):
@@ -959,9 +959,9 @@ class TestISS003ANotificationSemantics:
         first_title, first_body, _ = _notification_recorder[0]
         done_title, done_body, _ = _notification_recorder[1]
         assert first_title == notify.TITLE_FIRST
-        assert "部分覆盖（2 处权限受限）" in first_body
+        assert "部分覆盖（2 条读取受限记录）" in first_body
         assert done_title == notify.TITLE_DONE
-        assert "部分覆盖（2 处权限受限）" in done_body
+        assert "部分覆盖（2 条读取受限记录）" in done_body
         # 不夸大：不得声称完整覆盖。
         assert "完整" not in done_body
 

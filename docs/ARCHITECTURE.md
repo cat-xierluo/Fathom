@@ -1,6 +1,6 @@
 # Fathom 当前架构
 
-**事实基线：main `31396a08ed90a37f787614d6f32024e30836c3aa`，2026-09-22 代码与任务证据交叉核对。** 本次为静态合同核对，未重跑业务测试或实机验收。历史验证边界见文末；目标方案不代表已实现能力。
+**原始事实基线：main `31396a08ed90a37f787614d6f32024e30836c3aa`，2026-09-22 代码与任务证据交叉核对；2026-09-28 主干 ISS-116 已补核路径状态分类、schema 与相关 API，本分支另列 ISS-114 原生滚动候选。** 历史验证边界见文末；目标方案不代表已实现能力，候选的最终测试与合并状态以任务卡为准。
 
 ## 入口与边界
 
@@ -23,7 +23,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 | 模块 | 实现 | 已确认局限 |
 |---|---|---|
 | config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口；运行根下 `settings.json` 用户设置持久化（ISS-016A：原子写、校验 fail-closed、优先级 CLI > `FATHOM_*` 环境变量 > settings.json > 默认，覆盖项经 `/api/config` 读写并发布回 `MIN_DIR_KB`/`FREE_ALERT_GB`/`SCAN_HOUR`/`SCAN_MINUTE` 常量） | 分钟级 plist 写入与经确认重装已有 ISS-010B/016B 接线；发行账户中的真实计划/运行根一致性仍待 ISS-016 验收 |
-| db.py | sqlite3、WAL、外键、schema v5；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 支持旧版 v0–v4→v5；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
+| db.py | sqlite3、WAL、外键、schema v6；跨进程迁移锁、结构/完整性 fail-closed 校验、事务迁移与 0600 SQLite 一致备份 | 支持旧版 v0–v5→v6；磁盘满/掉电与真实历史用户库升级仍待发行验收 |
 | scanner.py | `/usr/bin/du -xk` 原始 bytes 采集，以请求根前缀无损映射特殊路径；`DuResult` 承载采集结果、退出码、耗时、权限/瞬时/其他错误分类计数与样例；`du_process_context`/`run_du` 管理取消、超时及扫描锁 FD 传递；有效采集才替换同数据集同日快照 | 无法无歧义映射/解码时拒绝采集；瞬时系统错误（Interrupted system call/Resource temporarily unavailable，按行尾 errno 段精确匹配）单独计数且使采集归 partial、永不 full，与真实致命错误并存仍整体拒绝；快照持久化 min_kb 与 collection_status（full/partial），v3 之前旧行为 NULL；瞬时计数尚未入库 |
 | reports.py | 比较 entries、在完整候选集上用路径 Trie 做父子折叠、最终稳定排序并截取 Top-N、生成 Markdown；按传入 sid 查找同数据集（同根同 `min_kb` 同 `exclude_names`）前驱，报头带 a/b 快照 ID 与记录口径说明 | 单条目仍无法区分低于阈值与移除，措辞如实表达为未记录/首次记录；报告状态由协调器单独记录 |
 | notify.py | 已支持首扫、对比、零变化、部分覆盖和中断通知；正文上限 200 字；低空间阈值读 `config.FREE_ALERT_GB` | 通知调用成功不等于系统横幅展示；权限与系统通知实测仍属 ISS-003；中断消息含路径线索，诊断共享须脱敏 |
@@ -41,8 +41,8 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 
 | 表 | 字段概要 | 含义 |
 |---|---|---|
-| schema | `PRAGMA user_version=5` | v0–v4 开发库经完整性/结构校验和一致备份后逐级事务迁移；未来版本、损坏或不兼容结构拒绝打开 |
-| snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb, min_kb, collection_status, vanished_count, exclude_names | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录；min_kb/collection_status 自 v3 起持久化，旧行 NULL 不补造；v4 新增 vanished_count 默认 0，v5 新增 exclude_names 默认空串（规范掩码串） |
+| schema | `PRAGMA user_version=6` | v0–v5 开发库经完整性/结构校验和一致备份后逐级事务迁移；未来版本、损坏或不兼容结构拒绝打开 |
+| snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb, min_kb, collection_status, vanished_count, exclude_names, confirmed_missing_count, path_unverified_count | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录；min_kb/collection_status 自 v3 起持久化，旧行 NULL 不补造；v4 新增 vanished_count 默认 0，v5 新增 exclude_names 默认空串（规范掩码串）；v6 两个细分计数对旧行保持 NULL，新扫描显式写入且和等于兼容汇总 |
 | entries | snapshot_id, path, size_kb | 复合主键，WITHOUT ROWID；父目录大小已含子目录 |
 | volume_stats | snapshot_id, total_bytes, free_bytes | 扫描时 statvfs，free 为 f_bavail × f_frsize |
 | scan_runs | id, started_at, finished_at, status, message | API/CLI/定时统一写 running/done/failed/interrupted；done message 保留兼容结果，failed/interrupted 为错误或取消原因 |
@@ -50,7 +50,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 
 协调器取得 `flock` 后才把遗留 running 记录收尾为 failed；无法取得锁时返回 busy 并只展示非权威 owner 元数据，不以 PID 或超时推断 owner 已死。扫描、报告、通知和保留逐阶段提交，首扫保存有效快照且 `report_status=not_available` 时整体成功；报告/通知失败作为警告，不抹掉快照。API shutdown、CLI SIGTERM/KeyboardInterrupt 与超时只回收本次会话拥有的 `du`，最后释放锁。
 
-同数据集（同根同 `min_kb` 同 `exclude_names` 口径）同一天的新扫描在判定采集有效后，才进入“删除旧快照并写入新条目和卷统计”的事务；更换阈值口径属另一数据集，同日共存不互相替换。致命非零退出、信号退出、空输出、缺失根记录、负数和混合/非权限错误都在写入前失败；有明确权限/瞬时错误或扫描期间目录消失、根记录有效且数值非负并通过无歧义解析时可记录为部分覆盖。事务中的 SQL 错误会整体回滚，保留原有效快照。
+同数据集（同根同 `min_kb` 同 `exclude_names` 口径）同一天的新扫描在判定采集有效后，才进入“删除旧快照并写入新条目和卷统计”的事务；更换阈值口径属另一数据集，同日共存不互相替换。致命非零退出、信号退出、空输出、缺失根记录、负数和混合/非权限错误都在写入前失败；有明确权限/瞬时错误或 `du` 输出路径在后校验时不存在/无法确认、根记录有效且数值非负并通过无歧义解析时可记录为部分覆盖。新扫描先以 `stat` 区分 errno；遇 `ENOENT` 再用 `lstat` 排除断开的符号链接，二者均确认不存在才计入该类；权限或其他 `OSError` 表示状态无法确认，实存非目录、根外仍拒绝采集。测量时的 `du` 数值保留，私人受限路径不另存。事务中的 SQL 错误会整体回滚，保留原有效快照。
 
 保留近 35 天每日快照，更早按 ISO 周保留一份；weekly_cutoff 实际从今天向前 12 周计算，总跨度约 84 天，不是“35 天再加 12 周”，更不是旧 DEC-006 所写约 9 个月。周分组按数据集 (root, min_kb, exclude_names) 隔离，两根或双数据集同周历史各保留一份；支持 `scan --root` 不代表多根产品已经正确。
 
@@ -69,8 +69,9 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | 方法 | 端点 | 当前返回/行为 |
 |---|---|---|
 | GET | /api/bootstrap | 在同源读取边界内返回当前进程写令牌；令牌不进入 URL、日志或 localStorage |
-| GET | /api/status | 实时卷容量、根、快照总数、最新元数据、db_bytes、scan、port，以及不含令牌/凭据的实际 runtime 路径与模式 |
-| GET | /api/snapshots | 全局快照降序列表，含卷统计与 min_kb/collection_status/vanished_count/exclude_names |
+| GET | /api/status | 实时卷容量、根、快照总数、最新元数据（含可空的路径细分计数）、db_bytes、scan、port，以及不含令牌/凭据的实际 runtime 路径与模式 |
+| GET | /api/permissions | 本机完全磁盘访问探测、通知状态与带时间的最近快照覆盖记录；受限错误为 `du` stderr 行数，路径细分字段旧快照为 NULL，授权探测不重写历史 |
+| GET | /api/snapshots | 全局快照降序列表，含卷统计与 min_kb/collection_status/vanished_count/exclude_names；v6 行另有 confirmed_missing_count/path_unverified_count，旧行两项为 NULL |
 | GET | /api/volume-trend?limit= | 以最新快照为锚取最新 N 条后正序输出；按数据集 (root, min_kb, exclude_names) 隔离，跨根/跨阈值不混点 |
 | GET | /api/trees?snapshot_id=&min_kb= | 最新/指定快照目录树；默认 ≥51200 KiB；节点预算在 SQL 层生效（LIMIT+1 探测），响应含 truncated/matched_count/node_count/node_limit；截断时子孙提升为顶层且无孤儿重复；指定快照不存在 404、空库 200 snapshot_id=null、低于阈值 200 空结果；root=/ 归一化不再成为自己的孩子 |
 | GET | /api/diff?a=&b=&topn= | b 相对 a；默认 a=最新快照的同数据集前驱；不足/无同数据集前驱 409，不存在 404；a/b 跨根、跨阈值或跨排除集 400 |

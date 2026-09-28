@@ -102,11 +102,14 @@ def test_get_config_defaults_without_settings_file(client):
     assert body["free_alert_gb"] == 10
     assert body["exclude_names"] == []
     # 进程环境未设 FATHOM_SCAN_ROOT、无 settings.json：全部默认来源
+    # ISS-113：auto_download_updates 入 sources/defaults（默认 true）。
     assert body["sources"] == {
         "scan_root": "default", "scan_time": "default",
         "min_kb": "default", "free_alert_gb": "default",
-        "exclude_names": "default",
+        "exclude_names": "default", "auto_download_updates": "default",
     }
+    assert body["auto_download_updates"] is True
+    assert body["defaults"]["auto_download_updates"] is True
     assert body["defaults"]["scan_time"] == "12:00"
     assert body["policies"]["du_timeout_s"] == config.DU_TIMEOUT_S
     assert body["settings_path"] == str(_settings_file())
@@ -114,6 +117,31 @@ def test_get_config_defaults_without_settings_file(client):
 
 
 # ---------- PUT：有效保存 ----------
+
+def test_put_config_auto_download_updates_roundtrip(client):
+    """ISS-113：开关经既有 PUT /api/config 落盘并在 GET 生效（true/false
+    两态 + 来源标注 settings）。"""
+    response = client.put("/api/config", json={"auto_download_updates": False})
+    assert response.status_code == 200
+    body = client.get("/api/config").json()
+    assert body["auto_download_updates"] is False
+    assert body["sources"]["auto_download_updates"] == "settings"
+
+    response = client.put("/api/config", json={"auto_download_updates": True})
+    assert response.status_code == 200
+    body = client.get("/api/config").json()
+    assert body["auto_download_updates"] is True
+
+
+@pytest.mark.parametrize("bad", [1, 0, "false", "true"])
+def test_put_config_auto_download_updates_rejects_non_bool(client, bad):
+    """ISS-113：严格布尔 fail-closed——近亲形态 400 + 中文 detail，旧值不动。"""
+    client.put("/api/config", json={"auto_download_updates": True})
+    response = client.put("/api/config", json={"auto_download_updates": bad})
+    assert response.status_code == 400
+    assert "布尔值" in response.json()["detail"]
+    body = client.get("/api/config").json()
+    assert body["auto_download_updates"] is True, "拒绝路径不得改变生效值"
 
 def test_put_config_valid_applies_and_persists(client, tmp_path):
     other_root = tmp_path / "other-root"

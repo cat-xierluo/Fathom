@@ -63,21 +63,31 @@ def _clip(text: str, limit: int) -> str:
     return text[: max(limit - 1, 1)] + "…"
 
 
-def _compose_body(main: str, free_bytes: int | None) -> str:
-    """折叠空白并限长，有卷数据时追加剩余空间后缀。
+def _compose_body(
+    main: str, free_bytes: int | None, coverage_note: str = ""
+) -> str:
+    """折叠空白并限长，优先保留覆盖质量与卷剩余空间。
 
-    截断只作用于主文案：剩余空间是低空间告警的核心事实，先按后缀
-    长度预留额度再截断，保证最终正文（含后缀）不超过 BODY_MAX_CHARS。
+    先为质量事实和剩余空间预留长度，再截断可能很长的目录路径。
+    短正文的拼接顺序仍是「变化；部分覆盖，剩余空间」。
     """
     body = " ".join(main.split())
-    if free_bytes is None:
-        return _clip(body, BODY_MAX_CHARS)
-    suffix = f"，剩余 {free_bytes / 1024**3:.1f} GB"
-    return _clip(body, BODY_MAX_CHARS - len(suffix)) + suffix
+    note = " ".join(coverage_note.split())
+    suffix = "" if free_bytes is None else f"，剩余 {free_bytes / 1024**3:.1f} GB"
+    if not note:
+        return _clip(body, BODY_MAX_CHARS - len(suffix)) + suffix
+    note_segment = "；" + note
+    main_limit = BODY_MAX_CHARS - len(note_segment) - len(suffix)
+    if main_limit <= 0:
+        # 防御异常长的外部计数；常规三类计数总能完整装入 200 字。
+        return _clip(note, BODY_MAX_CHARS - len(suffix)) + suffix
+    return _clip(body, main_limit) + note_segment + suffix
 
 
 def _partial_note(
-    collection_status: str | None, denied_count: int, vanished_count: int = 0
+    collection_status: str | None, denied_count: int, vanished_count: int = 0,
+    confirmed_missing_count: int | None = None,
+    path_unverified_count: int | None = None,
 ) -> str:
     """partial 采集的正文注明；full 与 NULL（v3 前旧口径）不注明。
 
@@ -89,19 +99,28 @@ def _partial_note(
         return ""
     clauses: list[str] = []
     if denied_count:
-        clauses.append(f"{denied_count} 处权限受限")
-    if vanished_count:
-        clauses.append(f"另有 {vanished_count} 个目录在扫描期间已消失")
+        clauses.append(f"{denied_count} 条读取受限记录")
+    if confirmed_missing_count is not None and path_unverified_count is not None:
+        if confirmed_missing_count:
+            clauses.append(f"{confirmed_missing_count} 个目录校验时路径不存在")
+        if path_unverified_count:
+            clauses.append(f"{path_unverified_count} 个目录状态无法确认")
+    elif vanished_count:
+        clauses.append(
+            f"另有 {vanished_count} 个目录状态未确认，"
+            "可能移动、清理或无法访问"
+        )
     if not clauses:
         clauses.append("瞬时读取错误")
     return "部分覆盖（" + "；".join(clauses) + "）"
 
 
 def _finish(
-    title_normal: str, main: str, free_bytes: int | None
+    title_normal: str, main: str, free_bytes: int | None,
+    coverage_note: str = "",
 ) -> tuple[str, str, str | None]:
     """拼正文并在低空间时换告警标题；阈值只读 config.FREE_ALERT_GB。"""
-    body = _compose_body(main, free_bytes)
+    body = _compose_body(main, free_bytes, coverage_note)
     if free_bytes is not None and free_bytes / 1024**3 < config.FREE_ALERT_GB:
         return TITLE_ALERT, body, ALERT_SOUND
     return title_normal, body, None
@@ -114,6 +133,8 @@ def build_notification(
     collection_status: str | None = "full",
     denied_count: int = 0,
     vanished_count: int = 0,
+    confirmed_missing_count: int | None = None,
+    path_unverified_count: int | None = None,
 ) -> tuple[str, str, str | None]:
     """由差分结果构造 (标题, 正文, 声音或 None)。
 
@@ -138,10 +159,9 @@ def build_notification(
     if added:
         top_added = max(added, key=lambda item: item.delta_kb)
         parts.append(f"首次记录大目录：{top_added.path}（{human_kb(top_added.new_kb)}）")
-    partial = _partial_note(collection_status, denied_count, vanished_count)
-    if partial:
-        parts.append(partial)
-    return _finish(TITLE_DONE, "；".join(parts), free_bytes)
+    partial = _partial_note(collection_status, denied_count, vanished_count,
+                            confirmed_missing_count, path_unverified_count)
+    return _finish(TITLE_DONE, "；".join(parts), free_bytes, partial)
 
 
 def build_first_notification(
@@ -150,13 +170,14 @@ def build_first_notification(
     collection_status: str | None = "full",
     denied_count: int = 0,
     vanished_count: int = 0,
+    confirmed_missing_count: int | None = None,
+    path_unverified_count: int | None = None,
 ) -> tuple[str, str, str | None]:
     """首扫（无同数据集基线）通知：明说这是首次快照，下次起才可比较。"""
     parts = ["首次快照已建立，下次扫描起可比较"]
-    partial = _partial_note(collection_status, denied_count, vanished_count)
-    if partial:
-        parts.append(partial)
-    return _finish(TITLE_FIRST, "；".join(parts), free_bytes)
+    partial = _partial_note(collection_status, denied_count, vanished_count,
+                            confirmed_missing_count, path_unverified_count)
+    return _finish(TITLE_FIRST, "；".join(parts), free_bytes, partial)
 
 
 def build_interrupted_notification(reason: str | None) -> tuple[str, str, str | None]:
@@ -197,6 +218,8 @@ def notify_scan_done(
     collection_status: str | None = "full",
     denied_count: int = 0,
     vanished_count: int = 0,
+    confirmed_missing_count: int | None = None,
+    path_unverified_count: int | None = None,
 ) -> bool:
     """扫描完成后调用：构造内容并弹通知。永不抛出。"""
     try:
@@ -204,6 +227,8 @@ def notify_scan_done(
             diff, free_bytes,
             collection_status=collection_status, denied_count=denied_count,
             vanished_count=vanished_count,
+            confirmed_missing_count=confirmed_missing_count,
+            path_unverified_count=path_unverified_count,
         )
     except Exception as exc:  # noqa: BLE001
         _log(f"通知构造异常：{exc!r}")
@@ -217,6 +242,8 @@ def notify_first_snapshot(
     collection_status: str | None = "full",
     denied_count: int = 0,
     vanished_count: int = 0,
+    confirmed_missing_count: int | None = None,
+    path_unverified_count: int | None = None,
 ) -> bool:
     """首扫（无同数据集基线）完成后调用：发"首次快照"通知。永不抛出。"""
     try:
@@ -224,6 +251,8 @@ def notify_first_snapshot(
             free_bytes,
             collection_status=collection_status, denied_count=denied_count,
             vanished_count=vanished_count,
+            confirmed_missing_count=confirmed_missing_count,
+            path_unverified_count=path_unverified_count,
         )
     except Exception as exc:  # noqa: BLE001
         _log(f"通知构造异常：{exc!r}")

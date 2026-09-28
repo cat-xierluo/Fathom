@@ -691,7 +691,7 @@ function _ensurePermissionsPanel() {
   panel.innerHTML = `
     <div class="panel-head">
       <h2>权限与覆盖</h2>
-      <p class="hint">三类授权/覆盖状态由最近一次采集推导；本应用不代改系统权限。</p>
+      <p class="hint">以下只说明最近一次扫描的覆盖情况；当前完全磁盘访问的探测结果见「权限」分区。</p>
     </div>
     <div class="perm-panel" data-test="permissions-panel-body">
       <p class="hint">权限与覆盖信息加载中…</p>
@@ -703,36 +703,44 @@ function _ensurePermissionsPanel() {
   return panel;
 }
 
-/* 把覆盖判定结果翻译为"授权状态"说明（ISS-002A）：
- *   full       → 已授权扫描范围完整
- *   partial+denied      → 可能未授权或部分目录受限（部分授权）
- *   partial+vanished    → 部分目录在扫描期间消失（采集范围存在不可控变化）
+/* 最近快照的覆盖说明（ISS-002A）：不能由扫描结果反推当前授权。
+ *   full       → 最近扫描范围完整
+ *   partial+denied      → du 报告了读取受限错误行
+ *   partial+vanished    → du 输出后校验未确认路径仍存在
  *   partial+excluded    → 扫描集已自定义（排除掩码生效）
  *   partial+none        → 部分覆盖（具体缺口未上报）
  *   missing   → 尚未扫描或覆盖未知
- * 数字是缺口位置数，不冒充影响大小；不含"数量=影响"或"未记录=删除"表述。 */
-function _explainAuthorization(coverage) {
+ * denied 是 stderr 行数，不冒充不同目录数或影响大小。 */
+function _explainCoverage(coverage) {
   if (coverage.state === "full") {
-    return { text: "已授权：扫描范围完整", cls: "ok" };
+    return { text: "最近扫描：范围完整", cls: "ok" };
   }
   if (coverage.state === "missing") {
     return { text: "尚未扫描或覆盖未知", cls: "miss" };
   }
   if (coverage.denied > 0) {
     return {
-      text: `可能未授权或部分目录受限：${coverage.denied} 个目录本次被拒绝读取`,
+      text: `最近扫描：${coverage.denied} 条读取受限记录`,
       cls: "warn",
+    };
+  }
+  if (coverage.confirmed !== null && coverage.unverified !== null) {
+    if (coverage.confirmed > 0) return {
+      text: `最近扫描：${coverage.confirmed} 个目录校验时路径不存在`, cls: "warn",
+    };
+    if (coverage.unverified > 0) return {
+      text: `最近扫描：${coverage.unverified} 个目录状态无法确认`, cls: "warn",
     };
   }
   if (coverage.vanished > 0) {
     return {
-      text: `采集范围存在不可控变化：${coverage.vanished} 个目录在扫描期间已消失`,
+      text: `最近扫描：${coverage.vanished} 个目录状态未确认`,
       cls: "warn",
     };
   }
   if (coverage.excluded > 0) {
     return {
-      text: `扫描集已自定义：${coverage.excluded} 项排除掩码生效（与默认不同）`,
+      text: `最近扫描：${coverage.excluded} 项排除掩码生效（与默认不同）`,
       cls: "warn",
     };
   }
@@ -740,9 +748,13 @@ function _explainAuthorization(coverage) {
 }
 
 function _coverage(snapshot) {
-  if (!snapshot) return { state: "missing", denied: 0, vanished: 0, excluded: 0 };
+  if (!snapshot) return { state: "missing", denied: 0, vanished: 0, confirmed: null, unverified: null, excluded: 0 };
   const denied = snapshot.denied_count ?? 0;
   const vanished = snapshot.vanished_count ?? 0;
+  const classified = Number.isInteger(snapshot.confirmed_missing_count) &&
+    Number.isInteger(snapshot.path_unverified_count);
+  const confirmed = classified ? snapshot.confirmed_missing_count : null;
+  const unverified = classified ? snapshot.path_unverified_count : null;
   const ex = snapshot.exclude_names;
   let excluded = 0;
   if (Array.isArray(ex)) excluded = ex.length;
@@ -753,7 +765,7 @@ function _coverage(snapshot) {
   if (snapshot.collection_status === "partial") state = "partial";
   else if (denied > 0) state = "partial";
   else state = "full";
-  return { state, denied, vanished, excluded };
+  return { state, denied, vanished, confirmed, unverified, excluded };
 }
 
 async function loadPermissions() {
@@ -775,13 +787,14 @@ async function loadPermissions() {
   }
   const latest = statusData?.latest_snapshot;
   const coverage = _coverage(latest);
-  const auth = _explainAuthorization(coverage);
+  const auth = _explainCoverage(coverage);
   const tauri = window.__TAURI__;
   const tauriAvailable = !!(tauri && tauri.core && typeof tauri.core.invoke === "function");
   body.innerHTML = `
     <p class="perm-state">
       <span class="quality-chip ${auth.cls}" data-test="perm-auth-chip">${icon("shield", 12)} ${escapeHtml(auth.text)}</span>
     </p>
+    ${latest?.created_at ? `<p class="perm-note">快照时间：${escapeHtml(String(latest.created_at).slice(0, 16).replace("T", " "))}；授权变更不会更新已有快照。</p>` : ""}
     <p class="perm-note">本应用不代改系统权限，授权由你在系统设置完成；
       在浏览器模式下不会自动跳转系统设置，下方显示的是应进入的路径。</p>
     <div class="perm-link-row">
@@ -851,8 +864,8 @@ async function loadPermissions() {
  * 授予权限的显示」。
  * 三张权限项卡（数据源 = GET /api/permissions）：
  * - 完全磁盘访问：后端对 TCC 保护路径只读探测的 granted/denied/unknown
- *   三态（探测异常如实 unknown，不伪造）；辅助呈现最近扫描的受限/消失
- *   计数与占比（ISS-091 监控卡数据迁入本分区，原卡移除、原位留交叉
+ *   三态（探测异常如实 unknown，不伪造）；辅助呈现最近扫描的受限/校验未确认
+ *   计数（ISS-091 监控卡数据迁入本分区，原卡移除、原位留交叉
  *   说明——见 index.html）；深链 = 系统设置完全磁盘访问页。
  * - 通知：最近一次扫描的 notification_status（submitted/failed/未登记
  *   如实展示，不推断）；深链 = 系统设置通知页。
@@ -867,8 +880,8 @@ async function loadPermissions() {
  * - 状态徽章配色用既有语义 token：granted→--ok、denied→--danger、
  *   unknown→--muted（.quality-chip 既有 ok/miss 类 + ISS-111 新增 danger
  *   浅底派生，无新色板）；零 emoji；
- * - 占比文案沿用 ISS-095 口径（_permRatioText：denied 是 du stderr 行数、
- *   可超目录总数，比值 >100% 时改用倍数表述）。 */
+ * - denied 是 du stderr 权限错误行数，与已记录目录数不是同一单位，不展示
+ *   相除所得百分比或倍数。 */
 const PERM_HUB_PANEL_ID = "permissions-hub-panel";
 
 /* 通知页深链：与 FDA 深链同走 opener 权限（ISS-068 ACL 已备
@@ -878,27 +891,14 @@ const NOTIFS_PATH_TEXT = "系统设置 › 通知";
 
 /* 状态徽章语义映射：unknown/未登记是真实探测结论，不是加载失败。 */
 const PERM_FDA_BADGES = {
-  granted: { text: "已授权", cls: "ok" },
-  denied: { text: "未授权", cls: "danger" },
+  granted: { text: "探测可读", cls: "ok" },
+  denied: { text: "探测受限", cls: "danger" },
   unknown: { text: "未知", cls: "miss" },
 };
 const PERM_NOTIF_BADGES = {
   submitted: { text: "已提交", cls: "ok" },
   failed: { text: "失败", cls: "danger" },
 };
-
-/** denied 占比文案：分母 dir_count<=0（异常快照/防御值）时不显示，只留数字。
- * ISS-095：denied 是 du stderr 的受限行数、可超过目录总数（比值 >100%），
- * 此时「（1250.0%）」会被读成「1250% 的目录受限」——语义错误；改用
- * 「受限行数为目录数的 X.X 倍」表述。比值 ≤100%（含 denied=0）维持
- * 「（N%）」形态不变。（ISS-111 自原监控卡 _mpermRatioText 原样迁入。） */
-function _permRatioText(denied, dirCount) {
-  if (!Number.isFinite(dirCount) || dirCount <= 0) return "";
-  if (denied > dirCount) {
-    return `${denied} / ${dirCount}（受限行数为目录数的 ${(denied / dirCount).toFixed(1)} 倍）`;
-  }
-  return `${denied} / ${dirCount}（${((denied / dirCount) * 100).toFixed(1)}%）`;
-}
 
 function _ensurePermHubPanel() {
   const host = document.getElementById("settings-permissions-extra");
@@ -947,18 +947,18 @@ function _ensurePermHubPanel() {
   return panel;
 }
 
-/** FDA 三态的白话说明（授权动作只在系统设置完成；授权后需重扫）。 */
+/** FDA 三态的白话说明：只描述当前服务对一个保护位置的探测。 */
 function _permFdaExplain(status) {
   if (status === "granted") {
-    return "当前可读取系统保护位置（如用户目录下的 Containers），扫描不受此类限制。";
+    return "当前服务可读取探测位置（如用户目录下的 Containers）；这不能保证扫描范围内所有路径都可读。";
   }
   if (status === "denied") {
-    return "系统拒绝了部分受保护位置的读取，扫描会在这些目录受限；为 Fathom 开启「完全磁盘访问」可减少受限。授权后需重新扫描才生效。";
+    return "当前服务读取探测位置遭拒。请核对 Fathom 的「完全磁盘访问」；授权变更后重启后台服务并重新扫描，才能获得新结果。";
   }
   return "本次探测未得出结论（保护路径不存在或读取异常）。状态未知时不猜测，可稍后重试。";
 }
 
-/** FDA 卡：三态徽章 + 白话说明 + 091 受限/消失事实 + 深链（含降级）。 */
+/** FDA 卡：三态徽章 + 白话说明 + 091 受限/校验未确认事实 + 深链。 */
 function renderPermFda(body, fda, coverage) {
   const invoke = tauriInvoke();
   const tauriAvailable = !!invoke;
@@ -968,28 +968,45 @@ function renderPermFda(body, fda, coverage) {
     badgeNode.className = `quality-chip ${badge.cls}`;
     badgeNode.innerHTML = `${icon("shield", 12)} ${escapeHtml(badge.text)}`;
   }
-  // 091 数据迁入：最近快照的受限/消失计数与占比；空库显示「尚未扫描」。
+  // 最近快照的受限错误行数与校验未确认路径数；与当前授权探测分开。
   let factsHtml;
   if (coverage && coverage.snapshot_id != null) {
     const denied = Number(coverage.denied_count ?? 0) || 0;
     const vanished = Number(coverage.vanished_count ?? 0) || 0;
-    const dirCount = Number(coverage.dir_count ?? 0) || 0;
-    const ratio = _permRatioText(denied, dirCount);
+    const classified = Number.isInteger(coverage.confirmed_missing_count) &&
+      Number.isInteger(coverage.path_unverified_count);
+    const confirmed = classified ? coverage.confirmed_missing_count : 0;
+    const unverified = classified ? coverage.path_unverified_count : 0;
+    const scanTime = coverage.created_at
+      ? escapeHtml(String(coverage.created_at).slice(0, 16).replace("T", " "))
+      : "时间未知";
     factsHtml = `
+      <p class="perm-note">最近扫描：${scanTime}。以下是当时的记录；授权变更不会改写旧快照，请重新扫描后比较。</p>
       <div class="perm-facts" data-test="perm-fda-facts">
         <div class="perm-fact">
           <span class="perm-fact-num" data-test="perm-fda-denied" data-sev="${denied > 0 ? "warn" : "ok"}">${escapeHtml(String(denied))}</span>
-          <span class="perm-fact-label">读取受限（处）${ratio ? ` · ${escapeHtml(ratio)}` : ""}</span>
+          <span class="perm-fact-label">读取受限错误（条）</span>
         </div>
-        <div class="perm-fact">
-          <span class="perm-fact-num" data-test="perm-fda-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>
-          <span class="perm-fact-label">扫描期间消失（个）</span>
-        </div>
+        ${classified ? `
+          <div class="perm-fact">
+            <span class="perm-fact-num" data-test="perm-fda-confirmed-missing" data-sev="${confirmed > 0 ? "warn" : "ok"}">${escapeHtml(String(confirmed))}</span>
+            <span class="perm-fact-label">校验时路径不存在（个目录）</span>
+          </div>
+          <div class="perm-fact">
+            <span class="perm-fact-num" data-test="perm-fda-path-unverified" data-sev="${unverified > 0 ? "warn" : "ok"}">${escapeHtml(String(unverified))}</span>
+            <span class="perm-fact-label">目录状态无法确认（个）</span>
+          </div>` : `
+          <div class="perm-fact">
+            <span class="perm-fact-num" data-test="perm-fda-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>
+            <span class="perm-fact-label">目录状态未确认（个）</span>
+          </div>`}
       </div>
-      <p class="perm-note">受限 = du 无法读取某些目录（如受系统保护的位置）；消失 = 扫描期间目录被移动或删除，属正常现象，不代表数据被清理。</p>`;
+      <p class="perm-note">受限数字是 du 输出的权限错误行数，同一路径可能出现多条；${classified
+        ? "校验时路径不存在只说明当时状态；无法确认可能由权限或其他读取错误造成。不能据此认定谁删除了目录。"
+        : "目录状态未确认表示 du 输出后校验时未能确认路径仍存在，可能已移动、被清理或无法访问，不能认定已删除。"}${classified ? "不同类别" : "两类"}计数可能指向同一路径，不能相加成不同目录数，也不能推出受影响空间大小。</p>`;
   } else {
     factsHtml =
-      `<p class="hint" data-test="perm-fda-not-yet">尚未扫描：完成首次扫描后，这里会显示读取受限与扫描期间消失目录的情况。</p>`;
+      `<p class="hint" data-test="perm-fda-not-yet">尚未扫描：完成首次扫描后，这里会显示读取受限与目录状态未确认的情况。</p>`;
   }
   body.innerHTML = `
     <p class="perm-note">${escapeHtml(_permFdaExplain(fda?.status))}</p>
@@ -1493,23 +1510,26 @@ async function loadAutostart() {
   renderAutostartBody(body, record);
 }
 
-/* ===== 应用更新（ISS-040B；ISS-102 扩展阶段/字节进度/下载取消）=====
- * 壳内更新协调的前端接线：检查按钮 → 状态行（含当前版本）；available →
- * 版本 + notes + 「下载并安装」确认层（复用 010B autostart 确认层模式）→
- * 确认后经 updater-state 事件呈现 preparing/downloading/installing/
- * verifying/finalizing 阶段（ISS-102）；downloading 显示已下载/总大小
- * 字节进度（total 未知时只显示字节数，不伪造百分比）；下载阶段提供
- * 「取消下载」（emit 既有 updater-cancel-requested，Rust 侧在 poll 边界
- * 中止并回滚）；进入 installing 后取消不可触发并说明原因；cancelled/
- * failed 呈现原因与重试入口（候选保留，可再次「下载并安装」）；安装
- * 成功后「重启以完成」独立确认；取消/失败全部回落可恢复态。
- * - 不静默：下载安装与重启都需显式确认（confirmed=true 才会在壳内执行）；
- *   确认层收起（确认前取消）不算下载取消，不发送 updater-cancel-requested；
- *   启动延迟检查（≥10s）只经 updater-state 事件更新状态行，不弹窗不安装。
+/* ===== 应用更新（ISS-040B；ISS-102 阶段/字节进度/下载取消；ISS-113 无感化）=====
+ * 呈现收敛（ISS-113，参照 Folia AboutSection 的 UpdateSnapshot 语义）：
+ * 默认两行内——「当前版本 X · 状态一句话」+ 动作行（检查更新 / 自动下载
+ * 开关）；长说明收进「了解详情」展开（ISS-108 details 模式）。状态语义：
+ * 检查中 / 下载中（进度%）/ 已就绪（安装（需重启）确认）/ 最新 / 失败（重试）。
+ * - 自动下载（ISS-113）：开关默认开（/api/config 的 auto_download_updates，
+ *   经既有 PUT /api/config 写 settings.json；Rust 壳只读同一文件）。开启时
+ *   检查发现 available 由壳自动后台下载（downloading 事件复用既有进度呈现，
+ *   可取消）；下载完成 downloaded 事件 → ready 态，用户唯一动作 = 「安装
+ *   （需重启）」确认。关闭则回 040B 现状：available + 「下载并安装」确认层。
+ * - 不静默（边界保留）：下载安装与重启都需显式确认（confirmed=true 才在壳内
+ *   执行）；确认层收起（确认前取消）不算下载取消，不发 updater-cancel-requested。
+ * - 安装事务阶段事件（ISS-102）：preparing/downloading/installing/verifying/
+ *   finalizing；下载字节进度（total 未知时只显示字节数，不伪造百分比）；
+ *   下载阶段可取消（emit 既有 updater-cancel-requested）；installing 后取消
+ *   不可触发并说明原因；cancelled/failed 呈现原因与重试入口（候选保留）；
+ *   安装成功「重启以完成」独立确认；取消/失败全部回落可恢复态。
  * - Tauri 桥可用时经 invoke 调 updater_check/updater_install/updater_restart；
- *   浏览器模式（无桥）如实降级为只读说明，不渲染假入口。
- * - invoke 结果做形状校验：桥异常/mock 桥返回异常结构时按「状态异常」
- *   渲染，不抛未捕获异常。
+ *   浏览器模式（无桥）如实降级为只读说明，不渲染假入口。invoke 结果做形状
+ *   校验；未知事件不猜测、不覆盖既有呈现。
  * - DOM 在本文件内联创建（与 autostart 面板同模式），零 emoji，无构建链。 */
 const UPDATER_PANEL_ID = "updater-panel";
 
@@ -1522,6 +1542,9 @@ const UPDATER_STATE_LABELS = {
   installed: "更新已安装，重启后生效",
   failed: "更新检查失败",
 };
+
+/* ISS-113：ready 态一句话（downloaded 事件；字节已下载并验签）。 */
+const UPDATER_READY_LABEL = "已下载就绪";
 
 /* ISS-102：安装事务阶段标签（updater-state 事件，lib.rs UpdaterInstallPhase
  * 合同）。preparing/downloading/installing/verifying/finalizing 为进行中，
@@ -1555,6 +1578,16 @@ let lastUpdaterStatus = null;  // 最近一次检查态（确认层取消后的�
 let updaterInstall = null;     // 最近一次安装事务呈现（updater-state 事件驱动；null=无事务）
 let updaterCancelRequested = false;  // 取消请求已发出（按钮转「正在取消…」，cancelled 后复位）
 let updaterPendingNote = null; // 已确认但首个阶段事件未到达前的过渡说明（不伪造阶段名）
+let updaterReady = null;       // ISS-113：downloaded 事件载荷（后台下载完成，待安装确认；null=无）
+let updaterChecking = false;   // ISS-113：检查请求在途（「正在检查更新」一句话）
+let updaterToggleNote = null;  // ISS-113：自动下载开关保存失败的就近提示（成功即清）
+
+/** ISS-113：自动下载开关当前生效值（/api/config 的 auto_download_updates；
+ * 后端默认 true，未到达/缺键时按默认开呈现——与 Rust 侧宽读同口径）。 */
+function updaterAutoDownload() {
+  const value = lastConfig?.auto_download_updates;
+  return typeof value === "boolean" ? value : true;
+}
 
 function _ensureUpdaterPanel() {
   const page = document.getElementById("page-settings");
@@ -1567,7 +1600,7 @@ function _ensureUpdaterPanel() {
   panel.innerHTML = `
     <div class="panel-head">
       <h2>应用更新</h2>
-      <p class="hint">检查、下载与安装均需手动确认；下载阶段可取消，进入安装后不可取消。启动后也会延迟自动检查一次（仅提示，不安装）。</p>
+      <p class="hint">有新版本时自动在后台下载；安装与重启需要你确认。详情见下方「了解详情」。</p>
     </div>
     <div class="perm-panel" data-test="updater-panel-body">
       <p class="hint">应用更新状态加载中…</p>
@@ -1589,6 +1622,24 @@ function updaterStatusLine(status) {
     ? (status?.error ? `（${status.error}）` : "")
     : "";
   return `当前版本 ${version} · ${label}${error}`;
+}
+
+/** ISS-113：状态行首行（两行合同的行 1）——检查中 / 安装事务 / ready /
+ * 检查态 / 尚未检查，五个语境同一「当前版本 X · 一句话」形态。版本兜底序：
+ * 检查态 → ready 载荷 → /api/status 的 app_version（页面加载即回填）。 */
+function updaterHeadLine(status, install, ready, checking) {
+  const version = (typeof status?.current_version === "string" && status.current_version)
+    || (typeof ready?.current_version === "string" && ready.current_version)
+    || (typeof lastStatusAppVersion === "string" && lastStatusAppVersion)
+    || "未知";
+  if (checking) return `当前版本 ${version} · 正在检查更新…`;
+  if (install) return updaterInstallLine(install, status);
+  if (ready) {
+    const target = ready.available_version || "未知";
+    return `当前版本 ${version} · 新版本 ${target} ${UPDATER_READY_LABEL}`;
+  }
+  if (status) return updaterStatusLine(status);
+  return `当前版本 ${version} · 尚未检查更新`;
 }
 
 /** 安装事务进行中的阶段行（ISS-102）：检查态版本优先，事件载荷兜底；
@@ -1678,84 +1729,218 @@ function renderUpdaterBody(body, status, install, extraNote) {
   }
   const terminal = install && (install.state === "cancelled" || install.state === "failed");
   const busy = !!install && !terminal;  // 安装事务进行中：检查/安装入口收起
-  const line = install
-    ? updaterInstallLine(install, status)
-    : (status
-      ? updaterStatusLine(status)
-      : "尚未检查更新；点击「检查更新」获取当前版本与可用更新。");
-  /* available 区块：无事务时呈现检查结果；事务终态时保留——cancelled/failed
-   * 的候选仍有效，同一入口即重试（Rust 侧候选保留、独占门已释放）。 */
-  const available = (!install || terminal) && status?.state === "available"
+  const ready = !install && updaterReady ? updaterReady : null;
+  const auto = updaterAutoDownload();
+  const line = updaterHeadLine(status, install, ready, updaterChecking);
+  /* available 区块：无事务/事务终态且未 ready 时呈现检查结果；终态保留——
+   * cancelled/failed 的候选仍有效，同一入口即重试（Rust 侧候选保留、独占
+   * 门已释放）。文案按开关分流：开（默认）只说明后台下载去向；关则回
+   * 040B 现状——手动「下载并安装」确认层。 */
+  const showAvailable = (!install || terminal) && !ready && status?.state === "available";
+  const available = showAvailable
     ? `
     <p class="hint" data-test="updater-available">
-      可更新到 <code>${escapeHtml(String(status.available_version || "未知"))}</code>；
-      下载与安装需要你确认，安装完成后需重启应用。
-    </p>
-    ${status.notes ? `<p class="hint" data-test="updater-notes">更新说明：${escapeHtml(status.notes)}</p>` : ""}`
+      可更新到 <code>${escapeHtml(String(status.available_version || "未知"))}</code>；${auto
+        ? "已开启自动下载，即将在后台下载，完成后在此确认安装。"
+        : "下载与安装需要你确认，安装完成后需重启应用。"}
+    </p>`
     : "";
-  const installed = !install && status?.state === "installed"
+  /* ready 区块（ISS-113）：下载完成（已验签），用户唯一动作 = 安装（需重启）确认。 */
+  const readyBlock = ready
+    ? `
+    <p class="hint" data-test="updater-ready">
+      新版本 <code>${escapeHtml(String(ready.available_version || "未知"))}</code> 已下载并验签；点击「安装（需重启）」开始安装。
+    </p>`
+    : "";
+  const installed = !install && !ready && status?.state === "installed"
     ? `
     <p class="hint" data-test="updater-installed">已安装 <code>${escapeHtml(String(status.available_version || "新版本"))}</code>；重启前保持当前版本运行。</p>`
     : "";
-  const installBtn = (!busy && status?.state === "available")
+  /* 动作行上下文主按钮：ready → 安装（需重启）；开关关 + available →
+   * 下载并安装（040B 现状）；开关开 + 下载终态（无 ready 字节）→ 重试
+   * 下载（重新检查即由壳再触发后台下载）；installed → 重启以完成。 */
+  const readyBtn = ready
+    ? `<button type="button" id="btn-updater-install-ready" class="btn primary" data-test="updater-install-ready-btn">安装（需重启）</button>`
+    : "";
+  const installBtn = (!busy && !ready && !auto && showAvailable)
     ? `<button type="button" id="btn-updater-install" class="btn primary" data-test="updater-install-btn">下载并安装</button>`
     : "";
-  const restartBtn = !install && status?.state === "installed"
+  const retryDownloadBtn = (!busy && !ready && auto && terminal)
+    ? `<button type="button" id="btn-updater-retry-download" class="btn" data-test="updater-retry-download-btn">重试下载</button>`
+    : "";
+  const restartBtn = !install && !ready && status?.state === "installed"
     ? `<button type="button" id="btn-updater-restart" class="btn primary" data-test="updater-restart-btn">重启以完成</button>`
     : "";
+  /* 了解详情（ISS-108 details 模式）：长说明与更新说明（notes）收进默认
+   * 折叠区，默认视图保持两行内（状态一句话 + 动作行）。 */
+  const details = `
+    <details class="cfg-details" data-test="updater-details">
+      <summary>了解详情</summary>
+      ${status?.notes ? `<p class="cfg-desc" data-test="updater-notes">更新说明：${escapeHtml(status.notes)}</p>` : ""}
+      <p class="cfg-desc">安装包经内置公钥验签（不可关闭）；下载阶段可取消，进入安装后不可取消，失败会自动回滚到当前版本。
+        安装会先暂停写入并自动备份数据，完成后需重启应用才切换到新版本。启动后会自动检查一次更新；
+        「自动下载更新」开启时，发现新版本即在后台下载，安装始终需要你确认。任何失败路径下，旧版本与已入库数据都不受影响。</p>
+    </details>`;
   body.innerHTML = `
     <p class="hint" data-test="updater-status-text">${escapeHtml(line)}</p>
     ${install ? updaterInstallHtml(install, status) : ""}
     ${available}
+    ${readyBlock}
     ${installed}
     ${updaterPendingNote ? `<p class="hint" data-test="updater-pending-note">${escapeHtml(updaterPendingNote)}</p>` : ""}
+    ${updaterToggleNote ? `<p class="hint cfg-error" data-test="updater-toggle-note">${escapeHtml(updaterToggleNote)}</p>` : ""}
     ${extraNote ? `<p class="hint cfg-error" data-test="updater-note">${escapeHtml(extraNote)}</p>` : ""}
     <div class="perm-link-row">
       <button type="button" id="btn-updater-check" class="btn" data-test="updater-check-btn"${busy ? " disabled" : ""}>检查更新</button>
+      ${readyBtn}
       ${installBtn}
+      ${retryDownloadBtn}
       ${restartBtn}
+      <label class="exclude-confirm-label updater-auto-label" for="updater-auto-download">
+        <input type="checkbox" id="updater-auto-download" data-test="updater-auto-download-toggle"${auto ? " checked" : ""}>
+        <span>自动下载更新</span>
+      </label>
     </div>
+    ${details}
     <div id="updater-confirm" data-test="updater-confirm" hidden></div>
     <div id="updater-restart-confirm" data-test="updater-restart-confirm" hidden></div>`;
   const checkBtn = document.getElementById("btn-updater-check");
   if (checkBtn) checkBtn.addEventListener("click", () => checkUpdater(body));
+  const readyBtnNode = document.getElementById("btn-updater-install-ready");
+  if (readyBtnNode) readyBtnNode.addEventListener("click", () => confirmUpdaterInstallReady(body));
   const installBtnNode = document.getElementById("btn-updater-install");
   if (installBtnNode) installBtnNode.addEventListener("click", () => confirmUpdaterInstall(body));
+  const retryDownloadNode = document.getElementById("btn-updater-retry-download");
+  if (retryDownloadNode) retryDownloadNode.addEventListener("click", () => checkUpdater(body));
   const restartBtnNode = document.getElementById("btn-updater-restart");
   if (restartBtnNode) restartBtnNode.addEventListener("click", () => confirmUpdaterRestart(body));
   const cancelBtnNode = document.getElementById("btn-updater-cancel");
   if (cancelBtnNode) cancelBtnNode.addEventListener("click", () => requestUpdaterCancel(body));
+  const autoToggle = document.getElementById("updater-auto-download");
+  if (autoToggle) {
+    // 变更即时保存（经既有 PUT /api/config 写 settings.json，壳侧只读）；
+    // 失败按 ISS-108 口径恢复旧值可辨（重渲染以生效值回写开关）。
+    autoToggle.addEventListener("change", () => {
+      saveUpdaterAutoDownload(body, autoToggle.checked);
+    });
+  }
 }
 
-/** 手动检查：按钮防重入；结果做形状校验后渲染（失败也是可恢复状态行）。 */
+/** ISS-113：保存「自动下载更新」开关（经既有 PUT /api/config；不新增桥
+ * 命令）。成功：以返回的生效配置刷新 lastConfig 并重渲染；失败：开关由
+ * 重渲染按生效值恢复（旧值可辨），就近显示失败说明，不吞错。 */
+async function saveUpdaterAutoDownload(body, checked) {
+  try {
+    const res = await apiPut("/api/config", { auto_download_updates: checked });
+    const data = await res.json();
+    if (data && data.config) {
+      lastConfig = data.config;
+      renderEffective(data.config);
+    }
+    updaterToggleNote = null;
+  } catch (e) {
+    updaterToggleNote = e.status === 0
+      ? "保存失败：无法连接本地服务，开关已恢复为当前生效值。"
+      : `保存失败：${e.message} 开关已恢复为当前生效值。`;
+  }
+  renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+}
+
+/** 手动检查（ISS-113 兼「重试下载」入口）：按钮防重入；在途显示「正在检查
+ * 更新…」（Folia checking 语义）；结果做形状校验后渲染（失败也是可恢复
+ * 状态行）。壳内发现 available 且开关开启时，检查返回即由后台下载事件
+ * 推进（downloading → downloaded），前端无需本地触发。 */
 async function checkUpdater(body) {
   const invoke = tauriInvoke();
   const checkBtn = document.getElementById("btn-updater-check");
   if (!invoke || !checkBtn) return;
+  if (updaterChecking) return;
   checkBtn.disabled = true;
+  updaterChecking = true;
+  renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
   let status = null;
   try {
     status = await invoke("updater_check", {});
   } catch (e) {
+    updaterChecking = false;
     renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `检查请求失败：${e?.message || e}`);
     return;
-  } finally {
-    checkBtn.disabled = false;
   }
+  updaterChecking = false;
+  checkBtn.disabled = false;
   if (!status || typeof status.state !== "string" || !UPDATER_STATE_LABELS[status.state]) {
     renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, "状态返回异常（不是预期的更新状态结构）。");
     return;
   }
   lastUpdaterStatus = status;
+  // 新一轮检查取代上一轮呈现：旧安装事务终态（cancelled/failed——事务早已
+  // 结束，仅是呈现残留）与新结果并存会让状态行停留在旧终态；ready 在非
+  // available 确定态下也不再成立（如已最新）。
+  updaterInstall = null;
+  if (status.state !== "available") updaterReady = null;
   renderUpdaterBody(body, status, updaterInstall);
   renderAboutVersion();
 }
 
-/** 「下载并安装」确认层：展示版本与后果，确认后才 invoke（confirmed=true）；
- * 取消（确认前收起）不算下载取消——不发送 updater-cancel-requested，
- * available 状态与入口保持可再次尝试；确认后收起确认层，进度由
- * updater-state 事件驱动呈现（ISS-102），invoke 返回与事件幂等。 */
-async function confirmUpdaterInstall(body) {
+/** 共享安装事务执行（ISS-113 从确认层抽出）：清上一轮终态与 ready 呈现 →
+ * 过渡说明 → invoke updater_install（confirmed=true）→ 按返回值渲染
+ * （与 updater-state 事件幂等）。进度由事件驱动（ISS-102）。 */
+async function runUpdaterInstallTransaction(body, pendingNote, fallbackVersion, fallbackCurrent) {
+  const invoke = tauriInvoke();
+  if (!invoke) return;
+  // 新一轮事务：清除上一轮终态呈现与取消标记，避免旧终态残留误导
+  updaterInstall = null;
+  updaterCancelRequested = false;
+  updaterReady = null;  // ready 已消费（进入安装事务）
+  // 首个阶段事件到达前的过渡说明（事件到达即清除，不伪造阶段名）
+  updaterPendingNote = pendingNote;
+  renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+  let outcome = null;
+  try {
+    outcome = await invoke("updater_install", { confirmed: true });
+  } catch (e) {
+    updaterPendingNote = null;
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `安装请求失败：${e?.message || e}`);
+    return;
+  }
+  updaterPendingNote = null;
+  if (outcome && outcome.ok === true) {
+    // 事件 installed 可能尚未到达：按返回值渲染（事件到达后幂等覆盖）
+    if (!updaterInstall || updaterInstall.state !== "installed") {
+      updaterInstall = null;
+      updaterReady = null;
+      lastUpdaterStatus = {
+        state: "installed",
+        current_version: outcome.current_version || fallbackCurrent,
+        available_version: outcome.available_version || fallbackVersion,
+      };
+    }
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+  } else if (outcome && (outcome.state === "cancelled" || outcome.state === "failed")) {
+    // 终态：updater-state 事件通常先于 invoke 返回到达；仅当事件未到时
+    // 以返回值补建终态呈现（错误可读，不吞错）。ready 字节被 Rust 保留，
+    // 若终态源自已就绪安装的失败，重试入口按 ready 语境回到「安装（需重启）」。
+    if (!updaterInstall || updaterInstall.state !== outcome.state) {
+      updaterInstall = { state: outcome.state, error: outcome?.error || "未知原因" };
+    }
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+  } else {
+    const why = outcome && outcome.error ? outcome.error : "未知原因";
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `安装未完成：${why}`);
+  }
+}
+
+/** 确认层取消回落（两个安装入口共用）：收起层即取消，不发
+ * updater-cancel-requested（确认前尚无下载/安装事务可取消），原状态与
+ * 入口保持可再次尝试。 */
+function dismissUpdaterConfirm(layer) {
+  layer.hidden = true;
+  layer.innerHTML = "";
+}
+
+/** 「下载并安装」确认层（开关关闭的 040B 现状路径）：展示版本与后果，
+ * 确认后才 invoke（confirmed=true）。 */
+function confirmUpdaterInstall(body) {
   const layer = document.getElementById("updater-confirm");
   const invoke = tauriInvoke();
   if (!layer || !invoke) return;
@@ -1772,55 +1957,53 @@ async function confirmUpdaterInstall(body) {
       <button type="button" id="updater-confirm-no" class="btn" data-test="updater-confirm-no">取消</button>
     </div>`;
   const no = document.getElementById("updater-confirm-no");
-  if (no) no.addEventListener("click", () => {
-    // 取消回落：确认层收起，available 状态与入口保持可再次尝试；
-    // 不发送 updater-cancel-requested（此时尚无下载事务可取消）。
-    layer.hidden = true;
-    layer.innerHTML = "";
-  });
+  if (no) no.addEventListener("click", () => dismissUpdaterConfirm(layer));
   const yes = document.getElementById("updater-confirm-yes");
   if (yes) {
     yes.addEventListener("click", async () => {
       yes.disabled = true;
-      layer.hidden = true;  // 确认完成：层收起，进度转入面板主体（事件驱动）
-      layer.innerHTML = "";
-      // 新一轮事务：清除上一轮终态呈现与取消标记，避免旧终态残留误导
-      updaterInstall = null;
-      updaterCancelRequested = false;
-      // 首个阶段事件到达前的过渡说明（事件到达即清除，不伪造阶段名）
-      updaterPendingNote = "已确认下载并安装；更新开始后此处显示进度。";
-      renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
-      let outcome = null;
-      try {
-        outcome = await invoke("updater_install", { confirmed: true });
-      } catch (e) {
-        updaterPendingNote = null;
-        renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `安装请求失败：${e?.message || e}`);
-        return;
-      }
-      updaterPendingNote = null;
-      if (outcome && outcome.ok === true) {
-        // 事件 installed 可能尚未到达：按返回值渲染（事件到达后幂等覆盖）
-        if (!updaterInstall || updaterInstall.state !== "installed") {
-          updaterInstall = null;
-          lastUpdaterStatus = {
-            state: "installed",
-            current_version: outcome.current_version || status?.current_version,
-            available_version: outcome.available_version || version,
-          };
-        }
-        renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
-      } else if (outcome && (outcome.state === "cancelled" || outcome.state === "failed")) {
-        // 终态：updater-state 事件通常先于 invoke 返回到达；仅当事件未到时
-        // 以返回值补建终态呈现（错误可读，不吞错）
-        if (!updaterInstall || updaterInstall.state !== outcome.state) {
-          updaterInstall = { state: outcome.state, error: outcome?.error || "未知原因" };
-        }
-        renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
-      } else {
-        const why = outcome && outcome.error ? outcome.error : "未知原因";
-        renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `安装未完成：${why}`);
-      }
+      dismissUpdaterConfirm(layer);
+      await runUpdaterInstallTransaction(
+        body,
+        "已确认下载并安装；更新开始后此处显示进度。",
+        version,
+        status?.current_version,
+      );
+    });
+  }
+}
+
+/** ISS-113「安装（需重启）」确认层（ready 路径）：更新包已后台下载并验签，
+ * 确认后进入既有安装事务（复用 updater_install + confirmed=true，六步合同
+ * 不变）；取消回落保持 ready 态可再次尝试。 */
+function confirmUpdaterInstallReady(body) {
+  const layer = document.getElementById("updater-confirm");
+  const invoke = tauriInvoke();
+  if (!layer || !invoke) return;
+  const ready = updaterReady || {};
+  const version = ready.available_version || lastUpdaterStatus?.available_version || "未知";
+  layer.hidden = false;
+  layer.innerHTML = `
+    <p class="hint">即将安装 <code>${escapeHtml(String(version))}</code>：更新包已在后台下载并经内置公钥验签，
+      无需再次下载；安装会暂停写入并自动备份数据，进入安装后不可取消（失败会自动回滚到当前版本）；
+      完成后需重启应用才切换到新版本。</p>
+    <div class="exclude-actions">
+      <button type="button" id="updater-confirm-yes" class="btn primary" data-test="updater-ready-confirm-yes">确认安装</button>
+      <button type="button" id="updater-confirm-no" class="btn" data-test="updater-ready-confirm-no">取消</button>
+    </div>`;
+  const no = document.getElementById("updater-confirm-no");
+  if (no) no.addEventListener("click", () => dismissUpdaterConfirm(layer));
+  const yes = document.getElementById("updater-confirm-yes");
+  if (yes) {
+    yes.addEventListener("click", async () => {
+      yes.disabled = true;
+      dismissUpdaterConfirm(layer);
+      await runUpdaterInstallTransaction(
+        body,
+        "已确认安装；更新开始后此处显示进度。",
+        version,
+        ready.current_version || lastUpdaterStatus?.current_version,
+      );
     });
   }
 }
@@ -1887,10 +2070,17 @@ function loadUpdater() {
     return;
   }
   renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
-  // updater-state 事件（ISS-040B 检查类 + ISS-102 安装事务阶段）：统一分发——
-  // 检查类状态更新 lastUpdaterStatus；安装阶段/终态更新 updaterInstall；
-  // installed 为事务成功终态（清事务呈现，转「重启以完成」语境）；
-  // 未知状态不猜测、不覆盖既有呈现。
+  // ISS-113 无感化：进入设置页即自动检查一次（用户不必手点才知道当前状态；
+  // 壳内发现 available 且开关开启时随后台下载事件推进到 ready）。仅在尚无
+  // 任何已知状态时发起，避免每次进页重复请求。
+  if (!lastUpdaterStatus && !updaterInstall && !updaterReady) {
+    checkUpdater(body);
+  }
+  // updater-state 事件（ISS-040B 检查类 + ISS-102 安装事务阶段 + ISS-113
+  // downloaded/ready）：统一分发——检查类状态更新 lastUpdaterStatus；安装
+  // 阶段/终态更新 updaterInstall；downloaded 更新 updaterReady（后台下载
+  // 完成）；installed 为事务成功终态（清事务与 ready 呈现，转「重启以完成」
+  // 语境）；未知状态不猜测、不覆盖既有呈现。
   const tauri = window.__TAURI__;
   if (tauri && tauri.event && typeof tauri.event.listen === "function") {
     tauri.event.listen("updater-state", (event) => {
@@ -1898,19 +2088,36 @@ function loadUpdater() {
       const state = payload && typeof payload.state === "string" ? payload.state : null;
       if (!state) return;
       if (state === "installed") {
-        // 事务成功：清安装事务呈现与过渡说明，检查态转 installed
+        // 事务成功：清安装事务/ready 呈现与过渡说明，检查态转 installed
         lastUpdaterStatus = { ...(lastUpdaterStatus || {}), ...payload };
+        updaterInstall = null;
+        updaterReady = null;
+        updaterPendingNote = null;
+        updaterCancelRequested = false;
+      } else if (state === "downloaded") {
+        // ISS-113：后台下载完成（ready）——旧终态呈现清除，等待安装确认。
+        updaterReady = payload;
         updaterInstall = null;
         updaterPendingNote = null;
         updaterCancelRequested = false;
       } else if (UPDATER_PHASE_LABELS[state]) {
-        // 安装事务阶段/终态：合并载荷（downloading 进度按节流事件推进）
+        // 安装事务阶段/终态：合并载荷（downloading 进度按节流事件推进）。
+        // downloading 到达即视为新一轮下载在途（壳预下载或事务内下载），
+        // 旧 ready 呈现不再成立。
         updaterInstall = { ...(updaterInstall || {}), ...payload };
+        if (state === "downloading") updaterReady = null;
         if (state === "cancelled") updaterCancelRequested = false;
         if (state === "preparing") updaterPendingNote = null;
       } else if (UPDATER_STATE_LABELS[state]) {
         // 检查类事件（unconfigured/unreachable/up_to_date/available/failed）
         lastUpdaterStatus = payload;
+        // 非 available 的确定态（如已最新）使旧 ready 呈现不再成立；
+        // available 同版本时 ready 仍有效（壳会随即重发 downloaded）。
+        if (state !== "available") updaterReady = null;
+        else if (updaterReady && payload.available_version
+          && payload.available_version !== updaterReady.available_version) {
+          updaterReady = null;
+        }
       } else {
         return;
       }

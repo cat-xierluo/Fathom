@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ISS-031 可复现 pytest 入口（CI 与本地同一断言口径）。
 #
-# 本地等价命令（ISS-111 后 781 passed = 771 + 10(tests/test_api_permissions.py)；771 = 766 + 5(tests/test_scan_runs.py)；766 = 753 + 13(tests/test_release_gate.py)；753 = 739 + 14(tests/test_upgrade_restore.py)；739 = 727 + 12(ISS-097)，727 = 720 + 7(ISS-096)）：
+# 本地等价命令（ISS-116 后 814 passed = 800 + 14；ISS-113 后 800 = 781 + 19；781 = 771 + 10(tests/test_api_permissions.py)；771 = 766 + 5(tests/test_scan_runs.py)；766 = 753 + 13(tests/test_release_gate.py)；753 = 739 + 14(tests/test_upgrade_restore.py)；739 = 727 + 12(ISS-097)，727 = 720 + 7(ISS-096)）：
 #   .runtime/bin/python -m pytest tests -q
 # CI：FATHOM_PYTHON 指向 setup-python 锁定版本创建的 venv 解释器。
 #
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 781）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 814）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -42,7 +42,16 @@ cd "$(dirname "$0")/.."
 # 三态（可读 granted / PermissionError denied / 探测异常 unknown）+
 # notification 透传/未登记/空历史 + coverage 引用与空库 + /api/status
 # 的 app_version 增量字段 + 外站 Host 403 守卫（771 → 781）。
-expected="${EXPECTED_PYTEST_PASSED:-781}"
+# ISS-113 +19：应用更新无感化配置项——tests/test_auto_download_config.py
+# 14 项（严格布尔校验 6 参数 + 双布尔接受/默认视图 true+来源/落盘往返
+# false/排除集环境覆盖透传/部分合并不动其余键 + lib.rs 三钉子：读
+# settings.json 的 auto_download_updates 键与宽读 fail-safe、downloaded
+# ready 事件与预下载入口/复用下载路径与独占门、安装与重启 confirmed
+# 确认门不回退）+ tests/test_api_config.py 5 项（PUT true/false 往返 +
+# 近亲形态 4 参数 400 且旧值不动）（781 → 800）。
+# ISS-116 +14：errno 路径分类、v5→v6 迁移/API/日报/通知，
+# 长路径通知覆盖质量优先保留反例。
+expected="${EXPECTED_PYTEST_PASSED:-814}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前期望值以脚本及 CI 为准：pytest **813**、API/浏览器 **39**、前端 refresh **200**（ISS-115 后 198 项，ISS-116 增加 2 项）、Rust 单测 **65**。变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前期望值以脚本及 CI 为准：pytest **814**、API/浏览器 **39**、前端 refresh **200**（ISS-115 后 198 项，ISS-116 增加 2 项）、Rust 单测 **65**。变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -23,7 +23,7 @@ PLAYWRIGHT_BIN="$PWD/.runtime/playwright/node_modules/.bin/playwright" \
 PW_INSTALL=1 /bin/bash scripts/ci_browser_checks.sh
 ```
 
-GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（813）和 Rust 1.88 locked build+单测（65）；浏览器/API 检查（39）与前端 refresh 功能回归（200）在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
+GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（814）和 Rust 1.88 locked build+单测（65）；浏览器/API 检查（39）与前端 refresh 功能回归（200）在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
 
 本地/API/CLI 验收必须显式设置完整隔离边界：`FATHOM_RUNTIME_DIR` 派生 data/reports/logs，`FATHOM_SCAN_ROOT` 指定合成根，`FATHOM_RESOURCE_DIR` 指定只读资源，`FATHOM_PORT` 使用已核对的测试端口；CLI 也提供等价覆盖。旧 `FATHOM_DB` 仅作兼容，未指定运行根时其父目录成为完整运行根。`FATHOM_DU_TIMEOUT_S`（ISS-061，默认 14400 秒）设置单次 `du` 采集的安全时限：超时后本次扫描记为 `interrupted` 并保留上次有效快照；值必须是正的有限数，`0`、负数、非数字、`nan`、`inf` 一律在启动时被拒绝（不存在"无限超时"）；夹具里可用极小值（如 `0.001`）构造超时反例。端口占用须非零退出，不停止未知进程；install/uninstall/权限与真实 Finder 动作另属实机验证。
 
@@ -43,7 +43,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（813�
 **2026-09-15 起 `CI` workflow 已停用**（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发）：push/PR 不再创建 run，`gh pr checks` 为空属预期，不是"检查缺失"。本地替代链在 main 上按下列顺序复跑，与云端 5 个 job 一一对应；输出重定向到文件只看尾部：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 813（ISS-116 同步）
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 814（ISS-116 同步）
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 200（ISS-116 同步）
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 65（ISS-113 同步）
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
@@ -149,7 +149,7 @@ PY
 | 查询资源 | 超 limit 历史、超过树预算、并发大文件查询、超时/取消 | 最新窗口、明确截断、可控 IO/内存/线程数 |
 | 浏览器 | 空/单/双快照、只有新增、缺失点、重扫、切页/乱序、HTML 外观路径 | 无注入/旧值/未处理异常；正确状态与按钮反馈 |
 | 权限与覆盖展示（ISS-115） | 旧快照 130/44→授权后新快照 6/4；仅路径未确认 0/4；受限行数小于、超过或为零；无快照及权限探测未知 | 总览、设置、日报、通知按快照时间与原始计数显示“读取受限记录”及“校验时未确认仍存在”，不把后者断言为已清理，也不拿受限行数/已记录目录数当覆盖率；当前探测不改写旧快照、不承诺全盘可读；独立于真实 HOME 扫描的合成浏览器回归 |
-| 路径状态分类（ISS-116） | 合成 `du` 输出后路径 `ENOENT`、`EACCES`、`EPERM`、其他 `OSError`、断开的符号链接、实存非目录、根外；v5 旧行 `vanished_count>0` 与新行两种分类并存 | `stat` 与 `lstat` 均确认 `ENOENT` 才计校验时不存在，其他不可确认单列、实存非目录仍拒绝；旧行细分字段 NULL 且不倒填；新行两个细分之和与兼容汇总一致；v5→v6 一致备份、迁移失败回滚、隔离根端到端扫描、API/总览/设置/日报/通知同源；不由 Agent 扫描真实 HOME |
+| 路径状态分类（ISS-116） | 合成 `du` 输出后路径 `ENOENT`、`EACCES`、`EPERM`、其他 `OSError`、断开的符号链接、实存非目录、根外；v5 旧行 `vanished_count>0` 与新行两种分类并存；超长变化路径的通知 | `stat` 与 `lstat` 均确认 `ENOENT` 才计校验时不存在，其他不可确认单列、实存非目录仍拒绝；旧行细分字段 NULL 且不倒填；新行两个细分之和与兼容汇总一致；v5→v6 一致备份、迁移失败回滚、隔离根端到端扫描、API/总览/设置/日报/通知同源；200 字通知正文优先保留覆盖质量与剩余空间；不由 Agent 扫描真实 HOME |
 | UX | 980×640、1220×820、1440×900；长路径；键盘导航 | 不溢出、图表非零尺寸、焦点可见/返回、三步定位；Tauri 三尺寸实机入口 `bash scripts/verify_tauri_window_sizes.sh`（ISS-028，零打扰模式：几何/总览图表机器断言 + 交互类 NOT_VERIFIED-需前台单列，证据在 apps/desktop/src-tauri/verify-results/window-sizes/，gitignore 内） |
 
 修复首先补能失败的反例测试；禁止 `or True`、只断言执行未抛错、全路径 mock 后称端到端。改变一个纯文案/间距不必堆单元测试，DOM/截图核对即可。核心行为改变必须测试失败路径。

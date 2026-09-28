@@ -409,7 +409,7 @@ class TestPreviewInvalidation:
             manager.create_preview(a, b)
         assert ei.value.reason_code == "runtime_unsupported"
 
-    def test_bad_runtime_configuration_rejected(self, isolated):
+    def test_dataset_mismatch_rejected(self, isolated):
         bin_dir = isolated["runtime"] / "bin"
         bin_dir.mkdir()
         enable_analysis(make_fake_claude(bin_dir, mode="ok"))
@@ -770,6 +770,22 @@ class TestLifecycle:
         assert view["reason_code"] == "owner_exit"
         assert view["terminal"] is True
         assert agent_rows() == []
+
+    def test_finish_never_rewrites_terminal_row(self, isolated):
+        """终态单写守卫直接单测：迟到 _finish 不得改写已终态行（方案 §5
+        「终态只写一次、迟到回调不得复活」的守卫本体锁定）。"""
+        self._insert_run("job-guard", "succeeded", "2026-09-28T00:00:00")
+        before = tuple(run_row("job-guard"))
+        manager = make_manager()
+        rec = am.JobRecord(job_id="job-guard", preview=None,
+                           idempotency_key="ik-guard",
+                           cancel_event=threading.Event())
+        manager._finish(rec, "failed", "late_callback", 999)
+        after = run_row("job-guard")
+        assert after["status"] == "succeeded"      # 终态未被改写
+        assert after["reason_code"] is None        # 未被污染
+        assert after["finished_at"] is None and after["duration_ms"] is None
+        assert tuple(after) == before              # 整行逐列未动
 
     def test_retention_35_days_and_100_rows(self, isolated):
         old = "2026-06-01T00:00:00"

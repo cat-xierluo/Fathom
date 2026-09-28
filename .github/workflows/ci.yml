@@ -49,7 +49,7 @@ env:
   # (tests/test_upgrade_restore.py 安装后失败的真实旧 bundle 与数据恢复
   # 聚焦测试)；739 = 727 + 12(ISS-097
   # 升级事务聚焦测试)，727 = 720 + 7(ISS-096)，720 已含 ISS-030A/040B/040C/
-  # 037/081/090/091 批次）：ISS-116 后 813 pytest、39 API/浏览器检查、200 前端
+  # 037/081/090/091 批次）：ISS-116 后 814 pytest、39 API/浏览器检查、200 前端
   # refresh（ISS-100 起随浏览器 job 执行；ISS-111 权限分区断言 179 → 188；
   # ISS-113 更新无感化 +5：开关关闭回现状 1、后台下载呈现与取消 1、重试
   # 下载 1、downloaded ready 与确认取消 1、确认安装至 installed 1；
@@ -64,7 +64,7 @@ env:
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "813"
+  EXPECTED_PYTEST_PASSED: "814"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "200"
   EXPECTED_CARGO_PASSED: "65"
@@ -103,7 +103,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 813 项通过）
+      - name: pytest（断言 814 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh

@@ -353,6 +353,30 @@ class TestISS065VanishedInNotify:
 class TestISS003ABodyCap:
     """ISS-003A：最终正文（含剩余空间后缀）≤ 200 字符的可解释截断。"""
 
+    def test_long_growth_path_cannot_hide_partial_coverage(self):
+        diff = _diff([reports.DirChange(
+            "/synthetic/" + "长" * 220, 0, 2048, 2048,
+        )])
+        cases = (
+            (dict(collection_status="partial", denied_count=6,
+                  vanished_count=4, confirmed_missing_count=1,
+                  path_unverified_count=3),
+             ("6 条读取受限记录", "1 个目录校验时路径不存在", "3 个目录状态无法确认")),
+            (dict(collection_status="partial", denied_count=6,
+                  vanished_count=4),
+             ("6 条读取受限记录", "4 个目录状态未确认")),
+        )
+        for free_bytes in (None, 5 * 1024**3):
+            for kwargs, required in cases:
+                _, body, _ = notify.build_notification(diff, free_bytes, **kwargs)
+                assert len(body) <= notify.BODY_MAX_CHARS
+                assert "增长最多：/synthetic/" in body
+                assert "…" in body
+                assert "部分覆盖" in body
+                assert all(phrase in body for phrase in required)
+                if free_bytes is not None:
+                    assert body.endswith("剩余 5.0 GB")
+
     def test_long_body_with_free_suffix_capped_and_suffix_kept(self):
         diff = _diff([reports.DirChange("/tmp/" + "长" * 300, 0, 2048, 2048)])
         _, body, _ = notify.build_notification(diff, 5 * 1024**3)

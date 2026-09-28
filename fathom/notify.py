@@ -63,17 +63,25 @@ def _clip(text: str, limit: int) -> str:
     return text[: max(limit - 1, 1)] + "…"
 
 
-def _compose_body(main: str, free_bytes: int | None) -> str:
-    """折叠空白并限长，有卷数据时追加剩余空间后缀。
+def _compose_body(
+    main: str, free_bytes: int | None, coverage_note: str = ""
+) -> str:
+    """折叠空白并限长，优先保留覆盖质量与卷剩余空间。
 
-    截断只作用于主文案：剩余空间是低空间告警的核心事实，先按后缀
-    长度预留额度再截断，保证最终正文（含后缀）不超过 BODY_MAX_CHARS。
+    先为质量事实和剩余空间预留长度，再截断可能很长的目录路径。
+    短正文的拼接顺序仍是「变化；部分覆盖，剩余空间」。
     """
     body = " ".join(main.split())
-    if free_bytes is None:
-        return _clip(body, BODY_MAX_CHARS)
-    suffix = f"，剩余 {free_bytes / 1024**3:.1f} GB"
-    return _clip(body, BODY_MAX_CHARS - len(suffix)) + suffix
+    note = " ".join(coverage_note.split())
+    suffix = "" if free_bytes is None else f"，剩余 {free_bytes / 1024**3:.1f} GB"
+    if not note:
+        return _clip(body, BODY_MAX_CHARS - len(suffix)) + suffix
+    note_segment = "；" + note
+    main_limit = BODY_MAX_CHARS - len(note_segment) - len(suffix)
+    if main_limit <= 0:
+        # 防御异常长的外部计数；常规三类计数总能完整装入 200 字。
+        return _clip(note, BODY_MAX_CHARS - len(suffix)) + suffix
+    return _clip(body, main_limit) + note_segment + suffix
 
 
 def _partial_note(
@@ -108,10 +116,11 @@ def _partial_note(
 
 
 def _finish(
-    title_normal: str, main: str, free_bytes: int | None
+    title_normal: str, main: str, free_bytes: int | None,
+    coverage_note: str = "",
 ) -> tuple[str, str, str | None]:
     """拼正文并在低空间时换告警标题；阈值只读 config.FREE_ALERT_GB。"""
-    body = _compose_body(main, free_bytes)
+    body = _compose_body(main, free_bytes, coverage_note)
     if free_bytes is not None and free_bytes / 1024**3 < config.FREE_ALERT_GB:
         return TITLE_ALERT, body, ALERT_SOUND
     return title_normal, body, None
@@ -152,9 +161,7 @@ def build_notification(
         parts.append(f"首次记录大目录：{top_added.path}（{human_kb(top_added.new_kb)}）")
     partial = _partial_note(collection_status, denied_count, vanished_count,
                             confirmed_missing_count, path_unverified_count)
-    if partial:
-        parts.append(partial)
-    return _finish(TITLE_DONE, "；".join(parts), free_bytes)
+    return _finish(TITLE_DONE, "；".join(parts), free_bytes, partial)
 
 
 def build_first_notification(
@@ -170,9 +177,7 @@ def build_first_notification(
     parts = ["首次快照已建立，下次扫描起可比较"]
     partial = _partial_note(collection_status, denied_count, vanished_count,
                             confirmed_missing_count, path_unverified_count)
-    if partial:
-        parts.append(partial)
-    return _finish(TITLE_FIRST, "；".join(parts), free_bytes)
+    return _finish(TITLE_FIRST, "；".join(parts), free_bytes, partial)
 
 
 def build_interrupted_notification(reason: str | None) -> tuple[str, str, str | None]:

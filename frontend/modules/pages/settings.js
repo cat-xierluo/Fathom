@@ -724,6 +724,14 @@ function _explainCoverage(coverage) {
       cls: "warn",
     };
   }
+  if (coverage.confirmed !== null && coverage.unverified !== null) {
+    if (coverage.confirmed > 0) return {
+      text: `最近扫描：${coverage.confirmed} 个目录校验时路径不存在`, cls: "warn",
+    };
+    if (coverage.unverified > 0) return {
+      text: `最近扫描：${coverage.unverified} 个目录状态无法确认`, cls: "warn",
+    };
+  }
   if (coverage.vanished > 0) {
     return {
       text: `最近扫描：${coverage.vanished} 个目录状态未确认`,
@@ -740,9 +748,13 @@ function _explainCoverage(coverage) {
 }
 
 function _coverage(snapshot) {
-  if (!snapshot) return { state: "missing", denied: 0, vanished: 0, excluded: 0 };
+  if (!snapshot) return { state: "missing", denied: 0, vanished: 0, confirmed: null, unverified: null, excluded: 0 };
   const denied = snapshot.denied_count ?? 0;
   const vanished = snapshot.vanished_count ?? 0;
+  const classified = Number.isInteger(snapshot.confirmed_missing_count) &&
+    Number.isInteger(snapshot.path_unverified_count);
+  const confirmed = classified ? snapshot.confirmed_missing_count : null;
+  const unverified = classified ? snapshot.path_unverified_count : null;
   const ex = snapshot.exclude_names;
   let excluded = 0;
   if (Array.isArray(ex)) excluded = ex.length;
@@ -753,7 +765,7 @@ function _coverage(snapshot) {
   if (snapshot.collection_status === "partial") state = "partial";
   else if (denied > 0) state = "partial";
   else state = "full";
-  return { state, denied, vanished, excluded };
+  return { state, denied, vanished, confirmed, unverified, excluded };
 }
 
 async function loadPermissions() {
@@ -961,6 +973,10 @@ function renderPermFda(body, fda, coverage) {
   if (coverage && coverage.snapshot_id != null) {
     const denied = Number(coverage.denied_count ?? 0) || 0;
     const vanished = Number(coverage.vanished_count ?? 0) || 0;
+    const classified = Number.isInteger(coverage.confirmed_missing_count) &&
+      Number.isInteger(coverage.path_unverified_count);
+    const confirmed = classified ? coverage.confirmed_missing_count : 0;
+    const unverified = classified ? coverage.path_unverified_count : 0;
     const scanTime = coverage.created_at
       ? escapeHtml(String(coverage.created_at).slice(0, 16).replace("T", " "))
       : "时间未知";
@@ -971,12 +987,23 @@ function renderPermFda(body, fda, coverage) {
           <span class="perm-fact-num" data-test="perm-fda-denied" data-sev="${denied > 0 ? "warn" : "ok"}">${escapeHtml(String(denied))}</span>
           <span class="perm-fact-label">读取受限错误（条）</span>
         </div>
-        <div class="perm-fact">
-          <span class="perm-fact-num" data-test="perm-fda-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>
-          <span class="perm-fact-label">目录状态未确认（个）</span>
-        </div>
+        ${classified ? `
+          <div class="perm-fact">
+            <span class="perm-fact-num" data-test="perm-fda-confirmed-missing" data-sev="${confirmed > 0 ? "warn" : "ok"}">${escapeHtml(String(confirmed))}</span>
+            <span class="perm-fact-label">校验时路径不存在（个目录）</span>
+          </div>
+          <div class="perm-fact">
+            <span class="perm-fact-num" data-test="perm-fda-path-unverified" data-sev="${unverified > 0 ? "warn" : "ok"}">${escapeHtml(String(unverified))}</span>
+            <span class="perm-fact-label">目录状态无法确认（个）</span>
+          </div>` : `
+          <div class="perm-fact">
+            <span class="perm-fact-num" data-test="perm-fda-vanished" data-sev="${vanished > 0 ? "warn" : "ok"}">${escapeHtml(String(vanished))}</span>
+            <span class="perm-fact-label">目录状态未确认（个）</span>
+          </div>`}
       </div>
-      <p class="perm-note">受限数字是 du 输出的权限错误行数，同一路径可能出现多条；目录状态未确认表示 du 输出后校验时未能确认路径仍存在，可能已移动、被清理或无法访问，不能认定已删除。两类计数可能指向同一路径，不能相加成不同目录数，也不能推出受影响空间大小。</p>`;
+      <p class="perm-note">受限数字是 du 输出的权限错误行数，同一路径可能出现多条；${classified
+        ? "校验时路径不存在只说明当时状态；无法确认可能由权限或其他读取错误造成。不能据此认定谁删除了目录。"
+        : "目录状态未确认表示 du 输出后校验时未能确认路径仍存在，可能已移动、被清理或无法访问，不能认定已删除。"}${classified ? "不同类别" : "两类"}计数可能指向同一路径，不能相加成不同目录数，也不能推出受影响空间大小。</p>`;
   } else {
     factsHtml =
       `<p class="hint" data-test="perm-fda-not-yet">尚未扫描：完成首次扫描后，这里会显示读取受限与目录状态未确认的情况。</p>`;

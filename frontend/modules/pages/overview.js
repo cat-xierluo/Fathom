@@ -42,9 +42,13 @@ function _shortTs(iso) {
  *   excluded:    排除掩码项数（exclude_names 数组长度；缺字段 0）
  * denied 不等于不同目录数；三类计数不求和不推比例。 */
 function _coverage(snapshot) {
-  if (!snapshot) return { state: "missing", denied: 0, vanished: 0, excluded: 0 };
+  if (!snapshot) return { state: "missing", denied: 0, vanished: 0, confirmed: null, unverified: null, excluded: 0 };
   const denied = snapshot.denied_count ?? 0;
   const vanished = snapshot.vanished_count ?? 0;
+  const classified = Number.isInteger(snapshot.confirmed_missing_count) &&
+    Number.isInteger(snapshot.path_unverified_count);
+  const confirmed = classified ? snapshot.confirmed_missing_count : null;
+  const unverified = classified ? snapshot.path_unverified_count : null;
   const ex = snapshot.exclude_names;
   let excluded = 0;
   if (Array.isArray(ex)) excluded = ex.length;
@@ -56,7 +60,7 @@ function _coverage(snapshot) {
   if (snapshot.collection_status === "partial") state = "partial";
   else if (denied > 0) state = "partial";  // 兼容旧版本
   else state = "full";
-  return { state, denied, vanished, excluded };
+  return { state, denied, vanished, confirmed, unverified, excluded };
 }
 
 /* 三类缺口的「意味着什么 / 不意味着什么」文案（ISS-002A）。
@@ -73,6 +77,16 @@ const COV_NOTES = {
     means: "du 输出后，校验时未能确认这些目录路径仍存在。",
     doesnt: "可能已移动、被清理，也可能因权限无法访问；不能认定已删除或据此计算影响空间。",
   },
+  confirmed: {
+    label: "目录校验时路径不存在",
+    means: "du 输出后，校验时确认这些目录路径不存在。",
+    doesnt: "这只说明校验时的状态；不能推断由谁删除，也不能据此计算影响空间。",
+  },
+  unverified: {
+    label: "目录状态无法确认",
+    means: "du 输出后，校验时无法确认这些目录路径是否仍存在。",
+    doesnt: "可能因权限或其他读取错误无法访问；不能认定已删除或据此计算影响空间。",
+  },
   excluded: {
     label: "排除掩码",
     means: "这些目录从未进入扫描集；与默认配置形成不同数据集。",
@@ -85,8 +99,12 @@ function _renderCoverageClasses(coverage) {
   if (coverage.state === "full") {
     return `<span class="quality-chip ok">${icon("shield", 12)} 完整覆盖</span>`;
   }
-  const order = ["denied", "vanished", "excluded"];
-  const counts = { denied: coverage.denied, vanished: coverage.vanished, excluded: coverage.excluded };
+  const classified = coverage.confirmed !== null && coverage.unverified !== null;
+  const order = classified
+    ? ["denied", "confirmed", "unverified", "excluded"]
+    : ["denied", "vanished", "excluded"];
+  const counts = { denied: coverage.denied, vanished: coverage.vanished,
+    confirmed: coverage.confirmed, unverified: coverage.unverified, excluded: coverage.excluded };
   const items = order
     .filter((k) => counts[k] > 0)
     .map((k) => {
@@ -138,10 +156,14 @@ async function loadQualityLine() {
   const cov = _coverage(latest);
   // 质量徽章概括最新快照；denied 是错误行数，不称不同目录数。
   // 详细分类放在独立 #overview-coverage-note 区块。
+  const pathChip = cov.confirmed !== null
+    ? (cov.confirmed > 0 ? `${cov.confirmed} 个目录校验时路径不存在` :
+      cov.unverified > 0 ? `${cov.unverified} 个目录状态无法确认` : "")
+    : (cov.vanished > 0 ? `${cov.vanished} 个目录状态未确认` : "");
   const covChip = cov.state === "full"
     ? `<span class="quality-chip ok">${icon("alert", 12)} 覆盖完整</span>`
     : cov.state === "partial"
-      ? `<span class="quality-chip warn">${icon("alert", 12)} 部分覆盖${cov.denied > 0 ? `（${cov.denied} 条读取受限记录）` : cov.vanished > 0 ? `（${cov.vanished} 个目录状态未确认）` : ""}</span>`
+      ? `<span class="quality-chip warn">${icon("alert", 12)} 部分覆盖${cov.denied > 0 ? `（${cov.denied} 条读取受限记录）` : pathChip ? `（${pathChip}）` : ""}</span>`
       : `<span class="quality-chip miss">${icon("alert", 12)} 覆盖未知</span>`;
   const rangeChip = snaps.length >= 2
     ? `<span>${escapeHtml(_shortTs(snaps[1].created_at))} → ${escapeHtml(_shortTs(latest.created_at))}</span>`

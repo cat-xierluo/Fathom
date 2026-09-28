@@ -83,15 +83,19 @@ def _insert_snapshot(
     denied: int = 0,
     collection_status: str | None = None,
     vanished_count: int = 0,
+    confirmed_missing_count: int | None = None,
+    path_unverified_count: int | None = None,
     hour: str = "12:00:00",
 ) -> int:
     """直接造表行（不经 du）。min_kb=None 表示 v3 之前的旧记录（NULL 不补造）。"""
     sizes = entries or {}
     cur = conn.execute(
         "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, "
-        "total_kb, min_kb, collection_status, vanished_count) VALUES (?,?,?,?,?,?,?,?,?)",
+        "total_kb, min_kb, collection_status, vanished_count, "
+        "confirmed_missing_count, path_unverified_count) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (f"{day}T{hour}", root, len(sizes) + 1, denied, 0.0,
-         max(sizes.values(), default=0), min_kb, collection_status, vanished_count),
+         max(sizes.values(), default=0), min_kb, collection_status, vanished_count,
+         confirmed_missing_count, path_unverified_count),
     )
     sid = cur.lastrowid
     conn.executemany(
@@ -624,6 +628,25 @@ class TestISS065VanishedInReport:
             md = out.read_text(encoding="utf-8")
             assert "du 输出 2 条读取受限记录" in md
             assert "另有 5 个目录状态未确认" in md
+        finally:
+            conn.close()
+
+    def test_v6_classified_path_states_are_separate(self):
+        conn = db.connect()
+        try:
+            _insert_snapshot(conn, "2026-09-10", "/synthetic/root-a", min_kb=1024,
+                             entries={"/synthetic/root-a": 10_000})
+            sid = _insert_snapshot(
+                conn, "2026-09-12", "/synthetic/root-a", min_kb=1024,
+                entries={"/synthetic/root-a": 12_000}, collection_status="partial",
+                denied=6, vanished_count=4, confirmed_missing_count=1,
+                path_unverified_count=3,
+            )
+            md = reports.write_daily_report(conn, sid, notify_after_write=False).read_text()
+            assert "1 个目录在 du 输出后校验时路径不存在" in md
+            assert "3 个目录在 du 输出后校验时状态无法确认" in md
+            assert "4 个目录状态未确认" not in md
+            assert "不能据此推断删除原因" in md
         finally:
             conn.close()
 

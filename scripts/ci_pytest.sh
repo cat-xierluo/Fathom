@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # ISS-031 可复现 pytest 入口（CI 与本地同一断言口径）。
 #
-# 本地等价命令（ISS-113 后 800 passed = 781 + 19(ISS-113)；781 = 771 + 10(tests/test_api_permissions.py)；771 = 766 + 5(tests/test_scan_runs.py)；766 = 753 + 13(tests/test_release_gate.py)；753 = 739 + 14(tests/test_upgrade_restore.py)；739 = 727 + 12(ISS-097)，727 = 720 + 7(ISS-096)）：
+# 本地等价命令（ISS-116 后 813 passed = 800 + 13；ISS-113 后 800 = 781 + 19；781 = 771 + 10(tests/test_api_permissions.py)；771 = 766 + 5(tests/test_scan_runs.py)；766 = 753 + 13(tests/test_release_gate.py)；753 = 739 + 14(tests/test_upgrade_restore.py)；739 = 727 + 12(ISS-097)，727 = 720 + 7(ISS-096)）：
 #   .runtime/bin/python -m pytest tests -q
 # CI：FATHOM_PYTHON 指向 setup-python 锁定版本创建的 venv 解释器。
 #
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 800）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 813）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -49,7 +49,8 @@ cd "$(dirname "$0")/.."
 # ready 事件与预下载入口/复用下载路径与独占门、安装与重启 confirmed
 # 确认门不回退）+ tests/test_api_config.py 5 项（PUT true/false 往返 +
 # 近亲形态 4 参数 400 且旧值不动）（781 → 800）。
-expected="${EXPECTED_PYTEST_PASSED:-800}"
+# ISS-116 +13：errno 路径分类、v5→v6 迁移/API/日报/通知聚焦反例。
+expected="${EXPECTED_PYTEST_PASSED:-813}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

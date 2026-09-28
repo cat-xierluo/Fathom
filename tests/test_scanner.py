@@ -253,6 +253,7 @@ class TestISS065VanishedPath:
             "vanished 与解析歧义必须分离；path_error 只收含换行/根外/非目录"
         )
         assert result.vanished_count == 1
+        assert (result.confirmed_missing_count, result.path_unverified_count) == (1, 0)
         assert result.vanished_sample == vanished_path
         assert vanished_path in result.sizes  # du 数据是测量期事实，保留
         assert scanner.classify_collection(result, str(root)) == "partial"
@@ -278,10 +279,12 @@ class TestISS065VanishedPath:
         try:
             sid = scanner.create_snapshot(conn, root, min_kb=0)
             row = conn.execute(
-                "SELECT vanished_count, collection_status, dir_count FROM snapshots "
+                "SELECT vanished_count, confirmed_missing_count, "
+                "path_unverified_count, collection_status, dir_count FROM snapshots "
                 "WHERE id=?", (sid,)
             ).fetchone()
             assert row["vanished_count"] == 1
+            assert (row["confirmed_missing_count"], row["path_unverified_count"]) == (1, 0)
             assert row["collection_status"] == "partial"
             assert row["dir_count"] == 3  # 根 + ok + vanished（事实保留）
             # vanished 的条目按 KB 进入 entries（vanished 不删事实）
@@ -329,6 +332,99 @@ class TestISS065VanishedPath:
         result = scanner.run_du(root)
         assert result.path_error_count == 1
         assert result.vanished_count == 0
+        with pytest.raises(scanner.InvalidScanError, match="不可无歧义解析"):
+            scanner.classify_collection(result, str(root))
+
+
+class TestISS116PathClassification:
+    def test_errno_classes_keep_du_measurements(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        root.mkdir()
+        missing = root / "missing"
+        denied = root / "denied"
+        restricted = root / "restricted"
+        uncertain = root / "uncertain"
+        original_stat = scanner.os.stat
+
+        def classified_stat(path, *args, **kwargs):
+            if str(path) == str(denied):
+                raise PermissionError(13, "Permission denied", str(path))
+            if str(path) == str(restricted):
+                raise PermissionError(1, "Operation not permitted", str(path))
+            if str(path) == str(uncertain):
+                raise OSError(5, "Input/output error", str(path))
+            return original_stat(path, *args, **kwargs)
+
+        fake = scanner.subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="".join(
+                f"4\t{path}\n" for path in (missing, denied, restricted, uncertain, root)
+            ).encode(), stderr=b"",
+        )
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake)
+        monkeypatch.setattr(scanner.os, "stat", classified_stat)
+
+        result = scanner.run_du(root)
+        assert result.path_error_count == 0
+        assert result.confirmed_missing_count == 1
+        assert result.path_unverified_count == 3
+        assert result.vanished_count == 4
+        assert all(str(p) in result.sizes for p in (missing, denied, restricted, uncertain))
+        assert scanner.classify_collection(result, str(root)) == "partial"
+
+    def test_new_snapshot_writes_both_classified_counts(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        root.mkdir()
+        missing = root / "missing"
+        monkeypatch.setattr(scanner, "run_du", lambda _: scanner.DuResult(
+            sizes={str(root): 8, str(missing): 4}, exit_code=0,
+            denied_count=0, elapsed_seconds=0.1, vanished_count=1,
+            confirmed_missing_count=1, path_unverified_count=0,
+        ))
+        conn = db.connect()
+        try:
+            sid = scanner.create_snapshot(conn, root, min_kb=0)
+            row = conn.execute("SELECT vanished_count, confirmed_missing_count, "
+                               "path_unverified_count FROM snapshots WHERE id=?", (sid,)).fetchone()
+            assert tuple(row) == (1, 1, 0)
+            assert conn.execute("SELECT size_kb FROM entries WHERE snapshot_id=? AND path=?",
+                                (sid, str(missing))).fetchone()[0] == 4
+        finally:
+            conn.close()
+
+    def test_inconsistent_classification_cannot_replace_same_day_snapshot(
+        self, tmp_path, monkeypatch
+    ):
+        root = tmp_path / "root"
+        root.mkdir()
+        conn = db.connect()
+        try:
+            first = scanner.create_snapshot(conn, root, min_kb=0)
+            monkeypatch.setattr(scanner, "run_du", lambda _: scanner.DuResult(
+                sizes={str(root): 8}, exit_code=0, denied_count=0,
+                elapsed_seconds=0.1, vanished_count=1,
+                confirmed_missing_count=0, path_unverified_count=0,
+            ))
+            with pytest.raises(scanner.InvalidScanError, match="计数不一致"):
+                scanner.create_snapshot(conn, root, min_kb=0)
+            assert conn.execute("SELECT id FROM snapshots").fetchone()[0] == first
+        finally:
+            conn.close()
+
+    def test_broken_symlink_is_not_confirmed_missing_directory(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        root.mkdir()
+        link = root / "broken-link"
+        link.symlink_to(root / "absent-target", target_is_directory=True)
+        fake = scanner.subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout=f"4\t{link}\n8\t{root}\n".encode(), stderr=b"",
+        )
+        monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake)
+        result = scanner.run_du(root)
+        assert result.path_error_count == 1
+        assert result.confirmed_missing_count == 0
+        assert result.path_unverified_count == 0
         with pytest.raises(scanner.InvalidScanError, match="不可无歧义解析"):
             scanner.classify_collection(result, str(root))
 

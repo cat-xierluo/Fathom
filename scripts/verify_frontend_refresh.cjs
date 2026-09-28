@@ -123,6 +123,12 @@ function createFixture() {
                 collection_status: "partial", dir_count: 40 },
               snapshot(1, "2026-09-12T10:00:00")];
     }
+    if (state.mode === "partial-classified") {
+      return [{ ...latest, denied_count: 6, vanished_count: 4,
+                confirmed_missing_count: 1, path_unverified_count: 3,
+                collection_status: "partial", dir_count: 20 },
+              snapshot(1, "2026-09-12T10:00:00")];
+    }
     if (state.mode === "partial-no-fields") {
       // ISS-002A：vanished_count 与 exclude_names 字段缺失，验证 ?? 0 / 防御
       // 注意：denied_count=6 触发 partial，但 vanished/excluded 必须被防御为 0
@@ -145,6 +151,7 @@ function createFixture() {
   const SNAPSHOTS_ENDPOINT_COLUMNS = [
     "id", "created_at", "root", "total_kb", "dir_count", "denied_count",
     "min_kb", "collection_status", "vanished_count", "exclude_names",
+    "confirmed_missing_count", "path_unverified_count",
     "total_bytes", "free_bytes",
   ];
   const snapshotsForSnapshotsEndpoint = () => snapshots().map((s) => {
@@ -636,6 +643,8 @@ function createFixture() {
           dir_count: latest.dir_count ?? null,
           denied_count: latest.denied_count ?? null,
           vanished_count: latest.vanished_count ?? null,
+          confirmed_missing_count: latest.confirmed_missing_count ?? null,
+          path_unverified_count: latest.path_unverified_count ?? null,
         } : null,
       });
     }
@@ -2879,6 +2888,36 @@ async function main() {
         permissionAmbiguousSettings.schedule.includes("目录状态未确认") &&
         !Object.values(permissionAmbiguousSettings).join(" ").includes("已消失"),
       JSON.stringify(permissionAmbiguousSettings).slice(0, 180));
+
+    await setMode("partial-classified");
+    await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-classes']");
+    const classifiedOverview = await page.evaluate(() => ({
+      quality: document.getElementById("overview-quality")?.textContent || "",
+      detail: document.getElementById("overview-coverage-note")?.textContent || "",
+    }));
+    record("coverage-classified-path-states-separate-from-legacy",
+      classifiedOverview.detail.includes("1 个目录校验时路径不存在") &&
+        classifiedOverview.detail.includes("3 个目录状态无法确认") &&
+        !classifiedOverview.detail.includes("4 个目录状态未确认"),
+      JSON.stringify(classifiedOverview).slice(0, 200));
+    await openPage("#/settings");
+    await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
+    await page.waitForSelector("#perm-fda-card [data-test='perm-fda-path-unverified']");
+    const classifiedSettings = await page.evaluate(() => {
+      const fda = document.getElementById("perm-fda-card");
+      return {
+        missing: fda?.querySelector("[data-test='perm-fda-confirmed-missing']")?.textContent || "",
+        unverified: fda?.querySelector("[data-test='perm-fda-path-unverified']")?.textContent || "",
+        old: !!fda?.querySelector("[data-test='perm-fda-vanished']"),
+        note: fda?.textContent || "",
+      };
+    });
+    record("perm-fda-classified-counts-without-legacy-guess",
+      classifiedSettings.missing === "1" && classifiedSettings.unverified === "3" &&
+        !classifiedSettings.old && classifiedSettings.note.includes("不能据此认定谁删除") &&
+        classifiedSettings.note.includes("不能相加成不同目录数"),
+      JSON.stringify(classifiedSettings).slice(0, 200));
 
     // 3) 仅 excluded（exclude_names 数组）：只见排除掩码 chip
     await setMode("partial-excluded");

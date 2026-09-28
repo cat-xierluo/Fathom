@@ -549,6 +549,10 @@ tr:hover .btn-mini { opacity: 1; }
 }
 .perm-link:hover { border-color: var(--primary); }
 .perm-link[disabled] { cursor: not-allowed; opacity: 0.7; }
+/* ISS-112：hidden 属性的隐藏依赖 UA 默认 [hidden] { display:none }，会被
+ * 上面 .perm-link 的 display:inline-flex 作者规则覆盖（作者样式恒胜 UA 样式），
+ * 浏览器态深链按钮与降级路径文字双可见；属性选择器补回互斥。 */
+.perm-link[hidden] { display: none; }
 .perm-link-fallback {
   display: inline-flex; align-items: center; gap: 6px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;

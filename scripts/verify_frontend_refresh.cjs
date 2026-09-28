@@ -3052,6 +3052,15 @@ async function main() {
     const permBrowser = await page.evaluate(() => ({
       openBtnVisible: !document.getElementById("btn-open-system-prefs")?.hidden,
       fallbackVisible: !document.querySelector("[data-test='perm-path-fallback']")?.hidden,
+      // ISS-112：hidden 是否真的落到计算样式（见下方 record 说明）
+      openBtnDisplay: (() => {
+        const el = document.getElementById("btn-open-system-prefs");
+        return el ? getComputedStyle(el).display : null;
+      })(),
+      fallbackDisplay: (() => {
+        const el = document.querySelector("[data-test='perm-path-fallback']");
+        return el ? getComputedStyle(el).display : null;
+      })(),
       fallbackText: document.querySelector("[data-test='perm-path-fallback']")?.textContent || "",
       authChip: document.querySelector("[data-test='perm-auth-chip']")?.textContent || "",
       rescanVisible: !document.getElementById("btn-rescan")?.hidden,
@@ -3066,6 +3075,16 @@ async function main() {
         permBrowser.fallbackText.includes("完全磁盘访问") &&
         permBrowser.fakeAnchorCount === 0,
       JSON.stringify(permBrowser).slice(0, 160));
+    /* ISS-112：hidden 属性的隐藏靠 UA 默认 [hidden] { display:none }，曾被
+     * .perm-link 的 display:inline-flex 作者规则覆盖（作者样式恒胜 UA 样式），
+     * 浏览器态深链按钮与降级路径文字双可见；上面的属性级检查探测不到该缺陷，
+     * 必须断到计算样式。互斥两态：hidden 按钮 display:none；未 hidden 的
+     * fallback 保持可见——inline-flex 声明在 .perm-link-row flex 容器内被
+     * blockified，resolved 值为 flex（正向值一并钉住防反向回归）。 */
+    record("permissions-browser-perm-link-display-matches-hidden-state",
+      permBrowser.openBtnDisplay === "none" &&
+        (permBrowser.fallbackDisplay === "flex" || permBrowser.fallbackDisplay === "inline-flex"),
+      JSON.stringify({ openBtn: permBrowser.openBtnDisplay, fallback: permBrowser.fallbackDisplay }));
 
     /* ---------- ISS-002A 设置页：重扫按钮复用既有 /api/scan 入口 ----------
      * 点击后必须真实 POST /api/scan（fixture 计数 +1），并显示反馈；
@@ -3111,6 +3130,11 @@ async function main() {
     const permTauri = await tpage2.evaluate(() => ({
       openBtnVisible: !document.getElementById("btn-open-system-prefs")?.hidden,
       fallbackHidden: document.querySelector("[data-test='perm-path-fallback']")?.hidden,
+      // ISS-112：未 hidden 的按钮必须保持可见的计算 display（反向态）
+      openBtnDisplay: (() => {
+        const el = document.getElementById("btn-open-system-prefs");
+        return el ? getComputedStyle(el).display : null;
+      })(),
       authChip: document.querySelector("[data-test='perm-auth-chip']")?.textContent || "",
       note: [...document.querySelectorAll("#permissions-panel p")]
         .map((p) => p.textContent).join(" | "),
@@ -3121,6 +3145,12 @@ async function main() {
         permTauri.note.includes("授权变更不会更新已有快照") &&
         permTauri.note.includes("不代改系统权限"),
       JSON.stringify(permTauri).slice(0, 200));
+    /* ISS-112 反向态：未 hidden 的深链按钮必须保持 inline-flex 声明的
+     * resolved 可见值（flex，见浏览器态 record 注释），防止互斥规则
+     * 反向误伤可见态。 */
+    record("permissions-tauri-mock-perm-link-visible-keeps-display",
+      permTauri.openBtnDisplay === "flex" || permTauri.openBtnDisplay === "inline-flex",
+      `openBtnDisplay=${permTauri.openBtnDisplay}`);
     await tpage2.click("#btn-open-system-prefs");
     await tpage2.waitForFunction(() => (window.__tauriMock2.invokes || []).some(
       (c) => c && c.cmd === "plugin:opener|open_url"));
@@ -3159,6 +3189,11 @@ async function main() {
       const notif = document.getElementById("perm-notif-card");
       const sched = document.getElementById("perm-schedule-card");
       const badgeCls = (sel) => document.querySelector(`#perm-${sel}-card [data-test='perm-${sel}-badge']`)?.className || "";
+      // ISS-112：hidden 是否真的落到计算样式（见下方 record 说明）
+      const disp = (root, sel) => {
+        const el = root && root.querySelector(sel);
+        return el ? getComputedStyle(el).display : null;
+      };
       return {
         threeCards: !!fda && !!notif && !!sched,
         fdaBadge: fda?.querySelector("[data-test='perm-fda-badge']")?.textContent || "",
@@ -3181,6 +3216,10 @@ async function main() {
         notifOpenBtnVisible: !notif?.querySelector("[data-test='perm-notif-open-btn']")?.hidden,
         notifFallbackVisible: !notif?.querySelector("[data-test='perm-notif-path-fallback']")?.hidden,
         notifFallbackText: notif?.querySelector("[data-test='perm-notif-path-fallback']")?.textContent || "",
+        fdaOpenBtnDisplay: disp(fda, "[data-test='perm-fda-open-btn']"),
+        fdaFallbackDisplay: disp(fda, "[data-test='perm-fda-path-fallback']"),
+        notifOpenBtnDisplay: disp(notif, "[data-test='perm-notif-open-btn']"),
+        notifFallbackDisplay: disp(notif, "[data-test='perm-notif-path-fallback']"),
         fakeAnchorCount: [...(document.getElementById("permissions-hub-panel")?.querySelectorAll("a") || [])]
           .filter((a) => a.getAttribute("href")?.startsWith("x-apple.systempreferences")).length,
         scheduleGotoBtn: !!sched?.querySelector("[data-test='perm-schedule-goto-btn']"),
@@ -3217,6 +3256,17 @@ async function main() {
         permHubBrowser.notifFallbackText.includes("通知") &&
         permHubBrowser.fakeAnchorCount === 0,
       JSON.stringify(permHubBrowser).slice(0, 200));
+    /* ISS-112：与 002A 主深链同源缺陷——hidden 被 .perm-link 的
+     * display:inline-flex 作者规则覆盖，FDA/通知按钮浏览器态同样双可见；
+     * 计算样式互斥两态同前（hidden→none，未 hidden fallback→可见）。 */
+    record("perm-hub-browser-perm-link-display-matches-hidden-state",
+      permHubBrowser.fdaOpenBtnDisplay === "none" && permHubBrowser.notifOpenBtnDisplay === "none" &&
+        (permHubBrowser.fdaFallbackDisplay === "flex" || permHubBrowser.fdaFallbackDisplay === "inline-flex") &&
+        (permHubBrowser.notifFallbackDisplay === "flex" || permHubBrowser.notifFallbackDisplay === "inline-flex"),
+      JSON.stringify({
+        fdaBtn: permHubBrowser.fdaOpenBtnDisplay, fdaFb: permHubBrowser.fdaFallbackDisplay,
+        notifBtn: permHubBrowser.notifOpenBtnDisplay, notifFb: permHubBrowser.notifFallbackDisplay,
+      }));
     const permHubShot = path.join(evidenceDir, "settings-permissions-hub-1220x820.png");
     await page.screenshot({ path: permHubShot });
 
@@ -3306,8 +3356,24 @@ async function main() {
       fdaOpenBtnVisible: !document.querySelector("[data-test='perm-fda-open-btn']")?.hidden,
       fdaFallbackHidden: document.querySelector("[data-test='perm-fda-path-fallback']")?.hidden,
       notifOpenBtnVisible: !document.querySelector("[data-test='perm-notif-open-btn']")?.hidden,
+      // ISS-112：未 hidden 的按钮必须保持可见的计算 display（反向态）
+      fdaOpenBtnDisplay: (() => {
+        const el = document.querySelector("[data-test='perm-fda-open-btn']");
+        return el ? getComputedStyle(el).display : null;
+      })(),
+      notifOpenBtnDisplay: (() => {
+        const el = document.querySelector("[data-test='perm-notif-open-btn']");
+        return el ? getComputedStyle(el).display : null;
+      })(),
       denied: document.querySelector("[data-test='perm-fda-denied']")?.textContent || "",
     }));
+    /* ISS-112 反向态：未 hidden 的深链按钮必须保持 inline-flex 声明的
+     * resolved 可见值（flex，见浏览器态 record 注释），防止互斥规则
+     * 反向误伤可见态。 */
+    record("perm-hub-tauri-mock-perm-link-visible-keeps-display",
+      (permHubTauri.fdaOpenBtnDisplay === "flex" || permHubTauri.fdaOpenBtnDisplay === "inline-flex") &&
+        (permHubTauri.notifOpenBtnDisplay === "flex" || permHubTauri.notifOpenBtnDisplay === "inline-flex"),
+      JSON.stringify({ fda: permHubTauri.fdaOpenBtnDisplay, notif: permHubTauri.notifOpenBtnDisplay }));
     await tpage6.click("[data-test='perm-fda-open-btn']");
     await tpage6.waitForFunction(() => (window.__tauriMock6.invokes || []).some(
       (c) => c && c.cmd === "plugin:opener|open_url"));

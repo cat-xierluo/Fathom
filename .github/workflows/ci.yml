@@ -49,26 +49,28 @@ env:
   # (tests/test_upgrade_restore.py 安装后失败的真实旧 bundle 与数据恢复
   # 聚焦测试)；739 = 727 + 12(ISS-097
   # 升级事务聚焦测试)，727 = 720 + 7(ISS-096)，720 已含 ISS-030A/040B/040C/
-  # 037/081/090/091 批次）：ISS-116 后 814 pytest、39 API/浏览器检查、208 前端
+  # 037/081/090/091 批次）：ISS-110 后 822 pytest、39 API/浏览器检查、212 前端
   # refresh（ISS-100 起随浏览器 job 执行；ISS-111 权限分区断言 179 → 188；
   # ISS-113 更新无感化 +5：开关关闭回现状 1、后台下载呈现与取消 1、重试
   # 下载 1、downloaded ready 与确认取消 1、确认安装至 installed 1；
   # available/浏览器降级断言原地改写不计数；ISS-115 权限错误行/历史快照
   # +3、校验歧义 +2，比值断言原地更新不计数；ISS-116 分类显示 +2；
-  # ISS-114 滚动边界在 980/1220 两视口各增 4 项=208）、
+  # ISS-114 滚动边界在 980/1220 两视口各增 4 项；ISS-112 深链按钮
+# hidden 计算样式互斥断言 +4=212）、
   # cargo locked offline build +
   # 单测 67（ISS-100 起随 cargo job 执行；ISS-113 +3：settings.json 宽读
   # fail-safe、prefetch 决策分支、downloaded ready 载荷合同；ISS-113 修复
   # episode 1 +2：预下载独占门门序两钉子——持门期间 install 被拒 busy /
-  # CAS 失败放弃不扰动既有门；ISS-114 原生 mask ABI 拒绝路径 +2）=67。
+  # CAS 失败放弃不扰动既有门；ISS-114 原生 mask ABI 拒绝路径 +2；
+# ISS-110 prepare 期望 pid/导航 URL/失败话术 +3（1 项原地改写）=69。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "814"
+  EXPECTED_PYTEST_PASSED: "822"
   EXPECTED_BROWSER_PASSED: "39"
-  EXPECTED_REFRESH_PASSED: "208"
-  EXPECTED_CARGO_PASSED: "67"
+  EXPECTED_REFRESH_PASSED: "212"
+  EXPECTED_CARGO_PASSED: "69"
 
 jobs:
   pytest:
@@ -104,7 +106,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 814 项通过）
+      - name: pytest（断言 822 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh
@@ -149,7 +151,7 @@ jobs:
           npm install "playwright@${PLAYWRIGHT_VERSION}"
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" --version
 
-      - name: API/浏览器 39 项与前端 refresh 208 项检查（断言计数）
+      - name: API/浏览器 39 项与前端 refresh 212 项检查（断言计数）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
           NODE_PATH: ${{ runner.temp }}/pw/node_modules
@@ -200,7 +202,7 @@ jobs:
           cargo --version
           [ "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION" ]
 
-      - name: Cargo.lock 锁定离线构建与单测（断言 67 项通过）
+      - name: Cargo.lock 锁定离线构建与单测（断言 69 项通过）
         env:
           CARGO_PREFETCH: '1'
         run: bash scripts/ci_cargo_locked.sh

@@ -388,16 +388,39 @@ def test_probe_per_command_timeout_honored(tmp_path):
 
 
 def test_probe_output_cap_honored(tmp_path):
-    """单命令输出上限有效：1MB 噪声在 16KiB 预算下不拖垮探测。"""
+    """探测路径真实执行 16KiB 单命令输出上限，而非 256KiB 兜底。
+
+    合成候选 stdout 共输出约 32KiB：低于产品 runner 的 stdout 兜底
+    （256KiB）、高于探测预算（16KiB）；版本行在前保证输出可解析。
+    若探测 runner 未接线预算、退回 256KiB 兜底，版本探测会照常得到
+    READY——本用例即失败，以此证明生效的是 16KiB 预算本身。
+    """
     script = make_script(tmp_path, "fakecli", '''
-dd if=/dev/zero bs=1024 count=1024 2>/dev/null
 echo "1.0.0 (Fake)"
+dd if=/dev/zero bs=1024 count=32 2>/dev/null
 ''')
     budget = ar.ProbeBudget(per_command_output_cap=16 * 1024, per_command_timeout_s=3)
     t0 = time.monotonic()
     info = _detect(make_meta(tmp_path), budget=budget, path_env="",
                    extra_locations=[script], login_shell_cmd=["/bin/echo"])
     assert time.monotonic() - t0 < 6
+    assert info.availability is ar.Availability.BROKEN
+    assert "output_limit" in info.detail
+
+
+def test_probe_output_cap_covers_stderr(tmp_path):
+    """探测预算同样约束 stderr：32KiB stderr 噪声（低于 64KiB 兜底）即判失败。
+
+    stderr 超限使版本命令以 OUTPUT_LIMIT 结局失败；若探测 runner 未把
+    预算接到 stderr（仍用产品合同的 64KiB），版本探测会照常 READY。
+    """
+    script = make_script(tmp_path, "fakecli", '''
+echo "1.0.0 (Fake)"
+dd if=/dev/zero bs=1024 count=32 1>&2 2>/dev/null
+''')
+    budget = ar.ProbeBudget(per_command_output_cap=16 * 1024, per_command_timeout_s=3)
+    info = _detect(make_meta(tmp_path), budget=budget, path_env="",
+                   extra_locations=[script], login_shell_cmd=["/bin/echo"])
     assert info.availability is ar.Availability.BROKEN
     assert "output_limit" in info.detail
 

@@ -942,7 +942,14 @@ def detect_runtime(
     shell 探测一次。
     """
     budget = budget or ProbeBudget()
-    runner = runner or AgentCliRunner(liveness_watch=False)
+    runner = runner or AgentCliRunner(
+        liveness_watch=False,
+        # 方案 §3.1 探测预算：单命令输出 16 KiB，同时约束 stdout 与 stderr
+        # （登录 shell 探测同样经此 runner，受同一上限）。产品运行合同的
+        # 256 KiB/64 KiB 上限只用于探测之外的受控调用，不在这里兜底。
+        stdout_max_bytes=budget.per_command_output_cap,
+        stderr_max_bytes=budget.per_command_output_cap,
+    )
     final_deadline = deadline if deadline is not None else time.monotonic() + budget.total_timeout_s
     notes: list[str] = []
     precheck_failures: list[_ProbeFailure] = []

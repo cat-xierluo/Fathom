@@ -57,7 +57,10 @@ function createFixture() {
     // ISS-069：初始已有一项排除掩码（来源 settings），前端应原样渲染该值；
     // 硬编码空列表或默认掩码的回归会被前端检查捕获。
     exclude_names: ["*.noindex"],
-    sources: { scan_root: "default", scan_time: "settings", min_kb: "settings", free_alert_gb: "settings", exclude_names: "settings" },
+    // ISS-113：自动下载更新默认开（真实后端未持久化时 effective 值 true、
+    // 来源 default）；前端按该值分流 available 呈现与开关初始勾选。
+    auto_download_updates: true,
+    sources: { scan_root: "default", scan_time: "settings", min_kb: "settings", free_alert_gb: "settings", exclude_names: "settings", auto_download_updates: "default" },
     defaults: { scan_root: "/fixture/home", scan_time: "12:00", min_kb: 10240, free_alert_gb: 10 },  // ISS-073 夹具卫生：真实 effective_settings_view().defaults 无 exclude_names 键（ISS-069 曾多写），前端 resetToDefaults 也只消费这 4 键
     policies: { keep_daily_days: 21, keep_weekly_weeks: 8, du_timeout_s: 14400, bigfile_default_days: 7, bigfile_default_mb: 100 },
     settings_path: "/fixture/runtime/settings.json",
@@ -479,10 +482,16 @@ function createFixture() {
         // 形状校验镜像 fathom/config.py 的合同；scan_root 的存在性/目录校验
         // 依赖真实文件系统，夹具根是合成路径，只校验键与数值形状（后端
         // pytest 已覆盖完整校验矩阵）。
-        const allowed = ["scan_root", "scan_time", "min_kb", "free_alert_gb", "exclude_names"];
+        const allowed = ["scan_root", "scan_time", "min_kb", "free_alert_gb", "exclude_names", "auto_download_updates"];
         const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
         if (unknown.length) {
           return json(res, 400, { detail: `未知的配置项：${unknown.join(", ")}` });
+        }
+        // ISS-113：镜像 fathom/config.py 的 _validated_bool——严格布尔，
+        // 1/0/"false" 等 JSON 近亲一律 400（宽接收会静默改变用户意图）。
+        if (body.auto_download_updates != null
+            && typeof body.auto_download_updates !== "boolean") {
+          return json(res, 400, { detail: "auto_download_updates 必须是布尔值（true/false）" });
         }
         if (body.scan_time != null && !/^([01]\d|2[0-3]):([0-5]\d)$/.test(String(body.scan_time).trim())) {
           return json(res, 400, { detail: "scan_time 必须是 HH:MM 格式（00:00–23:59）" });
@@ -529,6 +538,14 @@ function createFixture() {
           } else {
             state.config[key] = body[key];
           }
+        }
+        // ISS-113：auto_download_updates 一经 PUT 即为 settings 来源（镜像
+        // 后端 effective_settings_view 的 sources 语义）。
+        if (body.auto_download_updates !== undefined) {
+          state.config.sources = {
+            ...state.config.sources,
+            auto_download_updates: "settings",
+          };
         }
         // ISS-016B：镜像后端——注册时间夹具恒 12:00，按保存后的 scan_time
         // 重算漂移态（差 1 分钟也是 drift），随嵌套 config 与顶层字段一起返回。
@@ -3301,12 +3318,15 @@ async function main() {
       JSON.stringify({ registerArgs: registerInvoke?.args, statusCount3, afterRegister }).slice(0, 200));
     await tpage3.close();
 
-    /* ---------- ISS-040B 应用更新：浏览器降级 + mock 桥全流程 ----------
-     * 浏览器模式（无桥）：只读降级说明，不渲染检查按钮/假入口。
-     * mock 桥：unconfigured 态状态行（含当前版本、无安装入口）；available 态
-     * 版本+notes+确认层；取消回落（不发 updater_install）；确认后
-     * updater_install 携 confirmed:true；安装成功进入「重启以完成」独立确认，
-     * 取消不发 updater_restart、再确认才携带 confirmed:true 调用。 */
+    /* ---------- ISS-040B 应用更新 + ISS-113 无感化：浏览器降级 + mock 桥全流程 ----------
+     * 浏览器模式（无桥）：只读降级说明，不渲染检查按钮/自动下载开关/假入口。
+     * mock 桥：unconfigured 态状态行（含当前版本、无安装入口）；available +
+     * 自动下载开（默认）→ 版本 + 后台下载去向一句话 + notes 收进「了解详情」；
+     * 开关关闭（PUT /api/config 落 false）→ 回 040B 现状「下载并安装」确认层
+     * 全流程（取消回落不发 updater_install；确认后 confirmed:true；阶段/字节
+     * 进度/取消边界/终态重试；安装成功「重启以完成」独立确认）；开关拨回开 →
+     * downloading 事件驱动后台下载呈现、取消/重试下载、downloaded（ready）→
+     * 「安装（需重启）」确认（复用 updater_install + confirmed:true）→ installed。 */
     await setMode("dual");
     await openPage("#/settings");
     // ISS-087：updater-panel 在「关于」section 下；切到 about 让其可见。
@@ -3316,10 +3336,12 @@ async function main() {
       note: document.querySelector("[data-test='updater-browser-note']")?.textContent || "",
       hasCheckBtn: Boolean(document.getElementById("btn-updater-check")),
       hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+      hasAutoToggle: Boolean(document.getElementById("updater-auto-download")),
     }));
     record("updater-browser-mode-readonly-degrade",
       updaterBrowser.note.includes("桌面应用的设置页") &&
-        !updaterBrowser.hasCheckBtn && !updaterBrowser.hasInstallBtn,
+        !updaterBrowser.hasCheckBtn && !updaterBrowser.hasInstallBtn &&
+        !updaterBrowser.hasAutoToggle,
       JSON.stringify(updaterBrowser).slice(0, 160));
 
     const tpage4 = await browser.newPage({ viewport: { width: 1220, height: 820 } });
@@ -3385,7 +3407,9 @@ async function main() {
         !updUnconf.hasInstall && JSON.stringify(updUnconf.checkArgs) === "{}",
       JSON.stringify(updUnconf).slice(0, 200));
 
-    // 2) available：版本 + notes + 「下载并安装」入口。
+    // 2) available + 自动下载开（默认）：状态一句话 + 版本 + 后台下载去向；
+    //    notes 收进「了解详情」折叠区（默认收起）；无手动「下载并安装」入口
+    //    （下载由壳后台进行）；自动下载开关在场且按配置勾选。
     await tpage4.evaluate(() => {
       window.__updaterCheck = { state: "available", current_version: "0.3.0",
         available_version: "0.4.0", notes: "演示版本说明" };
@@ -3397,12 +3421,38 @@ async function main() {
       status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
       available: document.querySelector("[data-test='updater-available']")?.textContent || "",
       notes: document.querySelector("[data-test='updater-notes']")?.textContent || "",
+      notesInsideDetails: Boolean(
+        document.querySelector("[data-test='updater-details'] [data-test='updater-notes']")),
+      detailsOpen: document.querySelector("[data-test='updater-details']")?.open ?? null,
       hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+      hasAutoToggle: Boolean(document.getElementById("updater-auto-download")),
+      autoToggleChecked: !!document.getElementById("updater-auto-download")?.checked,
     }));
-    record("updater-available-shows-version-and-notes",
+    record("updater-available-auto-hint-collapses-notes",
       updAvail.status.includes("0.3.0") && updAvail.available.includes("0.4.0") &&
-        updAvail.notes.includes("演示版本说明") && updAvail.hasInstallBtn,
-      JSON.stringify(updAvail).slice(0, 200));
+        updAvail.available.includes("后台下载") &&
+        updAvail.notes.includes("演示版本说明") && updAvail.notesInsideDetails &&
+        updAvail.detailsOpen === false &&
+        !updAvail.hasInstallBtn && updAvail.hasAutoToggle && updAvail.autoToggleChecked,
+      JSON.stringify(updAvail).slice(0, 240));
+
+    // 2b) ISS-113 自动下载开关关闭：经既有 PUT /api/config 落 false（夹具
+    //     生效值可查），available 呈现回 040B 现状——「下载并安装」手动入口
+    //     出现（后续 3-7 走现状全流程）。
+    await tpage4.click("#updater-auto-download");
+    await tpage4.waitForSelector("#btn-updater-install");
+    const fixtureCfg1 = (await fixtureState()).config;
+    const updToggleOff = await tpage4.evaluate(() => ({
+      toggleChecked: !!document.getElementById("updater-auto-download")?.checked,
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      available: document.querySelector("[data-test='updater-available']")?.textContent || "",
+    }));
+    record("updater-auto-toggle-off-falls-back-to-manual-install",
+      fixtureCfg1.auto_download_updates === false && !updToggleOff.toggleChecked &&
+        updToggleOff.hasInstallBtn && updToggleOff.status.includes("有可用更新") &&
+        updToggleOff.available.includes("确认"),
+      JSON.stringify({ fixture: fixtureCfg1.auto_download_updates, ...updToggleOff }).slice(0, 240));
 
     // 3) 确认层：版本可审，确认/取消都在。
     await tpage4.click("[data-test='updater-install-btn']");
@@ -3679,6 +3729,138 @@ async function main() {
     record("updater-restart-confirmed-invoke",
       restartInvoke?.args?.confirmed === true && tpage4Errors.length === 0,
       JSON.stringify(restartInvoke));
+
+    /* ---------- 8-11 ISS-113 自动下载（开关开）：后台下载 → 取消/重试 →
+     * downloaded（ready）→ 「安装（需重启）」确认（复用 updater_install +
+     * confirmed:true，六步合同不变）→ installed。下载阶段事件与取消语义
+     * 复用 ISS-102 呈现（壳后台预下载与事务内下载同载荷）。 ---------- */
+    // 8a) 开关拨回开：PUT true 落盘；重新检查回 available 后手动入口消失。
+    await tpage4.click("[data-test='updater-check-btn']");
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("有可用更新"));
+    await tpage4.waitForSelector("#btn-updater-install");  // 开关仍关：现状入口在
+    await tpage4.click("#updater-auto-download");
+    await tpage4.waitForFunction(() => !document.getElementById("btn-updater-install"));
+    const fixtureCfg2 = (await fixtureState()).config;
+
+    // 8b) downloading 事件（后台预下载载荷）：字节进度百分比 + 取消入口；
+    //     点击取消发 updater-cancel-requested；cancelled 终态后自动语境的
+    //     重试入口是「重试下载」，不出现手动「下载并安装」。
+    await tpage4Emit({ state: "downloading", current_version: "0.3.0", available_version: "0.4.0",
+      downloaded: 1024, total: 8388608, cancellable: true });
+    await tpage4Emit({ state: "downloading", current_version: "0.3.0", available_version: "0.4.0",
+      downloaded: 4194304, total: 8388608, cancellable: true });
+    const autoDl = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      percent: document.querySelector("[data-test='updater-progress']")?.getAttribute("data-percent") || "",
+      hasCancel: Boolean(document.getElementById("btn-updater-cancel")),
+    }));
+    await tpage4.click("[data-test='updater-cancel-btn']");
+    await tpage4.waitForFunction(() => (window.__tauriMock4.emits || [])
+      .some((e) => e.name === "updater-cancel-requested"));
+    await tpage4Emit({ state: "cancelled", current_version: "0.3.0", available_version: "0.4.0",
+      hint: "下载已取消；旧版本保持运行，可再次安装" });
+    const autoCancelled = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      terminal: document.querySelector("[data-test='updater-terminal']")?.textContent || "",
+      hasRetryDownload: Boolean(document.getElementById("btn-updater-retry-download")),
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+    }));
+    record("updater-auto-downloading-progress-and-cancel",
+      fixtureCfg2.auto_download_updates === true &&
+        autoDl.status.includes("正在下载更新") && autoDl.percent === "50" && autoDl.hasCancel &&
+        autoCancelled.status.includes("下载已取消") &&
+        autoCancelled.terminal.includes("旧版本保持运行") &&
+        autoCancelled.hasRetryDownload && !autoCancelled.hasInstallBtn,
+      JSON.stringify({ fixture: fixtureCfg2.auto_download_updates, autoDl, autoCancelled }).slice(0, 280));
+
+    // 8c) 重试下载 = 重新检查（壳内由开关再触发后台下载）；available 回自动
+    //     语境（无手动入口、无重试按钮）。
+    const checksBeforeRetry = await tpage4.evaluate(() =>
+      (window.__tauriMock4.invokes || []).filter((c) => c && c.cmd === "updater_check").length);
+    await tpage4.click("[data-test='updater-retry-download-btn']");
+    await tpage4.waitForFunction((before) =>
+      (window.__tauriMock4.invokes || []).filter((c) => c && c.cmd === "updater_check").length > before,
+      checksBeforeRetry);
+    const retryRes = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      hasInstallBtn: Boolean(document.getElementById("btn-updater-install")),
+      hasRetryDownload: Boolean(document.getElementById("btn-updater-retry-download")),
+    }));
+    record("updater-retry-download-rechecks-and-awaits-auto",
+      retryRes.status.includes("有可用更新") && !retryRes.hasInstallBtn &&
+        !retryRes.hasRetryDownload,
+      JSON.stringify(retryRes).slice(0, 200));
+
+    // 8d) downloaded（ready）：状态一句话 + ready 区块 + 「安装（需重启）」；
+    //     确认层取消不发 updater_install，ready 保持。
+    const installsBeforeReady = await tpage4.evaluate(() =>
+      (window.__tauriMock4.invokes || []).filter((c) => c && c.cmd === "updater_install").length);
+    await tpage4Emit({ state: "downloaded", current_version: "0.3.0", available_version: "0.4.0",
+      hint: "新版本已下载并验签；经你确认后安装，完成后重启应用生效" });
+    const readyState = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      ready: document.querySelector("[data-test='updater-ready']")?.textContent || "",
+      hasReadyBtn: Boolean(document.getElementById("btn-updater-install-ready")),
+      hasCancel: Boolean(document.getElementById("btn-updater-cancel")),
+    }));
+    await tpage4.click("[data-test='updater-install-ready-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    const readyLayer = await tpage4.evaluate(() => ({
+      text: document.querySelector("[data-test='updater-confirm']")?.textContent || "",
+      hasYes: Boolean(document.getElementById("updater-confirm-yes")),
+      hasNo: Boolean(document.getElementById("updater-confirm-no")),
+    }));
+    await tpage4.click("[data-test='updater-ready-confirm-no']");
+    await tpage4.waitForFunction(() =>
+      document.querySelector("[data-test='updater-confirm']")?.hidden === true);
+    const afterReadyNo = await tpage4.evaluate((before) => ({
+      installs: (window.__tauriMock4.invokes || [])
+        .filter((c) => c && c.cmd === "updater_install").length - before,
+      hasReadyBtn: Boolean(document.getElementById("btn-updater-install-ready")),
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+    }), installsBeforeReady);
+    record("updater-downloaded-ready-confirm-cancel-keeps-ready",
+      readyState.status.includes("已下载就绪") && readyState.status.includes("0.4.0") &&
+        readyState.ready.includes("已下载并验签") && readyState.hasReadyBtn &&
+        !readyState.hasCancel &&
+        readyLayer.text.includes("0.4.0") && readyLayer.text.includes("验签") &&
+        readyLayer.text.includes("重启") && readyLayer.hasYes && readyLayer.hasNo &&
+        afterReadyNo.installs === 0 && afterReadyNo.hasReadyBtn &&
+        afterReadyNo.status.includes("已下载就绪"),
+      JSON.stringify({ readyState, layer: readyLayer.text.slice(0, 60), afterReadyNo }).slice(0, 320));
+
+    // 8e) 确认安装：updater_install 携 confirmed:true（pending 模式事件驱动）；
+    //     preparing → installing（ready 入口消失）→ installed →「重启以完成」。
+    await tpage4.evaluate(() => { window.__installMode = "pending"; });
+    await tpage4.click("[data-test='updater-install-ready-btn']");
+    await tpage4.waitForSelector("[data-test='updater-confirm']:not([hidden])");
+    await tpage4.click("[data-test='updater-ready-confirm-yes']");
+    await tpage4.waitForFunction(() => (window.__tauriMock4.invokes || [])
+      .some((c) => c && c.cmd === "updater_install"));
+    const readyInstallInvoke = await tpage4.evaluate(() => (window.__tauriMock4.invokes || [])
+      .find((c) => c && c.cmd === "updater_install"));
+    await tpage4Emit({ state: "preparing", current_version: "0.3.0", available_version: "0.4.0" });
+    await tpage4Emit({ state: "installing", current_version: "0.3.0", available_version: "0.4.0",
+      cancellable: false, hint: "已进入安装阶段，不可取消；若安装失败将自动回滚到当前版本" });
+    const readyInstalling = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      hasReadyBtn: Boolean(document.getElementById("btn-updater-install-ready")),
+    }));
+    await tpage4Emit({ state: "installed", current_version: "0.3.0", available_version: "0.4.0",
+      hint: "更新已安装；重启应用后生效" });
+    await tpage4.waitForFunction(() =>
+      (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("重启后生效"));
+    const readyInstalled = await tpage4.evaluate(() => ({
+      status: document.querySelector("[data-test='updater-status-text']")?.textContent || "",
+      hasRestartBtn: Boolean(document.getElementById("btn-updater-restart")),
+    }));
+    record("updater-ready-install-confirmed-to-installed",
+      readyInstallInvoke?.args?.confirmed === true &&
+        readyInstalling.status.includes("正在安装更新") && !readyInstalling.hasReadyBtn &&
+        readyInstalled.status.includes("重启后生效") && readyInstalled.hasRestartBtn &&
+        tpage4Errors.length === 0,
+      JSON.stringify({ args: readyInstallInvoke?.args, readyInstalling, readyInstalled }).slice(0, 240));
     await tpage4.close();
 
     /* ---------- ISS-083 设置页信息架构收敛：打包态隐藏技术细节 ----------

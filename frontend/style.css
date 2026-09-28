@@ -1164,3 +1164,10 @@ code {
 }
 .updater-progress-fill { height: 100%; background: var(--primary); }
 .updater-progress .hint { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
+
+/* ISS-113 关于页更新区精简：默认两行内（状态一句话 + 动作行）。「自动
+ * 下载更新」开关复用 .exclude-confirm-label 既有开关形态，收在动作行
+ * 行尾（margin-left:auto），与检查/安装按钮同排；长说明由
+ * [data-test=updater-details] 的 .cfg-details 折叠承载（零新色板、零
+ * 动画依赖，键盘可达为原生 checkbox/details）。 */
+.updater-auto-label { margin-left: auto; flex: none; white-space: nowrap; }

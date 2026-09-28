@@ -203,9 +203,42 @@ fn helper_retry(app: AppHandle, state: State<'_, HelperState>) -> serde_json::Va
     }
 }
 
+/// ISS-110：计算主窗口导航目标。返回 ``(目标 URL, 同源跳过)``：
+/// - 保留当前页面的 hash 片段（如 ``#/settings``）——升级失败回滚后用户
+///   留在原页面，不因导航丢 hash「跳到主界面」；
+/// - 当前页面已是同一 ``127.0.0.1:<port>`` 源时 ``same_origin=true``：
+///   调用方跳过导航——升级失败回滚重启 helper 后端口通常未变，跳过可避免
+///   文档重载，设置页的升级失败呈现（前端内存态）与 hash 一并原样保留。
+///   首次启动（当前为 tauri 内置页，host 非 127.0.0.1）与端口变化不受影响。
+fn navigate_target_url(port: u16, current: Option<&Url>) -> (String, bool) {
+    let (fragment, same_origin) = match current {
+        Some(url) => {
+            let same_origin = url.host_str() == Some("127.0.0.1")
+                && url.port_or_known_default() == Some(port);
+            (url.fragment().unwrap_or("").to_string(), same_origin)
+        }
+        None => (String::new(), false),
+    };
+    let mut url_str = format!("http://127.0.0.1:{port}/");
+    if !fragment.is_empty() {
+        url_str.push('#');
+        url_str.push_str(&fragment);
+    }
+    (url_str, same_origin)
+}
+
 /// 导航主窗口到 ``http://127.0.0.1:<port>/``；仅在握手成功时调用。
+/// ISS-110：同源跳过 + hash 保留（见 ``navigate_target_url``）——升级失败
+/// 回滚后停留在设置页且失败原因可见，不导航到根 URL 丢上下文。
 fn navigate_main_to(window: &WebviewWindow, port: u16) -> Result<(), String> {
-    let url_str = format!("http://127.0.0.1:{}/", port);
+    let current = window.url().ok();
+    let (url_str, same_origin) = navigate_target_url(port, current.as_ref());
+    if same_origin {
+        println!(
+            "[helper] 目标 127.0.0.1:{port} 与当前页面同源；跳过导航（保留当前页面与 hash 上下文，ISS-110）"
+        );
+        return Ok(());
+    }
     let parsed = Url::parse(&url_str).map_err(|err| {
         format!("主窗口导航 URL 解析 {} 失败：{}", url_str, err)
     })?;
@@ -749,7 +782,9 @@ async fn updater_check(
 /// 下载并安装当前候选（仅经设置页确认层调用：confirmed=true 才动手）。
 /// ISS-040C 六步接线（协议状态在冻结 helper 的 upgrade-* 子命令，见上方
 /// 模块段）：确认后先 upgrade-prepare（①停写→②旧 helper 退出→③一致备份
-/// →④journal；在途扫描→明确拒绝、绝不终止），再⑤download_and_install——
+/// →④journal；在途扫描→明确拒绝、绝不终止；ISS-110：外部同服务实例
+/// （launchd 常驻服务占用端口）→ 写 journal 之前明确拒绝并给手动安装
+/// 指引，不静默、不触碰外部服务），再⑤download_and_install——
 /// 拆为 download（进度映射 UPDATER_EVENT downloading 含 downloaded/total、
 /// 下载阶段可取消）与 install（不可取消且文案明确），下载与验签都由
 /// tauri-plugin-updater 完成（minisign 验签不可关闭）；随后新 helper 身份
@@ -869,6 +904,30 @@ fn peek_prefetched_bytes(app: &AppHandle, version: &str) -> Option<Vec<u8>> {
     (cached.version == version).then(|| cached.bytes.clone())
 }
 
+/// ISS-110：upgrade-prepare 的 argv（纯函数便于单测钉合同）。壳生产形态
+/// **总是**声明本壳 helper pid（``--expected-helper-pid``；本壳无 helper、
+/// 已让位或句柄未持有时传 0）——prepare 据此在写 journal 之前检测外部同
+/// 服务实例（launchd 常驻服务占用端口）并明确拒绝（零信号、零副作用），
+/// 不再把外部常驻服务 pid 当旧 helper 处理。
+fn prepare_extra_args(
+    from_version: &str,
+    to_version: &str,
+    helper_dir: &str,
+    expected_helper_pid: u32,
+) -> Vec<String> {
+    vec![
+        "upgrade-prepare".to_string(),
+        "--from".to_string(),
+        from_version.to_string(),
+        "--to".to_string(),
+        to_version.to_string(),
+        "--helper-dir".to_string(),
+        helper_dir.to_string(),
+        "--expected-helper-pid".to_string(),
+        expected_helper_pid.to_string(),
+    ]
+}
+
 /// 单个安装事务的本体（ISS-097：仅经 ``updater_install`` 的独占门进入）。
 async fn updater_install_transaction(
     app: &AppHandle,
@@ -913,22 +972,34 @@ async fn updater_install_transaction(
     // ISS-098：附带 --helper-dir（现役 helper onedir 根）——prepare 据此在
     // N+1 替换之前把旧 bundle 副本落盘进运行根恢复区（磁盘预算不足即在
     // 此处拒绝升级，零副作用），作为 install 后失败的唯一真实恢复依据。
+    // ISS-110：附带 --expected-helper-pid（本壳 helper pid；无则 0）——
+    // 外部同服务实例（launchd 常驻服务）占用端口时 prepare 在写 journal
+    // 之前明确拒绝（kind=external_service_instance），壳据此给手动安装
+    // 指引，不静默、不触碰外部服务。
     let helper_source_dir = helper_bin
         .parent()
         .map(|dir| dir.display().to_string())
         .unwrap_or_default();
+    let expected_helper_pid = {
+        let helper_state = app.state::<HelperState>();
+        helper_state
+            .0
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref().and_then(|handle| handle.helper_pid()))
+            .unwrap_or(0)
+    };
+    let prepare_args = prepare_extra_args(
+        &update.current_version,
+        &update.version,
+        &helper_source_dir,
+        expected_helper_pid,
+    );
+    let prepare_arg_refs: Vec<&str> = prepare_args.iter().map(String::as_str).collect();
     let prepare = match run_upgrade_phase(
         &helper_bin,
         &runtime_dir,
-        &[
-            "upgrade-prepare",
-            "--from",
-            &update.current_version,
-            "--to",
-            &update.version,
-            "--helper-dir",
-            &helper_source_dir,
-        ],
+        &prepare_arg_refs,
     ) {
         Ok(payload) => payload,
         Err(err) => serde_json::json!({ "ok": false, "kind": "internal", "error": err }),
@@ -1506,7 +1577,8 @@ fn verify_new_helper(bin: &Path, expected_version: &str) -> Result<(), String> {
 }
 
 /// prepare 失败的用户话术（kind → 明确可读的恢复提示；scan_busy 必须带
-/// 「稍后重试」，对应合同①的可读失败态）。
+/// 「稍后重试」，对应合同①的可读失败态；external_service_instance 必须带
+/// 手动 DMG 安装指引，对应 ISS-110 的明确拒绝合同）。
 fn prepare_failure_hint(kind: &str) -> &'static str {
     match kind {
         "scan_busy" => "有扫描正在进行；升级未开始、未终止扫描。请等扫描完成后重试",
@@ -1514,6 +1586,11 @@ fn prepare_failure_hint(kind: &str) -> &'static str {
         "schema_refused" => "数据库版本不可信，升级被拒绝；请先处理数据文件",
         "backup" | "disk_full" => "备份失败；旧版本与旧数据未受影响，清理空间后可重试",
         "half_upgraded_state" => "存在未收口的半升级态；请先恢复（upgrade-rollback）后重试",
+        "external_service_instance" => {
+            "检测到独立的 Fathom 常驻服务正在占用服务端口（如 launchd 常驻服务）；\
+             为不终止它，升级未开始。可退出该常驻服务后重试；或手动安装：\
+             下载新版 DMG，将应用拖入「应用程序」覆盖旧版（数据保留）"
+        }
         _ => "升级准备失败；旧版本与旧数据未受影响，可重试",
     }
 }
@@ -2456,6 +2533,14 @@ mod tests {
     fn prepare_failure_hint_maps_kinds_to_recovery_copy() {
         let busy = prepare_failure_hint("scan_busy");
         assert!(busy.contains("扫描") && busy.contains("重试"));
+        // ISS-110：外部同服务实例拒绝的指引必须含手动 DMG 安装路径。
+        let external = prepare_failure_hint("external_service_instance");
+        assert!(
+            external.contains("常驻服务")
+                && external.contains("手动安装")
+                && external.contains("DMG"),
+            "external_service_instance 指引必须含常驻服务说明与手动 DMG 安装路径"
+        );
         for kind in [
             "helper_exit_timeout",
             "schema_refused",
@@ -2469,6 +2554,61 @@ mod tests {
                 "{kind} 必须有恢复提示"
             );
         }
+    }
+
+    /// ISS-110：upgrade-prepare argv 必须携带 ``--expected-helper-pid``（壳
+    /// 生产形态总是声明本壳 helper pid；本壳无 helper/已让位时 0）——
+    /// prepare 据此在写 journal 之前检测外部同服务实例并明确拒绝。
+    #[test]
+    fn prepare_extra_args_declare_expected_helper_pid() {
+        let args = prepare_extra_args("0.3.4", "0.3.5", "/tmp/helper", 4242);
+        let expected = [
+            "upgrade-prepare",
+            "--from", "0.3.4",
+            "--to", "0.3.5",
+            "--helper-dir", "/tmp/helper",
+            "--expected-helper-pid", "4242",
+        ];
+        assert_eq!(args, expected);
+        // 本壳无 helper（让位后句柄未持有子进程）→ 0：任何存活同服务实例
+        // 都非本壳所有，prepare 仍应拒绝。
+        let absent = prepare_extra_args("0.3.4", "0.3.5", "/tmp/helper", 0);
+        assert_eq!(absent.last().map(String::as_str), Some("0"));
+    }
+
+    /// ISS-110：导航目标计算——hash 保留 + 同源跳过。升级失败回滚重启
+    /// helper 后：端口未变 → 同源跳过（设置页失败呈现与 hash 原样保留）；
+    /// 端口变化或首次启动 → 导航到新端口并保留当前 hash，不丢页面上下文。
+    #[test]
+    fn navigate_target_url_keeps_hash_and_skips_same_origin() {
+        // 首次启动：当前是 tauri 内置页（host 非 127.0.0.1）→ 导航根 URL。
+        let builtin: Url = "tauri://localhost/".parse().unwrap();
+        let (url, skip) = navigate_target_url(7952, Some(&builtin));
+        assert_eq!(url, "http://127.0.0.1:7952/");
+        assert!(!skip, "非本服务源必须真实导航");
+
+        // 无当前 URL（读取失败）→ 同上。
+        let (url, skip) = navigate_target_url(7952, None);
+        assert_eq!(url, "http://127.0.0.1:7952/");
+        assert!(!skip);
+
+        // 同端口 + 设置页 hash → 同源跳过（页面不重载，上下文保留）。
+        let settings: Url = "http://127.0.0.1:7952/#/settings".parse().unwrap();
+        let (url, skip) = navigate_target_url(7952, Some(&settings));
+        assert_eq!(url, "http://127.0.0.1:7952/#/settings", "hash 必须保留");
+        assert!(skip, "同源必须跳过导航");
+
+        // 端口变化（helper 换端口）→ 导航新端口并保留 hash（不导航到根）。
+        let moved: Url = "http://127.0.0.1:7953/#/settings".parse().unwrap();
+        let (url, skip) = navigate_target_url(7952, Some(&moved));
+        assert_eq!(url, "http://127.0.0.1:7952/#/settings");
+        assert!(!skip);
+
+        // 同端口但无 hash → 同源跳过（拼不出 hash 就不附加）。
+        let plain: Url = "http://127.0.0.1:7952/".parse().unwrap();
+        let (url, skip) = navigate_target_url(7952, Some(&plain));
+        assert_eq!(url, "http://127.0.0.1:7952/");
+        assert!(skip);
     }
 
     /// ISS-040C：控制面阶段机——begin 复位/推进取消语义（下载中受理、安装

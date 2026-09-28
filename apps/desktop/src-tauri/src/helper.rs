@@ -611,6 +611,14 @@ impl HelperHandle {
             .and_then(|guard| guard.as_ref().map(|child| child.id()))
     }
 
+    /// ISS-110：本壳 helper pid 的只读读取（升级 prepare 的
+    /// ``--expected-helper-pid`` 来源）；无子进程（让位后句柄已被
+    /// wait_with_events 取走/未 adopt）时为 ``None``——壳据此传 0
+    /// （语义：本壳无 helper，任何存活同服务实例都非本壳所有）。
+    pub fn helper_pid(&self) -> Option<u32> {
+        self.own_child_pid()
+    }
+
     /// 最近一次端口耗尽信息（ISS-059）；未发生过为 ``None``。
     pub fn exhausted_info(&self) -> Option<ExhaustedInfo> {
         self.last_exhausted

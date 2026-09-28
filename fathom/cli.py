@@ -471,9 +471,10 @@ def cmd_version(_: argparse.Namespace) -> int:
 
 # --------------------------------------------- 升级协调子命令（ISS-040C）
 # 与桌面壳 updater_install 的合同：壳经冻结 helper（本入口 fathom/__main__.py）以
-# ``--runtime-dir <rt> upgrade-prepare --from N --to N+1 --helper-dir <dir>`` 等
-# argv 调用，结果以 stdout 最后一个非空行的单行 JSON 返回（诊断走 stderr），
-# 退出码 0=ok:true、1=ok:false。协议语义见 fathom/upgrade.py 模块说明。
+# ``--runtime-dir <rt> upgrade-prepare --from N --to N+1 --helper-dir <dir>
+# --expected-helper-pid <pid>`` 等 argv 调用，结果以 stdout 最后一个非空行的
+# 单行 JSON 返回（诊断走 stderr），退出码 0=ok:true、1=ok:false。协议语义见
+# fathom/upgrade.py 模块说明。
 
 
 def _frozen_helper_dir() -> str | None:
@@ -488,13 +489,19 @@ def _frozen_helper_dir() -> str | None:
 def cmd_upgrade_prepare(args: argparse.Namespace) -> int:
     """升级协调①-④：停写→旧 helper 退出→一致备份→（ISS-098 ③b 恢复材料
     落盘：旧 helper 副本 + manifest，磁盘预算不足即拒绝）→journal（协议失败
-    自动回滚，结果 JSON 的 kind 区分 scan_busy/disk_full/backup 等）。"""
+    自动回滚，结果 JSON 的 kind 区分 scan_busy/disk_full/backup 等）。
+
+    ISS-110：``--expected-helper-pid``（壳生产形态总是传；本壳无 helper 时
+    0）——prepare 在写 journal 之前据此检测外部同服务实例（launchd 常驻
+    服务占用），在位即 kind=external_service_instance 明确拒绝并给手动
+    DMG 安装指引（零信号、零副作用）。缺省（旧调用方）不做该检测。"""
     paths = upgrade.UpgradePaths.from_config()
     coord = upgrade.UpgradeCoordinator(
         paths,
         from_version=args.from_version,
         to_version=args.to_version,
         helper_dir=args.helper_dir or _frozen_helper_dir(),
+        expected_helper_pid=getattr(args, "expected_helper_pid", None),
     )
     result = coord.run_prepare()
     print(json.dumps(result, ensure_ascii=False))
@@ -619,6 +626,12 @@ def main(argv: list[str] | None = None) -> int:
         "--helper-dir", dest="helper_dir", default=None,
         help="现役 helper onedir 根（ISS-098 恢复材料来源；缺省冻结形态自动推导，"
              "开发态缺省不保存恢复材料）",
+    )
+    p.add_argument(
+        "--expected-helper-pid", dest="expected_helper_pid", type=int, default=None,
+        help="壳声明的本壳 helper pid（ISS-110；本壳无 helper 时 0）——据此在"
+             "写 journal 之前检测外部同服务实例（launchd 常驻服务占用）并明确"
+             "拒绝；缺省（旧调用方）不做该检测",
     )
     p.set_defaults(func=cmd_upgrade_prepare)
 

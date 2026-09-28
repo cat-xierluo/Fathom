@@ -1,0 +1,93 @@
+{
+  "case_id": "07-legacy-quality-unknown",
+  "category": "legacy_quality_unknown",
+  "category_label": "旧质量字段未知",
+  "description": "v6 之前旧快照：collection_status/confirmed_missing/path_unverified 为 NULL，阈值未持久化；同口径 NULL 数据集可比较，未知值如实 null 不补 0。",
+  "a": {
+    "created_at": "2026-09-10T08:00:00",
+    "root": "/synth/root",
+    "min_kb": null,
+    "exclude_names": "",
+    "collection_status": null,
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": null,
+    "path_unverified_count": null,
+    "total_kb": 60000,
+    "entries": {
+      "/synth/root": 60000,
+      "/synth/root/x": 30000
+    }
+  },
+  "b": {
+    "created_at": "2026-09-12T08:00:00",
+    "root": "/synth/root",
+    "min_kb": null,
+    "exclude_names": "",
+    "collection_status": null,
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": null,
+    "path_unverified_count": null,
+    "total_kb": 72000,
+    "entries": {
+      "/synth/root": 72000,
+      "/synth/root/x": 30000,
+      "/synth/root/y": 42000
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": 12000,
+    "kind_counts": {
+      "measured": 1,
+      "first_recorded": 0,
+      "unrecorded": 0
+    },
+    "selected": 1,
+    "total_candidates": 1,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root",
+        "kind": "measured",
+        "old_kb": 60000,
+        "new_kb": 72000,
+        "delta_kb": 12000
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [],
+    "evidence_id_of": {
+      "/synth/root": "f-001"
+    },
+    "unknown_fields_a": [
+      "collection_status",
+      "confirmed_missing_count",
+      "path_unverified_count"
+    ],
+    "unknown_fields_b": [
+      "collection_status",
+      "confirmed_missing_count",
+      "path_unverified_count"
+    ],
+    "forbid_substrings": [],
+    "assert_fields": {
+      "coverage.a.confirmed_missing_count": null,
+      "coverage.b.confirmed_missing_count": null,
+      "dataset.min_kb": null
+    }
+  },
+  "rubric": {
+    "must_state_any": [
+      "12000"
+    ],
+    "must_not_state_any": [],
+    "must_limit": true,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "采集质量未知（字段为 null 不是 0）；解读应说明覆盖信息缺失，不得假设采集完整。"
+  }
+}

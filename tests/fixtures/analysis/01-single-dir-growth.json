@@ -1,0 +1,85 @@
+{
+  "case_id": "01-single-dir-growth",
+  "category": "single_dir_growth",
+  "category_label": "单目录增长",
+  "description": "一个目录实测增长；根行与增长行同 delta 时由折叠语义由更深的子目录替换根行。",
+  "a": {
+    "created_at": "2026-09-20T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 50000,
+    "entries": {
+      "/synth/root": 50000,
+      "/synth/root/projects": 20000,
+      "/synth/root/media": 30000
+    }
+  },
+  "b": {
+    "created_at": "2026-09-21T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 81200,
+    "entries": {
+      "/synth/root": 81200,
+      "/synth/root/projects": 51200,
+      "/synth/root/media": 30000
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": 31200,
+    "kind_counts": {
+      "measured": 1,
+      "first_recorded": 0,
+      "unrecorded": 0
+    },
+    "selected": 1,
+    "total_candidates": 1,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root/projects",
+        "kind": "measured",
+        "old_kb": 20000,
+        "new_kb": 51200,
+        "delta_kb": 31200
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [],
+    "evidence_id_of": {
+      "/synth/root/projects": "f-001"
+    },
+    "unknown_fields_a": [],
+    "unknown_fields_b": [],
+    "forbid_substrings": [],
+    "assert_fields": {}
+  },
+  "rubric": {
+    "must_state_any": [
+      "31200",
+      "31,200",
+      "30.5 MB",
+      "31.2 MB"
+    ],
+    "must_not_state_any": [],
+    "must_limit": false,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "重点应引用 projects 条目（f-001）并给出 31200 KiB 增长；查看方向应指向该目录。"
+  }
+}

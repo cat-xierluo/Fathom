@@ -1,0 +1,100 @@
+{
+  "case_id": "02-multiple-independent-growths",
+  "category": "multiple_independent_growths",
+  "category_label": "多个独立增长",
+  "description": "根行与两个子目录行并存（兄弟分支各占一部分）；父子行不得相加。",
+  "a": {
+    "created_at": "2026-09-20T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 140000,
+    "entries": {
+      "/synth/root": 140000,
+      "/synth/root/alpha": 40000,
+      "/synth/root/beta": 100000
+    }
+  },
+  "b": {
+    "created_at": "2026-09-21T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 160000,
+    "entries": {
+      "/synth/root": 160000,
+      "/synth/root/alpha": 52000,
+      "/synth/root/beta": 108000
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": 20000,
+    "kind_counts": {
+      "measured": 3,
+      "first_recorded": 0,
+      "unrecorded": 0
+    },
+    "selected": 3,
+    "total_candidates": 3,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root",
+        "kind": "measured",
+        "old_kb": 140000,
+        "new_kb": 160000,
+        "delta_kb": 20000
+      },
+      {
+        "path": "/synth/root/alpha",
+        "kind": "measured",
+        "old_kb": 40000,
+        "new_kb": 52000,
+        "delta_kb": 12000
+      },
+      {
+        "path": "/synth/root/beta",
+        "kind": "measured",
+        "old_kb": 100000,
+        "new_kb": 108000,
+        "delta_kb": 8000
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [],
+    "evidence_id_of": {
+      "/synth/root": "f-001",
+      "/synth/root/alpha": "f-002",
+      "/synth/root/beta": "f-003"
+    },
+    "unknown_fields_a": [],
+    "unknown_fields_b": [],
+    "forbid_substrings": [],
+    "assert_fields": {}
+  },
+  "rubric": {
+    "must_state_any": [
+      "20000",
+      "12,000",
+      "8000"
+    ],
+    "must_not_state_any": [],
+    "must_limit": false,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "根行 20000 与子行 12000/8000 并存且互有包含；解读应逐行理解，禁止把根行与子行相加（合成 40000/32000 等新数值）。"
+  }
+}

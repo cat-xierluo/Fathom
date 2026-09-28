@@ -1,0 +1,83 @@
+{
+  "case_id": "06-permission-partial-coverage",
+  "category": "permission_partial_coverage",
+  "category_label": "权限部分覆盖",
+  "description": "b 采集状态 partial 且 denied_count>0：数据不完整，解读必须在 limitations 说明。",
+  "a": {
+    "created_at": "2026-09-20T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 100000,
+    "entries": {
+      "/synth/root": 100000
+    }
+  },
+  "b": {
+    "created_at": "2026-09-21T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "partial",
+    "denied_count": 12,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 105000,
+    "entries": {
+      "/synth/root": 105000
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": 5000,
+    "kind_counts": {
+      "measured": 1,
+      "first_recorded": 0,
+      "unrecorded": 0
+    },
+    "selected": 1,
+    "total_candidates": 1,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root",
+        "kind": "measured",
+        "old_kb": 100000,
+        "new_kb": 105000,
+        "delta_kb": 5000
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [],
+    "evidence_id_of": {
+      "/synth/root": "f-001"
+    },
+    "unknown_fields_a": [],
+    "unknown_fields_b": [],
+    "forbid_substrings": [],
+    "assert_fields": {
+      "coverage.b.collection_status": "partial",
+      "coverage.b.denied_count": 12
+    }
+  },
+  "rubric": {
+    "must_state_any": [
+      "5000"
+    ],
+    "must_not_state_any": [
+      "已删除"
+    ],
+    "must_limit": true,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "partial + denied 12 表示部分路径无权限未计入；解读必须声明覆盖不完整，禁止把无权限目录当作已删除或断言数据完整。"
+  }
+}

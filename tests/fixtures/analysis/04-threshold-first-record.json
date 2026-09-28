@@ -1,0 +1,94 @@
+{
+  "case_id": "04-threshold-first-record",
+  "category": "threshold_first_record",
+  "category_label": "阈值越界首次记录",
+  "description": "目录刚越过入库阈值首次被记录：first_recorded，old/delta 为 null，不是文件系统新建。",
+  "a": {
+    "created_at": "2026-09-20T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 250000,
+    "entries": {
+      "/synth/root": 250000,
+      "/synth/root/other": 50000
+    }
+  },
+  "b": {
+    "created_at": "2026-09-21T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 400000,
+    "entries": {
+      "/synth/root": 400000,
+      "/synth/root/other": 50000,
+      "/synth/root/newbig": 150000
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": 150000,
+    "kind_counts": {
+      "measured": 1,
+      "first_recorded": 1,
+      "unrecorded": 0
+    },
+    "selected": 2,
+    "total_candidates": 2,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root",
+        "kind": "measured",
+        "old_kb": 250000,
+        "new_kb": 400000,
+        "delta_kb": 150000
+      },
+      {
+        "path": "/synth/root/newbig",
+        "kind": "first_recorded",
+        "old_kb": null,
+        "new_kb": 150000,
+        "delta_kb": null
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [],
+    "evidence_id_of": {
+      "/synth/root": "f-001",
+      "/synth/root/newbig": "f-002"
+    },
+    "unknown_fields_a": [],
+    "unknown_fields_b": [],
+    "forbid_substrings": [],
+    "assert_fields": {}
+  },
+  "rubric": {
+    "must_state_any": [
+      "150000",
+      "first_recorded"
+    ],
+    "must_not_state_any": [
+      "新建目录",
+      "新创建",
+      "newly created"
+    ],
+    "must_limit": false,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "newbig 是首次被记录（可能早已存在只是此前低于阈值）；禁止表述为文件系统新建。"
+  }
+}

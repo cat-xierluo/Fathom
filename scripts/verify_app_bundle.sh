@@ -10,7 +10,7 @@
 #
 # 断言清单（与任务卡 §Phase 2.12 一致）：
 #   (a) 结构：Contents/Resources/helper/fathom-helper/fathom-helper 存在
-#       且可执行；Info.plist CFBundleShortVersionString == 0.3.0；
+#       且可执行；Info.plist CFBundleShortVersionString == 单一版本源动态值；
 #       bundle 内不存在 data/reports/logs 目录
 #   (b) 只读布局：启动前后 .app 指纹（find + shasum）一致
 #   (c) 含空格/中文/& 的临时目录里拷贝一份 .app 后 `open` 启动，
@@ -87,10 +87,13 @@ fi
 INFO_PLIST="$APP_PATH/Contents/Info.plist"
 if [ -f "$INFO_PLIST" ]; then
   VERSION_OUT="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST" 2>/dev/null || echo unknown)"
-  if [ "$VERSION_OUT" = "0.3.0" ]; then
-    record "a-infoplist-version" pass "CFBundleShortVersionString == 0.3.0"
+  # 版本单一源（ISS-101 发行准备修正）：预期值动态取自 fathom/__init__.py，
+  # 不再硬编码字面量（曾停留在 0.3.0，任何后续 bump 都会假红）
+  EXPECTED_VERSION="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$ROOT/fathom/__init__.py" | head -1)"
+  if [ -n "$EXPECTED_VERSION" ] && [ "$VERSION_OUT" = "$EXPECTED_VERSION" ]; then
+    record "a-infoplist-version" pass "CFBundleShortVersionString == $EXPECTED_VERSION（单一版本源）"
   else
-    record "a-infoplist-version" fail "CFBundleShortVersionString = ${VERSION_OUT}（预期 0.3.0）"
+    record "a-infoplist-version" fail "CFBundleShortVersionString = ${VERSION_OUT}（预期 ${EXPECTED_VERSION:-未知}）"
   fi
 else
   record "a-infoplist-version" fail "Info.plist 不存在"

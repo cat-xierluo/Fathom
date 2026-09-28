@@ -89,6 +89,12 @@ function createFixture() {
       return [{ ...latest, denied_count: 6, collection_status: "partial",
                 dir_count: 12 }, snapshot(1, "2026-09-12T10:00:00")];
     }
+    if (state.mode === "partial-denied-130") {
+      // ISS-115：真实历史规模的反例；130 是 du stderr 权限错误行数。
+      return [{ ...latest, denied_count: 130, vanished_count: 44,
+                collection_status: "partial", dir_count: 500 },
+              snapshot(1, "2026-09-12T10:00:00")];
+    }
     if (state.mode === "partial-vanished") {
       // ISS-002A：扫描期间消失 N 处；字段 ISS-066 落地后由 API 暴露
       return [{ ...latest, vanished_count: 4, collection_status: "partial",
@@ -2582,16 +2588,32 @@ async function main() {
     // 部分覆盖：denied_count > 0、collection_status=partial
     await setMode("partial");
     await openPage("#/overview");
-    await waitForText(page, "#overview-quality", "部分目录未读取");
+    await waitForText(page, "#overview-quality", "部分覆盖");
     const partialQuality = await page.locator("#overview-quality").textContent();
     record("state-matrix-partial-quality-shown",
-      partialQuality.includes("部分目录未读取") && partialQuality.includes("6 个"),
+      partialQuality.includes("部分覆盖") && partialQuality.includes("6 条读取受限记录") &&
+        !partialQuality.includes("6 个目录"),
       partialQuality.slice(0, 80));
     await waitForText(page, "#overview-scan-note", "读取受限");
     const partialScanNote = await page.locator("#overview-scan-note").textContent();
     record("state-matrix-partial-scan-note-shown",
-      partialScanNote.includes("读取受限") && partialScanNote.includes("6 个目录读取受限"),
+      partialScanNote.includes("6 条读取受限记录") && !partialScanNote.includes("6 个目录读取受限"),
       partialScanNote.slice(0, 80));
+    await setMode("partial-denied-130");
+    await openPage("#/overview");
+    await waitForText(page, "#overview-quality", "130 条读取受限记录");
+    const historicalCoverage = await page.evaluate(() => ({
+      quality: document.getElementById("overview-quality")?.textContent || "",
+      scan: document.getElementById("overview-scan-note")?.textContent || "",
+      detail: document.getElementById("overview-coverage-note")?.textContent || "",
+    }));
+    record("coverage-denied-130-stays-error-lines",
+      historicalCoverage.quality.includes("130 条读取受限记录") &&
+        historicalCoverage.scan.includes("130 条读取受限记录") &&
+        historicalCoverage.detail.includes("130 条读取受限记录") &&
+        historicalCoverage.detail.includes("同一路径可能出现多条") &&
+        !Object.values(historicalCoverage).join(" ").includes("130 个目录"),
+      JSON.stringify(historicalCoverage).slice(0, 180));
 
     // 首扫无日报：单快照 + 报告为空
     await setMode("single");
@@ -2774,18 +2796,17 @@ async function main() {
       coverageNote: document.getElementById("overview-coverage-note")?.textContent || "",
     }));
     record("coverage-three-classes-rendered",
-      covAll.classes.includes("权限受限") && covAll.classes.includes("6") &&
+      covAll.classes.includes("6 条读取受限记录") &&
         covAll.classes.includes("扫描期间消失") && covAll.classes.includes("4") &&
         covAll.classes.includes("排除掩码") && covAll.classes.includes("3") &&
         // 文案不冒充影响/删除（合同禁止「数量=影响」「未记录=删除」表述）
         !covAll.classes.includes("数量=影响") && !covAll.classes.includes("未记录=删除") &&
         !covAll.classes.includes("数量等于影响"),
       covAll.classes.slice(0, 160));
-    // 追加后的并存形态：旧串「6 个目录读取受限」仍在 #overview-scan-note（既有契约），
-    // 新三类计数提示在独立区块 #overview-coverage-note 内出现。
+    // 受限行数与消失目录数在同一快照中各自保留原始单位。
     record("coverage-scan-note-shows-all-three-counts",
-      covAll.scanNote.includes("6 个目录读取受限") &&
-        covAll.coverageNote.includes("6 处权限受限") &&
+      covAll.scanNote.includes("6 条读取受限记录") &&
+        covAll.coverageNote.includes("6 条读取受限记录") &&
         covAll.coverageNote.includes("4 处扫描期间消失") &&
         covAll.coverageNote.includes("3 项排除掩码"),
       `scan=${covAll.scanNote.slice(0, 80)} | cov=${covAll.coverageNote.slice(0, 80)}`);
@@ -2798,8 +2819,14 @@ async function main() {
       document.querySelector("[data-test='coverage-classes']")?.textContent || "");
     record("coverage-vanished-only-class-shown",
       covVanished.includes("扫描期间消失") && covVanished.includes("4") &&
-        !covVanished.includes("权限受限") && !covVanished.includes("排除掩码"),
+        !covVanished.includes("读取受限记录") && !covVanished.includes("排除掩码"),
       covVanished.slice(0, 120));
+    const vanishedQuality = await page.locator("#overview-quality").textContent();
+    record("coverage-vanished-only-no-zero-unread-directories",
+      vanishedQuality.includes("部分覆盖") &&
+        vanishedQuality.includes("扫描期间有目录消失") &&
+        !vanishedQuality.includes("未读取") && !vanishedQuality.includes("0 个"),
+      vanishedQuality.slice(0, 120));
 
     // 3) 仅 excluded（exclude_names 数组）：只见排除掩码 chip
     await setMode("partial-excluded");
@@ -2809,7 +2836,7 @@ async function main() {
       document.querySelector("[data-test='coverage-classes']")?.textContent || "");
     record("coverage-excluded-only-class-shown",
       covExcluded.includes("排除掩码") && covExcluded.includes("2") &&
-        !covExcluded.includes("权限受限") && !covExcluded.includes("扫描期间消失"),
+        !covExcluded.includes("读取受限记录") && !covExcluded.includes("扫描期间消失"),
       covExcluded.slice(0, 120));
 
     // 4) 字段缺失防御（vanished_count / exclude_names 不在快照里）：
@@ -2824,15 +2851,14 @@ async function main() {
       coverageNote: document.getElementById("overview-coverage-note")?.textContent || "",
     }));
     record("coverage-vanished-and-excluded-defended-to-zero",
-      covDefended.classes.includes("权限受限") && covDefended.classes.includes("6") &&
+      covDefended.classes.includes("6 条读取受限记录") &&
         !covDefended.classes.includes("扫描期间消失") &&
         !covDefended.classes.includes("排除掩码"),
       covDefended.classes.slice(0, 120));
-    // 追加后的并存形态：旧串「6 个目录读取受限」仍在 scan-note（既有契约），
-    // 新 coverage-note 只渲染权限受限 chip，不冒充消失/排除掩码计数。
+    // 缺失字段按 0 处理，不凭空出现消失/排除掩码计数。
     record("coverage-scan-note-defends-missing-fields",
-      covDefended.scanNote.includes("6 个目录读取受限") &&
-        covDefended.coverageNote.includes("权限受限") &&
+      covDefended.scanNote.includes("6 条读取受限记录") &&
+        covDefended.coverageNote.includes("读取受限记录") &&
         !covDefended.coverageNote.includes("消失") &&
         !covDefended.coverageNote.includes("排除掩码"),
       `scan=${covDefended.scanNote.slice(0, 80)} | cov=${covDefended.coverageNote.slice(0, 80)}`);
@@ -2852,8 +2878,8 @@ async function main() {
     record("coverage-full-shows-only-complete",
       covFull.quality.includes("覆盖完整") && covFull.classes === "" &&
         covFull.note.includes("完整覆盖") &&
-        !covFull.quality.includes("权限受限") && !covFull.quality.includes("扫描期间消失") &&
-        !covFull.note.includes("权限受限"),
+        !covFull.quality.includes("读取受限记录") && !covFull.quality.includes("扫描期间消失") &&
+        !covFull.note.includes("读取受限记录"),
       JSON.stringify({ q: covFull.quality.slice(0, 60), n: covFull.note.slice(0, 60) }));
 
     /* ---------- ISS-002A 设置页：浏览器降级渲染路径文字 ----------
@@ -2932,7 +2958,8 @@ async function main() {
     }));
     record("permissions-tauri-mock-shows-button-and-warning",
       permTauri.openBtnVisible && permTauri.fallbackHidden &&
-        permTauri.authChip.includes("可能未授权") &&
+        permTauri.authChip.includes("最近扫描：6 条读取受限记录") &&
+        permTauri.note.includes("授权变更不会更新已有快照") &&
         permTauri.note.includes("不代改系统权限"),
       JSON.stringify(permTauri).slice(0, 200));
     await tpage2.click("#btn-open-system-prefs");
@@ -2953,12 +2980,12 @@ async function main() {
      * GET /api/permissions（夹具：fda 默认 granted、notification=submitted、
      * coverage 引用当前模式 latest 快照）。
      * 1) 浏览器态（默认 page，无 Tauri 桥）：切到 permissions 分区——
-     *    三张权限卡存在；FDA 徽章=已授权 + partial-all 的 denied=6 /
+     *    三张权限卡存在；FDA 徽章=探测可读 + partial-all 的 denied=6 /
      *    vanished=4 / 6/40（15.0%）如实呈现；深链按钮隐藏、降级路径文字
      *    可见，不渲染假 <a>；通知徽章=已提交；后台计划卡点击「前往」
      *    切到 schedule 分区。
-     * 2) scenario=fda-denied / fda-unknown：徽章=未授权（--danger）/未知
-     *    （--muted），unknown 不伪造已授权。
+     * 2) scenario=fda-denied / fda-unknown：徽章=探测受限（--danger）/未知
+     *    （--muted），unknown 不伪造可读。
      * 3) 监控分区：交叉说明行 + 前往按钮在位、旧 #monitor-permissions-card
      *    不存在；点击前往按钮切回 permissions。
      * 4) mock 桥（tpage6）：FDA/通知深链按钮可见、fallback 隐藏，点击后
@@ -3000,17 +3027,23 @@ async function main() {
     });
     record("perm-hub-three-cards-render",
       permHubBrowser.threeCards && permHubBrowser.scheduleGotoBtn &&
-        permHubBrowser.fdaBadge.includes("已授权") && permHubBrowser.fdaBadgeCls.includes("ok") &&
+        permHubBrowser.fdaBadge.includes("探测可读") && permHubBrowser.fdaBadgeCls.includes("ok") &&
         permHubBrowser.notifBadge.includes("已提交") && permHubBrowser.notifBadgeCls.includes("ok"),
       JSON.stringify({ fda: permHubBrowser.fdaBadge, notif: permHubBrowser.notifBadge }).slice(0, 160));
     record("perm-fda-granted-badge-with-coverage-numbers",
       permHubBrowser.denied === "6" && permHubBrowser.vanished === "4" &&
         permHubBrowser.deniedLabel.includes("6 / 40") &&
         permHubBrowser.deniedLabel.includes("15.0%") &&
-        // granted 态白话说明指向「可读取保护位置」；「授权后需重新扫描才
-        // 生效」是 denied 态文案，由 perm-fda-denied-badge 用例单独钉住。
-        permHubBrowser.fdaNote.includes("保护位置"),
+        permHubBrowser.fdaNote.includes("当前服务可读取探测位置") &&
+        permHubBrowser.fdaNote.includes("不能保证扫描范围内所有路径都可读"),
       JSON.stringify({ d: permHubBrowser.denied, l: permHubBrowser.deniedLabel }).slice(0, 160));
+    record("perm-fda-old-snapshot-separate-from-current-probe",
+      permHubBrowser.fdaNote.includes("最近扫描：2026-09-13 10:00") &&
+        permHubBrowser.fdaNote.includes("授权变更不会改写旧快照") &&
+        permHubBrowser.fdaNote.includes("du 输出的权限错误行数") &&
+        permHubBrowser.deniedLabel.includes("读取受限错误（条）") &&
+        permHubBrowser.deniedLabel.includes("错误行数 / 已记录目录数"),
+      permHubBrowser.fdaNote.slice(0, 180));
     record("perm-notif-submitted-badge-and-note",
       permHubBrowser.notifBadge.includes("已提交") &&
         permHubBrowser.notifNote.includes("系统通知已提交"),
@@ -3040,7 +3073,7 @@ async function main() {
     await openPage("#/settings");
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="permissions"]')?.click());
     await page.waitForFunction(() =>
-      document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent.includes("未授权"));
+      document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent.includes("探测受限"));
     const fdaDenied = await page.evaluate(() => ({
       badge: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.textContent || "",
       cls: document.querySelector("#perm-fda-card [data-test='perm-fda-badge']")?.className || "",
@@ -3048,8 +3081,8 @@ async function main() {
         .map((p) => p.textContent).join(" | "),
     }));
     record("perm-fda-denied-badge-uses-danger-token",
-      fdaDenied.badge.includes("未授权") && fdaDenied.cls.includes("danger") &&
-        !fdaDenied.cls.includes("ok") && fdaDenied.note.includes("重新扫描才生效"),
+      fdaDenied.badge.includes("探测受限") && fdaDenied.cls.includes("danger") &&
+        !fdaDenied.cls.includes("ok") && fdaDenied.note.includes("重启后台服务并重新扫描"),
       JSON.stringify(fdaDenied).slice(0, 160));
 
     await setScenario("fda-unknown");

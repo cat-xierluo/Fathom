@@ -502,7 +502,7 @@ class TestFourMissingCases:
 
             md = self._report(conn, sid2)
             assert "## 未记录的目录" in md and str(secret) in md
-            assert "部分覆盖" in md and "权限无法统计" in md
+            assert "部分覆盖" in md and "条读取受限记录" in md
             assert "已删除" not in md
         finally:
             conn.close()
@@ -598,7 +598,9 @@ class TestISS065VanishedInReport:
             )
             out = reports.write_daily_report(conn, a2, notify_after_write=False)
             md = out.read_text(encoding="utf-8")
-            assert "3 个目录因权限无法统计" in md
+            assert "du 输出 3 条读取受限记录" in md
+            assert "无法据此判断未统计目录数量或空间大小" in md
+            assert "运行终端" not in md
             assert "扫描期间已消失" not in md
         finally:
             conn.close()
@@ -618,7 +620,7 @@ class TestISS065VanishedInReport:
             )
             out = reports.write_daily_report(conn, a2, notify_after_write=False)
             md = out.read_text(encoding="utf-8")
-            assert "2 个目录因权限无法统计" in md
+            assert "du 输出 2 条读取受限记录" in md
             assert "另有 5 个目录在扫描期间已消失" in md
         finally:
             conn.close()

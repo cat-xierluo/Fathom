@@ -20,7 +20,7 @@
 #   - PW_INSTALL=1 且提供 PLAYWRIGHT_BIN 时下载 chromium（仅 CI 冷环境）。
 #
 # 断言口径：两套结果 JSON 均必须 ok=true、failed=0、passed 等于各自期望
-# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 188，
+# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 191，
 # ISS-108 增补 5 项至 172 后，ISS-106 总览层级/五态容器再增 7 项=179：
 # ready 清态与次级图 1 + 空库等待 1 + 单快照等待 1 + 错误容器 1 +
 # 净变化根差分 1 + 无基线不伪造零 1 + 980 首屏坐标 1；
@@ -31,13 +31,15 @@
 # 后台计划引导 1、denied 三态 1、unknown 三态 1、监控交叉说明 1、交叉
 # 前往 1、mock FDA 深链 1、mock 通知深链 1、无页错误 1、denied-over 1、
 # 空库 1），另增关于页版本从 status 回填 1 项）；
+# ISS-115 再增 3 项=191：130 条错误行不冒充目录、仅消失目录时不显示
+# 0 个未读、当前探测与历史快照时间/计数分开展示。
 # verify 脚本自身任一检查失败都会以非零退出（pipefail 直通，不走门禁
 # 兜底），计数门禁只拦空跑与静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 expected="${EXPECTED_BROWSER_PASSED:-39}"
-expected_refresh="${EXPECTED_REFRESH_PASSED:-188}"
+expected_refresh="${EXPECTED_REFRESH_PASSED:-191}"
 
 if [ ! -x .runtime/bin/python ]; then
   requested_python="${FATHOM_PYTHON:-python3}"

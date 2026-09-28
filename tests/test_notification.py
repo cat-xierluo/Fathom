@@ -209,7 +209,7 @@ class TestISS003AFourStateCopy:
         _, body, _ = notify.build_notification(
             diff, 50 * 1024**3, collection_status="partial", denied_count=3
         )
-        assert "部分覆盖（3 处权限受限）" in body
+        assert "部分覆盖（3 条读取受限记录）" in body
         assert "完整" not in body
 
     def test_partial_transient_note(self):
@@ -283,7 +283,7 @@ class TestISS065VanishedInNotify:
             _diff(), None, collection_status="partial",
             denied_count=3, vanished_count=0,
         )
-        assert "部分覆盖（3 处权限受限）" in body
+        assert "部分覆盖（3 条读取受限记录）" in body
         assert "扫描期间" not in body
 
     def test_vanished_and_denied_together_listed_separately(self):
@@ -292,7 +292,7 @@ class TestISS065VanishedInNotify:
             _diff(), None, collection_status="partial",
             denied_count=2, vanished_count=5,
         )
-        assert "部分覆盖（2 处权限受限；另有 5 个目录在扫描期间已消失）" in body
+        assert "部分覆盖（2 条读取受限记录；另有 5 个目录在扫描期间已消失）" in body
 
     def test_first_snapshot_with_vanished_carries_note(self):
         """首扫通知含 vanished_count：与 ISS-003A partial 机制联动。"""
@@ -431,7 +431,7 @@ class TestISS003AWiringStates:
         finally:
             conn.close()
         script = osascript[0][2]
-        assert "部分覆盖（7 处权限受限）" in script
+        assert "部分覆盖（7 条读取受限记录）" in script
 
     def test_notify_for_snapshot_passes_partial_state(self, osascript):
         conn = db.connect()
@@ -458,7 +458,7 @@ class TestISS003AWiringStates:
             conn.close()
         script = osascript[0][2]
         assert notify.TITLE_FIRST in script
-        assert "首次快照已建立" in script and "部分覆盖（2 处权限受限）" in script
+        assert "首次快照已建立" in script and "部分覆盖（2 条读取受限记录）" in script
 
     def test_notify_first_snapshot_failure_is_silent(self, monkeypatch):
         def _boom(*a, **kw):

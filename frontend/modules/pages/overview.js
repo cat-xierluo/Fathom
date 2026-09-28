@@ -37,10 +37,10 @@ function _shortTs(iso) {
 /* 覆盖状态判定：collection_status 在 api.snapshots 里有值；fallback 到无
  * 返回结构含三类缺口计数（ISS-002A）：
  *   state: missing | partial | full
- *   denied:      权限受限位置数（denied_count，?? 0 防御缺失字段）
+ *   denied:      du stderr 权限错误行数（denied_count，?? 0 防御缺失字段）
  *   vanished:    扫描期间消失位置数（vanished_count，字段 ISS-066 落地后才存在）
  *   excluded:    排除掩码项数（exclude_names 数组长度；缺字段 0）
- * 数字仅代表"未被采集的位置数"，不求和不推比例；详见 _explainClasses。 */
+ * denied 不等于不同目录数；三类计数不求和不推比例。 */
 function _coverage(snapshot) {
   if (!snapshot) return { state: "missing", denied: 0, vanished: 0, excluded: 0 };
   const denied = snapshot.denied_count ?? 0;
@@ -65,8 +65,8 @@ function _coverage(snapshot) {
 const COV_NOTES = {
   denied: {
     label: "权限受限",
-    means: "这些目录本次未被系统授权读取；仅记录采集时被拒的位置。",
-    doesnt: "数量不代表影响大小，也无法判断真实占用。",
+    means: "最近扫描的 du 输出了读取权限错误；每条代表一行错误记录。",
+    doesnt: "同一路径可能出现多条记录；行数不等于未读取的目录数，也不代表影响大小。",
   },
   vanished: {
     label: "扫描期间消失",
@@ -93,12 +93,12 @@ function _renderCoverageClasses(coverage) {
       const note = COV_NOTES[k];
       const chipCls = k === "excluded" ? "quality-chip miss" : "quality-chip warn";
       const chipIcon = k === "excluded" ? "filter" : "alert";
-      const unit = k === "excluded" ? "项" : "处";
-      // ISS-002A 计数前置（N 处权限受限 / N 处扫描期间消失 / N 项排除掩码）：
+      const unit = k === "denied" ? "条读取受限记录" : k === "excluded" ? "项" : "处";
+      // 计数前置；denied 是错误行数，vanished 是目录数，excluded 是掩码数。
       // 验收契约要求「计数在前、类目在后」，避免读成「类目 N」被误当影响大小。
       return `<li class="cov-class">
         <span class="cov-class-head">
-          <span class="${chipCls}">${icon(chipIcon, 12)} ${counts[k]} ${unit}${escapeHtml(note.label)}</span>
+          <span class="${chipCls}">${icon(chipIcon, 12)} ${counts[k]} ${unit}${k === "denied" ? "" : escapeHtml(note.label)}</span>
         </span>
         <p class="cov-class-note">${escapeHtml(note.means)} ${escapeHtml(note.doesnt)}</p>
       </li>`;
@@ -136,13 +136,12 @@ async function loadQualityLine() {
   }
   const latest = snaps[0];
   const cov = _coverage(latest);
-  // 既有口径（ISS-028 m1 验收字符串）：保留「部分目录未读取 / N 个」字样，
-  // 避免后续回归（state-matrix-partial-quality-shown 等既有检查依赖此句）。
-  // ISS-002A 三类缺口的详细可解释文案移到独立 #overview-coverage-note 区块。
+  // 质量徽章概括最新快照；denied 是错误行数，不称不同目录数。
+  // 详细分类放在独立 #overview-coverage-note 区块。
   const covChip = cov.state === "full"
     ? `<span class="quality-chip ok">${icon("alert", 12)} 覆盖完整</span>`
     : cov.state === "partial"
-      ? `<span class="quality-chip warn">${icon("alert", 12)} 部分目录未读取（${latest.denied_count || 0} 个）</span>`
+      ? `<span class="quality-chip warn">${icon("alert", 12)} 部分覆盖${cov.denied > 0 ? `（${cov.denied} 条读取受限记录）` : cov.vanished > 0 ? "（扫描期间有目录消失）" : ""}</span>`
       : `<span class="quality-chip miss">${icon("alert", 12)} 覆盖未知</span>`;
   const rangeChip = snaps.length >= 2
     ? `<span>${escapeHtml(_shortTs(snaps[1].created_at))} → ${escapeHtml(_shortTs(latest.created_at))}</span>`
@@ -184,12 +183,9 @@ async function loadScanNote() {
     `最近扫描 ${escapeHtml(_shortTs(latest.created_at))}`,
     `目录 ${latest.dir_count || 0} 个`,
   ];
-  // 既有口径（ISS-028 m3 验收字符串）：保留「读取受限 / N 个目录读取受限」
-  // 字样，避免后续回归（state-matrix-partial-scan-note-shown 等既有检查
-  // 依赖此句）。三类缺口详细解释放到独立区块 #overview-coverage-note，
-  // 本节只在存在 denied 时追加一句紧凑提示（不替换既有文案）。
+  // 最近扫描的权限错误是 du stderr 行数，不冒充不同目录数。
   if (cov.denied > 0) {
-    parts.push(`<span class="st st-restricted">${icon("alert", 12)} ${cov.denied} 个目录读取受限</span>`);
+    parts.push(`<span class="st st-restricted">${icon("alert", 12)} ${cov.denied} 条读取受限记录</span>`);
   }
   if (cov.state === "full") {
     parts.push(`<span class="st st-ok">覆盖完整</span>`);

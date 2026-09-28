@@ -281,9 +281,8 @@ def render_markdown(
         )
     if new_meta["denied_count"]:
         lines.append(
-            f"- 注意：本次采集为部分覆盖，有 {new_meta['denied_count']} 个目录因权限无法统计"
-            "（如需覆盖 ~/Library 受保护区域，为运行终端授予「完全磁盘访问权限」），"
-            "这些目录及其子目录本次未记录"
+            f"- 注意：本次采集为部分覆盖，du 输出 {new_meta['denied_count']} 条读取受限记录；"
+            "同一路径可能产生多条错误，无法据此判断未统计目录数量或空间大小"
         )
     # ISS-065：扫描期间消失的目录单独计数（不进 denied_count）；du 列到时
     # 存在、校验时已被系统清理——既是测量期事实（KB 数保留）也是部分覆盖

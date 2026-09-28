@@ -16,6 +16,13 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - PUT  /api/config           保存用户设置（需写令牌；不注册/不重载 launchd）
 - GET  /api/permissions      权限状态总览（FDA 只读探测三态 + 最近通知状态 +
                             最近快照受限/消失引用，ISS-111）
+- POST /api/analysis/runtimes/detect   Runtime 能力检测（仅用户点击触发，ISS-035B）
+- POST /api/analysis/previews          变化解读发送预览（不可变请求，TTL 5 分钟）
+- POST /api/analysis/jobs              执行预览（只收 preview_id/digest/幂等键）
+- GET  /api/analysis/jobs/{id}         查询 job 状态（纯读无副作用）
+- POST /api/analysis/jobs/{id}/cancel  取消（终态不复活）
+- GET  /api/analyses?a=&b=             某 a→b 区间的历史解读（含过期原因）
+- DELETE /api/analyses/{id}            撤销解读（删除正文与关联事实包）
 
 本地边界合同（ISS-022，仅覆盖当前单实例 loopback 服务；发行端口/服务发现归 ISS-029）：
 
@@ -39,6 +46,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hmac
+import json
 import logging
 import os
 import re
@@ -54,7 +62,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import SERVICE_IDENTITY, __version__, __protocol_version__, bigfiles, config, db, launchd, reports, scan_coordinator
+from . import SERVICE_IDENTITY, __version__, __protocol_version__
+from . import agent_runtime
+from . import analysis_manager
+from . import bigfiles, config, db, launchd, reports, scan_coordinator
 
 # version 只从单一版本源 fathom.__version__ 读取（ISS-037）；本文件内
 # 禁止再出现硬编码语义化版本字面量，校验器会拦截。
@@ -552,6 +563,166 @@ def _get_bigfiles_manager() -> bigfiles.BigfilesManager:
     return _BIGFILES_MANAGER
 
 
+# ---------- 变化解读（ISS-035B：预览/派发/状态/取消/历史/撤销） ----------
+
+_ANALYSIS_MANAGER: analysis_manager.AnalysisManager | None = None
+_ANALYSIS_MANAGER_LOCK = threading.Lock()
+
+
+def _get_analysis_manager() -> analysis_manager.AnalysisManager:
+    """进程级单例 ``AnalysisManager``（生产路径，不注入测试参数）。
+
+    首次创建时执行启动 reconcile：遗留 starting/running/cancelling 统一
+    标 interrupted（不自动重派、不按持久化 PID 发信号）。"""
+    global _ANALYSIS_MANAGER
+    if _ANALYSIS_MANAGER is None:
+        with _ANALYSIS_MANAGER_LOCK:
+            if _ANALYSIS_MANAGER is None:
+                manager = analysis_manager.AnalysisManager()
+                manager.reconcile_startup()
+                _ANALYSIS_MANAGER = manager
+    return _ANALYSIS_MANAGER
+
+
+@app.exception_handler(analysis_manager.AnalysisError)
+async def _analysis_error_handler(request: Request,
+                                  exc: analysis_manager.AnalysisError):
+    """分析合同错误：稳定 reason_code + 可读说明，不透出 stderr/路径/凭据。
+
+    403 未启用/未配置；409 busy/预览失效/升级停写/幂等冲突/终态竞争；
+    404 未知资源；400 坏参数或数据集口径不一致。"""
+    return JSONResponse(
+        {"reason_code": exc.reason_code, "detail": str(exc)},
+        status_code=exc.status_code,
+    )
+
+
+def _analysis_body(request_json: object, allowed: set[str]) -> dict:
+    """分析端点请求体校验：必须是 JSON 对象且仅含声明字段（严格拒绝，
+    不静默忽略——静默丢弃会让调用方误以为某个字段已生效）。"""
+    if not isinstance(request_json, dict):
+        raise analysis_manager.AnalysisError(
+            "bad_request", "请求体必须是 JSON 对象", status_code=400)
+    unknown = sorted(set(request_json) - allowed)
+    if unknown:
+        raise analysis_manager.AnalysisError(
+            "bad_request", f"请求体含未知字段：{', '.join(unknown)}",
+            status_code=400)
+    return request_json
+
+
+@app.post("/api/analysis/runtimes/detect")
+async def api_analysis_detect(request: Request):
+    """Runtime 能力检测（仅用户点击触发；POST 写令牌保护）。
+
+    可选 ``{"runtime_id": ...}`` 只探测一家；缺省探测全部四家（共享
+    20 秒预算）。探测只读：不发送业务数据、不改用户 CLI 配置；结果
+    如实区分 not_found/broken/unsupported/ready，认证恒 unknown（
+    ``--version`` 成功不解释为已登录）。分析未启用也可检测（检测是
+    选择的前置）。"""
+    body: dict = {}
+    raw = await request.body()
+    if raw.strip():
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            raise analysis_manager.AnalysisError(
+                "bad_request", "请求体必须是合法 JSON", status_code=400)
+        body = _analysis_body(body, {"runtime_id"})
+    runtime_id = body.get("runtime_id")
+    if runtime_id is not None:
+        if not isinstance(runtime_id, str) or runtime_id not in agent_runtime.CANDIDATES:
+            raise analysis_manager.AnalysisError(
+                "unknown_runtime", f"未知的 Runtime ID：{runtime_id!r}",
+                status_code=400)
+        infos = {runtime_id: agent_runtime.detect_runtime(
+            agent_runtime.get_candidate(runtime_id))}
+    else:
+        infos = agent_runtime.probe_all()
+    return {"runtimes": {cid: info.to_dict() for cid, info in infos.items()}}
+
+
+@app.post("/api/analysis/previews")
+async def api_analysis_preview(request: Request):
+    """生成发送预览（方案 §4.2：预览=不可变请求，TTL 5 分钟，内存最多 8 份）。
+
+    请求体 ``{"a": int, "b": int}``。响应含完整发送文本（prompt_text）、
+    双 digest、请求范围 manifest 与 Runtime 身份；本端点零外传、零派发。"""
+    body = _analysis_body(await _request_json(request), {"a", "b"})
+    a, b = body.get("a"), body.get("b")
+    for name, value in (("a", a), ("b", b)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise analysis_manager.AnalysisError(
+                "bad_request", f"{name} 必须是快照 ID 整数", status_code=400)
+    preview = _get_analysis_manager().create_preview(a, b)
+    return preview.public_dict()
+
+
+async def _request_json(request: Request) -> object:
+    try:
+        return await request.json()
+    except ValueError:
+        raise analysis_manager.AnalysisError(
+            "bad_request", "请求体必须是合法 JSON", status_code=400)
+
+
+@app.post("/api/analysis/jobs")
+async def api_analysis_jobs(request: Request):
+    """执行预览（只收 preview_id + request_digest + idempotency_key）。
+
+    202 返回 job；幂等重放同 job；不同请求忙时 409（不排队、不自动
+    重试、不换 Runtime）；预览过期/数据或设置变化 409 要求重新预览；
+    未启用 403。请求体不接受任意 prompt/命令/cwd/executable。"""
+    body = _analysis_body(await _request_json(request),
+                          {"preview_id", "request_digest", "idempotency_key"})
+    for name in ("preview_id", "request_digest", "idempotency_key"):
+        if not isinstance(body.get(name), str) or not body.get(name).strip():
+            raise analysis_manager.AnalysisError(
+                "bad_request", f"{name} 必须是非空字符串", status_code=400)
+    job, replayed = _get_analysis_manager().start_job(
+        body["preview_id"], body["request_digest"], body["idempotency_key"])
+    return JSONResponse({"job": job, "replayed": replayed}, status_code=202)
+
+
+@app.get("/api/analysis/jobs/{job_id}")
+def api_analysis_job(job_id: str):
+    """查询 job 状态（纯读，无派发/探测/外传副作用）。"""
+    return {"job": _get_analysis_manager().job_view(job_id)}
+
+
+@app.post("/api/analysis/jobs/{job_id}/cancel")
+def api_analysis_job_cancel(job_id: str):
+    """请求取消：可经 cancelling；终态不复活（409 job_terminal，响应携带
+    最终状态——与完成竞争只有一个确定结果）。"""
+    view = _get_analysis_manager().cancel_job(job_id)
+    if view.get("terminal"):
+        return JSONResponse(
+            {"reason_code": "job_terminal",
+             "detail": "任务已结束，取消不再生效",
+             "job": view},
+            status_code=409,
+        )
+    return {"job": view}
+
+
+@app.get("/api/analyses")
+def api_analyses(a: int = Query(...), b: int = Query(...)):
+    """某 a→b 区间的历史解读（读取层评估过期；新增快照不使旧报告过期）。
+
+    每条含已保存的结构化结果与脱敏事实包（证据可回溯）；expired=true
+    附原因（snapshot_replaced/snapshot_pruned/dataset_unverifiable）。"""
+    return {"a": a, "b": b,
+            "analyses": _get_analysis_manager().list_analyses(a, b)}
+
+
+@app.delete("/api/analyses/{analysis_id}")
+def api_analysis_revoke(analysis_id: int):
+    """撤销（删除正文与关联事实包；生命周期行保留 revoked_at 审计）。
+
+    不能承诺清除 SQLite 旧页/WAL、旧备份或第三方 CLI/模型服务留存。"""
+    return _get_analysis_manager().revoke_analysis(analysis_id)
+
+
 @app.get("/api/bootstrap")
 def api_bootstrap():
     """发放写令牌（ISS-022）。守卫已保证：Host 正确，且 Origin（若有）同源或
@@ -638,6 +809,13 @@ async def api_config_put(request: Request):
         raise HTTPException(400, str(exc))
     except OSError as exc:
         raise HTTPException(500, f"settings.json 写入失败（旧文件未改动）：{exc}")
+    if "analysis" in body:
+        # ISS-035B：授权关闭/切 Runtime → 原子撤销提交资格、失效预览并
+        # 取消在途（与完成竞争只有一个确定结果，见 AnalysisManager）。
+        try:
+            _get_analysis_manager().refresh_policy()
+        except Exception:  # noqa: BLE001 - 撤销失败不阻塞设置保存的成功反馈
+            logger.exception("analysis 策略刷新失败（设置已保存）")
     config_view = _config_view_with_reload_state()
     return {
         "applied": True,
@@ -832,7 +1010,21 @@ def _shutdown_scan() -> None:
         thread.join(timeout=8)
 
 
+def _shutdown_analysis() -> None:
+    """helper 正常退出回收自有分析（ISS-035B）：cancel + 有界等待终态。
+
+    异常退出（SIGKILL 等）不依赖本钩子：runner 的父进程存活看门使 CLI
+    子任务有界退出；遗留 running 行由下次启动 reconcile 标 interrupted。"""
+    manager = _ANALYSIS_MANAGER
+    if manager is not None:
+        try:
+            manager.shutdown()
+        except Exception:  # noqa: BLE001 - 退出路径不因回收失败而挂起
+            logger.exception("analysis 关闭回收失败")
+
+
 app.router.add_event_handler("shutdown", _shutdown_scan)
+app.router.add_event_handler("shutdown", _shutdown_analysis)
 
 
 # ---------- v0.2：目录浏览器 / 日报档案 / Finder 打开 ----------

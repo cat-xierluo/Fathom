@@ -1311,6 +1311,15 @@ impl Drop for InstallActiveGuard<'_> {
     }
 }
 
+/// ISS-113 修复（审查 B1）：预下载线程开头的独占门获取序列——先 CAS，成功
+/// 才构造守卫（``InstallActiveGuard`` 仅由 CAS 成功方持有），失败返回 None
+/// 表示放弃本轮预下载。返回 None 时调用方**不得**触碰 ctl（不 begin、不释放
+/// 他人持有的门）——由此保证：预下载在途时 ``updater_install`` 被拒 busy 的
+/// 互斥真实存在，且预下载退出只释放自己抢到的门。
+fn try_begin_prefetch(ctl: &UpdaterInstallCtl) -> Option<InstallActiveGuard<'_>> {
+    ctl.try_begin_install().then(|| InstallActiveGuard(ctl))
+}
+
 /// ISS-040C：下载进度事件载荷（合同：downloading 态含 downloaded/total；
 /// total 未知时为 null，downloaded 为累计字节数）。
 fn updater_download_progress_json(
@@ -1621,8 +1630,10 @@ fn spawn_updater_startup_check(app: &AppHandle) {
 /// 检查两处调用）。决策（prefetch_plan）：
 /// - 开关关闭（settings.json 显式 false）→ 不启动，回 040B 现状；
 /// - 同版本已预下载 → 直接发 downloaded（ready）事件，不再下载；
-/// - 否则经独占门（try_begin_install）单飞启动后台下载——与安装事务互斥，
-///   在途期间 updater_install 被拒 busy（前端不并行走两条下载链）。
+/// - 否则启动后台预下载线程：线程开头先经 ``try_begin_prefetch`` 抢独占门
+///   （try_begin_install CAS）——CAS 失败（安装事务或另一轮预下载在途）即
+///   放弃本轮，成功则持门至下载结束；在途期间 updater_install 被拒 busy
+///   （前端不并行走两条下载链）。
 /// 下载全程复用既有路径：UPDATER_EVENT downloading 进度事件 + 取消经
 /// UPDATER_CANCEL_EVENT 在 poll 边界受理。完成后只发 ready 事件，**绝不
 /// 安装**——六步安装合同不变，安装仍只经 updater_install（confirmed=true）。
@@ -1682,18 +1693,31 @@ fn maybe_spawn_updater_prefetch(app: &AppHandle, status: &serde_json::Value) {
 }
 
 /// ISS-113：后台预下载线程本体（复用安装事务的下载路径与取消受理）。
-/// 完成三支：downloaded（ready，等用户安装确认）/ cancelled（候选保留，
-/// 可重试）/ failed（可重试）。任何一支都复位阶段机（清取消标志）并经
-/// ``InstallActiveGuard`` Drop 释放独占门。
+/// 审查 B1：线程开头先经 ``try_begin_prefetch`` 抢独占门——CAS 失败即放弃
+/// 本轮（安装事务或另一轮预下载在途，下一轮检查再判，不触碰 ctl）；成功则
+/// 持门至线程结束。完成三支：downloaded（ready，等用户安装确认）/
+/// cancelled（候选保留，可重试）/ failed（可重试）。任何一支都复位阶段机
+///（清取消标志）并经 ``InstallActiveGuard`` Drop 释放独占门。
 fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater::Update) {
     let handle = app.clone();
     let spawned = std::thread::Builder::new()
         .name("fathom-updater-prefetch".to_string())
         .spawn(move || {
             let ctl = handle.state::<UpdaterInstallCtl>();
-            let _gate = InstallActiveGuard(ctl.inner());
-            // 先回 Preparing 复位上一轮可能残留的取消标志，再进 Downloading
-            //（取消只应在下载进行中受理，见 handle_cancel_request）。
+            // 审查 B1：先过独占门 CAS 再触碰阶段机——失败即放弃本轮预下载
+            //（已有安装事务或另一轮预下载在途），既让「预下载在途期间
+            // updater_install 被拒 busy」的互斥真实存在，也不会在退出时释放
+            // 他人持有的门或清掉安装事务已受理的取消标志。
+            let Some(_gate) = try_begin_prefetch(ctl.inner()) else {
+                println!(
+                    "[updater] 已有下载或安装事务在途：本轮跳过后台下载 {}（下次检查再判）",
+                    update.version
+                );
+                return;
+            };
+            // 门已由本轮持有：先回 Preparing 复位上一轮可能残留的取消标志，
+            // 再进 Downloading（取消只应在下载进行中受理，见
+            // handle_cancel_request）。
             ctl.begin(UpdaterInstallPhase::Preparing);
             ctl.begin(UpdaterInstallPhase::Downloading);
             println!(
@@ -2474,6 +2498,65 @@ mod tests {
             ctl.try_begin_install(),
             "守卫 Drop（含 panic unwinding 路径）必须释放独占门，不留 busy 死锁"
         );
+        ctl.end_install();
+    }
+
+    /// ISS-113 修复（审查 B1）：预下载线程门序合同钉子一——``try_begin_prefetch``
+    /// 成功后持门独占：预下载在途（含 begin(Preparing)/begin(Downloading) 阶段
+    /// 推进全程）``updater_install`` 的 CAS 必须被拒 busy——「下载与安装互斥」
+    /// 由单测直接可验证，不再只是设计宣称。
+    #[test]
+    fn try_begin_prefetch_holds_gate_and_excludes_install() {
+        let ctl = UpdaterInstallCtl::new();
+        let Some(gate) = try_begin_prefetch(&ctl) else {
+            panic!("空闲时预下载必须能抢到独占门");
+        };
+        assert!(
+            !ctl.try_begin_install(),
+            "预下载持门期间安装事务必须被独占门拒绝（busy）"
+        );
+        // 预下载线程的阶段机推进（begin(Preparing) 清取消标志 → Downloading）
+        // 只发生在本轮持门之后；期间门仍由预下载持有。
+        ctl.begin(UpdaterInstallPhase::Preparing);
+        ctl.begin(UpdaterInstallPhase::Downloading);
+        assert!(
+            !ctl.try_begin_install(),
+            "阶段推进后门仍由预下载持有，安装事务必须继续被拒"
+        );
+        drop(gate);
+        assert!(
+            ctl.try_begin_install(),
+            "预下载结束（守卫 Drop）后安装事务必须可进入，不留 busy 死锁"
+        );
+        ctl.end_install();
+    }
+
+    /// ISS-113 修复（审查 B1）：预下载线程门序合同钉子二——独占门已被安装
+    /// 事务持有时 ``try_begin_prefetch`` CAS 失败返回 None：预下载放弃本轮且
+    /// **不触碰 ctl**——不构造守卫（此前 no-op 守卫会在 Drop 时释放他人持有
+    /// 的门）、不 begin(Preparing)（不清掉安装事务已受理的取消标志）。
+    #[test]
+    fn try_begin_prefetch_aborts_when_busy_without_touching_existing_gate() {
+        let ctl = UpdaterInstallCtl::new();
+        assert!(ctl.try_begin_install(), "前置：安装事务先持门");
+        // 安装事务（下载阶段）已受理用户取消。
+        ctl.request_cancel();
+        assert!(
+            try_begin_prefetch(&ctl).is_none(),
+            "安装事务持门期间预下载必须放弃（CAS 失败即返回 None）"
+        );
+        // 既有门未被释放：安装事务仍独占（不可再进第二个事务）。
+        assert!(
+            !ctl.try_begin_install(),
+            "预下载放弃不得释放安装事务持有的独占门"
+        );
+        // 安装事务已受理的取消标志未被清除。
+        assert!(
+            ctl.is_cancel_requested(),
+            "预下载放弃不得清除安装事务已受理的取消标志"
+        );
+        ctl.end_install();
+        assert!(ctl.try_begin_install(), "显式释放后回到空闲可进入");
         ctl.end_install();
     }
 

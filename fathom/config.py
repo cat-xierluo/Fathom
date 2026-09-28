@@ -369,7 +369,7 @@ DEFAULT_SCAN_TIME = "12:00"
 DEFAULT_AUTO_DOWNLOAD_UPDATES = True
 _SCAN_TIME_PATTERN = re.compile(r"\A([01]\d|2[0-3]):([0-5]\d)\Z")
 _SETTING_KEYS = ("scan_root", "scan_time", "min_kb", "free_alert_gb",
-                 "exclude_names", "auto_download_updates")
+                 "exclude_names", "auto_download_updates", "analysis")
 # ISS-066：du ``-I mask`` 按名字（fnmatch）跳过整棵子树；超过该数就退回
 # 逐项路径排除或考虑拆分运行根（防御性上限，避免配置层把 du argv 撑爆）。
 MAX_EXCLUDE_NAMES = 50
@@ -382,6 +382,55 @@ _SETTINGS_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
+class AnalysisSettings:
+    """变化解读（ISS-035B）的持久化设置。
+
+    - ``enabled`` 默认 False：用户入口（035C）接通前分析功能保持关闭，
+      且关闭态下 API 派发一律 403。
+    - ``runtime_*`` 三元组是「注册表 ID + 已验证绝对路径 + 能力身份」；
+      任意程序、未知 ID 在解析层拒绝（``_validated_analysis``），能力门
+      （READY/已验证版本）由 manager 在预览时以真实探测复核——settings
+      只保存用户选择，不构成能力背书。
+    - ``settings_revision``：enabled/runtime 任一实质变化时自动 +1（进程
+      内 ``update_user_settings`` 维护）；预览冻结该值，派发核对，不匹配
+      即要求重新预览。``consent_revision``：用户重新确认发送授权时由
+      调用方显式传入递增；后端只持久化与核对，不自行推断同意。
+    """
+
+    enabled: bool = False
+    runtime_id: str | None = None
+    runtime_executable: str | None = None
+    runtime_version: str | None = None
+    settings_revision: int = 0
+    consent_revision: int = 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "enabled": self.enabled,
+            "runtime_id": self.runtime_id,
+            "runtime_executable": self.runtime_executable,
+            "runtime_version": self.runtime_version,
+            "settings_revision": self.settings_revision,
+            "consent_revision": self.consent_revision,
+        }
+
+    def runtime_payload(self) -> dict[str, str] | None:
+        """Runtime 身份（公开面）；未配置返回 None。"""
+        if self.runtime_id is None or self.runtime_executable is None:
+            return None
+        return {
+            "id": self.runtime_id,
+            "executable": self.runtime_executable,
+            "version": self.runtime_version,
+        }
+
+    def identity(self) -> tuple:
+        """enabled + runtime 的实质身份（revision 变化不改变它）。"""
+        return (self.enabled, self.runtime_id, self.runtime_executable,
+                self.runtime_version)
+
+
+@dataclass(frozen=True, slots=True)
 class UserSettings:
     """已持久化的用户设置；``None`` 表示该项未持久化（按内置默认）。"""
 
@@ -391,6 +440,7 @@ class UserSettings:
     free_alert_gb: float | None = None
     exclude_names: str | None = None  # 规范串（排序去重后 ``;`` 拼接），无配置 = ""
     auto_download_updates: bool | None = None  # ISS-113；None = 未持久化 → 默认 True
+    analysis: AnalysisSettings | None = None  # ISS-035B；None = 未持久化 → 全默认关闭
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -400,6 +450,17 @@ class UserSettings:
             "free_alert_gb": self.free_alert_gb,
             "exclude_names": self.exclude_names,
             "auto_download_updates": self.auto_download_updates,
+            # analysis 落盘为 wire 形态（runtime 嵌套对象），与
+            # _validated_analysis 的解析输入一致，保证 settings.json 可回读。
+            "analysis": (
+                None if self.analysis is None
+                else {
+                    "enabled": self.analysis.enabled,
+                    "runtime": self.analysis.runtime_payload(),
+                    "settings_revision": self.analysis.settings_revision,
+                    "consent_revision": self.analysis.consent_revision,
+                }
+            ),
         }
 
 
@@ -514,6 +575,108 @@ def _validated_exclude_names(raw: object) -> str:
     )
 
 
+def _validated_analysis_fields(raw: object, *, partial: bool) -> dict[str, object]:
+    """校验 analysis 设置对象，返回已校验字段的字典（ISS-035B）。
+
+    wire 形态（settings.json / PUT body）::
+
+        {"enabled": bool,
+         "runtime": {"id": ..., "executable": ..., "version": str|null} | null,
+         "settings_revision": int >= 0, "consent_revision": int >= 0}
+
+    fail-closed 规则：
+    - 非对象、未知键一律拒绝；``partial=False``（落盘回读/整体写入）时
+      ``enabled`` 必须显式存在；``partial=True``（部分更新）时缺省键表示
+      「保持现值」，返回字典只含出现的键。
+    - ``runtime.id`` 必须是注册表已知 ID（未知 ID/相似名一律拒绝）；
+    - ``runtime.executable`` 必须是已存在的绝对路径可执行文件——任意程序、
+      相对路径、shell 片段在此拒绝；能力门（READY/已验证版本）由
+      analysis_manager 在预览时以真实探测复核，settings 不构成能力背书；
+    - revision 必须是非负整数（bool 不是整数）。
+    """
+    if not isinstance(raw, dict):
+        raise ConfigurationError(f"analysis 必须是 JSON 对象：{raw!r}")
+    allowed = {"enabled", "runtime", "settings_revision", "consent_revision"}
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ConfigurationError(f"analysis 含未知字段：{', '.join(unknown)}")
+    if not partial and "enabled" not in raw:
+        raise ConfigurationError("analysis.enabled 必须显式给出（true/false）")
+    fields: dict[str, object] = {}
+    if "enabled" in raw:
+        fields["enabled"] = _validated_bool(raw["enabled"], "analysis.enabled")
+    if "runtime" in raw:
+        runtime = raw["runtime"]
+        if runtime is None:
+            fields["runtime_id"] = None
+            fields["runtime_executable"] = None
+            fields["runtime_version"] = None
+        else:
+            if not isinstance(runtime, dict):
+                raise ConfigurationError(
+                    f"analysis.runtime 必须是 JSON 对象或 null：{runtime!r}")
+            unknown_rt = sorted(set(runtime) - {"id", "executable", "version"})
+            if unknown_rt:
+                raise ConfigurationError(
+                    f"analysis.runtime 含未知字段：{', '.join(unknown_rt)}")
+            if partial and not runtime:
+                raise ConfigurationError("analysis.runtime 不能是空对象")
+            from . import agent_runtime  # 延迟导入：config 先于包内模块初始化也可用
+            rt_id = runtime.get("id")
+            if not isinstance(rt_id, str) or not rt_id.strip():
+                raise ConfigurationError(
+                    f"analysis.runtime.id 必须是非空字符串：{rt_id!r}")
+            try:
+                agent_runtime.get_candidate(rt_id)
+            except agent_runtime.UnknownCandidateError:
+                raise ConfigurationError(
+                    f"analysis.runtime.id 不是已注册的 Runtime（拒绝任意程序）：{rt_id!r}"
+                ) from None
+            exe = runtime.get("executable")
+            if not isinstance(exe, str) or not exe.strip():
+                raise ConfigurationError(
+                    f"analysis.runtime.executable 必须是非空字符串：{exe!r}")
+            path = Path(exe).expanduser()
+            if not path.is_absolute():
+                raise ConfigurationError(
+                    f"analysis.runtime.executable 必须是绝对路径：{exe}")
+            resolved = path.resolve(strict=False)
+            if not resolved.is_file() or not os.access(resolved, os.X_OK):
+                raise ConfigurationError(
+                    "analysis.runtime.executable 必须是已存在的可执行文件："
+                    f"{resolved}")
+            version = runtime.get("version")
+            if version is not None and (
+                    not isinstance(version, str) or not version.strip()):
+                raise ConfigurationError(
+                    f"analysis.runtime.version 必须是字符串或 null：{version!r}")
+            fields["runtime_id"] = rt_id
+            fields["runtime_executable"] = str(resolved)
+            fields["runtime_version"] = version
+    for key in ("settings_revision", "consent_revision"):
+        if key in raw:
+            value = raw[key]
+            if (isinstance(value, bool) or not isinstance(value, int)
+                    or value < 0):
+                raise ConfigurationError(
+                    f"analysis.{key} 必须是非负整数：{value!r}")
+            fields[key] = value
+    return fields
+
+
+def _validated_analysis(raw: object) -> AnalysisSettings:
+    """整体形态校验（settings.json 回读 / 显式整体写入）。"""
+    fields = _validated_analysis_fields(raw, partial=False)
+    return AnalysisSettings(
+        enabled=fields.get("enabled", False),
+        runtime_id=fields.get("runtime_id"),
+        runtime_executable=fields.get("runtime_executable"),
+        runtime_version=fields.get("runtime_version"),
+        settings_revision=fields.get("settings_revision", 0),
+        consent_revision=fields.get("consent_revision", 0),
+    )
+
+
 def parse_user_settings(data: Mapping[str, object]) -> UserSettings:
     """把（部分）设置字典校验为 UserSettings；未知键或坏值 fail-closed。"""
     unknown = sorted(set(data) - set(_SETTING_KEYS))
@@ -528,6 +691,7 @@ def parse_user_settings(data: Mapping[str, object]) -> UserSettings:
         "exclude_names": _validated_exclude_names,
         "auto_download_updates": lambda raw: _validated_bool(
             raw, "auto_download_updates"),
+        "analysis": _validated_analysis,
     }
     for key, validate in validators.items():
         raw = data.get(key)
@@ -538,11 +702,29 @@ def parse_user_settings(data: Mapping[str, object]) -> UserSettings:
 def merge_user_settings(
     current: UserSettings, changes: Mapping[str, object]
 ) -> UserSettings:
-    """部分更新：只改 ``changes`` 里出现的键，其余保持 ``current``。"""
+    """部分更新：只改 ``changes`` 里出现的键，其余保持 ``current``。
+
+    ``analysis`` 键按字段部分合并（ISS-035B）：patch 里出现的字段生效、
+    缺省字段保持现值；因此「只把 enabled 关掉」不会意外丢掉已配置的
+    Runtime。patch 为空对象视为无变化。
+    """
     merged = dict(current.as_dict())
-    for key, value in parse_user_settings(changes).as_dict().items():
+    parsed = parse_user_settings({k: v for k, v in changes.items()
+                                  if k != "analysis"}).as_dict()
+    for key, value in parsed.items():
         if key in changes:
             merged[key] = value
+    if "analysis" in changes:
+        base = current.analysis if current.analysis is not None else AnalysisSettings()
+        patch = _validated_analysis_fields(changes["analysis"], partial=True)
+        merged["analysis"] = AnalysisSettings(
+            enabled=patch.get("enabled", base.enabled),
+            runtime_id=patch.get("runtime_id", base.runtime_id),
+            runtime_executable=patch.get("runtime_executable", base.runtime_executable),
+            runtime_version=patch.get("runtime_version", base.runtime_version),
+            settings_revision=patch.get("settings_revision", base.settings_revision),
+            consent_revision=patch.get("consent_revision", base.consent_revision),
+        )
     return UserSettings(**merged)  # type: ignore[arg-type]
 
 
@@ -679,11 +861,39 @@ def update_user_settings(changes: Mapping[str, object]) -> UserSettings:
 
     任一步失败：旧文件不动、进程内生效值不变（校验失败抛
     ConfigurationError，写失败抛 OSError，两者都不产生半更新状态）。
+
+    ISS-035B：``analysis`` 的 enabled/runtime 实质变化时
+    ``settings_revision`` 自动 +1（预览据此失效）；patch 显式给出的
+    ``consent_revision`` 优先保留（用户重新确认授权的入口），否则维持
+    现值。identity 未变时 revision 不动，避免无谓的预览失效。
     """
     with _SETTINGS_LOCK:
-        merged = merge_user_settings(_USER_SETTINGS, changes)
-        save_user_settings(settings_path(), merged)
-        return refresh_user_settings(merged)
+        previous = _USER_SETTINGS
+        merged_settings = merge_user_settings(_USER_SETTINGS, changes)
+        if "analysis" in changes:
+            old = previous.analysis if previous.analysis is not None else AnalysisSettings()
+            new: AnalysisSettings = merged_settings.analysis  # type: ignore[assignment]
+            bump = new.identity() != old.identity()
+            consent = new.consent_revision if new.consent_revision != old.consent_revision \
+                else old.consent_revision
+            settings_revision = (
+                old.settings_revision + 1 if bump else old.settings_revision)
+            new = AnalysisSettings(
+                enabled=new.enabled, runtime_id=new.runtime_id,
+                runtime_executable=new.runtime_executable,
+                runtime_version=new.runtime_version,
+                settings_revision=max(settings_revision, new.settings_revision),
+                consent_revision=max(consent, new.consent_revision),
+            )
+            merged_settings = replace(merged_settings, analysis=new)
+        save_user_settings(settings_path(), merged_settings)
+        return refresh_user_settings(merged_settings)
+
+
+def effective_analysis_settings() -> AnalysisSettings:
+    """当前生效的 analysis 设置；未持久化时返回全默认（关闭、无 Runtime）。"""
+    return _USER_SETTINGS.analysis if _USER_SETTINGS.analysis is not None \
+        else AnalysisSettings()
 
 
 def effective_settings_view() -> dict[str, object]:
@@ -712,6 +922,7 @@ def effective_settings_view() -> dict[str, object]:
         "auto_download_updates": (
             "settings" if settings.auto_download_updates is not None else "default"),
     }
+    analysis = effective_analysis_settings()
     return {
         "scan_root": str(_ACTIVE.scan_root),
         "scan_time": settings.scan_time or DEFAULT_SCAN_TIME,
@@ -722,6 +933,14 @@ def effective_settings_view() -> dict[str, object]:
             settings.auto_download_updates
             if settings.auto_download_updates is not None
             else DEFAULT_AUTO_DOWNLOAD_UPDATES),
+        "analysis": {
+            "enabled": analysis.enabled,
+            "runtime": analysis.runtime_payload(),
+            "settings_revision": analysis.settings_revision,
+            "consent_revision": analysis.consent_revision,
+            "source": "settings" if settings.analysis is not None else "default",
+            "defaults": {"enabled": False},
+        },
         "sources": sources,
         "defaults": {
             "scan_root": str(_ACTIVE.home_dir),

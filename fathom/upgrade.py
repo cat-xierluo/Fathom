@@ -143,7 +143,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import SERVICE_IDENTITY, __protocol_version__, config, db, scan_coordinator
+from . import SERVICE_IDENTITY, __protocol_version__
+from . import analysis_manager, config, db, scan_coordinator
 
 #: 旧 helper 优雅退出的确认时限（对齐壳侧 STOP_TIMEOUT_S=10）。
 HELPER_EXIT_TIMEOUT_S = 10.0
@@ -733,6 +734,7 @@ class UpgradeCoordinator:
         # 半成品恢复区（保存成功后的材料是恢复依据，绝不清理）。
         self._restore_saved = False
         self._lease: scan_coordinator.ScanLease | None = None
+        self._analysis_lease: analysis_manager.AnalysisLease | None = None
 
     # ------------------------------------------------- 可注入系统动作
     def _pid_alive(self, pid: int) -> bool:
@@ -841,7 +843,15 @@ class UpgradeCoordinator:
         )
 
     def _step1_quiesce(self) -> None:
-        """①停写：非阻塞取得真实扫描租约；busy→明确拒绝，绝不终止在途扫描。"""
+        """①停写：非阻塞取得真实扫描租约**与分析租约**（ISS-035B）；busy
+        → 明确拒绝，绝不终止在途扫描/在途分析。
+
+        次序不变量（同 ISS-097，扩展到分析写入）：升级方先取扫描租约、
+        再取分析租约、查残留事务、写自己的 journal；分析方（manager）
+        先取分析租约、后查 journal——「分析在跑」与「升级事务已建立」
+        不可能同时成立，journal 存在性即可在租约内可靠拒绝新分析派发
+        与结果提交。分析在途时拒绝升级（busy），由用户取消或等待收敛，
+        绝不代杀。"""
         try:
             self._lease = scan_coordinator.ScanLease.acquire(
                 self.paths.lock_path, source="upgrader"
@@ -851,6 +861,18 @@ class UpgradeCoordinator:
                 "已有扫描在进行中；为不终止在途扫描，本次升级已被拒绝。"
                 "请等扫描完成后重试",
                 kind="scan_busy",
+            ) from exc
+        try:
+            self._analysis_lease = analysis_manager.AnalysisLease.acquire(
+                analysis_manager.analysis_lock_path(self.paths.db_path),
+                source="upgrader",
+            )
+        except analysis_manager.AnalysisBusy as exc:
+            raise UpgradeRefused(
+                "已有变化解读分析在进行中；为不终止在途分析、并保证数据库"
+                "备份一致性，本次升级已被拒绝。请等分析结束（或取消它）后"
+                "重试",
+                kind="analysis_busy",
             ) from exc
 
     def _step2_old_helper_exit(self) -> None:
@@ -929,6 +951,9 @@ class UpgradeCoordinator:
         if self._lease is not None:
             self._lease.release()
             self._lease = None
+        if self._analysis_lease is not None:
+            self._analysis_lease.release()
+            self._analysis_lease = None
 
     def dispose(self) -> None:
         """幂等收尾：释放尚未释放的停写租约（测试 finally 用）。"""

@@ -438,6 +438,25 @@ os._exit(_exit_code(rc))
 '''
 
 
+def run_supervisor_command(raw_args: list[str]) -> int:
+    """看门 shim 的进程内入口（ISS-035B 冻结包接缝）。
+
+    PyInstaller 冻结 helper 下 ``sys.executable -c <源码>`` 不可用（冻结
+    解释器不认 -c）；analysis_manager 的 ``production_shim_argv_factory``
+    在 ``sys.frozen`` 时改以 ``sys.executable _agent-supervisor <参数…>``
+    启动看门——冻结 helper 自身充当 shim。本入口经 ``exec`` 执行与
+    ``-c`` 形态**同一份** ``_SUPERVISOR_SOURCE``（单一实现，禁止两份漂移），
+    argv 合同完全一致：``<deadline_s> <grace_s> <pipe_fd> -- <目标argv…>``。
+    源码以 ``os._exit`` 终止，本函数不会正常返回。
+
+    仅供该子命令调用；不构成产品功能面。
+    """
+    sys.argv = ["fathom-agent-supervisor", *raw_args]
+    code = compile(_SUPERVISOR_SOURCE, "<fathom-agent-supervisor>", "exec")
+    exec(code, {"__name__": "__fathom_supervisor__"})  # noqa: S102 - 内部固定源码
+    return 0  # 不可达：源码恒以 os._exit 终止
+
+
 def _normalize_exit_code(rc: int | None) -> int | None:
     """负返回值（被信号杀死）规范为 128+N 惯例；None 原样返回。"""
     if rc is None:

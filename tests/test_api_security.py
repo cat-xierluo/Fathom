@@ -328,10 +328,18 @@ class TestReportAndCredentialHygiene:
         assert api._WRITE_TOKEN not in caplog.text
 
     def test_no_shell_like_endpoint_added(self):
-        """本任务不提供任意 shell API：POST 路由只允许 scan/reveal 两个白名单。"""
+        """本产品不提供任意 shell API：POST 路由只允许显式白名单。
+
+        ISS-035B 加入四个分析 POST 端点（检测/预览/派发/取消）——它们只
+        接受受控载荷（检测可选 Runtime ID、预览只收快照 ID、派发只收
+        preview_id+digest+幂等键），不接受任意 prompt/命令/cwd/executable；
+        白名单外的任何新 POST 路由都应被视为合同外新增。"""
         routes = {r.path for r in api.app.routes if getattr(r, "methods", None)
                   and "POST" in r.methods}
-        assert routes == {"/api/scan", "/api/reveal"}
+        assert routes == {"/api/scan", "/api/reveal",
+                          "/api/analysis/runtimes/detect",
+                          "/api/analysis/previews", "/api/analysis/jobs",
+                          "/api/analysis/jobs/{job_id}/cancel"}
 
 
 # ---------- 静态页安全头（浏览器渲染边界的响应侧） ----------

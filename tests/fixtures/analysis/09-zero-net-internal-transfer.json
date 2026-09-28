@@ -1,0 +1,96 @@
+{
+  "case_id": "09-zero-net-internal-transfer",
+  "category": "zero_net_internal_transfer",
+  "category_label": "零净变化内部迁移",
+  "description": "根累计不变但内部一涨一缩：净变化 0，不得说「没有变化」。",
+  "a": {
+    "created_at": "2026-09-20T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 200000,
+    "entries": {
+      "/synth/root": 200000,
+      "/synth/root/team-a": 80000,
+      "/synth/root/team-b": 80000,
+      "/synth/root/shared": 40000
+    }
+  },
+  "b": {
+    "created_at": "2026-09-21T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 200000,
+    "entries": {
+      "/synth/root": 200000,
+      "/synth/root/team-a": 90000,
+      "/synth/root/team-b": 70000,
+      "/synth/root/shared": 40000
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": 0,
+    "kind_counts": {
+      "measured": 2,
+      "first_recorded": 0,
+      "unrecorded": 0
+    },
+    "selected": 2,
+    "total_candidates": 2,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root/team-a",
+        "kind": "measured",
+        "old_kb": 80000,
+        "new_kb": 90000,
+        "delta_kb": 10000
+      },
+      {
+        "path": "/synth/root/team-b",
+        "kind": "measured",
+        "old_kb": 80000,
+        "new_kb": 70000,
+        "delta_kb": -10000
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [],
+    "evidence_id_of": {
+      "/synth/root/team-a": "f-001",
+      "/synth/root/team-b": "f-002"
+    },
+    "unknown_fields_a": [],
+    "unknown_fields_b": [],
+    "forbid_substrings": [],
+    "assert_fields": {}
+  },
+  "rubric": {
+    "must_state_any": [
+      "10000",
+      "0"
+    ],
+    "must_not_state_any": [
+      "没有变化",
+      "无变化"
+    ],
+    "must_limit": false,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "净变化 0 不等于无事件；应指出 team-a/team-b 之间的内部迁移语义（一涨一缩）。"
+  }
+}

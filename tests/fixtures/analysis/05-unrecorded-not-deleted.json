@@ -1,0 +1,96 @@
+{
+  "case_id": "05-unrecorded-not-deleted",
+  "category": "unrecorded_not_deleted",
+  "category_label": "未记录非删除",
+  "description": "目录从本次记录中消失：unrecorded，new/delta 为 null；可能是跌破阈值/权限受限/移除，不构成删除证据。",
+  "a": {
+    "created_at": "2026-09-20T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 270000,
+    "entries": {
+      "/synth/root": 270000,
+      "/synth/root/gone": 120000,
+      "/synth/root/keep": 150000
+    }
+  },
+  "b": {
+    "created_at": "2026-09-21T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 150000,
+    "entries": {
+      "/synth/root": 150000,
+      "/synth/root/keep": 150000
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": -120000,
+    "kind_counts": {
+      "measured": 1,
+      "first_recorded": 0,
+      "unrecorded": 1
+    },
+    "selected": 2,
+    "total_candidates": 2,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root",
+        "kind": "measured",
+        "old_kb": 270000,
+        "new_kb": 150000,
+        "delta_kb": -120000
+      },
+      {
+        "path": "/synth/root/gone",
+        "kind": "unrecorded",
+        "old_kb": 120000,
+        "new_kb": null,
+        "delta_kb": null
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [],
+    "evidence_id_of": {
+      "/synth/root": "f-001",
+      "/synth/root/gone": "f-002"
+    },
+    "unknown_fields_a": [],
+    "unknown_fields_b": [],
+    "forbid_substrings": [],
+    "assert_fields": {}
+  },
+  "rubric": {
+    "must_state_any": [
+      "120000",
+      "未记录"
+    ],
+    "must_not_state_any": [
+      "已删除",
+      "删除了",
+      "被删除",
+      "已移除",
+      "safe to delete"
+    ],
+    "must_limit": false,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "gone 未记录的确切原因数据无法区分（阈值/权限/移除），必须按 unrecorded 语义表述，禁止以肯定语气主张已删除；否定语境的引用（如「不能表述为已删除」）不算命中。"
+  }
+}

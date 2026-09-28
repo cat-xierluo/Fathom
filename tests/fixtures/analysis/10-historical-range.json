@@ -1,0 +1,106 @@
+{
+  "case_id": "10-historical-range",
+  "category": "historical_range",
+  "category_label": "历史区间",
+  "description": "a/b 是历史两个快照（中间还有一个不参与对比的快照）：事实包只含 a/b 数据，中间快照不得混入。",
+  "a": {
+    "created_at": "2026-09-01T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 100000,
+    "entries": {
+      "/synth/root": 100000,
+      "/synth/root/m": 60000
+    }
+  },
+  "b": {
+    "created_at": "2026-09-03T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 131072,
+    "entries": {
+      "/synth/root": 131072,
+      "/synth/root/m": 91072
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": 31072,
+    "kind_counts": {
+      "measured": 1,
+      "first_recorded": 0,
+      "unrecorded": 0
+    },
+    "selected": 1,
+    "total_candidates": 1,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root/m",
+        "kind": "measured",
+        "old_kb": 60000,
+        "new_kb": 91072,
+        "delta_kb": 31072
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [],
+    "evidence_id_of": {
+      "/synth/root/m": "f-001"
+    },
+    "unknown_fields_a": [],
+    "unknown_fields_b": [],
+    "forbid_substrings": [
+      "2026-09-02"
+    ],
+    "assert_fields": {
+      "a.created_at": "2026-09-01T08:00:00",
+      "b.created_at": "2026-09-03T08:00:00"
+    }
+  },
+  "rubric": {
+    "must_state_any": [
+      "31072",
+      "2026-09-01",
+      "2026-09-03"
+    ],
+    "must_not_state_any": [],
+    "must_limit": false,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "解读针对 a→b 历史区间；夹具库中另有 09-02 快照，其数据不得出现在事实包或解读中。"
+  },
+  "extra_snapshots": [
+    {
+      "created_at": "2026-09-02T08:00:00",
+      "root": "/synth/root",
+      "min_kb": 1024,
+      "exclude_names": "",
+      "collection_status": "full",
+      "denied_count": 0,
+      "vanished_count": 0,
+      "confirmed_missing_count": 0,
+      "path_unverified_count": 0,
+      "total_kb": 110000,
+      "entries": {
+        "/synth/root": 110000,
+        "/synth/root/m": 60000,
+        "/synth/root/k": 50000
+      }
+    }
+  ]
+}

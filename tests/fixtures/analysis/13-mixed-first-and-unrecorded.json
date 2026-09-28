@@ -1,0 +1,111 @@
+{
+  "case_id": "13-mixed-first-and-unrecorded",
+  "category": "mixed_first_and_unrecorded",
+  "category_label": "首次记录与未记录混合",
+  "description": "同一区间既有首次记录（fresh）也有未记录（drop）：两种语义并存且各不相同。",
+  "a": {
+    "created_at": "2026-09-20T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 300000,
+    "entries": {
+      "/synth/root": 300000,
+      "/synth/root/media": 120000,
+      "/synth/root/old-media": 80000
+    }
+  },
+  "b": {
+    "created_at": "2026-09-21T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 350000,
+    "entries": {
+      "/synth/root": 350000,
+      "/synth/root/media": 150000,
+      "/synth/root/fresh-media": 200000
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": 50000,
+    "kind_counts": {
+      "measured": 2,
+      "first_recorded": 1,
+      "unrecorded": 1
+    },
+    "selected": 4,
+    "total_candidates": 4,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root",
+        "kind": "measured",
+        "old_kb": 300000,
+        "new_kb": 350000,
+        "delta_kb": 50000
+      },
+      {
+        "path": "/synth/root/fresh-media",
+        "kind": "first_recorded",
+        "old_kb": null,
+        "new_kb": 200000,
+        "delta_kb": null
+      },
+      {
+        "path": "/synth/root/old-media",
+        "kind": "unrecorded",
+        "old_kb": 80000,
+        "new_kb": null,
+        "delta_kb": null
+      },
+      {
+        "path": "/synth/root/media",
+        "kind": "measured",
+        "old_kb": 120000,
+        "new_kb": 150000,
+        "delta_kb": 30000
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [],
+    "evidence_id_of": {
+      "/synth/root": "f-001",
+      "/synth/root/fresh-media": "f-002",
+      "/synth/root/old-media": "f-003",
+      "/synth/root/media": "f-004"
+    },
+    "unknown_fields_a": [],
+    "unknown_fields_b": [],
+    "forbid_substrings": [],
+    "assert_fields": {}
+  },
+  "rubric": {
+    "must_state_any": [
+      "50000",
+      "200000",
+      "80000"
+    ],
+    "must_not_state_any": [
+      "已删除",
+      "新建目录"
+    ],
+    "must_limit": false,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "fresh 是首次记录非新建；old-media 未记录非删除；两种语义必须区分表述。"
+  }
+}

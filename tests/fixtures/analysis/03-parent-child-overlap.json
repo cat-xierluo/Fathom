@@ -1,0 +1,98 @@
+{
+  "case_id": "03-parent-child-overlap",
+  "category": "parent_child_overlap",
+  "category_label": "父子重叠",
+  "description": "父目录增长中只有一部分来自已入选子目录（兄弟分支并存），父子两行同时入选且互有包含。",
+  "a": {
+    "created_at": "2026-09-20T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 100000,
+    "entries": {
+      "/synth/root": 100000,
+      "/synth/root/big": 60000,
+      "/synth/root/big/data": 58500
+    }
+  },
+  "b": {
+    "created_at": "2026-09-21T08:00:00",
+    "root": "/synth/root",
+    "min_kb": 1024,
+    "exclude_names": "",
+    "collection_status": "full",
+    "denied_count": 0,
+    "vanished_count": 0,
+    "confirmed_missing_count": 0,
+    "path_unverified_count": 0,
+    "total_kb": 105000,
+    "entries": {
+      "/synth/root": 105000,
+      "/synth/root/big": 65000,
+      "/synth/root/big/data": 60000
+    }
+  },
+  "expect": {
+    "build_rejected": false,
+    "reject_reason_code": null,
+    "net_delta_kb": 5000,
+    "kind_counts": {
+      "measured": 2,
+      "first_recorded": 0,
+      "unrecorded": 0
+    },
+    "selected": 2,
+    "total_candidates": 2,
+    "omitted": 0,
+    "utf8_truncated": false,
+    "must_contain": [
+      {
+        "path": "/synth/root/big",
+        "kind": "measured",
+        "old_kb": 60000,
+        "new_kb": 65000,
+        "delta_kb": 5000
+      },
+      {
+        "path": "/synth/root/big/data",
+        "kind": "measured",
+        "old_kb": 58500,
+        "new_kb": 60000,
+        "delta_kb": 1500
+      }
+    ],
+    "must_not_contain_paths": [],
+    "overlap_pairs": [
+      [
+        "f-001",
+        "f-002"
+      ]
+    ],
+    "evidence_id_of": {
+      "/synth/root/big": "f-001",
+      "/synth/root/big/data": "f-002"
+    },
+    "unknown_fields_a": [],
+    "unknown_fields_b": [],
+    "forbid_substrings": [],
+    "assert_fields": {}
+  },
+  "rubric": {
+    "must_state_any": [
+      "5000",
+      "1500"
+    ],
+    "must_not_state_any": [
+      "6500"
+    ],
+    "must_limit": false,
+    "should_findings": true,
+    "should_inspect_next": true,
+    "notes": "父行 5000 与子行 1500 并存（3500 来自 data 之外的兄弟分支）；禁止输出 5000+1500=6500 的合并数值。"
+  }
+}

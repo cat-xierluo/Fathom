@@ -1136,7 +1136,8 @@ async function main() {
       aboutText.includes("Fathom") &&
         aboutText.includes("Apache-2.0") &&
         aboutText.includes("cat-xierluo/Fathom") &&
-        aboutText.includes("Copyright 2026 maoking") &&
+        // 09-27 走查裁决：作者实名 + 微信（Folia 模式），替换原 Copyright 行
+        aboutText.includes("杨卫薪律师") && aboutText.includes("ywxlaw") &&
         brandImgStructureOk(aboutBrand) && aboutBrand.naturalWidth >= 64,
       JSON.stringify(aboutBrand));
     // 关于区应包含检查更新面板（来自 settings.js 的 updater 面板，挂 #settings-about-extra）
@@ -1182,7 +1183,7 @@ async function main() {
     const meta = aboutMetaState.items;
     const keyXs = meta.map((m) => m.keyX);
     record("iss108-about-meta-key-value-paired-per-row",
-      meta.length === 4 &&
+      meta.length === 5 &&
         meta.every((m) => m.childCount === 2) &&
         Math.max(...keyXs) - Math.min(...keyXs) < 2 &&
         meta.every((m) => Math.abs(m.keyY - m.valY) < 6) &&
@@ -1222,7 +1223,7 @@ async function main() {
     const meta980 = aboutMetaState980.items;
     const keyXs980 = meta980.map((m) => m.keyX);
     record("iss108-about-meta-aligned-at-980-no-overflow",
-      meta980.length === 4 &&
+      meta980.length === 5 &&
         meta980.every((m) => m.childCount === 2) &&
         Math.max(...keyXs980) - Math.min(...keyXs980) < 2 &&
         meta980.every((m) => Math.abs(m.keyY - m.valY) < 6) &&

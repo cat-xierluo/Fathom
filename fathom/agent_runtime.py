@@ -668,11 +668,16 @@ class AgentCliRunner:
     def _terminate_group(self, proc: subprocess.Popen) -> bool:
         """SIGTERM → 宽限 → SIGKILL 回收自建进程组；终态前 reap 并确认组消失。"""
         pgid = proc.pid  # start_new_session 下 pid 即 pgid
+        # macOS 对「子进程组已退出但尚未 reap」的组发信号返回 EPERM：
+        # 此时组内已无存活进程，按组已消失继续，不放大为运行失败
+        # （仅 PermissionError；其余 OSError 原样上抛，不吞真异常）。
         if proc.poll() is None:
             try:
                 os.killpg(pgid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+            except PermissionError as exc:
+                _LOG.debug("killpg SIGTERM EPERM（组已退出未 reap）pgid=%s：%s", pgid, exc)
             stop = time.monotonic() + self._term_grace_s
             while proc.poll() is None and time.monotonic() < stop:
                 time.sleep(0.02)
@@ -681,6 +686,8 @@ class AgentCliRunner:
                     os.killpg(pgid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+                except PermissionError as exc:
+                    _LOG.debug("killpg SIGKILL EPERM（组已退出未 reap）pgid=%s：%s", pgid, exc)
         try:
             proc.wait(timeout=10.0)  # reap 直接子进程，防僵尸
         except subprocess.TimeoutExpired:

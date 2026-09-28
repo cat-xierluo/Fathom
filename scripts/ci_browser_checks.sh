@@ -20,7 +20,7 @@
 #   - PW_INSTALL=1 且提供 PLAYWRIGHT_BIN 时下载 chromium（仅 CI 冷环境）。
 #
 # 断言口径：两套结果 JSON 均必须 ok=true、failed=0、passed 等于各自期望
-# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 193，
+# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 198，
 # ISS-108 增补 5 项至 172 后，ISS-106 总览层级/五态容器再增 7 项=179：
 # ready 清态与次级图 1 + 空库等待 1 + 单快照等待 1 + 错误容器 1 +
 # 净变化根差分 1 + 无基线不伪造零 1 + 980 首屏坐标 1；
@@ -30,20 +30,29 @@
 # 版本（6 → 14：三卡与徽章 1、granted 数字占比 1、通知徽章 1、降级 1、
 # 后台计划引导 1、denied 三态 1、unknown 三态 1、监控交叉说明 1、交叉
 # 前往 1、mock FDA 深链 1、mock 通知深链 1、无页错误 1、denied-over 1、
-# 空库 1），另增关于页版本从 status 回填 1 项）；
-# ISS-115 再增 3 项=191：130 条错误行不冒充目录、仅路径校验未确认时不显示
+# 空库 1），另增关于页版本从 status 回填 1 项；
+# ISS-113 再增 5 项=193：available+自动下载开断言原地改写（自动下载去向
+# 一句话 + notes 收进「了解详情」折叠区 + 无手动安装入口 + 开关在场勾选，
+# 计数不变），另增 5 项——开关关闭回 040B 现状（PUT /api/config 落 false
+# +「下载并安装」手动入口出现）1、downloading 事件驱动后台下载呈现（字节
+# 进度百分比 + 取消 + cancelled 终态后「重试下载」而非手动安装）1、重试
+# 下载 = 重新检查回自动语境 1、downloaded（ready）一句话 + ready 区块 +
+# 「安装（需重启）」确认层取消不发 updater_install 且 ready 保持 1、
+# 确认安装 confirmed:true → preparing/installing → installed「重启以完成」
+# 1；浏览器降级断言原地补「无自动下载开关」（计数不变））；
+# ISS-115 再增 3 项=196：130 条错误行不冒充目录、仅路径校验未确认时不显示
 # 0 个未读、当前探测与历史快照时间/计数分开展示。
-# ISS-115 复审再增 2 项=193：无法访问路径也可能被归入 vanished，
+# ISS-115 复审再增 2 项=198：无法访问路径也可能被归入 vanished，
 # 总览与权限页均不能据此断言目录已消失。
 # ISS-115 再将现有 3 项权限卡断言改为只验原始条数（低于/高于分母与零值），
-# 移除行数/目录数的比例或倍数展示；检查总数仍为 193。
+# 移除行数/目录数的比例或倍数展示；检查总数为 198。
 # verify 脚本自身任一检查失败都会以非零退出（pipefail 直通，不走门禁
 # 兜底），计数门禁只拦空跑与静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 expected="${EXPECTED_BROWSER_PASSED:-39}"
-expected_refresh="${EXPECTED_REFRESH_PASSED:-193}"
+expected_refresh="${EXPECTED_REFRESH_PASSED:-198}"
 
 if [ ! -x .runtime/bin/python ]; then
   requested_python="${FATHOM_PYTHON:-python3}"

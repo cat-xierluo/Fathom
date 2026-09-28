@@ -13,9 +13,12 @@
 //!   Rust 侧不引 HTTP 依赖。
 //! - helper 路径定位：打包态 ``resource_dir()/helper/fathom-helper/fathom-helper``；
 //!   开发态 ``FATHOM_HELPER_BIN`` 覆盖；缺失时握手页显示明确错误而非 panic。
-//! - 应用内更新（ISS-040B）：updater/process 两插件 + 三个协调命令，全程不静默
-//!   ——检查（手动或启动延迟 ≥10s 的状态提示）、下载安装、重启三步各自经
-//!   设置页确认层；未配置/不可达是两个明确的可恢复失败态，不伪装成功。
+//! - 应用内更新（ISS-040B + ISS-113 无感化）：updater/process 两插件 +
+//!   三个协调命令。检查（手动或启动延迟 ≥10s）；发现可用更新且未显式关闭
+//!   ``auto_download_updates``（运行根 settings.json，默认开）时**自动开始
+//!   后台下载**（复用既有下载路径/进度事件/取消语义，不新增命令），完成进入
+//!   ready 态；安装与重启两步仍各自经设置页确认层（confirmed=true），**不做
+//!   静默安装/静默重启**；未配置/不可达是两个明确的可恢复失败态，不伪装成功。
 //!
 //! 更新相关新 crate 仅 tauri-plugin-updater / tauri-plugin-process 两个
 //! （ISS-040B 合同边界，版本锁进 Cargo.lock）；helper 进程操作全用
@@ -432,12 +435,16 @@ const ESC_FORWARD_JS: &str = r#"(function () {
   }));
 })();"#;
 
-// ===== 应用内更新协调（ISS-040B）=====
+// ===== 应用内更新协调（ISS-040B；ISS-113 无感化）=====
 //
-// 边界（ISS-040 父卡 + 040B 合同）：
-// - 全程不静默：检查由用户点击或启动后延迟（≥10s）触发；下载安装必须经设置页
-//   确认层（confirmed=true）；重启是独立确认；启动延迟检查只 emit 状态事件，
-//   不弹窗、不下载、不安装。
+// 边界（ISS-040 父卡 + 040B 合同 + ISS-113 裁决）：
+// - 不静默安装/不静默重启（ISS-113 明确保留）：下载安装必须经设置页确认层
+//   （confirmed=true）；重启是独立确认。
+// - ISS-113 更新无感化：检查由用户点击或启动后延迟（≥10s）触发；发现可用
+//   更新且 ``auto_download_updates`` 未显式关闭（默认开）时自动开始**后台
+//   下载**——只下载（含 minisign 验签），下载完进入 ready 态（用户唯一动作
+//   = 安装确认）；关闭开关则回到 040B 现状（发现可用只提示，下载留在安装
+//   确认事务内）。下载全程复用既有进度事件与取消语义，不新增命令/ACL 权限。
 // - 更新动作只在可信 Rust 壳内执行：前端经本壳三个命令（updater_check /
 //   updater_install / updater_restart）协调，不经 plugin:updater|* 直调插件
 //   命令——回环远程页面（127.0.0.1:7952 仪表盘）因此不获得宽泛 updater 权限。
@@ -464,6 +471,85 @@ const UPDATER_EVENT: &str = "updater-state";
 /// 可安装候选暂存：updater_check 发现 available 时写入；updater_install
 /// （经确认层）取出执行；安装成功后清空，失败保留供重试。
 struct UpdaterState(Mutex<Option<tauri_plugin_updater::Update>>);
+
+/// ISS-113：`auto_download_updates` 设置键。存储 = 运行根 ``settings.json``
+/// （Python ``fathom/config.py`` 持久化，前端经既有 PUT /api/config 写入，
+/// 壳侧**只读不写**——单一设置源，不引第二份壳侧存储）。缺键/文件缺失/
+/// 解析失败一律按默认 true（与 Python 内置默认一致），仅显式 ``false``
+/// 视为关闭。
+const UPDATER_AUTO_DOWNLOAD_KEY: &str = "auto_download_updates";
+
+/// ISS-113：后台预下载产物。``Update::download`` 内含 minisign 验签
+/// （tauri-plugin-updater updater.rs），故缓存的字节是**已验签**制品；
+/// 缓存键 = 目标版本（latest.json 同版本即同一制品），跨版本候选不命中。
+#[derive(Clone)]
+struct PrefetchedUpdate {
+    version: String,
+    bytes: Vec<u8>,
+}
+
+/// ISS-113：预下载产物暂存。安装成功后随候选一并清空；安装失败/取消时
+/// 保留（已验签字节仍有效，重试免再下载）。
+struct UpdaterPrefetch(Mutex<Option<PrefetchedUpdate>>);
+
+/// 读运行根 settings.json 的 auto_download_updates（std 文件 I/O，不引
+/// HTTP——模块设计原则；文件名与 Python ``SETTINGS_FILENAME`` 同源）。
+fn auto_download_updates_enabled(runtime_dir: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(runtime_dir.join("settings.json")) else {
+        return true;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return true;
+    };
+    // 宽读 fail-safe：只有显式布尔 false 才视为关闭；键损坏/形态异常维持
+    // 默认开（Python 校验层保证合法值只会是 bool，此处防御的是手改文件）。
+    !matches!(
+        value.get(UPDATER_AUTO_DOWNLOAD_KEY),
+        Some(serde_json::Value::Bool(false))
+    )
+}
+
+/// ISS-113：发现可用更新后的预下载决策（纯函数，单测直接覆盖分支）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrefetchPlan {
+    /// 开关关闭：回到 040B 现状（available 只提示，下载留在安装确认事务内）。
+    Disabled,
+    /// 同版本已预下载完成：不再下载，直接发 ready（downloaded）事件。
+    AlreadyReady,
+    /// 需要后台下载（调用方经独占门单飞启动）。
+    Download,
+}
+
+fn prefetch_plan(
+    auto_download: bool,
+    prefetched: Option<&PrefetchedUpdate>,
+    available_version: &str,
+) -> PrefetchPlan {
+    if !auto_download {
+        PrefetchPlan::Disabled
+    } else if prefetched
+        .map(|p| p.version == available_version)
+        .unwrap_or(false)
+    {
+        PrefetchPlan::AlreadyReady
+    } else {
+        PrefetchPlan::Download
+    }
+}
+
+/// ISS-113：预下载完成的 ready 事件载荷（沿用 UPDATER_EVENT）。前端「已
+/// 就绪，重启应用」语义的唯一事实源——用户唯一动作 = 安装（需重启）确认。
+fn updater_prefetch_ready_json(
+    current_version: &str,
+    available_version: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "state": "downloaded",
+        "current_version": current_version,
+        "available_version": available_version,
+        "hint": "新版本已下载并验签；经你确认后安装，完成后重启应用生效",
+    })
+}
 
 /// 检查结果状态机的纯枚举。unconfigured 与 unreachable 是两个**各自明确**的
 /// 失败态：前者是「本壳没有更新配置」（部署/构建缺陷），后者是「源不可达」
@@ -646,13 +732,16 @@ async fn perform_updater_check(
 }
 
 /// 手动检查更新（设置页「检查更新」按钮）。永不返回 Err：所有失败都映射为
-/// 结构化状态 JSON，前端据此渲染可恢复态。
+/// 结构化状态 JSON，前端据此渲染可恢复态。ISS-113：发现 available 且开关
+/// 开启时在返回前触发后台预下载（maybe_spawn_updater_prefetch 单飞）。
 #[tauri::command]
 async fn updater_check(
     app: AppHandle,
     state: State<'_, UpdaterState>,
 ) -> Result<serde_json::Value, String> {
-    Ok(perform_updater_check(&app, Some(state.inner())).await)
+    let status = perform_updater_check(&app, Some(state.inner())).await;
+    maybe_spawn_updater_prefetch(&app, &status);
+    Ok(status)
 }
 
 /// 下载并安装当前候选（仅经设置页确认层调用：confirmed=true 才动手）。
@@ -697,16 +786,85 @@ async fn updater_install(
 
     // ISS-097 后端独占门：已有安装事务进行中（含下载/安装/核验/收尾任一
     // 阶段）时，本次 invoke 明确拒绝——零等待、不排队、不触碰在途事务。
+    // ISS-113：后台预下载同样持此门（与安装事务互斥），故在途期间也可能因
+    // 下载占用被拒——文案如实覆盖两种占用来源。
     if !ctl.try_begin_install() {
         return Ok(serde_json::json!({
             "ok": false,
             "state": "busy",
-            "error": "已有升级安装事务在进行中；本次请求已被拒绝（后端独占门，\
-                      不依赖前端按钮禁用），请待当前安装结束后再试",
+            "error": "已有下载或安装事务在进行中；本次请求已被拒绝（后端独占门，\
+                      不依赖前端按钮禁用），请待当前下载/安装结束后再试",
         }));
     }
     let _gate = InstallActiveGuard(ctl.inner());
     updater_install_transaction(&app, &state, ctl.inner(), update).await
+}
+
+/// ISS-102/113：下载候选的结果三分支（原 ISS-102 事务内枚举上移——后台
+/// 预下载与安装事务的下载阶段共用同一下载路径与同一结果语义）。
+enum UpdaterDownloadOutcome {
+    Completed(Vec<u8>),
+    Cancelled,
+    Failed(String),
+}
+
+/// 下载候选并按 128 KiB 节流发 UPDATER_EVENT downloading 进度事件；取消
+/// 请求（UPDATER_CANCEL_EVENT → ctl）在 poll 边界受理。ISS-113 起两处
+/// 复用——安装事务的下载阶段（合同⑤前半）与后台预下载：同一路径、同一
+/// 事件、同一取消语义，不新增命令。
+async fn download_update_with_progress(
+    app: &AppHandle,
+    update: &tauri_plugin_updater::Update,
+    ctl: &UpdaterInstallCtl,
+) -> UpdaterDownloadOutcome {
+    let mut downloaded: u64 = 0;
+    let mut last_emitted: u64 = 0;
+    let emit_app = app.clone();
+    let current_version = update.current_version.clone();
+    let target_version = update.version.clone();
+    let mut download = std::pin::pin!(update.download(
+        move |chunk, total| {
+            downloaded = downloaded.saturating_add(chunk as u64);
+            if progress_should_emit(last_emitted, downloaded, total) {
+                last_emitted = downloaded;
+                let _ = emit_app.emit(
+                    UPDATER_EVENT,
+                    updater_download_progress_json(
+                        &current_version,
+                        &target_version,
+                        downloaded,
+                        total,
+                    ),
+                );
+            }
+        },
+        || {},
+    ));
+    use std::future::Future as _;
+    std::future::poll_fn(|cx| {
+        if ctl.is_cancel_requested() {
+            return std::task::Poll::Ready(UpdaterDownloadOutcome::Cancelled);
+        }
+        match download.as_mut().poll(cx) {
+            std::task::Poll::Ready(Ok(bytes)) => {
+                std::task::Poll::Ready(UpdaterDownloadOutcome::Completed(bytes))
+            }
+            std::task::Poll::Ready(Err(err)) => {
+                std::task::Poll::Ready(UpdaterDownloadOutcome::Failed(err.to_string()))
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    })
+    .await
+}
+
+/// ISS-113：取与候选版本匹配的预下载字节（**不消费**——安装失败/取消后
+/// 已验签字节仍有效，保留供重试；清空只发生在安装成功）。
+fn peek_prefetched_bytes(app: &AppHandle, version: &str) -> Option<Vec<u8>> {
+    let store = app.try_state::<UpdaterPrefetch>()?;
+    let guard = store.0.lock().ok()?;
+    let cached = guard.as_ref()?;
+    (cached.version == version).then(|| cached.bytes.clone())
 }
 
 /// 单个安装事务的本体（ISS-097：仅经 ``updater_install`` 的独占门进入）。
@@ -807,85 +965,51 @@ async fn updater_install_transaction(
     // ⑤ download_and_install 前半（download 内完成下载+minisign 验签）：
     // 进度映射 UPDATER_EVENT（downloading 含 downloaded/total，节流）；取消
     // 请求在 poll 边界受理——中止即回滚，候选保留。
+    // ISS-113：开关开启时启动/手动检查已后台预下载同版本制品（已验签），
+    // 此处直接复用、跳过事务内下载；无缓存则事务内下载（开关关闭的现状路径）。
     ctl.begin(UpdaterInstallPhase::Downloading);
-    let mut downloaded: u64 = 0;
-    let mut last_emitted: u64 = 0;
-    let emit_app = app.clone();
-    let current_version = update.current_version.clone();
-    let target_version = update.version.clone();
-    let ctl_ref = ctl;
-    let mut download = std::pin::pin!(update.download(
-        move |chunk, total| {
-            downloaded = downloaded.saturating_add(chunk as u64);
-            if progress_should_emit(last_emitted, downloaded, total) {
-                last_emitted = downloaded;
-                let _ = emit_app.emit(
+    let bytes = match peek_prefetched_bytes(app, &update.version) {
+        Some(bytes) => {
+            println!(
+                "[updater] 复用后台预下载的已验签制品（{}，{} 字节），跳过事务内下载",
+                update.version,
+                bytes.len()
+            );
+            bytes
+        }
+        None => match download_update_with_progress(app, &update, ctl).await {
+            UpdaterDownloadOutcome::Cancelled => {
+                rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载取消");
+                let _ = app.emit(
                     UPDATER_EVENT,
-                    updater_download_progress_json(
-                        &current_version,
-                        &target_version,
-                        downloaded,
-                        total,
-                    ),
+                    serde_json::json!({
+                        "state": "cancelled",
+                        "current_version": update.current_version,
+                        "available_version": update.version,
+                        "hint": "下载已取消；旧版本保持运行，可再次安装",
+                    }),
                 );
-            }
-        },
-        || {},
-    ));
-    enum DownloadOutcome {
-        Completed(Vec<u8>),
-        Cancelled,
-        Failed(String),
-    }
-    use std::future::Future as _;
-    let outcome = std::future::poll_fn(|cx| {
-        if ctl_ref.is_cancel_requested() {
-            return std::task::Poll::Ready(DownloadOutcome::Cancelled);
-        }
-        match download.as_mut().poll(cx) {
-            std::task::Poll::Ready(Ok(bytes)) => {
-                std::task::Poll::Ready(DownloadOutcome::Completed(bytes))
-            }
-            std::task::Poll::Ready(Err(err)) => {
-                std::task::Poll::Ready(DownloadOutcome::Failed(err.to_string()))
-            }
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    })
-    .await;
-
-    let bytes = match outcome {
-        DownloadOutcome::Cancelled => {
-            rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载取消");
-            let _ = app.emit(
-                UPDATER_EVENT,
-                serde_json::json!({
+                return Ok(serde_json::json!({
+                    "ok": false,
                     "state": "cancelled",
-                    "current_version": update.current_version,
-                    "available_version": update.version,
-                    "hint": "下载已取消；旧版本保持运行，可再次安装",
-                }),
-            );
-            return Ok(serde_json::json!({
-                "ok": false,
-                "state": "cancelled",
-                "error": "下载已取消（旧版本保持运行，候选保留）",
-            }));
-        }
-        DownloadOutcome::Failed(err) => {
-            rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载失败");
-            let error = format!("下载/验签失败（已回滚，候选保留，可重试）：{err}");
-            let _ = app.emit(
-                UPDATER_EVENT,
-                serde_json::json!({ "state": "failed", "error": error }),
-            );
-            return Ok(serde_json::json!({
-                "ok": false,
-                "state": "failed",
-                "error": error,
-            }));
-        }
-        DownloadOutcome::Completed(bytes) => bytes,
+                    "error": "下载已取消（旧版本保持运行，候选保留）",
+                }));
+            }
+            UpdaterDownloadOutcome::Failed(err) => {
+                rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载失败");
+                let error = format!("下载/验签失败（已回滚，候选保留，可重试）：{err}");
+                let _ = app.emit(
+                    UPDATER_EVENT,
+                    serde_json::json!({ "state": "failed", "error": error }),
+                );
+                return Ok(serde_json::json!({
+                    "ok": false,
+                    "state": "failed",
+                    "error": error,
+                }));
+            }
+            UpdaterDownloadOutcome::Completed(bytes) => bytes,
+        },
     };
 
     // 进入安装（download_and_install 后半）：不可取消，文案明确（合同⑤）。
@@ -996,6 +1120,12 @@ async fn updater_install_transaction(
     }
     if let Ok(mut guard) = state.0.lock() {
         *guard = None;
+    }
+    // ISS-113：安装成功——预下载产物随候选一并清空（已消费）。
+    if let Some(store) = app.try_state::<UpdaterPrefetch>() {
+        if let Ok(mut guard) = store.0.lock() {
+            *guard = None;
+        }
     }
     let _ = app.emit(
         UPDATER_EVENT,
@@ -1179,6 +1309,15 @@ impl Drop for InstallActiveGuard<'_> {
     fn drop(&mut self) {
         self.0.end_install();
     }
+}
+
+/// ISS-113 修复（审查 B1）：预下载线程开头的独占门获取序列——先 CAS，成功
+/// 才构造守卫（``InstallActiveGuard`` 仅由 CAS 成功方持有），失败返回 None
+/// 表示放弃本轮预下载。返回 None 时调用方**不得**触碰 ctl（不 begin、不释放
+/// 他人持有的门）——由此保证：预下载在途时 ``updater_install`` 被拒 busy 的
+/// 互斥真实存在，且预下载退出只释放自己抢到的门。
+fn try_begin_prefetch(ctl: &UpdaterInstallCtl) -> Option<InstallActiveGuard<'_>> {
+    ctl.try_begin_install().then(|| InstallActiveGuard(ctl))
 }
 
 /// ISS-040C：下载进度事件载荷（合同：downloading 态含 downloaded/total；
@@ -1463,8 +1602,10 @@ fn rollback_upgrade_and_restart_helper(
 }
 
 /// 启动延迟检查（ISS-040B）：std 线程 + async_runtime::block_on（不引 tokio
-/// 直依赖）。只 emit updater-state 状态事件，绝不弹窗/下载/安装；失败也只
-/// 是状态行里的 unreachable/failed 文案，不阻塞启动（setup 即返回）。
+/// 直依赖）。只 emit updater-state 状态事件，绝不弹窗/安装；失败也只是状态
+/// 行里的 unreachable/failed 文案，不阻塞启动（setup 即返回）。ISS-113：状态
+/// 事件发出后若发现 available 且开关开启，交由 maybe_spawn_updater_prefetch
+/// 开始后台下载（下载不阻塞启动，安装仍只经确认层）。
 fn spawn_updater_startup_check(app: &AppHandle) {
     let handle = app.clone();
     let spawned = std::thread::Builder::new()
@@ -1474,13 +1615,163 @@ fn spawn_updater_startup_check(app: &AppHandle) {
             let store = handle.state::<UpdaterState>();
             let status =
                 tauri::async_runtime::block_on(perform_updater_check(&handle, Some(store.inner())));
-            if let Err(err) = handle.emit(UPDATER_EVENT, status) {
+            if let Err(err) = handle.emit(UPDATER_EVENT, status.clone()) {
                 eprintln!("[updater] 启动延迟检查状态事件发送失败：{err}");
             }
+            maybe_spawn_updater_prefetch(&handle, &status);
         });
     if let Err(err) = spawned {
-        // 线程起不来不阻塞启动：手动检查入口仍在。
+        // 线程起不起来不阻塞启动：手动检查入口仍在。
         eprintln!("[updater] 启动延迟检查线程创建失败（手动检查仍可用）：{err}");
+    }
+}
+
+/// ISS-113：检查发现 available 后的自动后台下载入口（启动延迟检查与手动
+/// 检查两处调用）。决策（prefetch_plan）：
+/// - 开关关闭（settings.json 显式 false）→ 不启动，回 040B 现状；
+/// - 同版本已预下载 → 直接发 downloaded（ready）事件，不再下载；
+/// - 否则启动后台预下载线程：线程开头先经 ``try_begin_prefetch`` 抢独占门
+///   （try_begin_install CAS）——CAS 失败（安装事务或另一轮预下载在途）即
+///   放弃本轮，成功则持门至下载结束；在途期间 updater_install 被拒 busy
+///   （前端不并行走两条下载链）。
+/// 下载全程复用既有路径：UPDATER_EVENT downloading 进度事件 + 取消经
+/// UPDATER_CANCEL_EVENT 在 poll 边界受理。完成后只发 ready 事件，**绝不
+/// 安装**——六步安装合同不变，安装仍只经 updater_install（confirmed=true）。
+fn maybe_spawn_updater_prefetch(app: &AppHandle, status: &serde_json::Value) {
+    if status.get("state").and_then(|v| v.as_str()) != Some(UpdaterCheckState::Available.as_str())
+    {
+        return;
+    }
+    let Some(available_version) = status.get("available_version").and_then(|v| v.as_str())
+    else {
+        return;
+    };
+    // 候选已在检查时暂存（perform_updater_check 写入 UpdaterState）；状态与
+    // 候选版本不一致（并发检查竞争）时本轮不启动，下一轮检查再判。
+    let candidate = {
+        let store = app.state::<UpdaterState>();
+        let Ok(guard) = store.0.lock() else {
+            return;
+        };
+        let Some(update) = guard.as_ref() else {
+            return;
+        };
+        if update.version != available_version {
+            return;
+        }
+        update.clone()
+    };
+    let runtime_dir = {
+        let helper_state = app.state::<HelperState>();
+        helper_state
+            .0
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|h| h.runtime_dir.clone()))
+            .unwrap_or_else(helper::default_runtime_dir)
+    };
+    let prefetched = app
+        .state::<UpdaterPrefetch>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().cloned());
+    match prefetch_plan(
+        auto_download_updates_enabled(&runtime_dir),
+        prefetched.as_ref(),
+        available_version,
+    ) {
+        PrefetchPlan::Disabled => {}
+        PrefetchPlan::AlreadyReady => {
+            let _ = app.emit(
+                UPDATER_EVENT,
+                updater_prefetch_ready_json(&candidate.current_version, available_version),
+            );
+        }
+        PrefetchPlan::Download => spawn_updater_prefetch_download(app, candidate),
+    }
+}
+
+/// ISS-113：后台预下载线程本体（复用安装事务的下载路径与取消受理）。
+/// 审查 B1：线程开头先经 ``try_begin_prefetch`` 抢独占门——CAS 失败即放弃
+/// 本轮（安装事务或另一轮预下载在途，下一轮检查再判，不触碰 ctl）；成功则
+/// 持门至线程结束。完成三支：downloaded（ready，等用户安装确认）/
+/// cancelled（候选保留，可重试）/ failed（可重试）。任何一支都复位阶段机
+///（清取消标志）并经 ``InstallActiveGuard`` Drop 释放独占门。
+fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater::Update) {
+    let handle = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("fathom-updater-prefetch".to_string())
+        .spawn(move || {
+            let ctl = handle.state::<UpdaterInstallCtl>();
+            // 审查 B1：先过独占门 CAS 再触碰阶段机——失败即放弃本轮预下载
+            //（已有安装事务或另一轮预下载在途），既让「预下载在途期间
+            // updater_install 被拒 busy」的互斥真实存在，也不会在退出时释放
+            // 他人持有的门或清掉安装事务已受理的取消标志。
+            let Some(_gate) = try_begin_prefetch(ctl.inner()) else {
+                println!(
+                    "[updater] 已有下载或安装事务在途：本轮跳过后台下载 {}（下次检查再判）",
+                    update.version
+                );
+                return;
+            };
+            // 门已由本轮持有：先回 Preparing 复位上一轮可能残留的取消标志，
+            // 再进 Downloading（取消只应在下载进行中受理，见
+            // handle_cancel_request）。
+            ctl.begin(UpdaterInstallPhase::Preparing);
+            ctl.begin(UpdaterInstallPhase::Downloading);
+            println!(
+                "[updater] 自动下载更新已开启：开始后台下载 {}（{} → {}）",
+                update.version, update.current_version, update.version
+            );
+            let outcome = tauri::async_runtime::block_on(download_update_with_progress(
+                &handle,
+                &update,
+                ctl.inner(),
+            ));
+            match outcome {
+                UpdaterDownloadOutcome::Completed(bytes) => {
+                    if let Some(store) = handle.try_state::<UpdaterPrefetch>() {
+                        if let Ok(mut guard) = store.0.lock() {
+                            *guard = Some(PrefetchedUpdate {
+                                version: update.version.clone(),
+                                bytes,
+                            });
+                        }
+                    }
+                    let _ = handle.emit(
+                        UPDATER_EVENT,
+                        updater_prefetch_ready_json(&update.current_version, &update.version),
+                    );
+                    println!("[updater] 后台下载完成（ready 等待安装确认）：{}", update.version);
+                }
+                UpdaterDownloadOutcome::Cancelled => {
+                    let _ = handle.emit(
+                        UPDATER_EVENT,
+                        serde_json::json!({
+                            "state": "cancelled",
+                            "current_version": update.current_version,
+                            "available_version": update.version,
+                            "hint": "下载已取消；旧版本保持运行，可再次安装",
+                        }),
+                    );
+                }
+                UpdaterDownloadOutcome::Failed(err) => {
+                    let error = format!("后台下载失败（已停止，可重试）：{err}");
+                    let _ = handle.emit(
+                        UPDATER_EVENT,
+                        serde_json::json!({ "state": "failed", "error": error }),
+                    );
+                    eprintln!("[updater] {error}");
+                }
+            }
+            // 复位阶段机（清取消标志）；随后 _gate Drop 释放独占门。
+            ctl.begin(UpdaterInstallPhase::Preparing);
+        });
+    if let Err(err) = spawned {
+        eprintln!(
+            "[updater] 后台下载线程创建失败（设置页手动「下载并安装」仍可用）：{err}"
+        );
     }
 }
 
@@ -1534,6 +1825,9 @@ pub fn run() {
             app.manage(HelperState(Mutex::new(Some(HelperHandle::new(runtime_dir)))));
             // ISS-040B：更新候选暂存句柄（启动延迟检查/手动检查写入）。
             app.manage(UpdaterState(Mutex::new(None)));
+            // ISS-113：后台预下载产物暂存（开关开启时检查发现 available 后
+            // 自动下载；安装成功清空，失败/取消保留供重试）。
+            app.manage(UpdaterPrefetch(Mutex::new(None)));
             // ISS-040C：升级安装控制面 + 取消请求事件通道（core:event:default
             // 已授权，不新增 updater 命令/ACL 权限——恰 3 权限合同不回退）。
             app.manage(UpdaterInstallCtl::new());
@@ -1887,6 +2181,85 @@ mod tests {
         assert_eq!(UPDATER_EVENT, "updater-state");
     }
 
+    /// ISS-113：settings.json 的 auto_download_updates 读取——缺文件/缺键/
+    /// 损坏 JSON/非布尔值一律按默认 true（宽读 fail-safe，与 Python 内置
+    /// 默认一致）；仅显式布尔 false 视为关闭。
+    #[test]
+    fn auto_download_setting_reads_false_only_when_explicit() {
+        let dir = std::env::temp_dir().join(format!(
+            "fathom-iss113-settings-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录失败");
+        assert!(
+            auto_download_updates_enabled(&dir),
+            "settings.json 缺失必须按默认开启"
+        );
+        let cases: &[(&str, bool)] = &[
+            ("{\"scan_time\": \"12:00\"}", true),
+            ("{\"auto_download_updates\": false}", false),
+            ("{\"auto_download_updates\": true}", true),
+            ("not json at all", true),
+            // Python 校验层不会落非布尔值；此处防御手改文件——形态异常
+            // 不视为关闭（无法确认用户意图，维持默认开）。
+            ("{\"auto_download_updates\": \"false\"}", true),
+            ("{\"auto_download_updates\": null}", true),
+        ];
+        for (text, expected) in cases {
+            std::fs::write(dir.join("settings.json"), text).expect("写临时 settings 失败");
+            assert_eq!(
+                auto_download_updates_enabled(&dir),
+                *expected,
+                "settings.json={text:?} 应读作 enabled={expected}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ISS-113：预下载决策分支——关闭优先（Disabled 压过 AlreadyReady）；
+    /// 同版本已缓存 → AlreadyReady；开启未缓存/跨版本缓存 → Download。
+    #[test]
+    fn prefetch_plan_branches() {
+        let cached = PrefetchedUpdate {
+            version: "0.4.0".to_string(),
+            bytes: vec![1, 2, 3],
+        };
+        assert_eq!(
+            prefetch_plan(false, Some(&cached), "0.4.0"),
+            PrefetchPlan::Disabled,
+            "开关关闭必须回现状（即使已缓存也不再发 ready）"
+        );
+        assert_eq!(prefetch_plan(false, None, "0.4.0"), PrefetchPlan::Disabled);
+        assert_eq!(
+            prefetch_plan(true, Some(&cached), "0.4.0"),
+            PrefetchPlan::AlreadyReady
+        );
+        assert_eq!(prefetch_plan(true, None, "0.4.0"), PrefetchPlan::Download);
+        assert_eq!(
+            prefetch_plan(true, Some(&cached), "0.5.0"),
+            PrefetchPlan::Download,
+            "跨版本缓存不得命中（候选已换，须重新下载）"
+        );
+    }
+
+    /// ISS-113：ready 事件载荷合同——state=downloaded、双版本、hint 明确
+    /// 「下载完成 + 确认后安装 + 重启生效」（用户唯一动作 = 安装确认的
+    /// 前端呈现依据）。
+    #[test]
+    fn updater_prefetch_ready_json_contract() {
+        let json = updater_prefetch_ready_json("0.3.0", "0.4.0");
+        assert_eq!(json["state"], "downloaded");
+        assert_eq!(json["current_version"], "0.3.0");
+        assert_eq!(json["available_version"], "0.4.0");
+        let hint = json["hint"].as_str().unwrap();
+        assert!(
+            hint.contains("下载") && hint.contains("确认") && hint.contains("重启"),
+            "hint 必须说明已下载、经确认安装与重启生效：{hint:?}"
+        );
+        assert!(json.get("error").is_none(), "ready 态不携带 error");
+    }
+
     /// ISS-040C：下载进度事件载荷合同——downloading 态含 downloaded/total
     ///（total 未知时为 null）、cancellable=true（下载阶段可取消的声明面）。
     #[test]
@@ -2125,6 +2498,65 @@ mod tests {
             ctl.try_begin_install(),
             "守卫 Drop（含 panic unwinding 路径）必须释放独占门，不留 busy 死锁"
         );
+        ctl.end_install();
+    }
+
+    /// ISS-113 修复（审查 B1）：预下载线程门序合同钉子一——``try_begin_prefetch``
+    /// 成功后持门独占：预下载在途（含 begin(Preparing)/begin(Downloading) 阶段
+    /// 推进全程）``updater_install`` 的 CAS 必须被拒 busy——「下载与安装互斥」
+    /// 由单测直接可验证，不再只是设计宣称。
+    #[test]
+    fn try_begin_prefetch_holds_gate_and_excludes_install() {
+        let ctl = UpdaterInstallCtl::new();
+        let Some(gate) = try_begin_prefetch(&ctl) else {
+            panic!("空闲时预下载必须能抢到独占门");
+        };
+        assert!(
+            !ctl.try_begin_install(),
+            "预下载持门期间安装事务必须被独占门拒绝（busy）"
+        );
+        // 预下载线程的阶段机推进（begin(Preparing) 清取消标志 → Downloading）
+        // 只发生在本轮持门之后；期间门仍由预下载持有。
+        ctl.begin(UpdaterInstallPhase::Preparing);
+        ctl.begin(UpdaterInstallPhase::Downloading);
+        assert!(
+            !ctl.try_begin_install(),
+            "阶段推进后门仍由预下载持有，安装事务必须继续被拒"
+        );
+        drop(gate);
+        assert!(
+            ctl.try_begin_install(),
+            "预下载结束（守卫 Drop）后安装事务必须可进入，不留 busy 死锁"
+        );
+        ctl.end_install();
+    }
+
+    /// ISS-113 修复（审查 B1）：预下载线程门序合同钉子二——独占门已被安装
+    /// 事务持有时 ``try_begin_prefetch`` CAS 失败返回 None：预下载放弃本轮且
+    /// **不触碰 ctl**——不构造守卫（此前 no-op 守卫会在 Drop 时释放他人持有
+    /// 的门）、不 begin(Preparing)（不清掉安装事务已受理的取消标志）。
+    #[test]
+    fn try_begin_prefetch_aborts_when_busy_without_touching_existing_gate() {
+        let ctl = UpdaterInstallCtl::new();
+        assert!(ctl.try_begin_install(), "前置：安装事务先持门");
+        // 安装事务（下载阶段）已受理用户取消。
+        ctl.request_cancel();
+        assert!(
+            try_begin_prefetch(&ctl).is_none(),
+            "安装事务持门期间预下载必须放弃（CAS 失败即返回 None）"
+        );
+        // 既有门未被释放：安装事务仍独占（不可再进第二个事务）。
+        assert!(
+            !ctl.try_begin_install(),
+            "预下载放弃不得释放安装事务持有的独占门"
+        );
+        // 安装事务已受理的取消标志未被清除。
+        assert!(
+            ctl.is_cancel_requested(),
+            "预下载放弃不得清除安装事务已受理的取消标志"
+        );
+        ctl.end_install();
+        assert!(ctl.try_begin_install(), "显式释放后回到空闲可进入");
         ctl.end_install();
     }
 

@@ -34,7 +34,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # 已验证基线（ISS-111 后 781 passed = 771 + 10(tests/test_api_permissions.py
+  # 已验证基线（ISS-113 后 800 passed = 781 + 19(ISS-113 应用更新无感化：
+  # tests/test_auto_download_config.py 14——严格布尔 6 参数 + 双布尔接受/
+  # 默认视图 true/落盘往返/排除集 env 覆盖透传/部分合并 + lib.rs 三钉子
+  # （settings.json 读取、downloaded ready 事件与预下载接线、安装与重启
+  # confirmed 门不回退）+ tests/test_api_config.py 5——PUT 往返 + 近亲 400×4)
+  # ；前段推导见 scripts/ci_pytest.sh 头注（ISS-111 后 781 passed = 771 + 10(tests/test_api_permissions.py
   # 权限状态端点契约：FDA 探测三态 / notification 透传与未登记 / coverage
   # 引用与空库 / /api/status 的 app_version / 外站 Host 403)；771 = 753 + 13
   # (tests/test_release_gate.py
@@ -44,20 +49,25 @@ env:
   # (tests/test_upgrade_restore.py 安装后失败的真实旧 bundle 与数据恢复
   # 聚焦测试)；739 = 727 + 12(ISS-097
   # 升级事务聚焦测试)，727 = 720 + 7(ISS-096)，720 已含 ISS-030A/040B/040C/
-  # 037/081/090/091 批次）：781 pytest、39 API/浏览器检查、193 前端
-  # refresh（ISS-100 起随浏览器 job 执行；ISS-111 权限分区断言 179 → 188，
-  # ISS-115 权限错误行/历史快照 188 → 191，复审校验歧义 191 → 193）、
+  # 037/081/090/091 批次）：800 pytest、39 API/浏览器检查、198 前端
+  # refresh（ISS-100 起随浏览器 job 执行；ISS-111 权限分区断言 179 → 188；
+  # ISS-113 更新无感化 +5：开关关闭回现状 1、后台下载呈现与取消 1、重试
+  # 下载 1、downloaded ready 与确认取消 1、确认安装至 installed 1；
+  # available/浏览器降级断言原地改写不计数；ISS-115 权限错误行/历史快照
+  # +3、校验歧义 +2，比值断言原地更新不计数）、
   # cargo locked offline build +
-  # 单测 60（ISS-100 起随 cargo job 执行；ISS-098 只更新既有 argv 断言、
-  # 数量不变）。
+  # 单测 65（ISS-100 起随 cargo job 执行；ISS-113 +3：settings.json 宽读
+  # fail-safe、prefetch 决策分支、downloaded ready 载荷合同；ISS-113 修复
+  # episode 1 +2：预下载独占门门序两钉子——持门期间 install 被拒 busy /
+  # CAS 失败放弃不扰动既有门）。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "781"
+  EXPECTED_PYTEST_PASSED: "800"
   EXPECTED_BROWSER_PASSED: "39"
-  EXPECTED_REFRESH_PASSED: "193"
-  EXPECTED_CARGO_PASSED: "60"
+  EXPECTED_REFRESH_PASSED: "198"
+  EXPECTED_CARGO_PASSED: "65"
 
 jobs:
   pytest:
@@ -93,7 +103,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 771 项通过）
+      - name: pytest（断言 800 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh
@@ -138,7 +148,7 @@ jobs:
           npm install "playwright@${PLAYWRIGHT_VERSION}"
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" --version
 
-      - name: API/浏览器 39 项与前端 refresh 160 项检查（断言计数）
+      - name: API/浏览器 39 项与前端 refresh 198 项检查（断言计数）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
           NODE_PATH: ${{ runner.temp }}/pw/node_modules
@@ -189,7 +199,7 @@ jobs:
           cargo --version
           [ "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION" ]
 
-      - name: Cargo.lock 锁定离线构建与单测（断言 60 项通过）
+      - name: Cargo.lock 锁定离线构建与单测（断言 63 项通过）
         env:
           CARGO_PREFETCH: '1'
         run: bash scripts/ci_cargo_locked.sh

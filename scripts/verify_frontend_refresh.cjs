@@ -3130,6 +3130,11 @@ async function main() {
     const permTauri = await tpage2.evaluate(() => ({
       openBtnVisible: !document.getElementById("btn-open-system-prefs")?.hidden,
       fallbackHidden: document.querySelector("[data-test='perm-path-fallback']")?.hidden,
+      // ISS-118：hidden 是否落到 fallback 的计算样式（属性级断言抓不到该缺陷）
+      fallbackDisplay: (() => {
+        const el = document.querySelector("[data-test='perm-path-fallback']");
+        return el ? getComputedStyle(el).display : null;
+      })(),
       // ISS-112：未 hidden 的按钮必须保持可见的计算 display（反向态）
       openBtnDisplay: (() => {
         const el = document.getElementById("btn-open-system-prefs");
@@ -3151,6 +3156,15 @@ async function main() {
     record("permissions-tauri-mock-perm-link-visible-keeps-display",
       permTauri.openBtnDisplay === "flex" || permTauri.openBtnDisplay === "inline-flex",
       `openBtnDisplay=${permTauri.openBtnDisplay}`);
+    /* ISS-118：.perm-link-fallback 的 display:inline-flex 与 .perm-link 同源地
+     * 覆盖 UA 默认 [hidden]，Tauri mock 态 fallback 的 fallbackHidden 属性级
+     * 断言抓不到该缺陷，必须断到计算样式。互斥两态：hidden fallback
+     * display:none；未 hidden 的深链按钮保持可见 resolved 值（防互斥规则反向
+     * 误伤，见上方 perm-link-visible record）。 */
+    record("permissions-tauri-mock-fallback-display-matches-hidden-state",
+      permTauri.fallbackHidden && permTauri.fallbackDisplay === "none" &&
+        (permTauri.openBtnDisplay === "flex" || permTauri.openBtnDisplay === "inline-flex"),
+      JSON.stringify({ fallback: permTauri.fallbackDisplay, openBtn: permTauri.openBtnDisplay }));
     await tpage2.click("#btn-open-system-prefs");
     await tpage2.waitForFunction(() => (window.__tauriMock2.invokes || []).some(
       (c) => c && c.cmd === "plugin:opener|open_url"));
@@ -3356,6 +3370,16 @@ async function main() {
       fdaOpenBtnVisible: !document.querySelector("[data-test='perm-fda-open-btn']")?.hidden,
       fdaFallbackHidden: document.querySelector("[data-test='perm-fda-path-fallback']")?.hidden,
       notifOpenBtnVisible: !document.querySelector("[data-test='perm-notif-open-btn']")?.hidden,
+      // ISS-118：hidden 是否落到 fallback 的计算样式（属性级断言抓不到该缺陷）
+      notifFallbackHidden: document.querySelector("[data-test='perm-notif-path-fallback']")?.hidden,
+      fdaFallbackDisplay: (() => {
+        const el = document.querySelector("[data-test='perm-fda-path-fallback']");
+        return el ? getComputedStyle(el).display : null;
+      })(),
+      notifFallbackDisplay: (() => {
+        const el = document.querySelector("[data-test='perm-notif-path-fallback']");
+        return el ? getComputedStyle(el).display : null;
+      })(),
       // ISS-112：未 hidden 的按钮必须保持可见的计算 display（反向态）
       fdaOpenBtnDisplay: (() => {
         const el = document.querySelector("[data-test='perm-fda-open-btn']");
@@ -3374,6 +3398,19 @@ async function main() {
       (permHubTauri.fdaOpenBtnDisplay === "flex" || permHubTauri.fdaOpenBtnDisplay === "inline-flex") &&
         (permHubTauri.notifOpenBtnDisplay === "flex" || permHubTauri.notifOpenBtnDisplay === "inline-flex"),
       JSON.stringify({ fda: permHubTauri.fdaOpenBtnDisplay, notif: permHubTauri.notifOpenBtnDisplay }));
+    /* ISS-118：与 002A 主深链同源镜像——FDA/通知卡的 perm-link-fallback 在
+     * Tauri mock 态同样带 hidden 属性，属性级 fdaFallbackHidden 抓不到
+     * display:inline-flex 覆盖 UA [hidden] 的双可见缺陷；计算样式互斥两态
+     * 同前（hidden fallback→none，未 hidden 按钮→保持可见 resolved 值）。 */
+    record("perm-hub-tauri-mock-fallback-display-matches-hidden-state",
+      permHubTauri.fdaFallbackHidden && permHubTauri.notifFallbackHidden &&
+        permHubTauri.fdaFallbackDisplay === "none" && permHubTauri.notifFallbackDisplay === "none" &&
+        (permHubTauri.fdaOpenBtnDisplay === "flex" || permHubTauri.fdaOpenBtnDisplay === "inline-flex") &&
+        (permHubTauri.notifOpenBtnDisplay === "flex" || permHubTauri.notifOpenBtnDisplay === "inline-flex"),
+      JSON.stringify({
+        fdaFb: permHubTauri.fdaFallbackDisplay, notifFb: permHubTauri.notifFallbackDisplay,
+        fdaBtn: permHubTauri.fdaOpenBtnDisplay, notifBtn: permHubTauri.notifOpenBtnDisplay,
+      }));
     await tpage6.click("[data-test='perm-fda-open-btn']");
     await tpage6.waitForFunction(() => (window.__tauriMock6.invokes || []).some(
       (c) => c && c.cmd === "plugin:opener|open_url"));

@@ -313,9 +313,69 @@ class TestISS065VanishedInNotify:
         assert "部分覆盖" not in body
         assert "扫描期间" not in body
 
+    def test_v6_classified_counts_are_distinct_in_done_and_first(self):
+        kwargs = dict(collection_status="partial", denied_count=6, vanished_count=4,
+                      confirmed_missing_count=1, path_unverified_count=3)
+        for build in (
+            lambda: notify.build_notification(_diff(), None, **kwargs),
+            lambda: notify.build_first_notification(None, **kwargs),
+        ):
+            _, body, _ = build()
+            assert "6 条读取受限记录" in body
+            assert "1 个目录校验时路径不存在" in body
+            assert "3 个目录状态无法确认" in body
+            assert "4 个目录状态未确认" not in body
+
+    def test_report_notification_wiring_passes_nullable_classification(self, monkeypatch):
+        conn = db.connect()
+        calls = []
+        monkeypatch.setattr(notify, "notify_scan_done",
+                            lambda *args, **kwargs: calls.append(kwargs) or True)
+        monkeypatch.setattr(notify, "notify_first_snapshot",
+                            lambda *args, **kwargs: calls.append(kwargs) or True)
+        try:
+            _insert_snapshot(conn, "2026-09-11", {"/tmp/x/a": 10}, 200 * 1024**3)
+            sid = _insert_snapshot(conn, "2026-09-12", {"/tmp/x/a": 20},
+                                   200 * 1024**3, collection_status="partial")
+            conn.execute("UPDATE snapshots SET vanished_count=4, "
+                         "confirmed_missing_count=1, path_unverified_count=3 "
+                         "WHERE id=?", (sid,))
+            conn.commit()
+            assert reports.notify_for_snapshot(conn, sid)
+            assert reports.notify_first_snapshot_for(conn, sid)
+            assert len(calls) == 2
+            assert all((call["vanished_count"], call["confirmed_missing_count"],
+                        call["path_unverified_count"]) == (4, 1, 3) for call in calls)
+        finally:
+            conn.close()
+
 
 class TestISS003ABodyCap:
     """ISS-003A：最终正文（含剩余空间后缀）≤ 200 字符的可解释截断。"""
+
+    def test_long_growth_path_cannot_hide_partial_coverage(self):
+        diff = _diff([reports.DirChange(
+            "/synthetic/" + "长" * 220, 0, 2048, 2048,
+        )])
+        cases = (
+            (dict(collection_status="partial", denied_count=6,
+                  vanished_count=4, confirmed_missing_count=1,
+                  path_unverified_count=3),
+             ("6 条读取受限记录", "1 个目录校验时路径不存在", "3 个目录状态无法确认")),
+            (dict(collection_status="partial", denied_count=6,
+                  vanished_count=4),
+             ("6 条读取受限记录", "4 个目录状态未确认")),
+        )
+        for free_bytes in (None, 5 * 1024**3):
+            for kwargs, required in cases:
+                _, body, _ = notify.build_notification(diff, free_bytes, **kwargs)
+                assert len(body) <= notify.BODY_MAX_CHARS
+                assert "增长最多：/synthetic/" in body
+                assert "…" in body
+                assert "部分覆盖" in body
+                assert all(phrase in body for phrase in required)
+                if free_bytes is not None:
+                    assert body.endswith("剩余 5.0 GB")
 
     def test_long_body_with_free_suffix_capped_and_suffix_kept(self):
         diff = _diff([reports.DirChange("/tmp/" + "长" * 300, 0, 2048, 2048)])

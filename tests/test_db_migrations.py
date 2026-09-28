@@ -250,9 +250,9 @@ def test_current_schema_rejects_broken_entries_invariants(tmp_path, fault):
 
 
 def test_v3_database_migrates_vanished_count_with_default_zero(tmp_path):
-    """ISS-065 + ISS-066：v3→v5 链式迁移给旧快照补 vanished_count + exclude_names。
+    """v3→v6 链式迁移保留旧快照的原有字段与未知分类。
 
-    ISS-066 落地后 SCHEMA_VERSION=5，v3 库需经 v3→v4→v5 两次迁移。
+    v3 库经 v3→v4→v5→v6 三次迁移。
     vanished_count 与 exclude_names 均 NOT NULL DEFAULT，旧行通过默认值
     获得 0 / ''，不补造未知元数据。
     """
@@ -281,7 +281,7 @@ def test_v3_database_migrates_vanished_count_with_default_zero(tmp_path):
 
     conn = db.connect(path)
     try:
-        assert db.schema_version(conn) == db.SCHEMA_VERSION == 5
+        assert db.schema_version(conn) == db.SCHEMA_VERSION == 6
         rows = conn.execute(
             "SELECT id, vanished_count, exclude_names FROM snapshots ORDER BY id"
         ).fetchall()
@@ -312,7 +312,7 @@ def test_v3_database_migrates_vanished_count_with_default_zero(tmp_path):
         assert (last["vanished_count"], last["exclude_names"]) == (5, "skip.noindex")
     finally:
         conn.close()
-    # v3→v4→v5 失败回退时 v3 备份仍可恢复（迁移前快照）。
+    # 链式迁移失败回退时 v3 备份仍可恢复（迁移前快照）。
     backups_v3 = sorted(path.parent.glob(path.name + ".backup-v3-*.sqlite3"))
     assert len(backups_v3) == 1
     backup = sqlite3.connect(backups_v3[0])
@@ -406,7 +406,7 @@ class TestISS066ExcludeNamesMigration:
 
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == db.SCHEMA_VERSION == 5
+            assert db.schema_version(conn) == db.SCHEMA_VERSION == 6
             cols = {row[1] for row in conn.execute(
                 "PRAGMA table_info(snapshots)")}
             assert "exclude_names" in cols
@@ -478,6 +478,101 @@ class TestISS066ExcludeNamesMigration:
             cols = [row[1] for row in second.execute(
                 "PRAGMA table_info(snapshots)")]
             assert cols.count("exclude_names") == 1
-            assert db.schema_version(second) == db.SCHEMA_VERSION == 5
+            assert db.schema_version(second) == db.SCHEMA_VERSION == 6
         finally:
             second.close()
+
+
+class TestISS116V6Migration:
+    @staticmethod
+    def _v5(path: Path, *, user_version: int = 5) -> None:
+        conn = sqlite3.connect(path)
+        try:
+            for statement in db._SCHEMA_STATEMENTS:
+                conn.execute(statement)
+            for ddl in (*db._SNAPSHOT_ALTER_V3, *db._SNAPSHOT_ALTER_V4,
+                        *db._SNAPSHOT_ALTER_V5):
+                conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+            conn.execute(f"PRAGMA user_version={user_version}")
+            conn.execute(
+                "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+                "du_seconds, total_kb, min_kb, collection_status, vanished_count) "
+                "VALUES ('2026-09-28T12:00:00', '/synthetic/root', 2, 1, "
+                "0.1, 42, 1024, 'partial', 4)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_v5_to_v6_preserves_old_uncertainty_and_backup(self, tmp_path):
+        path = tmp_path / "v5.db"
+        self._v5(path)
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 6
+            row = conn.execute("SELECT vanished_count, confirmed_missing_count, "
+                               "path_unverified_count FROM snapshots").fetchone()
+            assert tuple(row) == (4, None, None)
+            assert db._detect_schema_version(conn) == 6
+        finally:
+            conn.close()
+        backups = list(tmp_path.glob("v5.db.backup-v5-*.sqlite3"))
+        assert len(backups) == 1
+        raw = sqlite3.connect(backups[0])
+        try:
+            assert raw.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert "confirmed_missing_count" not in {r[1] for r in raw.execute(
+                "PRAGMA table_info(snapshots)")}
+        finally:
+            raw.close()
+
+    def test_v5_migration_failure_rolls_back_both_columns(self, tmp_path, monkeypatch):
+        path = tmp_path / "v5-fail.db"
+        self._v5(path)
+
+        def fail_after_first(conn):
+            conn.execute("ALTER TABLE snapshots ADD COLUMN confirmed_missing_count INTEGER")
+            raise sqlite3.OperationalError("injected v6 failure")
+
+        monkeypatch.setitem(db._MIGRATIONS, 5, fail_after_first)
+        with pytest.raises(db.MigrationError, match="原库已回滚"):
+            db.connect(path)
+        raw = sqlite3.connect(path)
+        try:
+            assert raw.execute("PRAGMA user_version").fetchone()[0] == 5
+            assert "confirmed_missing_count" not in {r[1] for r in raw.execute(
+                "PRAGMA table_info(snapshots)")}
+            assert raw.execute("SELECT vanished_count FROM snapshots").fetchone()[0] == 4
+        finally:
+            raw.close()
+
+    def test_v5_shape_with_zero_user_version_migrates_without_guessing(self, tmp_path):
+        path = tmp_path / "mismatch.db"
+        self._v5(path, user_version=0)
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 6
+            row = conn.execute("SELECT confirmed_missing_count, path_unverified_count "
+                               "FROM snapshots").fetchone()
+            assert tuple(row) == (None, None)
+        finally:
+            conn.close()
+
+    def test_v6_shape_with_v5_user_version_is_idempotent(self, tmp_path):
+        path = tmp_path / "idempotent.db"
+        self._v5(path)
+        raw = sqlite3.connect(path)
+        try:
+            for ddl in db._SNAPSHOT_ALTER_V6:
+                raw.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+            raw.commit()
+        finally:
+            raw.close()
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 6
+            names = [r[1] for r in conn.execute("PRAGMA table_info(snapshots)")]
+            assert names.count("confirmed_missing_count") == 1
+            assert names.count("path_unverified_count") == 1
+        finally:
+            conn.close()

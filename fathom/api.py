@@ -225,9 +225,13 @@ def api_status():
         # DEFAULT 同语义。
         if latest_row is not None:
             vanished_count = latest_row.get("vanished_count") or 0
+            confirmed_missing_count = latest_row.get("confirmed_missing_count")
+            path_unverified_count = latest_row.get("path_unverified_count")
             latest_excludes = latest_row.get("exclude_names") or ""
         else:
             vanished_count = 0
+            confirmed_missing_count = None
+            path_unverified_count = None
             latest_excludes = ""
         st = os.statvfs(config.DEFAULT_ROOT)
         db_size = config.DB_PATH.stat().st_size if config.DB_PATH.exists() else 0
@@ -239,6 +243,8 @@ def api_status():
             "snapshot_count": count,
             "latest_snapshot": latest_row,
             "vanished_count": vanished_count,
+            "confirmed_missing_count": confirmed_missing_count,
+            "path_unverified_count": path_unverified_count,
             "exclude_names": config.EXCLUDE_NAMES,
             "disk": {
                 "total_bytes": st.f_blocks * st.f_frsize,
@@ -264,6 +270,7 @@ def api_snapshots():
             """SELECT s.id, s.created_at, s.root, s.total_kb, s.dir_count, s.denied_count,
                       s.min_kb, s.collection_status,
                       s.vanished_count, s.exclude_names,
+                      s.confirmed_missing_count, s.path_unverified_count,
                       v.total_bytes, v.free_bytes
                FROM snapshots s LEFT JOIN volume_stats v ON v.snapshot_id = s.id
                ORDER BY s.created_at DESC, s.id DESC"""
@@ -807,6 +814,8 @@ def api_permissions():
                 "dir_count": snap["dir_count"] if snap else None,
                 "denied_count": snap["denied_count"] if snap else None,
                 "vanished_count": snap["vanished_count"] if snap else None,
+                "confirmed_missing_count": snap["confirmed_missing_count"] if snap else None,
+                "path_unverified_count": snap["path_unverified_count"] if snap else None,
             },
         }
     finally:

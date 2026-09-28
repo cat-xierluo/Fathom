@@ -284,10 +284,24 @@ def render_markdown(
             f"- 注意：本次采集为部分覆盖，du 输出 {new_meta['denied_count']} 条读取受限记录；"
             "同一路径可能产生多条错误，无法据此判断未统计目录数量或空间大小"
         )
-    # vanished_count 是 du 输出后校验未确认路径仍存在的数量；os.path.isdir/
-    # exists 对权限错误也可能返回 False，不能据此断言目录已消失或被清理。
     vanished_count = new_meta["vanished_count"] if "vanished_count" in new_meta.keys() else 0
-    if vanished_count:
+    confirmed = (new_meta["confirmed_missing_count"]
+                 if "confirmed_missing_count" in new_meta.keys() else None)
+    unverified = (new_meta["path_unverified_count"]
+                  if "path_unverified_count" in new_meta.keys() else None)
+    if confirmed is not None and unverified is not None:
+        if confirmed:
+            lines.append(
+                f"- 注意：{confirmed} 个目录在 du 输出后校验时路径不存在；"
+                "保留 du 当时的测量值，不能据此推断删除原因或未统计空间"
+            )
+        if unverified:
+            lines.append(
+                f"- 注意：{unverified} 个目录在 du 输出后校验时状态无法确认；"
+                "可能因权限或其他读取错误无法访问，保留 du 当时的测量值，"
+                "不能认定已删除或推算未统计空间"
+            )
+    elif vanished_count:
         lines.append(
             f"- 注意：另有 {vanished_count} 个目录状态未确认：du 输出后校验时"
             "未能确认路径仍存在（可能移动、被清理或无法访问）；保留 du 当时的测量值，"
@@ -396,6 +410,10 @@ def write_daily_report(
             collection_status=new_meta["collection_status"],
             denied_count=new_meta["denied_count"] or 0,
             vanished_count=new_meta["vanished_count"] if "vanished_count" in new_meta.keys() else 0,
+            confirmed_missing_count=(new_meta["confirmed_missing_count"]
+                                     if "confirmed_missing_count" in new_meta.keys() else None),
+            path_unverified_count=(new_meta["path_unverified_count"]
+                                   if "path_unverified_count" in new_meta.keys() else None),
         )
     return out
 
@@ -408,6 +426,10 @@ def notify_for_snapshot(conn: sqlite3.Connection, sid: int) -> bool:
         collection_status=new_meta["collection_status"],
         denied_count=new_meta["denied_count"] or 0,
         vanished_count=new_meta["vanished_count"] if "vanished_count" in new_meta.keys() else 0,
+        confirmed_missing_count=(new_meta["confirmed_missing_count"]
+                                 if "confirmed_missing_count" in new_meta.keys() else None),
+        path_unverified_count=(new_meta["path_unverified_count"]
+                               if "path_unverified_count" in new_meta.keys() else None),
     )
 
 
@@ -418,7 +440,8 @@ def notify_first_snapshot_for(conn: sqlite3.Connection, sid: int) -> bool:
     只说明快照已建立与覆盖/剩余状态，不出现 0 变化式误导文案。
     """
     row = conn.execute(
-        "SELECT collection_status, denied_count, vanished_count FROM snapshots WHERE id=?", (sid,)
+        "SELECT collection_status, denied_count, vanished_count, "
+        "confirmed_missing_count, path_unverified_count FROM snapshots WHERE id=?", (sid,)
     ).fetchone()
     free_row = conn.execute(
         "SELECT free_bytes FROM volume_stats WHERE snapshot_id = ?", (sid,)
@@ -430,6 +453,8 @@ def notify_first_snapshot_for(conn: sqlite3.Connection, sid: int) -> bool:
         collection_status=row["collection_status"],
         denied_count=row["denied_count"] or 0,
         vanished_count=row["vanished_count"] or 0,
+        confirmed_missing_count=row["confirmed_missing_count"],
+        path_unverified_count=row["path_unverified_count"],
     )
 
 

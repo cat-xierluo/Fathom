@@ -49,12 +49,12 @@ env:
   # (tests/test_upgrade_restore.py 安装后失败的真实旧 bundle 与数据恢复
   # 聚焦测试)；739 = 727 + 12(ISS-097
   # 升级事务聚焦测试)，727 = 720 + 7(ISS-096)，720 已含 ISS-030A/040B/040C/
-  # 037/081/090/091 批次）：800 pytest、39 API/浏览器检查、198 前端
+  # 037/081/090/091 批次）：ISS-116 后 814 pytest、39 API/浏览器检查、200 前端
   # refresh（ISS-100 起随浏览器 job 执行；ISS-111 权限分区断言 179 → 188；
   # ISS-113 更新无感化 +5：开关关闭回现状 1、后台下载呈现与取消 1、重试
   # 下载 1、downloaded ready 与确认取消 1、确认安装至 installed 1；
   # available/浏览器降级断言原地改写不计数；ISS-115 权限错误行/历史快照
-  # +3、校验歧义 +2，比值断言原地更新不计数）、
+  # +3、校验歧义 +2，比值断言原地更新不计数；ISS-116 分类显示 +2）、
   # cargo locked offline build +
   # 单测 65（ISS-100 起随 cargo job 执行；ISS-113 +3：settings.json 宽读
   # fail-safe、prefetch 决策分支、downloaded ready 载荷合同；ISS-113 修复
@@ -64,9 +64,9 @@ env:
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "800"
+  EXPECTED_PYTEST_PASSED: "814"
   EXPECTED_BROWSER_PASSED: "39"
-  EXPECTED_REFRESH_PASSED: "198"
+  EXPECTED_REFRESH_PASSED: "200"
   EXPECTED_CARGO_PASSED: "65"
 
 jobs:
@@ -103,7 +103,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 800 项通过）
+      - name: pytest（断言 814 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh
@@ -148,7 +148,7 @@ jobs:
           npm install "playwright@${PLAYWRIGHT_VERSION}"
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" --version
 
-      - name: API/浏览器 39 项与前端 refresh 198 项检查（断言计数）
+      - name: API/浏览器 39 项与前端 refresh 200 项检查（断言计数）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
           NODE_PATH: ${{ runner.temp }}/pw/node_modules

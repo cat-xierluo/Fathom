@@ -9,7 +9,8 @@
  *    tray/favicon/加载环仍为深度环矢量（DEC-023 分工）。
  *  - 选中态两级：一级导航深潭墨实底保留（全站唯一深色选中态，
  *    ISS-092 用户认可）；二级（内容页 tab/设置分区）= 浅品牌底
- *    rgba(52,93,127,.10) + 海沟蓝文字 + 3px 矿物青短刻度。
+ *    rgba(52,93,127,.10) + 海沟蓝文字（2026-09-27 用户走查裁决：
+ *    去除短刻度竖线）。
  *  - 按钮族：实心主按钮 36px 每视口至多一个（归属当前页主任务）；
  *    全局扫描与排除列表保存固定次级描边 32px。
  *  - 字阶 token：display 28 / h1 22 / h2 15 / body 14 / table 13 / hint 12
@@ -67,7 +68,8 @@
   /* ISS-105 间距 token（8pt 栅格；--sp5 20px 为半步，候选合同 conclusion
    * padding 用——ISS-104 候选 token 表原文） */
   --sp1: 4px; --sp2: 8px; --sp3: 12px; --sp4: 16px; --sp5: 20px; --sp6: 24px; --sp8: 32px;
-  /* 二级选中态短刻度与浅品牌底（ISS-104 候选：--primary 同源派生用法，非新色） */
+  /* 二级选中态浅品牌底（ISS-104 候选：--primary 同源派生用法，非新色；
+   * 2026-09-27 用户走查裁决：去除短刻度竖线，仅保留此底 + 海沟蓝文字） */
   --subsel-bg: rgba(52, 93, 127, 0.10);
 }
 
@@ -79,7 +81,20 @@
  *     短内容页也能滚出内容范围出现空白（含 WebView 橡皮筋放大）；
  *  2) 侧栏原先 sticky 的约束底边是 app-shell 底边，滚动进入页脚段
  *     时被顶出视口，按钮随滚动位移。壳内元素天然固定后零位移。 */
-html, body { height: 100%; overflow: hidden; }
+/* WKWebView（Tauri 壳）滚动弹性根治（09-27 走查反例：设置页上滑侧栏跟动）：
+ * wry 0.55 只在 iOS 禁 bounce（setBounces(false)），macOS 无开关——文档根只要
+ * 在 WK 视口下可滚（哪怕 1px），原生根滚动器就会整页弹性回弹，视觉上侧栏/
+ * 顶栏跟着动。html/body 钉死为 fixed（inset:0）使根布局永不溢出 → 根滚动器
+ * 无可弹内容；内部滚动与 sticky 全在 .page-container，不受影响。Chromium
+ * 无副作用（082 夹具合同不变）。 */
+html, body {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
 
 body {
   margin: 0;
@@ -431,8 +446,9 @@ tr:hover .btn-mini { opacity: 1; }
 }
 .panel-head h2 { margin: 0; font-size: var(--fs-h2); font-weight: 600; }
 /* ISS-105：原 panel 标题前三根短刻度（.panel-head h2::before）移除——
- * ISS-104 候选「h2 前刻度」属刻度泛化反例；R3 母题收敛为三处
- * （侧栏品牌位短刻度/总览等深线/二级选中态短刻度）。 */
+ * ISS-104 候选「h2 前刻度」属刻度泛化反例；R3 母题收敛为两处
+ * （侧栏品牌位短刻度/总览等深线；二级选中态短刻度已于 2026-09-27
+ * 用户走查裁决中去除）。 */
 .panel-head h3 { font-size: var(--fs-table); margin: 6px 0; }
 .hint { margin: 0; color: var(--muted); font-size: var(--fs-hint); }
 .hint.link { color: var(--primary); text-decoration: none; cursor: pointer; }
@@ -751,7 +767,7 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
  * 数据集的不同视图，用页头下横向 tab 条——「翻页」心智且不占纵向宽度。
  * ISS-105（ISS-104 候选 + 用户裁决④）：tab 条不再是卡片——表面层级
  * 收敛后它是 L1 白卡上方的独立控件条（bg 底、无描边），选中态与设置
- * 分区同语言（浅品牌底 + 短刻度，深色实底全站仅一级导航一处）；
+ * 分区同语言（浅品牌底 + 海沟蓝文字，深色实底全站仅一级导航一处）；
  * sticky 在 .page-container（ISS-082 唯一滚动容器）顶部：长内容上滚时
  * tab 常驻可达，不引入自身滚动（与设置页 nav 的 sticky 同做法）。 */
 .page-tabs {
@@ -783,25 +799,15 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   background: rgba(16, 24, 40, 0.05);
   color: var(--text);
 }
-/* ISS-105 二级选中态（用户裁决④）：浅品牌底（--primary 同源派生）+
- * 海沟蓝文字 + 左侧 3px 矿物青短刻度——与一级导航深潭墨实底形成明确
- * 权重差；深色实底选中态全站仅一级导航一处（ISS-092 用户认可，保留）。 */
+/* ISS-105 二级选中态（用户裁决④；2026-09-27 用户走查裁决：去除短刻度
+ * 竖线）：浅品牌底（--primary 同源派生）+ 海沟蓝文字——与一级导航深潭
+ * 墨实底形成明确权重差；深色实底选中态全站仅一级导航一处（ISS-092 用户
+ * 认可，保留）。 */
 .page-tab[aria-current="true"],
 .page-tab[aria-current="true"]:hover {
   background: var(--subsel-bg);
   color: var(--trench);
   font-weight: 600;
-}
-.page-tab[aria-current="true"]::before {
-  content: "";
-  position: absolute; left: 6px; top: 50%;
-  transform: translateY(-50%);
-  width: 3px; height: 14px; border-radius: 2px;
-  background: var(--mineral);
-  transition: height 0.2s ease-out;
-}
-@media (prefers-reduced-motion: reduce) {
-  .page-tab[aria-current="true"]::before { transition: none; }
 }
 .page-tab:focus-visible {
   outline: 2px solid var(--primary);
@@ -862,25 +868,14 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   background: rgba(16, 24, 40, 0.05);
   color: var(--text);
 }
-/* ISS-105 二级选中态（用户裁决④）：设置分区与内容页 tab 同语言——浅品牌
- * 底 + 海沟蓝文字 + 3px 矿物青短刻度；深潭墨实底全站仅一级导航一处
- * （ISS-092 用户认可的方向保留在侧栏）。 */
+/* ISS-105 二级选中态（用户裁决④；2026-09-27 用户走查裁决：去除短刻度
+ * 竖线）：设置分区与内容页 tab 同语言——浅品牌底 + 海沟蓝文字；深潭墨
+ * 实底全站仅一级导航一处（ISS-092 用户认可的方向保留在侧栏）。 */
 .settings-nav-item[aria-current="true"],
 .settings-nav-item[aria-current="true"]:hover {
   background: var(--subsel-bg);
   color: var(--trench);
   font-weight: 600;
-}
-.settings-nav-item[aria-current="true"]::before {
-  content: "";
-  position: absolute; left: 5px; top: 50%;
-  transform: translateY(-50%);
-  width: 3px; height: 14px; border-radius: 2px;
-  background: var(--mineral);
-  transition: height 0.2s ease-out;
-}
-@media (prefers-reduced-motion: reduce) {
-  .settings-nav-item[aria-current="true"]::before { transition: none; }
 }
 .settings-nav-icon {
   display: inline-flex;
@@ -964,6 +959,27 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   font-size: 12px;
 }
 .about-meta-val { min-width: 0; }
+/* 关于作者/微信拆分布局（2026-09-27 用户走查裁决，参照 Folia
+ * AboutSection）：作者键值列表在左，微信二维码独立块在右（纵向：码图 +
+ * 标签）；窄视口换行，不挤压键值列。 */
+.about-author-body {
+  display: flex;
+  gap: 28px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.about-author-body .about-meta { flex: 1 1 280px; }
+.about-wechat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(16, 24, 40, 0.04);
+}
+.about-wechat-qr { width: 96px; height: 96px; border-radius: 8px; display: block; }
+.about-wechat-label { font-size: var(--fs-hint); color: var(--text); }
 .about-meta a {
   color: var(--primary);
   text-decoration: none;

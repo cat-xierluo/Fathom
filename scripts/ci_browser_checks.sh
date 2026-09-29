@@ -102,7 +102,8 @@ fi
 
 out="$(mktemp)"
 refresh_out="$(mktemp)"
-trap 'rm -f "$out" "$refresh_out"' EXIT
+analysis_out="$(mktemp)"
+trap 'rm -f "$out" "$refresh_out" "$analysis_out"' EXIT
 node scripts/verify_api_security.cjs | tee "$out"
 
 # 两套检查同一门禁：结果 JSON 必须 ok=true、failed=0、passed==期望，
@@ -132,7 +133,6 @@ assert_result_json "$refresh_out" "$expected_refresh" "frontend refresh"
 # 随机端口）。47 项——七态/检测列表/授权层/世代守卫/幂等/HTML 转义/双视口。
 # 失败自身非零退出，pipefail 直通判红；计数漂移由 EXPECTED_ANALYSIS_PASSED
 # 兜底（同 refresh 门禁口径）。
-analysis_out="$RUNNER_TEMP/analysis_result.json"
 node scripts/verify_analysis_frontend.cjs | tee "$analysis_out"
 expected_analysis="${EXPECTED_ANALYSIS_PASSED:-47}"
 assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"

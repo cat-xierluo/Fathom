@@ -1176,3 +1176,57 @@ code {
  * [data-test=updater-details] 的 .cfg-details 折叠承载（零新色板、零
  * 动画依赖，键盘可达为原生 checkbox/details）。 */
 .updater-auto-label { margin-left: auto; flex: none; white-space: nowrap; }
+
+/* ===== AI 解读与 AI 分析分区（ISS-035C）=====
+ * 视觉合同：104 体系内——品牌蓝青色系、语义色只用既有 token
+ * （--ok 成功/--warn 中间态/--danger 失败/--muted 不可用），零 emoji；
+ * 长路径与不可信文本一律 break-word，不允许撑破布局。 */
+.analysis-runtime-list { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 8px; }
+.analysis-runtime-row {
+  border: 1px solid var(--hairline); border-radius: 8px;
+  padding: 10px 12px; display: grid; gap: 4px;
+}
+.analysis-runtime-disabled { opacity: 0.82; }
+.analysis-runtime-main { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.analysis-runtime-name { font-size: var(--fs-body); font-weight: 600; }
+.analysis-reco-badge {
+  font-size: var(--fs-hint); color: var(--trench);
+  border: 1px solid rgba(52, 93, 127, 0.35); border-radius: 999px;
+  padding: 1px 8px; background: var(--subsel-bg);
+}
+.analysis-reason { margin: 0; font-size: var(--fs-hint); color: var(--muted); line-height: 1.5; overflow-wrap: anywhere; }
+.analysis-runtime-actions { margin-top: 2px; }
+
+/* 变化页解读区：正文块、子标题、发现列表（已观察/推断用 quality-chip） */
+.analysis-summary { margin: 8px 0; font-size: var(--fs-body); line-height: 1.6; overflow-wrap: anywhere; }
+.analysis-subhead { font-size: var(--fs-body); margin: 12px 0 4px; color: var(--used); }
+.analysis-findings, .analysis-limitations, .analysis-inspect {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 6px;
+  font-size: var(--fs-hint); color: var(--text);
+}
+.analysis-finding { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.analysis-finding-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.analysis-finding-evidence { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.analysis-limitations li, .analysis-inspect li { overflow-wrap: anywhere; line-height: 1.5; }
+.analysis-prompt {
+  max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  background: var(--bg); border: 1px solid var(--hairline); border-radius: 6px;
+  padding: 8px; font-size: 12px; margin: 6px 0;
+}
+.analysis-expired-note {
+  border: 1px solid #e5d6a8; background: #faf3e3; color: var(--warn);
+  border-radius: 6px; padding: 8px 10px; line-height: 1.5;
+}
+.analysis-evidence-card {
+  border: 1px solid var(--hairline); border-radius: 8px;
+  padding: 10px 12px; margin-top: 8px; display: grid; gap: 4px;
+}
+.analysis-evidence-head { display: flex; align-items: center; gap: 8px; }
+.analysis-evidence-head .btn-mini { margin-left: auto; }
+.analysis-evidence-path {
+  margin: 0; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere; color: var(--used);
+}
+/* evidence 定位高亮：浅品牌底闪烁两次的静态等价物（无动画依赖：
+ * 2.4 秒后由 JS 移除类，reduced-motion 无差异） */
+#changes-body tr.analysis-locate-flash > td { background: var(--subsel-bg); }

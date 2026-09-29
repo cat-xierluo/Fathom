@@ -22,7 +22,7 @@
  *   默认 section = 监控；URL hash 可选持久化（`#settings/about` 等）。
  *   浏览器/开发态无 Tauri 桥时全部 section 仍可达（不删除/隐藏入口）。
  */
-import { fetchJSON, beginRequest, invalidateRequest, apiPut } from "../request.js";
+import { fetchJSON, beginRequest, invalidateRequest, apiPut, apiPost } from "../request.js";
 import { escapeHtml, fmtBytes, fmtKB } from "../format.js";
 import { icon } from "../../icons.js";
 import { triggerScan, loadStatus } from "../status.js";
@@ -41,12 +41,15 @@ let lastStatusAppVersion = null;  // 最近一次 /api/status 的 app_version（
  */
 /* ISS-111：权限分区排在「计划与通知」之后、「高级与诊断」之前——
  * 监控/计划与通知/权限同属用户级日常设置（授权操作是用户裁决的主入口），
- * 高级与诊断（排障）与关于（元信息）靠后。 */
-const SETTINGS_SECTIONS = ["monitoring", "schedule", "permissions", "advanced", "about"];
+ * 高级与诊断（排障）与关于（元信息）靠后。
+ * ISS-035C：「AI 分析」分区随用户级组（权限之后、高级与诊断之前）——
+ * 变化页 AI 解读的引擎检测/选择/授权都在这里完成。 */
+const SETTINGS_SECTIONS = ["monitoring", "schedule", "permissions", "analysis", "advanced", "about"];
 const SETTINGS_SECTION_LABELS = {
   monitoring: "监控",
   schedule: "计划与通知",
   permissions: "权限",
+  analysis: "AI 分析",
   advanced: "高级与诊断",
   about: "关于",
 };
@@ -151,9 +154,17 @@ function initSettingsNav() {
       _handleSettingsNavKeydown(event);
     });
   }
-  // URL hash 优先；空 hash 视为 monitoring 默认
+  // URL hash 优先；空 hash 视为 monitoring 默认。
+  // ISS-035C：跨页深链挂起段（window.__fathomSettingsSectionPending）——
+  // 变化页「前往设置开启」按钮置段后跳 #/settings；hash 形态 `#settings/x`
+  // 会触发 hashchange 且 router 解析不出页面，故跨页跳转走 pending 而非
+  // hash（与 tabs.js 的 __fathomTabPending 同一模式）。
+  const pendingSection = window.__fathomSettingsSectionPending;
+  window.__fathomSettingsSectionPending = null;
   const fromHash = _readHashSection();
-  activateSettingsSection(fromHash || "monitoring");
+  const initial = pendingSection && SETTINGS_SECTIONS.includes(pendingSection)
+    ? pendingSection : (fromHash || "monitoring");
+  activateSettingsSection(initial, { persistHash: Boolean(pendingSection) });
 }
 
 /* 深链目标：macOS 系统设置 → 隐私与安全性 → 完全磁盘访问。
@@ -626,6 +637,8 @@ async function loadSettings() {
   loadAutostart();
   // 加载"应用更新"区（ISS-040B；可独立失败，不影响主配置）
   loadUpdater();
+  // 加载"AI 分析"分区（ISS-035C；可独立失败，不影响主配置）
+  loadAnalysisSettings();
 }
 
 /* ISS-109：状态/来源英文枚举的中文展示映射；未登记的值原样展示不吞字 */
@@ -1107,6 +1120,356 @@ async function loadPermissionHub() {
   }
   renderPermFda(fdaBody, data?.fda, data?.coverage);
   renderPermNotif(notifBody, data?.notification);
+}
+
+/* ===== AI 分析（ISS-035C）=====
+ * 变化页 AI 解读的引擎检测/选择/授权分区。合同（方案 §7 + 用户裁决
+ * 2026-09-29）：
+ * - 检测只经用户点击触发（POST /api/analysis/runtimes/detect；探测只读，
+ *   不发送业务数据）；
+ * - 四家候选全部列出：Claude Code 首位 + 「推荐」徽章（用户裁决），
+ *   ZCode/Codex/Hermes 不隐藏不折叠——不支持/未安装/启动异常如实显示原因；
+ * - --version 成功不等于已登录：ready 家 auth_status=unknown 时显示
+ *   「认证待确认」，任何路径不出现「已登录」表述（反例 1 的断言锚点）；
+ * - 只有 availability=ready 的候选可选中；选择必经授权确认层——发送对象
+ *   说明（本机 CLI 可能把数据发送给其配置的模型服务，不暗示本地推理）、
+ *   本地保存与撤销说明、账号额度由该 CLI 管理；
+ * - 授权/关闭/换引擎都走既有 PUT /api/config 的 analysis 键（部分合并）；
+ *   失败保持旧值可辨（与 ISS-108 同口径：以 lastConfig 重渲染）；
+ * - 保存成功后提示：变化页已保存的发送预览已失效，下次分析需重新预览
+ *   （后端 refresh_policy 同步取消在途分析，前端只提示不替后端表态）。
+ */
+const ANALYSIS_PANEL_ID = "analysis-settings-panel";
+
+/* 候选展示顺序：Claude Code 首推固定首位；其余按注册表顺序。
+ * detect 响应缺失的候选也照常渲染（显示「未检测」），不隐藏。 */
+const ANALYSIS_RUNTIME_ORDER = ["claude-code", "zcode", "codex-cli", "hermes-agent"];
+const ANALYSIS_RECOMMENDED_ID = "claude-code";
+
+const ANALYSIS_AVAIL_BADGES = {
+  ready: { text: "可用", cls: "ok" },
+  unsupported: { text: "暂不支持", cls: "miss" },
+  not_found: { text: "未安装", cls: "miss" },
+  broken: { text: "启动异常", cls: "danger" },
+};
+
+/* reason_code 的用户可读文案；未登记的值原样展示不吞字（与既有映射
+ * SCAN_STATUS_LABELS 同口径）。 */
+const ANALYSIS_REASON_LABELS = {
+  verified_version: "已验证版本",
+  not_found: "本机未找到该命令行",
+  version_probe_failed: "版本探测失败（启动后无有效输出）",
+  version_unrecognized: "版本号未识别（可能未经测试）",
+  version_unverified: "版本不在已验证清单内",
+  probe_budget_exhausted: "本轮探测预算用尽，可稍后重测",
+  unsupported_by_contract: "当前产品合同未开放该引擎",
+  tool_disable_unverifiable: "无法从外部证明其工具已全部禁用",
+  tool_gate_absent_by_design: "无工具级禁用参数（只读沙箱不等于禁读文件）",
+  tool_events_unobservable: "调用形态无法观察工具事件",
+};
+
+/* 认证三态：unknown 是探测的真实结论（--version 不解释登录态）。 */
+const ANALYSIS_AUTH_BADGES = {
+  verified: { text: "已验证登录", cls: "ok" },
+  required: { text: "需要登录", cls: "warn" },
+  unknown: { text: "认证待确认", cls: "warn" },
+};
+
+function _ensureAnalysisPanel() {
+  const host = document.getElementById("settings-analysis-extra");
+  if (!host) return null;
+  let panel = document.getElementById(ANALYSIS_PANEL_ID);
+  if (panel) return panel;
+  panel = document.createElement("div");
+  panel.id = ANALYSIS_PANEL_ID;
+  panel.className = "panel";
+  panel.innerHTML = `
+    <div class="panel-head">
+      <h2>变化解读引擎</h2>
+      <span class="quality-chip miss" data-test="analysis-state-chip">${icon("sparkles", 12)} 未知</span>
+    </div>
+    <div class="perm-panel" data-test="analysis-panel-body">
+      <p class="hint">状态加载中…</p>
+    </div>`;
+  host.appendChild(panel);
+  return panel;
+}
+
+/** 当前授权状态的 chip（含引擎名/版本，未配置如实显示）。 */
+function analysisStateChip(cfgAnalysis) {
+  const node = document.querySelector("#" + ANALYSIS_PANEL_ID + " [data-test='analysis-state-chip']");
+  if (!node) return;
+  const runtime = cfgAnalysis?.runtime;
+  if (cfgAnalysis?.enabled && runtime) {
+    node.className = "quality-chip ok";
+    node.innerHTML = `${icon("sparkles", 12)} 已授权 ${escapeHtml(runtime.id)}` +
+      (runtime.version ? ` v${escapeHtml(runtime.version)}` : "");
+  } else {
+    node.className = "quality-chip miss";
+    node.innerHTML = `${icon("sparkles", 12)} 未启用`;
+  }
+}
+
+/** 渲染检测出的四家候选行。detectResult: {id: RuntimeInfo dict} | null（未检测）。 */
+function renderAnalysisRuntimes(body, cfgAnalysis, detectResult, detecting) {
+  const runtime = cfgAnalysis?.runtime || null;
+  const enabled = Boolean(cfgAnalysis?.enabled);
+  const rows = ANALYSIS_RUNTIME_ORDER.map((id) => {
+    const info = detectResult ? detectResult[id] : null;
+    const metaRecommended = id === ANALYSIS_RECOMMENDED_ID;
+    if (!info) {
+      return `
+      <li class="analysis-runtime-row" data-test="analysis-runtime-row" data-runtime-id="${id}">
+        <div class="analysis-runtime-main">
+          <span class="analysis-runtime-name">${escapeHtml(id)}</span>
+          ${metaRecommended ? `<span class="analysis-reco-badge" data-test="analysis-reco-badge">推荐</span>` : ""}
+          <span class="quality-chip miss"><span class="st-dot"></span>未检测</span>
+        </div>
+        <p class="analysis-reason">点击上方「检测可用引擎」查看本机可用性。</p>
+      </li>`;
+    }
+    const avail = ANALYSIS_AVAIL_BADGES[info.availability] ||
+      { text: String(info.availability), cls: "miss" };
+    const reasonText = ANALYSIS_REASON_LABELS[info.reason_code] || info.reason_code || "";
+    const auth = ANALYSIS_AUTH_BADGES[info.auth_status];
+    const selectable = info.availability === "ready";
+    const active = enabled && runtime && runtime.id === id;
+    const versionText = info.version ? `版本 ${escapeHtml(info.version)}` : "";
+    const isCurrent = runtime && runtime.id === id;
+    const drift = isCurrent && info.executable && runtime.executable &&
+      info.executable !== runtime.executable;
+    return `
+      <li class="analysis-runtime-row${selectable ? "" : " analysis-runtime-disabled"}"
+          data-test="analysis-runtime-row" data-runtime-id="${escapeHtml(id)}"
+          data-availability="${escapeHtml(info.availability)}">
+        <div class="analysis-runtime-main">
+          <span class="analysis-runtime-name">${escapeHtml(info.display_name || id)}</span>
+          ${metaRecommended ? `<span class="analysis-reco-badge" data-test="analysis-reco-badge">推荐</span>` : ""}
+          <span class="quality-chip ${avail.cls}" data-test="analysis-avail-badge">${escapeHtml(avail.text)}</span>
+          ${selectable && auth ? `<span class="quality-chip ${auth.cls}" data-test="analysis-auth-badge">${escapeHtml(auth.text)}</span>` : ""}
+          ${active ? `<span class="quality-chip ok" data-test="analysis-active-badge">当前使用</span>` : ""}
+          ${versionText ? `<span class="hint">${versionText}</span>` : ""}
+        </div>
+        ${reasonText ? `<p class="analysis-reason" data-test="analysis-reason">${escapeHtml(reasonText)}${info.detail && info.availability !== "ready" ? `：${escapeHtml(info.detail)}` : ""}</p>` : ""}
+        ${drift ? `<p class="analysis-reason cfg-error">检测到的入口与已保存路径不同；重新选择会更新保存的引擎。</p>` : ""}
+        ${selectable ? `
+        <div class="analysis-runtime-actions">
+          <button type="button" class="btn" data-test="analysis-pick-btn" data-runtime-id="${escapeHtml(id)}">
+            ${active ? "重新确认授权" : "选择此引擎"}
+          </button>
+        </div>` : ""}
+      </li>`;
+  }).join("");
+  const detectNote = detecting
+    ? `<span class="dr-loading" data-dr-spin aria-hidden="true"></span>正在检测（只读探测，最多约 20 秒）…`
+    : "";
+  body.innerHTML = `
+    <p class="perm-note">解读在分析时把两个快照的脱敏目录事实打包交给本机命令行引擎；
+      引擎可能把数据发送给它配置的模型服务。账号、额度与模型配置由该命令行管理，
+      Fathom 不保存密钥。检测只读取本机命令行的版本信息，不发送业务数据。</p>
+    <div class="perm-link-row">
+      <button type="button" id="btn-analysis-detect" class="btn" data-test="analysis-detect-btn"${detecting ? " disabled" : ""}>
+        ${icon("settings", 14)} 检测可用引擎
+      </button>
+      <span class="hint" data-test="analysis-detect-status">${detectNote}</span>
+    </div>
+    <ul class="analysis-runtime-list" data-test="analysis-runtime-list">${rows}</ul>
+    <p class="hint" data-test="analysis-save-note">${escapeHtml(analysisSaveNote(cfgAnalysis))}</p>
+    <div id="analysis-confirm-layer" data-test="analysis-confirm-layer" hidden></div>`;
+  const detectBtn = document.getElementById("btn-analysis-detect");
+  if (detectBtn) detectBtn.addEventListener("click", () => detectAnalysisRuntimes(body));
+  body.querySelectorAll("[data-test='analysis-pick-btn']").forEach((btn) => {
+    btn.addEventListener("click", () => confirmAnalysisPick(body, btn.dataset.runtimeId, detectResult));
+  });
+}
+
+/** 保存说明：revision 变化提示重新预览（范围合同）。 */
+function analysisSaveNote(cfgAnalysis) {
+  if (!cfgAnalysis?.enabled) {
+    return "当前未启用 AI 解读：变化页只显示基础事实，不发送任何数据。";
+  }
+  const runtime = cfgAnalysis.runtime;
+  if (!runtime) return "已启用但未选择引擎（异常状态）：请重新检测并选择。";
+  return `已授权 ${runtime.id}${runtime.version ? ` v${runtime.version}` : ""}。` +
+    "改动保存后，变化页已生成的发送预览即失效（如有），下次分析前需重新生成预览；" +
+    "在途分析会被取消。";
+}
+
+/** 检测（用户点击触发）：失败显示可读原因与重试（detect 按钮常驻即重试入口）。 */
+async function detectAnalysisRuntimes(body) {
+  const request = beginRequest("settingsAnalysis");
+  const status = body.querySelector("[data-test='analysis-detect-status']");
+  renderAnalysisDetecting(body);
+  try {
+    const r = await apiPost("/api/analysis/runtimes/detect", {});
+    if (!request.current()) return;
+    const data = await r.json();
+    const runtimes = data && data.runtimes && typeof data.runtimes === "object"
+      ? data.runtimes : null;
+    if (!runtimes) {
+      renderAnalysisBody(body, null, "检测返回异常（不是预期的候选结构）。");
+      return;
+    }
+    renderAnalysisBody(body, { detect: runtimes }, "");
+  } catch (e) {
+    if (!request.current()) return;
+    const msg = e.status === 0
+      ? "无法连接本地服务，检测暂不可用。"
+      : `检测失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`;
+    renderAnalysisBody(body, { detectError: msg }, "");
+  }
+}
+
+/** 检测中的过渡渲染（按钮禁用 + 状态行），保留当前授权状态 chip。 */
+function renderAnalysisDetecting(body) {
+  const status = body.querySelector("[data-test='analysis-detect-status']");
+  const btn = document.getElementById("btn-analysis-detect");
+  if (btn) btn.disabled = true;
+  if (status) {
+    status.innerHTML = `<span class="dr-loading" data-dr-spin aria-hidden="true"></span>正在检测（只读探测，最多约 20 秒）…`;
+  }
+}
+
+/** 授权确认层：发送对象/保存与撤销/认证待确认说明；确认才 PUT。 */
+function confirmAnalysisPick(body, runtimeId, detectResult) {
+  const layer = body.querySelector("[data-test='analysis-confirm-layer']");
+  const info = detectResult ? detectResult[runtimeId] : null;
+  if (!layer) return;
+  const name = (info && info.display_name) || runtimeId;
+  const auth = info ? ANALYSIS_AUTH_BADGES[info.auth_status] : ANALYSIS_AUTH_BADGES.unknown;
+  const authNote = auth && auth.text === "认证待确认"
+    ? `<p class="hint">该引擎的登录状态暂无法确认（版本探测成功不代表已登录）；
+        首次分析如遇认证问题，分析会失败并给出原因。</p>`
+    : "";
+  layer.hidden = false;
+  layer.innerHTML = `
+    <p class="hint exclude-warning">即将授权使用 <strong>${escapeHtml(name)}</strong> 作为变化解读引擎：</p>
+    <p class="hint">发送对象：分析时，Fathom 把两个快照的脱敏目录事实（目录路径与大小，无文件内容）
+      交给本机的 ${escapeHtml(name)} 命令行；该命令行可能把数据发送给它配置的模型服务。
+      账号与额度由该命令行管理，Fathom 不做密钥与模型配置。</p>
+    <p class="hint">本地保存：解读结果与批准发送的事实包保存在本机运行目录，
+      可随时在变化页撤销；撤销不能清除该命令行或模型服务自身的留存。</p>
+    ${authNote}
+    <div class="exclude-actions">
+      <button type="button" id="btn-analysis-confirm-yes" class="btn primary" data-test="analysis-confirm-yes">确认授权</button>
+      <button type="button" id="btn-analysis-confirm-no" data-test="analysis-confirm-no">取消</button>
+    </div>`;
+  const no = document.getElementById("btn-analysis-confirm-no");
+  if (no) no.addEventListener("click", () => { layer.hidden = true; layer.innerHTML = ""; });
+  const yes = document.getElementById("btn-analysis-confirm-yes");
+  if (yes) {
+    yes.addEventListener("click", async () => {
+      yes.disabled = true;
+      await saveAnalysisAuthorization(body, {
+        enabled: true,
+        runtime: {
+          id: runtimeId,
+          executable: info?.executable || "",
+          version: info?.version ?? null,
+        },
+      }, `已授权 ${name}。变化页已生成的发送预览即失效（如有），下次分析前需重新生成预览。`);
+    });
+  }
+}
+
+/** 关闭授权确认层：关闭会取消在途分析（后端行为），已保存解读保留可撤销。 */
+function confirmAnalysisDisable(body) {
+  const layer = body.querySelector("[data-test='analysis-confirm-layer']");
+  if (!layer) return;
+  layer.hidden = false;
+  layer.innerHTML = `
+    <p class="hint exclude-warning">即将关闭 AI 解读：在途分析会被取消；已保存的解读保留，可随时撤销。</p>
+    <div class="exclude-actions">
+      <button type="button" id="btn-analysis-disable-yes" class="btn primary" data-test="analysis-disable-yes">确认关闭</button>
+      <button type="button" id="btn-analysis-disable-no" data-test="analysis-disable-no">取消</button>
+    </div>`;
+  const no = document.getElementById("btn-analysis-disable-no");
+  if (no) no.addEventListener("click", () => { layer.hidden = true; layer.innerHTML = ""; });
+  const yes = document.getElementById("btn-analysis-disable-yes");
+  if (yes) {
+    yes.addEventListener("click", async () => {
+      yes.disabled = true;
+      await saveAnalysisAuthorization(body, { enabled: false },
+        "已关闭 AI 解读。在途分析已请求取消；已保存的解读保留，可在变化页撤销。");
+    });
+  }
+}
+
+/** 授权写入（PUT /api/config 的 analysis 键，部分合并）：成功后重读生效值
+ * 重渲染；失败保持旧值可辨（不重渲染授权态，只显示错误——与 ISS-108
+ * 「保存失败必须保持旧值可辨」同口径）。 */
+async function saveAnalysisAuthorization(body, patch, successNote) {
+  try {
+    await apiPut("/api/config", { analysis: patch });
+    let fresh = null;
+    try { fresh = await fetchJSON("/api/config"); } catch { /* 重读失败不阻塞成功反馈 */ }
+    if (fresh) lastConfig = fresh;
+    renderAnalysisBody(body, { note: successNote }, "");
+  } catch (e) {
+    const msg = e.status === 0
+      ? "保存失败：无法连接本地服务，当前授权保持不变。"
+      : `保存失败：${e.message} 当前授权保持不变。`;
+    renderAnalysisBody(body, { error: msg }, "");
+  }
+}
+
+function renderAnalysisBody(body, extra, unusedNote) {
+  const cfgAnalysis = lastConfig?.analysis || null;
+  analysisStateChip(cfgAnalysis);
+  renderAnalysisRuntimes(body, cfgAnalysis, extra?.detect || null, false);
+  const note = body.querySelector("[data-test='analysis-save-note']");
+  if (extra?.note && note) {
+    const ok = document.createElement("p");
+    ok.className = "hint cfg-ok";
+    ok.setAttribute("data-test", "analysis-note");
+    ok.textContent = extra.note;
+    note.after(ok);
+  }
+  if (extra?.error) {
+    const err = document.createElement("p");
+    err.className = "hint cfg-error";
+    err.setAttribute("data-test", "analysis-error");
+    err.textContent = extra.error;
+    note?.after(err);
+  }
+  if (extra?.detectError) {
+    const err = document.createElement("p");
+    err.className = "hint cfg-error";
+    err.setAttribute("data-test", "analysis-detect-error");
+    err.textContent = extra.detectError;
+    body.querySelector("[data-test='analysis-detect-status']")?.after(err);
+  }
+  // 关闭入口（已启用才显示；与授权确认同层互斥）
+  if (cfgAnalysis?.enabled) {
+    const row = document.createElement("div");
+    row.className = "perm-link-row";
+    row.innerHTML = `<button type="button" class="btn" data-test="analysis-disable-btn">${icon("trash", 14)} 关闭 AI 解读</button>`;
+    body.querySelector("[data-test='analysis-confirm-layer']")?.before(row);
+    row.querySelector("[data-test='analysis-disable-btn']").addEventListener("click", () => confirmAnalysisDisable(body));
+  }
+}
+
+async function loadAnalysisSettings() {
+  const panel = _ensureAnalysisPanel();
+  if (!panel) return;
+  const body = panel.querySelector("[data-test='analysis-panel-body']");
+  if (!body) return;
+  const request = beginRequest("settingsAnalysis");
+  let c = lastConfig;
+  if (!c) {
+    try {
+      c = await fetchJSON("/api/config");
+      if (!request.current()) return;
+      lastConfig = c;
+    } catch (e) {
+      if (!request.current()) return;
+      body.innerHTML = `<p class="hint">${escapeHtml(e.status === 0
+        ? "无法连接本地服务，AI 分析设置暂不可用。"
+        : `AI 分析设置加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`)} 可稍后重试；变化页基础事实不受影响。</p>`;
+      return;
+    }
+  }
+  renderAnalysisBody(body, {});
 }
 
 /* ===== 后台自启（ISS-010B）=====
@@ -2175,5 +2538,5 @@ export const settingsPage = {
         activateSettingsSection("permissions", { persistHash: true });
       });
   },
-  leave() { ["settings", "scanHistory", "settingsPermissions", "permHub", "settingsAutostart", "settingsUpdater"].forEach(invalidateRequest); },
+  leave() { ["settings", "scanHistory", "settingsPermissions", "permHub", "settingsAutostart", "settingsUpdater", "settingsAnalysis"].forEach(invalidateRequest); },
 };

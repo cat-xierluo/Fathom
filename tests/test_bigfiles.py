@@ -218,9 +218,19 @@ class TestCancellationAndTimeout:
 
         用 sleep 脚本作为假 find，确保取消时进程仍在运行；任何未真正回收
         的实现都会在 ``wait`` 5s 超时处失败。
+
+        脚本必须 ``exec`` 直接替换为 sleep（ISS-121）：写成裸 ``sleep 60``
+        时 sh 会 fork 出独立子进程；若该子进程在 cancel() 的 ``killpg``
+        组信号之后才完成 fork，就会错过 SIGTERM——sh 按预期退出（下方
+        ``wait`` 5s 仍通过），但漏杀子进程继承的 stdout/stderr 管道无法
+        EOF，``communicate()`` 阻塞，runner 无法投递 CancelledError，
+        ``result(timeout=2.0)`` 间歇抛 TimeoutError（CI run 36423632885
+        首跑实测失败栈）。exec 化后进程组自始至终只有单成员，组信号
+        必达，取消路径确定化；生产 find 本就是单进程，该夹具更贴近
+        真实进程组形态。
         """
         fake_find = tmp_path / "fake_find.sh"
-        fake_find.write_text("#!/bin/sh\nsleep 60\n")
+        fake_find.write_text("#!/bin/sh\nexec sleep 60\n")
         fake_find.chmod(0o755)
         m = bigfiles.BigfilesManager(find_path=str(fake_find),
                                      default_timeout_s=30.0,

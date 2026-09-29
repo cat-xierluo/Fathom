@@ -571,16 +571,39 @@ class TestCancelAndTimeout:
 
     def test_cancel_finish_race_single_outcome(self, isolated):
         """取消与完成竞争：每个尝试恰好一个确定终态，且与落库一致
-        （成功⇔有正文）；不同取消时距覆盖 cancelled 与 succeeded 两侧。"""
-        delays = (0.5, 0.9, 1.1, 1.25, 1.35, 1.6)
+        （成功⇔有正文）；不同取消时距覆盖 cancelled 与 succeeded 两侧。
+
+        档位不假设绝对耗时（ISS-124：CI x86_64 慢环境 spawn/stdin 开销
+        放大后，固定 1.6s 上界内六档全落取消侧）：先以一次不取消的
+        slow_ok 基准测量本环境「启动→终态」的观测耗时 T，再按 T 的
+        比例设取消时距——0.15T 远早于完成、1.8T 晚于 T（观测耗时是
+        完成提交时刻的上界），两侧确定性覆盖；0.75T/0.95T/1.1T 贴
+        真实竞态窗口，结果两侧皆可，只检查合同不变量。"""
+        # 基准轮：同夹具同脚本，吸收 spawn、stdin 读取、输出解析全部
+        # 环境开销；wait_terminal 轮询量化只令 T 偏大（对两侧余量安全）。
+        bin_dir = isolated["runtime"] / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        enable_analysis(make_fake_claude(bin_dir, mode="slow_ok"))
+        base_a, base_b = make_snapshots(isolated["scanroot"])
+        base_manager = make_manager()
+        base_preview = base_manager.create_preview(base_a, base_b)
+        base_job, _ = base_manager.start_job(base_preview.preview_id,
+                                             base_preview.request_digest,
+                                             "key-race-baseline")
+        t0 = time.monotonic()
+        base_final = wait_terminal(base_manager, base_job["job_id"])
+        finish_s = time.monotonic() - t0
+        assert base_final["status"] == "succeeded"  # 不取消、预算内必成功
+        run_timeout_s = max(15.0, 3.0 * finish_s)   # 晚档 1.8T 不触超时兜底
+        wait_s = run_timeout_s + 5.0
+        factors = (0.15, 0.5, 0.75, 0.95, 1.1, 1.8)
         outcomes: list[str] = []
         baseline_rows = len(agent_rows())
-        for attempt, delay in enumerate(delays):
-            bin_dir = isolated["runtime"] / "bin"
-            bin_dir.mkdir(exist_ok=True)
+        for attempt, factor in enumerate(factors):
+            delay = max(0.05, factor * finish_s)
             enable_analysis(make_fake_claude(bin_dir, mode="slow_ok"))
             a, b = make_snapshots(isolated["scanroot"])
-            manager = make_manager(run_timeout_s=15)
+            manager = make_manager(run_timeout_s=run_timeout_s)
             preview = manager.create_preview(a, b)
             job, _ = manager.start_job(preview.preview_id,
                                        preview.request_digest,
@@ -588,7 +611,7 @@ class TestCancelAndTimeout:
             timer = threading.Timer(delay, manager.cancel_job,
                                     args=(job["job_id"],))
             timer.start()
-            final = wait_terminal(manager, job["job_id"])
+            final = wait_terminal(manager, job["job_id"], timeout=wait_s)
             timer.join()
             rows_now = len(agent_rows())
             if final["status"] == "succeeded":

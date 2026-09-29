@@ -341,13 +341,28 @@ CANDIDATES: dict[str, CandidateMeta] = {
         capability_cap=_C,
         cap_reason_code="tool_gate_absent_by_design",
         cap_reason=(
-            "无工具级禁用参数；--sandbox read-only 的官方语义即允许模型运行只读命令"
-            "（读文件是设计行为且不限于 cwd），只读沙箱不等于禁读文件"
+            "无工具级禁用参数或配置键（0.147.0 与 0.158.0-alpha.2.1 双版本 --help 全参数面、"
+            "官方 config-reference 全键面核对：仅 web_search/view_image/shell_tool/"
+            "unified_exec/MCP 工具等逐项开关，无禁全部工具或纯文本模式）；"
+            "--sandbox read-only 官方语义即允许模型运行只读命令，"
+            "实测隔离 cwd 下模型执行 sed 读出 $HOME 哨兵——读取不限于 cwd"
         ),
         notes=(
             "~/.local/bin/codex 为用户自建 wrapper：目标已失效（exit 127）且硬编码注入 "
-            "danger-full-access/never-approval，与 Fathom 合同相反，产品绝不复用该入口",
-            "复核条件：官方提供工具级禁用或证明 read-only 可配为无工具（ISS-035E）",
+            "danger-full-access/never-approval，与 Fathom 合同相反，产品绝不复用该入口"
+            "（2026-09-29 复核：双目标仍缺失，硬编码不变）",
+            "ISS-035E 2026-09-29 终审（0.147.0，五组行为实验）：E1/E2 read-only 下"
+            "模型运行 shell 命令并读出 cwd 内与 $HOME 下哨兵；E3 关闭全部已知工具开关"
+            "（shell_tool/unified_exec/web_search/view_image/agents）后命令消失但哨兵"
+            "仍被内建读取路径读出；E4/E5 beta permissions profile "
+            "（filesystem :root=deny）能挡住 shell 与内建读取（命令仍执行 exit=134、"
+            "回复自述无读取权限），但模型转而成功调用内建 MCP 工具（codex_apps）——"
+            "工具面在任何配置组合下不归零，deny 是文件系统访问控制而非工具禁用；"
+            "实验证据见 035E worktree evidence/（11-15 号）",
+            "approval 与 sandbox 正交：approval 是跨界问人机制（-a untrusted 的可信集"
+            "明示含 ls/cat/sed），exec 非交互形态下不构成工具门",
+            "复核条件：官方提供禁全部工具/纯文本回复模式，或 permissions profile"
+            "结束 beta 并提供工具级（而非仅文件系统/网络）边界后重审（ISS-035E）",
         ),
     ),
     "hermes-agent": CandidateMeta(

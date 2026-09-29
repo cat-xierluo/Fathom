@@ -1165,7 +1165,7 @@ const ANALYSIS_REASON_LABELS = {
   unsupported_by_contract: "当前产品合同未开放该引擎",
   tool_disable_unverifiable: "无法从外部证明其工具已全部禁用",
   tool_disable_ineffective_by_design: "仅支持按工具名逐个禁用，无全部禁用或白名单开关（实测禁用被其余工具绕过）",
-  tool_gate_absent_by_design: "无工具级禁用参数（只读沙箱不等于禁读文件）",
+  tool_gate_absent_by_design: "无工具级禁用参数或配置键；只读沙箱实测允许运行只读命令并读取工作目录外文件",
   tool_events_unobservable: "调用形态无法观察工具事件",
 };
 

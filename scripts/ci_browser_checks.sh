@@ -20,7 +20,8 @@
 #   - PW_INSTALL=1 且提供 PLAYWRIGHT_BIN 时下载 chromium（仅 CI 冷环境）。
 #
 # 断言口径：两套结果 JSON 均必须 ok=true、failed=0、passed 等于各自期望
-# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 214，
+# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 214；
+# ISS-035C 起新增 analysis frontend 47 项（EXPECTED_ANALYSIS_PASSED），
 # ISS-108 增补 5 项至 172 后，ISS-106 总览层级/五态容器再增 7 项=179：
 # ready 清态与次级图 1 + 空库等待 1 + 单快照等待 1 + 错误容器 1 +
 # 净变化根差分 1 + 无基线不伪造零 1 + 980 首屏坐标 1；
@@ -126,3 +127,12 @@ assert_result_json "$out" "$expected" "browser checks"
 # 自身非零退出，pipefail 直通判红。
 node scripts/verify_frontend_refresh.cjs | tee "$refresh_out"
 assert_result_json "$refresh_out" "$expected_refresh" "frontend refresh"
+
+# ISS-035C：AI 解读前端回归（同 refresh 机制：纯 Node 合成 API + Playwright，
+# 随机端口）。47 项——七态/检测列表/授权层/世代守卫/幂等/HTML 转义/双视口。
+# 失败自身非零退出，pipefail 直通判红；计数漂移由 EXPECTED_ANALYSIS_PASSED
+# 兜底（同 refresh 门禁口径）。
+analysis_out="$RUNNER_TEMP/analysis_result.json"
+node scripts/verify_analysis_frontend.cjs | tee "$analysis_out"
+expected_analysis="${EXPECTED_ANALYSIS_PASSED:-47}"
+assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"

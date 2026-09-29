@@ -150,6 +150,20 @@
           <div class="net-line" id="changes-net" hidden></div>
         </div>
 
+        <!-- AI 解读（ISS-035C）：位于净变化之后、变化表之前（方案 §7），
+             跨明细 tab 常驻——解读绑定的是当前 a→b 区间，与二级 tab 无关。
+             七主态（未启用/未分析/发送预览/运行中/完成/失败/过期）由
+             changes.js 渲染进 #analysis-body；AI 不可用不影响上方基础事实。 -->
+        <div class="panel panel-divided" id="analysis-panel" data-test="analysis-panel" hidden>
+          <div class="panel-head">
+            <h2><span data-icon-inline="sparkles"></span>AI 解读</h2>
+            <p class="hint">由本机解读引擎基于已保存的快照事实生成；只读呈现，不执行模型输出的命令</p>
+          </div>
+          <div id="analysis-body" data-test="analysis-body">
+            <p class="hint"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>解读状态加载中…</p>
+          </div>
+        </div>
+
         <section class="page-tab-section" data-tab="detail" data-test="changes-section-detail">
           <div class="panel">
             <div class="panel-head">
@@ -325,6 +339,14 @@
               <span class="settings-nav-icon" data-icon="shield"></span>
               <span class="settings-nav-label">权限</span>
             </button>
+            <!-- ISS-035C：AI 分析分区——Runtime 检测/选择/授权（用户裁决
+                 2026-09-29：Claude Code 首推，其余候选如实列出自选）。
+                 放在「权限」之后、「高级与诊断」之前：同属用户级日常设置。 -->
+            <button type="button" class="settings-nav-item" data-section="analysis"
+                    data-test="settings-nav-analysis">
+              <span class="settings-nav-icon" data-icon="sparkles"></span>
+              <span class="settings-nav-label">AI 分析</span>
+            </button>
             <button type="button" class="settings-nav-item" data-section="advanced"
                     data-test="settings-nav-advanced">
               <span class="settings-nav-icon" data-icon="stethoscope"></span>
@@ -461,6 +483,20 @@
                 </div>
               </div>
               <div id="settings-permissions-extra"></div>
+            </section>
+
+            <!-- AI 分析（ISS-035C）：检测/选择/授权由 settings.js 注入
+                 #settings-analysis-extra（与既有面板同模式）。检测只经用户
+                 点击触发；候选按后端能力门如实展示，不隐藏不可用项。 -->
+            <section class="settings-section surface" data-section="analysis"
+                     id="settings-section-analysis" aria-labelledby="settings-head-analysis" hidden>
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 id="settings-head-analysis">AI 分析</h2>
+                  <p class="hint">变化页的 AI 解读由本机命令行引擎完成；在此检测可用引擎并授权使用</p>
+                </div>
+              </div>
+              <div id="settings-analysis-extra"></div>
             </section>
 
             <!-- 高级与诊断：ISS-083 折叠区原样迁入；运行信息表 + 服务管理面板在此 section 下 -->

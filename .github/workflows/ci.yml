@@ -70,6 +70,7 @@ env:
   EXPECTED_PYTEST_PASSED: "1014"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "214"
+  EXPECTED_ANALYSIS_PASSED: "47"
   EXPECTED_CARGO_PASSED: "69"
 
 jobs:
@@ -151,7 +152,7 @@ jobs:
           npm install "playwright@${PLAYWRIGHT_VERSION}"
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" --version
 
-      - name: API/浏览器 39 项与前端 refresh 214 项检查（断言计数）
+      - name: API/浏览器 39 项、前端 refresh 214 项与 AI 解读 47 项检查（断言计数）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
           NODE_PATH: ${{ runner.temp }}/pw/node_modules

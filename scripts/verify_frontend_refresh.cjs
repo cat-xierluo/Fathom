@@ -1133,8 +1133,8 @@ async function main() {
     await openPage("#/settings");
 
     /* ---------- ISS-087 设置页 IA：左导航 + 右 section ---------- */
-    // 默认 = 监控：监控区可见，其余各区隐藏；nav 5 项（ISS-111 新增权限）与
-    // aria-current 唯一。
+    // 默认 = 监控：监控区可见，其余各区隐藏；nav 6 项（ISS-111 新增权限、
+    // ISS-035C 新增 AI 分析）与 aria-current 唯一。
     const navInitial = await page.evaluate(() => {
       const buttons = [...document.querySelectorAll(".settings-nav-item")];
       return {
@@ -1145,16 +1145,18 @@ async function main() {
           .filter((s) => !s.hasAttribute("hidden")).map((s) => s.dataset.section),
       };
     });
-    record("settings-ia-nav-5-sections-default-monitoring",
+    record("settings-ia-nav-6-sections-default-monitoring",
       JSON.stringify(navInitial.labels) ===
-        JSON.stringify(["monitoring", "schedule", "permissions", "advanced", "about"]) &&
+        JSON.stringify(["monitoring", "schedule", "permissions", "analysis", "advanced", "about"]) &&
         navInitial.texts[2] === "权限" &&
+        navInitial.texts[3] === "AI 分析" &&
         navInitial.active === "monitoring" &&
         JSON.stringify(navInitial.visible) === JSON.stringify(["monitoring"]),
       JSON.stringify(navInitial));
 
     // 键盘可达：方向键 ↑/↓ 在 nav 项之间循环切换；Enter 激活 section。
-    // ISS-111 后顺序 = monitoring → schedule → permissions → advanced → about。
+    // ISS-035C 后顺序 = monitoring → schedule → permissions → analysis →
+    // advanced → about。
     await page.focus('[data-section="monitoring"]');
     await page.keyboard.press("ArrowDown");
     const afterArrowDown = await page.evaluate(() =>
@@ -1167,7 +1169,7 @@ async function main() {
     const afterUp = await page.evaluate(() =>
       document.activeElement?.dataset.section || null);
     record("settings-ia-nav-arrow-keys-cycle",
-      afterArrowDown === "schedule" && afterWrap === "advanced" && afterUp === "permissions",
+      afterArrowDown === "schedule" && afterWrap === "analysis" && afterUp === "permissions",
       JSON.stringify({ afterArrowDown, afterWrap, afterUp }));
     // Enter 激活：ArrowUp 后 focus 在 permissions，Enter 应让 permissions 可见
     await page.keyboard.press("Enter");
@@ -1178,9 +1180,9 @@ async function main() {
         .find((b) => b.getAttribute("aria-current") === "true")?.dataset.section;
       return { visible, active };
     });
-    // ISS-111 后 nav 顺序 = monitoring → schedule → permissions → advanced →
-    // about：三次 ArrowDown 后焦点在 advanced，ArrowUp 回到 permissions，
-    // Enter 应激活 permissions（按钮原生键盘行为）。
+    // ISS-035C 后 nav 顺序 = monitoring → schedule → permissions → analysis →
+    // advanced → about：三次 ArrowDown 后焦点在 analysis，ArrowUp 回到
+    // permissions，Enter 应激活 permissions（按钮原生键盘行为）。
     record("settings-ia-nav-enter-activates-section",
       JSON.stringify(enterActivate.visible) === JSON.stringify(["permissions"]) &&
         enterActivate.active === "permissions",

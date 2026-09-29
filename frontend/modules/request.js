@@ -40,6 +40,11 @@ export async function fetchJSON(url, opts) {
     const detail = await res.json().catch(() => "");
     const err = new Error(detail.detail || `${url} -> HTTP ${res.status}`);
     err.status = res.status;
+    // ISS-035C：分析端点的稳定机读码（reason_code）随错误上抛，
+    // 供变化页按合同映射为可读文案；完整错误体挂在 err.body
+    // （如取消终态竞争 409 携带的最终 job 视图）。
+    err.reason_code = detail && detail.reason_code ? detail.reason_code : null;
+    err.body = detail || null;
     throw err;
   }
   return res.json();
@@ -72,6 +77,8 @@ export async function apiSend(method, url, body) {
     const detail = await res.json().catch(() => ({}));
     const err = new Error(detail.detail || `${url} -> HTTP ${res.status}`);
     err.status = res.status;
+    err.reason_code = detail && detail.reason_code ? detail.reason_code : null;
+    err.body = detail || null;
     throw err;
   }
   return res;

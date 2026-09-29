@@ -306,14 +306,22 @@ CANDIDATES: dict[str, CandidateMeta] = {
         known_locations=("~/.local/bin/zcode", "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs"),
         version_pattern=r"^\s*(\d+\.\d+\.\d+)\s*$",
         capability_cap=_C,
-        cap_reason_code="tool_disable_unverifiable",
+        cap_reason_code="tool_disable_ineffective_by_design",
         cap_reason=(
-            "--disallowed-tools \"*\" 被接受但 --json 输出无工具事件字段，"
-            "「全部工具已移除」无法从外部观察证明；另有 --mode 默认 yolo 必须显式覆盖"
+            "0.16.9 实测（--output-format stream-json 事件流可观察工具调用）："
+            "--disallowed-tools 按名称精确匹配，\"*\" 为字面量不匹配任何工具，"
+            "禁用后 Read 工具仍读出哨兵文件；逐一枚举工具名禁用也被其余工具"
+            "绕过（内置会话/工作流工具与用户配置的 MCP 工具随环境扩展）；"
+            "无 --allowed-tools 白名单，--mode plan 官方语义即允许只读工具"
         ),
         notes=(
             "入口为 node shebang 脚本，精简 PATH 下 shebang 解释器解析可能失败",
-            "复核条件：未来版本提供工具事件流或官方「空工具集」参数（ISS-035E）",
+            "ISS-035E 2026-09-29 终审（0.16.9）：事件流可观察推翻 035A 的"
+            "「不可观察」论据，但可观察后证实禁工具设计性无效——权限检查为"
+            "disallowedTools 集合精确匹配（Set.has），无全禁/白名单机制；"
+            "实验证据见 035E worktree evidence/（05-10 号）",
+            "复核条件：官方提供工具白名单（--allowed-tools 类）或等效"
+            "「全部禁用」开关后重审（ISS-035E）",
         ),
     ),
     "codex-cli": CandidateMeta(

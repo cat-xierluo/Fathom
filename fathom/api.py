@@ -20,6 +20,7 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - POST /api/analysis/previews          变化解读发送预览（不可变请求，TTL 5 分钟）
 - POST /api/analysis/jobs              执行预览（只收 preview_id/digest/幂等键）
 - GET  /api/analysis/jobs/{id}         查询 job 状态（纯读无副作用）
+- GET  /api/analysis/jobs?a=&b=        按区间查在途 job（仅非终态，ISS-120）
 - POST /api/analysis/jobs/{id}/cancel  取消（终态不复活）
 - GET  /api/analyses?a=&b=             某 a→b 区间的历史解读（含过期原因）
 - DELETE /api/analyses/{id}            撤销解读（删除正文与关联事实包）
@@ -590,11 +591,13 @@ async def _analysis_error_handler(request: Request,
     """分析合同错误：稳定 reason_code + 可读说明，不透出 stderr/路径/凭据。
 
     403 未启用/未配置；409 busy/预览失效/升级停写/幂等冲突/终态竞争；
-    404 未知资源；400 坏参数或数据集口径不一致。"""
-    return JSONResponse(
-        {"reason_code": exc.reason_code, "detail": str(exc)},
-        status_code=exc.status_code,
-    )
+    404 未知资源；400 坏参数或数据集口径不一致。``extra`` 携带的附加字段
+    （如 409 analysis_busy 判定到占用者时的 active_job_id，ISS-120）原样
+    并入响应体；未携带时响应体保持原两键形状（既有错误合同不变）。"""
+    payload = {"reason_code": exc.reason_code, "detail": str(exc)}
+    if exc.extra:
+        payload.update(exc.extra)
+    return JSONResponse(payload, status_code=exc.status_code)
 
 
 def _analysis_body(request_json: object, allowed: set[str]) -> dict:
@@ -688,6 +691,21 @@ async def api_analysis_jobs(request: Request):
 def api_analysis_job(job_id: str):
     """查询 job 状态（纯读，无派发/探测/外传副作用）。"""
     return {"job": _get_analysis_manager().job_view(job_id)}
+
+
+@app.get("/api/analysis/jobs")
+def api_analysis_jobs_lookup(a: int = Query(...), b: int = Query(...)):
+    """按 a→b 快照区间查在途分析 job（ISS-120，035B 接缝补卡）。
+
+    只返回非终态（starting/running/cancelling）的既有 job 视图（字段同
+    GET /api/analysis/jobs/{id}，不含 prompt/正文）；终态不返回，历史归
+    GET /api/analyses、按 ID 归 GET /api/analysis/jobs/{id}。用途：页面
+    刷新/新会话丢失 job_id 后重新发现他方在途任务，再按 job_id 恢复
+    显示。纯读无副作用，不引入自动恢复/重派。守卫口径随既有读端点：
+    GET 免写令牌；不设 analysis.enabled 403 门——启用门只挡新派发，
+    不挡生命周期事实查询（与 GET /api/analyses 完全一致）。"""
+    return {"a": a, "b": b,
+            "jobs": _get_analysis_manager().find_active_jobs(a, b)}
 
 
 @app.post("/api/analysis/jobs/{job_id}/cancel")

@@ -6,7 +6,9 @@
   等待者共享同一 ``BigfilesFuture``。
 - 取消/超时：调用 ``future.cancel()`` 或超过 ``timeout`` 时，向 find 进程组
   发送 SIGTERM，超时回收窗口内仍存活则升级为 SIGKILL；所有等待者同步收到
-  ``CancelledError`` / 超时状态。
+  ``CancelledError`` / 超时状态。取消落在 Popen 返回到 ``task.proc`` 赋值
+  之间的 spawn 窗口时（ISS-123），进程创建后立即补投组信号——``cancel()``
+  返回 ``True`` 即代表取消必然生效。
 - TTL 缓存：成功结果缓存 ``cache_ttl_s``；TTL 内同参数请求直接命中缓存。
 - 过期即刷新：TTL 之外的首个同参数调用丢弃过期条目并启动新 find（仍遵守
   并发去重），返回新结果；``submit`` 不再返回携带旧数据的 ``state=expired``
@@ -462,6 +464,18 @@ class BigfilesManager:
         except OSError as exc:
             raise _FindFailure(f"无法启动 find：{exc}")
         task.proc = proc
+        if task.cancel_event.is_set():
+            # spawn 窗口取消补投（ISS-123）：_request_cancel 在 task.proc 赋值
+            # 前受理取消时进程尚不存在，无法投递组信号却已向调用方返回 True；
+            # 此刻进程已创建，立即补投组信号，使“取消已受理”必然生效。仅投
+            # SIGTERM，升级回收仍走下方 cancel_event 检测路径与超时路径的
+            # _terminate_group——取消/超时/回收合同不变。可见性：cancel 方先
+            # 置位 cancel_event 再读 task.proc，本方先赋值 task.proc 再读
+            # cancel_event，Event 的 happens-before 保证任一侧都不会双向错过。
+            try:
+                os.killpg(proc.pid, 15)  # SIGTERM
+            except (ProcessLookupError, PermissionError):
+                pass
 
         try:
             stdout, stderr = proc.communicate(timeout=timeout)

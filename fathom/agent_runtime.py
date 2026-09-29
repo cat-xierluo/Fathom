@@ -375,15 +375,20 @@ CANDIDATES: dict[str, CandidateMeta] = {
         known_locations=("~/.local/bin/hermes", "~/.hermes/hermes-agent/venv/bin/hermes"),
         version_pattern=r"^\s*Hermes Agent\s+v?(\d+\.\d+\.\d+)\S*\s+\(\d{4}\.\d+\.\d+\)",
         capability_cap=_C,
-        cap_reason_code="tool_events_unobservable",
+        cap_reason_code="tool_disable_ineffective_by_design",
         cap_reason=(
-            "oneshot 形态只输出最终文本、无工具事件；-t \"\" 空 toolsets 被接受但实际"
-            "工具集无法观察，且默认加载 34 个工具（含 file/terminal/browser）；"
-            "--safe-mode 与 --ignore-rules 在同版本 oneshot 路径行为不一致"
+            "chat -q 的 --format stream-json 提供完整工具事件（035E 第三轮实测，"
+            "推翻 035A「不可观察」旧论据）；可观察后行为反例钉死禁工具无效："
+            "-t \"\" 空 toolsets 下 read_file 照常调用并读出哨兵（事件流完整记录，"
+            "-z 形态正文同样含标记）；--safe-mode 复测仍读出（两形态一致）；"
+            "hermes tools 子命令是全局持久配置（改用户环境，违反隔离合同）"
+            "且非调用级禁用"
         ),
         notes=(
             "venv python 入口，精简 PATH 下 shebang 解释器解析可能失败",
-            "复核条件：oneshot 提供工具事件输出、或离线工具集验证手段（ISS-035E）",
+            "035E 第三轮实验证据 verify-results/agent-runtime-035e-hermes-20260929/：",
+            "E1-E3 stream-json 基线/对照/空工具集；E4 -z+空工具集；E5a/b safe-mode 复测",
+            "复核条件：提供调用级工具白名单/全禁参数（不改全局配置）后重审（ISS-035E）",
         ),
     ),
 }

@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前主干期望值为 pytest **1014**、API/浏览器 **39**、前端 refresh **214**、Rust 单测 **69**。[ISS-114 合并候选 CI](https://github.com/cat-xierluo/Fathom/actions/runs/36416710137) 六项通过，本地也按这些计数复跑；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前主干期望值为 pytest **1014**、API/浏览器 **39**、前端 refresh **214**、AI 解读前端 **47**、Rust 单测 **69**。[ISS-114 合并候选 CI](https://github.com/cat-xierluo/Fathom/actions/runs/36416710137) 六项通过，本地也按这些计数复跑；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -44,7 +44,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1014
 
 ```bash
 /bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 1014（ISS-123 同步）
-/bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 214
+/bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 214 + AI 解读 47
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 67
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
   rustup run stable cargo check --target x86_64-apple-darwin --locked --offline \

@@ -218,9 +218,19 @@ class TestCancellationAndTimeout:
 
         用 sleep 脚本作为假 find，确保取消时进程仍在运行；任何未真正回收
         的实现都会在 ``wait`` 5s 超时处失败。
+
+        脚本必须 ``exec`` 直接替换为 sleep（ISS-121）：写成裸 ``sleep 60``
+        时 sh 会 fork 出独立子进程；若该子进程在 cancel() 的 ``killpg``
+        组信号之后才完成 fork，就会错过 SIGTERM——sh 按预期退出（下方
+        ``wait`` 5s 仍通过），但漏杀子进程继承的 stdout/stderr 管道无法
+        EOF，``communicate()`` 阻塞，runner 无法投递 CancelledError，
+        ``result(timeout=2.0)`` 间歇抛 TimeoutError（CI run 36423632885
+        首跑实测失败栈）。exec 化后进程组自始至终只有单成员，组信号
+        必达，取消路径确定化；生产 find 本就是单进程，该夹具更贴近
+        真实进程组形态。
         """
         fake_find = tmp_path / "fake_find.sh"
-        fake_find.write_text("#!/bin/sh\nsleep 60\n")
+        fake_find.write_text("#!/bin/sh\nexec sleep 60\n")
         fake_find.chmod(0o755)
         m = bigfiles.BigfilesManager(find_path=str(fake_find),
                                      default_timeout_s=30.0,
@@ -240,6 +250,52 @@ class TestCancellationAndTimeout:
             proc._proc.wait(timeout=5.0)
         except subprocess.TimeoutExpired:
             pytest.fail("cancel() 后 find 子进程未在 5s 内退出")
+        with pytest.raises(concurrent.futures.CancelledError):
+            f.result(timeout=2.0)
+
+    def test_cancel_during_spawn_window_still_terminates_find(self, tmp_path):
+        """ISS-123 回归：cancel() 恰落在 Popen 返回到 ``task.proc`` 赋值之间
+        的 spawn 窗口时，取消请求必须确定终止 find 进程。
+
+        注入方式：popen_factory 在创建真实进程后、把 proc 交还 ``_run_find``
+        之前用 gate 阻塞——此刻进程已存在而 ``task.proc`` 仍为 None，正是
+        窗口；在其中调用 cancel()。窗口内旧实现只置位 cancel_event 即返回
+        True、不投递任何信号，find 无人终止（wait 5s 超时 pytest.fail，与
+        ISS-121 观察到的夹具失败同形态）。修复后 ``task.proc`` 赋值后同
+        路径立即补投组信号，进程组内单成员（exec 化假 find）确定退出。
+        """
+        fake_find = tmp_path / "fake_find.sh"
+        fake_find.write_text("#!/bin/sh\nexec sleep 60\n")
+        fake_find.chmod(0o755)
+        gate = threading.Event()
+
+        def window_popen(*args, **kwargs):
+            proc = _FakePopen(*args, **kwargs)
+            # 窗口：Popen 已返回，task.proc 尚未赋值；等测试在窗口内 cancel
+            assert gate.wait(timeout=10.0), "gate 未按预期释放（窗口注入挂起）"
+            return proc
+
+        m = bigfiles.BigfilesManager(find_path=str(fake_find),
+                                     default_timeout_s=6.5,
+                                     result_cap=10_000_000,
+                                     popen_factory=window_popen)
+        f = m.submit(tmp_path / "huge", days=7, min_mb=1, topn=10)
+        # 等待 Popen 启动；_FakePopen 构造完成后 runner 必然已停在窗口 gate
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not _FakePopen.instances:
+            time.sleep(0.005)
+        assert _FakePopen.instances, "find Popen 未启动"
+        proc = _FakePopen.instances[0]
+        # 确认此刻仍在窗口内：task.proc 尚未赋值（runner 阻塞在 gate）
+        task = m._tasks[f.query.key]
+        assert task.proc is None, "cancel 未注入到 spawn 窗口"
+        cancelled_ok = f.cancel()
+        assert cancelled_ok is True
+        gate.set()
+        try:
+            proc._proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            pytest.fail("spawn 窗口内 cancel() 后 find 子进程未在 5s 内退出")
         with pytest.raises(concurrent.futures.CancelledError):
             f.result(timeout=2.0)
 

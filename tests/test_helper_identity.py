@@ -264,7 +264,18 @@ def test_unknown_occupant_zero_kill_falls_back(tmp_path):
 
 
 def test_unknown_occupant_zero_kill_exhausted_clear_recovery(tmp_path):
-    """G6：占用 target + 全部 fallback 时退 3，含明确恢复动作且未触碰占用者。"""
+    """G6：占用 target + 全部 fallback 时退 3，含明确恢复动作且未触碰占用者。
+
+    超时预算取 60s（ISS-122）：serve 的 ports-exhausted 路径对每个被占
+    候选端口串行执行 ``_probe_health``（对 listen-but-not-accept 的占位
+    socket，urlopen timeout=1.0 固定等满 1s）与 ``_port_pids``（spawn
+    lsof，内部 timeout=3），三个候选的理论预算上限即 3×(1+3)=12s，再
+    叠加 Python 冷启动与 import。空闲下全程约 3.5s；但全量跑 pytest 的
+    负载环境（进程表/fd 表大）会放大 lsof 扫描与启动耗时，实测 serve
+    耗时可逼近甚至越过固定 15s 上限，表现为与产品行为无关的
+    TimeoutExpired（单跑必过、全量偶红）。60s 给足上述有界预算余量，
+    断言零弱化。
+    """
     runtime = tmp_path / "runtime"
     target = _unused_port()
     dummies: list[socket.socket] = []
@@ -278,7 +289,7 @@ def test_unknown_occupant_zero_kill_exhausted_clear_recovery(tmp_path):
         proc = subprocess.run(
             [sys.executable, str(MAIN), "--runtime-dir", str(runtime),
              "--port", str(target), "--port-range", "2", "serve"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=60,
             env=_clean_env(),
         )
         assert proc.returncode == 3, (proc.stdout, proc.stderr)

@@ -79,19 +79,26 @@ TERMINAL_STATUSES = frozenset({
 CANCELLABLE_STATUSES = frozenset({"starting", "running"})
 #: 启动 reconcile 时视为遗留的在途状态。
 LEFTOVER_ACTIVE_STATUSES = ("starting", "running", "cancelling")
+#: 在途状态 IN 子句占位符（ISS-120 查询用；与上一常量同源，防两处漂移）。
+_ACTIVE_STATUSES_SQL = ",".join("?" * len(LEFTOVER_ACTIVE_STATUSES))
 
 _LOCK_SUFFIX = ".analysis.lock"
 
 
 class AnalysisError(RuntimeError):
     """分析功能错误；``reason_code`` 是稳定机读码，``message`` 不含
-    stderr/路径/凭据（生产 handler 据此构造响应）。"""
+    stderr/路径/凭据（生产 handler 据此构造响应）。
+
+    ``extra`` 是可选附加响应字段（ISS-120：409 ``analysis_busy`` 已判定
+    占用者时补 ``active_job_id``）；None 或空时响应体保持原形状。"""
 
     def __init__(self, reason_code: str, message: str,
-                 *, status_code: int = 409) -> None:
+                 *, status_code: int = 409,
+                 extra: dict | None = None) -> None:
         super().__init__(message)
         self.reason_code = reason_code
         self.status_code = status_code
+        self.extra = extra
 
 
 def analysis_lock_path(db_path: Path | None = None) -> Path:
@@ -590,6 +597,7 @@ class AnalysisManager:
             raise AnalysisError(
                 "analysis_busy",
                 "已有分析在进行中；请等待其结束，不会排队或自动重试",
+                extra=self._busy_extra(),
             ) from None
         try:
             return self._start_job_under_lease(lease, preview, idempotency_key,
@@ -984,6 +992,57 @@ class AnalysisManager:
             "revoked": revoked,
             "terminal": row["status"] in TERMINAL_STATUSES,
         }
+
+    def find_active_jobs(self, a_snapshot_id: int,
+                         b_snapshot_id: int) -> list[dict]:
+        """按 a→b 快照区间查在途 job（ISS-120，GET /api/analysis/jobs?a=&b=
+        数据源；纯读无副作用）。
+
+        只返回非终态（starting/running/cancelling），终态不返回——在途
+        发现的唯一语义，历史归 GET /api/analyses、按 ID 归
+        GET /api/analysis/jobs/{id}。数据源是权威表 analysis_runs（跨进程
+        可见），因此他方会话/进程的在途任务同样可发现；返回复用既有
+        ``job_view`` 字段构造，不含 prompt/正文。查询不引入自动恢复/
+        重派语义：恢复显示由调用方按 job_id 显式进行。
+
+        区间未匹配或无在途返回空表（是「无在途」不是错误，与
+        ``list_analyses`` 口径一致）。"""
+        conn = db.connect(self._db_path)
+        try:
+            rows = conn.execute(
+                "SELECT job_id FROM analysis_runs "
+                "WHERE a_snapshot_id=? AND b_snapshot_id=? "
+                f"AND status IN ({_ACTIVE_STATUSES_SQL}) "
+                "ORDER BY created_at DESC, job_id DESC",
+                (a_snapshot_id, b_snapshot_id, *LEFTOVER_ACTIVE_STATUSES),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [self.job_view(r["job_id"]) for r in rows]
+
+    def _db_active_job_id(self) -> str | None:
+        """从权威表反查当前在途 job_id（不限区间；租约忙时的占用者判定）。
+
+        单在途合同下至多一行；取最新创建者为确定性结果。占用方已到终态
+        或尚未落 starting 行（毫秒窗口）时返回 None——调用方按合同不附
+        ``active_job_id``（知道才带，不猜）。"""
+        conn = db.connect(self._db_path)
+        try:
+            row = conn.execute(
+                "SELECT job_id FROM analysis_runs "
+                f"WHERE status IN ({_ACTIVE_STATUSES_SQL}) "
+                "ORDER BY created_at DESC, job_id DESC LIMIT 1",
+                LEFTOVER_ACTIVE_STATUSES,
+            ).fetchone()
+            return row["job_id"] if row else None
+        finally:
+            conn.close()
+
+    def _busy_extra(self) -> dict:
+        """409 ``analysis_busy`` 的附加响应字段：已判定占用者才带
+        ``active_job_id``（ISS-120）；判定不了返回空 dict（不附加）。"""
+        active = self._db_active_job_id()
+        return {"active_job_id": active} if active else {}
 
     # ------------------------------------------------------------ 历史
 

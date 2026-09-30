@@ -666,11 +666,13 @@ async function main() {
       hermesReadyRow.includes("可用") && hermesReadyRow.includes("已验证版本") &&
         hermesReadyNote.includes("只读工具集") && hermesReadyNote.includes("联网") &&
         // ISS-132：只读工具集里的图像分析确实接受本机图片路径并把结果
-        // 编码进模型输入，披露必须如实写明，且不得退回旧的「不读取本机文件」。
+        // 编码进模型输入，披露必须如实写明能力边界与当前不触发的原因，
+        // 既不得退回旧的「不读取本机文件」，也不得夸大成可读任意文件。
         hermesReadyNote.includes("图像分析") &&
         hermesReadyNote.includes("本机图片") &&
-        !hermesReadyNote.includes("不读取本机文件；") &&
-        hermesReadyNote.includes("不读取其他类型的本机文件"),
+        hermesReadyNote.includes("别名脱敏") &&
+        hermesReadyNote.includes("不读取其他类型的本机文件") &&
+        !hermesReadyNote.includes("读取任意本机文件"),
       hermesReadyNote.trim().slice(0, 80));
     await page.evaluate(() => fetch("/__set?sc=enabled"));
     await page.click("[data-test='analysis-detect-btn']");

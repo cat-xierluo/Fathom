@@ -663,13 +663,50 @@ class AnalysisManager:
         rec.cwd = Path(tempfile.mkdtemp(prefix="fathom-analysis-"))
         with self._lock:
             self._jobs[job_id] = rec
-        self._discard_preview(preview.preview_id)  # 单次消费
-        thread = threading.Thread(
-            target=self._execute_job, args=(rec,),
-            name=f"fathom-analysis-{job_id[:8]}", daemon=False,
-        )
-        thread.start()
-        return self.job_view(job_id), False
+        # 占位行已提交、worker 尚未确认运行：这段里的任何异常都必须把占位行
+        # 收敛到终态，否则它会以 starting 留在库里——被 find_active_jobs
+        # （ISS-135 的区间在途查询）当成幽灵在途任务渲染，直到服务重启
+        # reconcile 才消失。thread.start() 一旦成功，后续没有任何可抛异常的
+        # 操作，租约所有权即正式随 rec 移交 worker。
+        try:
+            self._discard_preview(preview.preview_id)  # 单次消费
+            # 视图在 thread.start() **之前**构造（ISS-136）。原实现把 job_view
+            # 留在 start() 之后，它一旦抛错会冒泡到 start_job 的
+            # except BaseException 提前 lease.release()——worker 仍在运行、
+            # 锁已消失，并发分析与升级 prepare 都能插进来；worker 自己的释放
+            # 因 _released 幂等而空转，整个剩余任务期间互斥失效。
+            view = self.job_view(job_id)
+            thread = threading.Thread(
+                target=self._execute_job, args=(rec,),
+                name=f"fathom-analysis-{job_id[:8]}", daemon=False,
+            )
+            thread.start()
+        except BaseException:
+            self._reap_unstarted_job(rec)
+            raise  # 外层 except 释放租约（worker 未运行，释放正确）
+        # start() 之后不再有可抛异常的操作。
+        return view, False
+
+    def _reap_unstarted_job(self, rec: JobRecord) -> None:
+        """占位行已插入但 worker 从未启动的收尾（ISS-136）。
+
+        只在启动失败路径调用：从注册表摘除并直接置 interrupted（不借道
+        _finish——那是 worker 的终态通道；这里没有 worker，duration 记 0）。
+        """
+        with self._lock:
+            self._jobs.pop(rec.job_id, None)
+        conn = db.connect(self._db_path)
+        try:
+            conn.execute(
+                "UPDATE analysis_runs SET status='interrupted',"
+                " reason_code='startup_aborted', finished_at=?, duration_ms=0"
+                " WHERE job_id=? AND status='starting'",
+                (_now(), rec.job_id))
+            conn.commit()
+        finally:
+            conn.close()
+        _LOG.warning("analysis job reaped before worker start job_id=%s",
+                     rec.job_id)
 
     def _find_job_by_idempotency(self, key: str) -> dict | None:
         conn = db.connect(self._db_path)

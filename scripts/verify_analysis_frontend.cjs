@@ -231,6 +231,7 @@ function createFixture() {
     jobsPosted: 0,                  // POST /api/analysis/jobs 计数（R4 断言）
     jobPhase: 0,                    // 轮询推进计数：>=2 转 scenario 终态
     holdRunning: false,             // true 时 job 不自动收敛（构造旧报告+在途并存）
+    failJobsLookup: false,          // true 时区间在途查询返回 500（构造查询失败）
     jobSeq: 1,
     jobs: new Map(),                // idempotency_key -> job 视图
     cancelRequested: new Set(),
@@ -281,6 +282,7 @@ function createFixture() {
       if (q.has("slowPreviewMs")) state.slowPreviewMs = Number(q.get("slowPreviewMs")) || 0;
       if (q.get("armPreview409") === "1") state.previewOnceArmed = true;
       if (q.has("holdRunning")) state.holdRunning = q.get("holdRunning") === "1";
+      if (q.has("failJobsLookup")) state.failJobsLookup = q.get("failJobsLookup") === "1";
       // 模拟「用户离页期间后台跑完」：服务端把在途 job 直接推到终态，
       // 此时页面没有在轮询，因此观察不到终态，只能靠下次重入读记录层发现。
       if (q.get("forceTerminal") === "1") {
@@ -389,6 +391,9 @@ function createFixture() {
 
     /* ISS-120/135：按区间查在途 job（纯读，仅非终态）。跨会话发现用。 */
     if (p === "/api/analysis/jobs" && req.method === "GET") {
+      if (state.failJobsLookup) {
+        return json(res, 500, { reason_code: "internal", detail: "合成故障" });
+      }
       const qa = Number(url.searchParams.get("a"));
       const qb = Number(url.searchParams.get("b"));
       const active = [...state.jobs.values()]
@@ -1026,6 +1031,73 @@ async function main() {
     await page.evaluate(() => fetch("/__set?holdRunning=0"));
     await page.waitForSelector("[data-test='analysis-state-done'], [data-test='analysis-state-failure']",
       { timeout: 15000 }).catch(() => {});
+
+    /* ---- 跨会话恢复出的在途任务，用户可以取消 ----
+     * 卡片验收写的是「恢复查询/取消」。cancelAnalysisJob 读模块级
+     * analysisJob，必须确认恢复路径把它赋上值，否则取消按钮点不动。 */
+    await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&holdRunning=1"));
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    await page.click("[data-test='analysis-preview-btn']");
+    await page.waitForSelector("[data-test='analysis-state-preview']");
+    await page.click("[data-test='analysis-confirm-btn']");
+    await page.waitForSelector("[data-test='analysis-state-running']", { timeout: 10000 });
+    await page.evaluate(() => { sessionStorage.clear(); });
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    const canCancel = await page.waitForSelector("[data-test='analysis-cancel-btn']",
+      { timeout: 10000 }).then(() => true).catch(() => false);
+    record("changes.135-resumed-job-cancellable", canCancel,
+      canCancel ? "跨会话恢复后取消入口可用" : "恢复后没有取消入口");
+    if (canCancel) {
+      await page.click("[data-test='analysis-cancel-btn']");
+      const cancelled = await page.waitForSelector("[data-test='analysis-state-failure']",
+        { timeout: 15000 }).then(() => true).catch(() => false);
+      const cancelText = await page.textContent("[data-test='analysis-body']");
+      record("changes.135-resumed-job-cancel-converges",
+        cancelled && cancelText.includes("已取消"),
+        cancelText.replace(/\s+/g, " ").slice(0, 60));
+    }
+    await page.evaluate(() => fetch("/__set?holdRunning=0"));
+
+    /* ---- 区间守卫：其他区间的在途 job 不得渲染为当前区间 ---- */
+    await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&holdRunning=1"));
+    await page.evaluate(() => fetch("/__seedjob?a=3&b=1&k=other-range-key"));
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    const bodyGuard = await page.textContent("[data-test='analysis-body']");
+    const mentionsOther = bodyGuard.includes("#3") && !bodyGuard.includes("job-other-range");
+    record("changes.135-other-range-not-rendered",
+      !bodyGuard.includes("job-other-range") &&
+        (bodyGuard.includes("还没有 AI 解读") || bodyGuard.includes("解读状态")),
+      mentionsOther ? "其他区间的在途 job 未被误渲染" : bodyGuard.replace(/\s+/g, " ").slice(0, 70));
+    const postedGuard = fixture.state.jobsPosted;
+    record("changes.135-other-range-no-dispatch",
+      postedGuard === 0, `仅查询不得派发：jobsPosted=${postedGuard}`);
+
+    /* ---- 查询失败：如实说明 + 重试入口，且不派发 ---- */
+    await page.evaluate(() => fetch("/__set?failJobsLookup=1"));
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    const failNote = await page.$("[data-test='analysis-active-query-failed']");
+    const failBody = await page.textContent("[data-test='analysis-body']");
+    record("changes.135-query-failure-disclosed",
+      Boolean(failNote) && failBody.includes("正在进行的解读")
+        && !failBody.includes("还没有 AI 解读"),
+      failBody.replace(/\s+/g, " ").slice(0, 70));
+    record("changes.135-query-failure-retryable", Boolean(failNote),
+      failNote ? "有重试入口" : "无重试入口");
+    record("changes.135-query-failure-no-dispatch",
+      fixture.state.jobsPosted === 0, `查询失败不得派发：${fixture.state.jobsPosted}`);
+    // 收尾：恢复正常查询并跑完一个任务，让页面回到「完成」态（带重跑入口），
+    // 后续 409 用例才能继续。
+    await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&failJobsLookup=0&holdRunning=0"));
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    await page.click("[data-test='analysis-preview-btn']", { timeout: 10000 });
+    await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
+    await page.click("[data-test='analysis-confirm-btn']");
+    await page.waitForSelector("[data-test='analysis-state-done']", { timeout: 15000 });
 
     /* ---------- 预览失效（409 preview_expired）→ 回未分析 ---------- */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&armPreview409=1"));

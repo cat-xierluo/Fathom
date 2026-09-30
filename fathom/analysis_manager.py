@@ -807,6 +807,22 @@ class AnalysisManager:
                     _LOG.info("analysis success dropped job_id=%s status=%s",
                               rec.job_id, row["status"] if row else None)
                     return
+                if gate is not None:
+                    # 提交资格已撤销：记 cancelled（带原因），不落正文。
+                    # 这一支优先于下面的 cancelling 分支：refresh_policy
+                    # （关授权/切 Runtime）也把 job 置为 cancelling，若先判
+                    # cancelling 就会把 reason_code 退化成笼统的 'cancelled'，
+                    # 丢掉 analysis_disabled / policy_changed / runtime_changed
+                    # 这类有诊断价值的原因。
+                    conn.execute(
+                        "UPDATE analysis_runs SET status='cancelled',"
+                        " reason_code=?, finished_at=?, duration_ms=? "
+                        "WHERE job_id=?",
+                        (gate, _now(), duration_ms, rec.job_id))
+                    conn.commit()
+                    _LOG.info("analysis success revoked job_id=%s gate=%s",
+                              rec.job_id, gate)
+                    return
                 if row["status"] == "cancelling":
                     # 取消已被受理（cancel_job 返回非终态 cancelling），但 worker
                     # 在本提交边界前已跑完。取消先到即取消胜：迟到成功一律丢弃，
@@ -820,17 +836,6 @@ class AnalysisManager:
                     conn.commit()
                     _LOG.info("analysis success dropped by accepted cancel "
                               "job_id=%s", rec.job_id)
-                    return
-                if gate is not None:
-                    # 提交资格已撤销：记 cancelled（带原因），不落正文。
-                    conn.execute(
-                        "UPDATE analysis_runs SET status='cancelled',"
-                        " reason_code=?, finished_at=?, duration_ms=? "
-                        "WHERE job_id=?",
-                        (gate, _now(), duration_ms, rec.job_id))
-                    conn.commit()
-                    _LOG.info("analysis success revoked job_id=%s gate=%s",
-                              rec.job_id, gate)
                     return
                 analysis_id = self._insert_analysis(conn, rec, result)
                 conn.execute(
@@ -953,13 +958,16 @@ class AnalysisManager:
         return self.job_view(job_id)
 
     def _mark_cancelling(self, job_id: str) -> None:
-        """受理取消：与成功提交共用 ``_commit_lock``，使「取消」与「完成」
-        在同一提交边界线性化。
+        """受理取消：置 cancelling（不写终态，终态由持有方收敛）。
 
-        取锁前不加概率性延迟——两个出口的先后由锁与库内状态共同决定：
-        取消先拿到锁则本次成功在提交时会看到 cancelling 并被判负；成功先
-        提交则本 UPDATE 的 ``status IN ('starting','running')`` 条件不成立、
-        rowcount 为 0，终态不被改写。
+        **线性化来自 SQL 条件与写事务，不是这把锁**：_commit_success 的
+        ``BEGIN IMMEDIATE`` 全程持有 SQLite 写锁，本 UPDATE 的
+        ``status IN ('starting','running')`` 与提交侧的终态集/``cancelling``
+        判定已经给出唯一结果——取消先落则提交时看到 cancelling 判负；提交
+        先落则本 UPDATE 条件不成立、rowcount 为 0，终态不被改写。
+        这里的 ``_commit_lock`` 只是把该不变量写进代码并与 refresh_policy
+        的 epoch 自增同锁；独立审查实测移除它现有测试仍全绿，不宣称它承担
+        正确性。取锁前不加概率性延迟。
         """
         with self._commit_lock:
             conn = db.connect(self._db_path)

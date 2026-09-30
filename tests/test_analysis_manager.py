@@ -877,6 +877,34 @@ class TestAcceptedCancelWins:
         # 无论哪一侧胜，终态与正文必须自洽。
         assert (final["status"] == "succeeded") == bool(agent_rows())
 
+    def test_policy_revocation_reason_not_masked_by_cancel(self, ok_setup):
+        """授权撤销优先于「取消已受理」，reason_code 不得退化成笼统值。
+
+        refresh_policy（关授权/切 Runtime）也把 job 置为 cancelling。若
+        _commit_success 先判 cancelling 再判 gate，记录的 reason_code 会从
+        analysis_disabled / policy_changed 退化成 'cancelled'，丢掉诊断信息。
+        既有 test_disable_during_run_revokes_commit 接受三值（含 'cancelled'），
+        罩不住这个退化，故单独钉住。
+        """
+        manager = make_manager()
+        barrier = threading.Event()
+        resume = threading.Event()
+        self._paused_settle(manager, barrier, resume)
+
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "policy-first")
+        assert barrier.wait(20)
+        config.update_user_settings({"analysis": {"enabled": False}})
+        manager.refresh_policy()
+        resume.set()
+
+        final = wait_terminal(manager, job["job_id"], timeout=20)
+        assert final["status"] == "cancelled", final
+        assert final["reason_code"] in ("analysis_disabled", "policy_changed"), \
+            f"撤销原因被掩盖：{final['reason_code']}"
+        assert agent_rows() == []
+
 
 # ==========================================================================
 # 反例①/⑥延伸：授权撤销与升级停写的提交资格撤销

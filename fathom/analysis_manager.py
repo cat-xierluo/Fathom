@@ -692,15 +692,23 @@ class AnalysisManager:
 
         只在启动失败路径调用：从注册表摘除并直接置 interrupted（不借道
         _finish——那是 worker 的终态通道；这里没有 worker，duration 记 0）。
+
+        条件用「非终态」而非 status='starting'：并发 cancel_job/refresh_policy
+        可能恰在这几毫秒把行置成 cancelling，窄条件会失配、把行留在活跃集里
+        成为无 worker 收敛的幽灵（本卡要消除的孤儿行的 cancel 变体）。
+        同时清理 rec.cwd——此路径无 worker，没人替它删临时目录。
         """
+        import shutil
         with self._lock:
             self._jobs.pop(rec.job_id, None)
+        shutil.rmtree(rec.cwd, ignore_errors=True)
         conn = db.connect(self._db_path)
         try:
             conn.execute(
                 "UPDATE analysis_runs SET status='interrupted',"
                 " reason_code='startup_aborted', finished_at=?, duration_ms=0"
-                " WHERE job_id=? AND status='starting'",
+                " WHERE job_id=? AND status NOT IN"
+                " ('succeeded','failed','cancelled','timed_out','interrupted')",
                 (_now(), rec.job_id))
             conn.commit()
         finally:

@@ -672,6 +672,7 @@ const ANALYSIS_JOB_REASON = {
   app_error: "引擎报告了应用层错误",
   cancelled_before_start: "分析在开始前被取消",
   owner_exit: "服务中断：本次分析未完成，不会自动重试",
+  startup_aborted: "分析在启动阶段中断，未产生任何解读",
 };
 
 /* 事实条目 kind 的中文说明（与 facts 包 entry_legend 同口径）。 */

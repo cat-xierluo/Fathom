@@ -1415,7 +1415,7 @@ class CodexCliAdapter(BaseCliAdapter):
                     usage = ev["usage"]
             elif etype == "turn.failed":
                 turn_failed.append(ev)
-            elif etype == "item.completed":
+            elif etype == "item.completed" and not turn_completed:
                 item = ev.get("item")
                 if not isinstance(item, dict):
                     continue
@@ -1434,7 +1434,16 @@ class CodexCliAdapter(BaseCliAdapter):
                 detail=f"turn.failed 事件：{json.dumps(turn_failed[0], ensure_ascii=False)[:200]}",
             )
 
-        result_text = "\n\n".join(t for t in agent_texts if t.strip()).strip()
+        # 进度消息与最终输出分离：Codex 会把同一轮的中间说明也发成独立的
+        # agent_message（实测 0.147.0 最多三条，item 只有 id/text/type，
+        # 没有可用于区分的 phase 字段），最终输出是 turn.completed 之前的
+        # 最后一条 agent_message——收集在上面的循环里已按 turn.completed
+        # 截断。拼接全部会让合法最终 JSON 前面粘上进度文字，被下游单 JSON
+        # 验证判为 result_not_json。
+        # 这里只做「按协议选定最终输出」，不放宽结构验证，也不从任意文本
+        # 里猜取 JSON 片段。
+        nonempty_texts = [t for t in agent_texts if t.strip()]
+        result_text = nonempty_texts[-1].strip() if nonempty_texts else ""
         if not turn_completed or not result_text:
             # 响应缺失/不完整：error item（流断连降级仍空响应）优先归因应用层。
             if error_items:
@@ -1450,8 +1459,8 @@ class CodexCliAdapter(BaseCliAdapter):
                 ok=False, reason_code="parse_failed_missing_agent_message",
                 detail=(
                     f"缺完整 agent_message（turn.completed="
-                    f"{'是' if turn_completed else '否'}，agent_message "
-                    f"{len(agent_texts)} 条，非 JSON 行 {bad_lines} 条）"
+                    f"{'是' if turn_completed else '否'}，非空 agent_message "
+                    f"{len(nonempty_texts)} 条，非 JSON 行 {bad_lines} 条）"
                 ),
             )
         return ParsedOutput(

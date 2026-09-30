@@ -36,9 +36,17 @@
   不写、不依赖，非 bare 形态的写入是第三方 CLI 自身行为，按已知行为
   披露（证据见 worktree evidence/，OAuth-only 形态与未来版本按
   ISS-035E 复核）。
-- ZCode / Codex / Hermes 的不可开放原因与复核条件注册在 ``CANDIDATES``
-  （能力上限 + 稳定 reason_code），不为其构建适配器；身份记录与
-  CodeBuddy（腾讯）等相似产品明确区分。
+- ZCode / Hermes 的不可开放原因与复核条件注册在 ``CANDIDATES``（能力
+  上限 + 稳定 reason_code），不为其构建适配器；身份记录与 CodeBuddy
+  （腾讯）等相似产品明确区分。
+- Codex CLI（ISS-126，DEC-030 防破坏能力门）：``-s read-only`` 的 OS 级
+  Seatbelt 只读沙箱原生匹配新门，0.147.0 锚定 ready。防破坏负例（写/删/
+  破坏命令）由 PM 于 2026-09-30 实证（worktree evidence/REPORT-pm-
+  negatives.md，不入库）：模型层规避（e1b/e1c/e1d/e2）+ OS 层拒绝旁证
+  （035E E4 同机制 exit=134）+ e1d 步骤 1 排除「模型没能力执行命令」的
+  替代解释。读取任意本机文件与联网是用户裁决（2026-09-30）允许的能力，
+  在设置页如实披露；调用载荷只走 stdin（codex exec 无 prompt 位置参数
+  形态，实测提示行与日志进 stderr、stdout 纯 JSONL）。
 
 argv 载荷披露：claude 支持 ``-p <payload>`` 以 argv 携带载荷，该形态下
 载荷文本对本机同用户进程（ps 等）可见。适配器默认走 stdin；argv 仅作
@@ -144,8 +152,9 @@ class CandidateMeta:
     """注册表条目：四家候选的静态元数据与能力上限。
 
     ``capability_cap``/``cap_reason_code`` 是该家能开放的天花板：即使本机
-    安装且版本可读，也不得高于上限开放。只有 Claude Code 当前上限为
-    READY（且仅限 ``verified_versions`` 内的版本）。
+    安装且版本可读，也不得高于上限开放。当前上限 READY：Claude Code
+    （严格禁工具，DEC-029 门）与 Codex CLI（OS 级 read-only 沙箱，
+    DEC-030 防破坏门），均仅限 ``verified_versions`` 内的版本。
     """
 
     id: str
@@ -162,6 +171,8 @@ class CandidateMeta:
     cap_reason: str = ""
     verified_versions: frozenset[str] = frozenset()
     notes: tuple[str, ...] = ()
+    #: ready 定级时 probe detail 的能力门句式（各家门的语义不同，如实分写）。
+    gate_summary: str = "禁工具/隔离/认证形态/进程回收均有实证"
 
     def parse_version(self, raw: str) -> str | None:
         """从版本命令首行非空输出解析版本号；不认识返回 None。"""
@@ -338,31 +349,41 @@ CANDIDATES: dict[str, CandidateMeta] = {
             "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
         ),
         version_pattern=r"^\s*codex-cli\s+(\d+\.\d+\.\d+)\s*$",
-        capability_cap=_C,
-        cap_reason_code="tool_gate_absent_by_design",
+        capability_cap=_R,
+        cap_reason_code="verified_version",
         cap_reason=(
-            "无工具级禁用参数或配置键（0.147.0 与 0.158.0-alpha.2.1 双版本 --help 全参数面、"
-            "官方 config-reference 全键面核对：仅 web_search/view_image/shell_tool/"
-            "unified_exec/MCP 工具等逐项开关，无禁全部工具或纯文本模式）；"
-            "--sandbox read-only 官方语义即允许模型运行只读命令，"
-            "实测隔离 cwd 下模型执行 sed 读出 $HOME 哨兵——读取不限于 cwd"
+            "DEC-030 防破坏能力门下的开放依据：-s read-only 为 OS 级 Seatbelt 只读"
+            "沙箱，写文件/删除/破坏性命令被模型层规避且被 OS 层拒绝（e1d 决定性对照："
+            "读命令 exit=0 真实执行、写步骤模型改跑 ls 核查并如实报告不存在；"
+            "e1e/e1f/e3 OS 层 PermissionError；证据 worktree evidence/"
+            "REPORT-pm-negatives.md，2026-09-30）；读取任意本机文件与联网是用户"
+            "裁决（2026-09-30）允许的能力，在设置页如实披露，不作失败条件"
+        ),
+        verified_versions=frozenset({"0.147.0"}),
+        gate_summary=(
+            "OS 级 read-only 沙箱防破坏（写/删/破坏命令负例有实证）+ 隔离/"
+            "不落盘/进程回收实证"
         ),
         notes=(
-            "~/.local/bin/codex 为用户自建 wrapper：目标已失效（exit 127）且硬编码注入 "
-            "danger-full-access/never-approval，与 Fathom 合同相反，产品绝不复用该入口"
-            "（2026-09-29 复核：双目标仍缺失，硬编码不变）",
-            "ISS-035E 2026-09-29 终审（0.147.0，五组行为实验）：E1/E2 read-only 下"
-            "模型运行 shell 命令并读出 cwd 内与 $HOME 下哨兵；E3 关闭全部已知工具开关"
-            "（shell_tool/unified_exec/web_search/view_image/agents）后命令消失但哨兵"
-            "仍被内建读取路径读出；E4/E5 beta permissions profile "
-            "（filesystem :root=deny）能挡住 shell 与内建读取（命令仍执行 exit=134、"
-            "回复自述无读取权限），但模型转而成功调用内建 MCP 工具（codex_apps）——"
-            "工具面在任何配置组合下不归零，deny 是文件系统访问控制而非工具禁用；"
-            "实验证据见 035E worktree evidence/（11-15 号）",
-            "approval 与 sandbox 正交：approval 是跨界问人机制（-a untrusted 的可信集"
-            "明示含 ls/cat/sed），exec 非交互形态下不构成工具门",
-            "复核条件：官方提供禁全部工具/纯文本回复模式，或 permissions profile"
-            "结束 beta 并提供工具级（而非仅文件系统/网络）边界后重审（ISS-035E）",
+            "入口探测：~/.local/bin/codex 为用户自建 wrapper（exit 127 且硬编码注入"
+            " danger-full-access，与 Fathom 合同相反，产品绝不复用），探测按序落到"
+            " ~/.hermes/node/bin/codex（@openai/codex 真实候选，2026-09-29 复核）",
+            "调用形态（ISS-126 实测，2026-09-30）：exec --json --ephemeral "
+            "--ignore-user-config --ignore-rules --skip-git-repo-check -s read-only "
+            "-C <隔离cwd> -c model_reasoning_effort=low，载荷经 stdin；提示行与"
+            "内部日志进 stderr，stdout 为纯 JSONL 事件流（-c 值 TOML 解析失败回退"
+            "字面量，裸 low 实测被接受）",
+            "防破坏实证（PM 负例，2026-09-30）：e1b/e1c 直白与无害外观写诱导模型"
+            "拒绝发起；e1d 步骤 1 证明命令通道可用（排除「模型没能力执行」的替代"
+            "解释）、步骤 2 写被规避且文件未创建；e2 删除诱导全规避；OS 层旁证"
+            " 035E E4 同 Seatbelt 机制 deny profile 下命令 exit=134 被直接拒绝",
+            "ISS-035E 旧合同（禁全部工具）终审结论历史有效：工具面在任何配置组合"
+            "下不归零（E5 内建 MCP 通道仍可被调用）、无工具级禁用参数；DEC-030"
+            " 修订后防破坏由 read-only 沙箱在 OS 层保证，不再以「禁全部工具」为门",
+            "网络与认证：本机→ChatGPT 后端 WebSocket 常断连并自动降级 HTTPS"
+            "（error item 'Falling back...' 与成功回复共存属实测正常形态，适配器"
+            "仅在响应缺失时判失败）；认证复用 CODEX_HOME 下用户 auth.json，"
+            "--ephemeral 不落盘会话、--ignore-user-config 不加载用户 config.toml",
         ),
     ),
     "hermes-agent": CandidateMeta(
@@ -890,7 +911,7 @@ def _version_probe(
     return (
         RuntimeInfo(
             availability=Availability.READY, reason_code="verified_version",
-            detail=f"{path} 版本 {version} 通过能力门（禁工具/隔离/认证形态/进程回收均有实证）",
+            detail=f"{path} 版本 {version} 通过能力门（{meta.gate_summary}）",
             version=version, notes=meta.notes, **base,
         ),
         None,
@@ -1092,11 +1113,29 @@ def probe_all(
 
 
 # --------------------------------------------------------------------------
-# Claude Code 适配器（首家 ready；接口即 ISS-035E 的接缝）
+# 适配器（接口即 ISS-035E 的接缝；各家同构，公共校验在基类）
 # --------------------------------------------------------------------------
 
 
-class ClaudeCodeAdapter:
+class BaseCliAdapter:
+    """适配器公共骨架：候选身份与能力门校验（各家 ``__init__`` 同构）。"""
+
+    id: str = ""
+
+    def __init__(self, info: RuntimeInfo) -> None:
+        if info.id != self.id:
+            raise UnsupportedRuntimeError(f"适配器 {self.id} 不接受候选 {info.id}")
+        if info.availability is not Availability.READY:
+            raise UnsupportedRuntimeError(
+                f"{info.id} 当前 {info.availability.value}（{info.reason_code}），"
+                "未通过能力门，禁止构建调用"
+            )
+        if not info.executable:
+            raise UnsupportedRuntimeError("RuntimeInfo 缺少 executable")
+        self.info = info
+
+
+class ClaudeCodeAdapter(BaseCliAdapter):
     """Claude Code 的 probe/build_invocation/parse_output 适配器。
 
     调用合同（2.1.237 实证）::
@@ -1112,18 +1151,6 @@ class ClaudeCodeAdapter:
     """
 
     id = "claude-code"
-
-    def __init__(self, info: RuntimeInfo) -> None:
-        if info.id != self.id:
-            raise UnsupportedRuntimeError(f"适配器 {self.id} 不接受候选 {info.id}")
-        if info.availability is not Availability.READY:
-            raise UnsupportedRuntimeError(
-                f"{info.id} 当前 {info.availability.value}（{info.reason_code}），"
-                "未通过能力门，禁止构建调用"
-            )
-        if not info.executable:
-            raise UnsupportedRuntimeError("RuntimeInfo 缺少 executable")
-        self.info = info
 
     def build_invocation(
         self,
@@ -1215,13 +1242,185 @@ class ClaudeCodeAdapter:
         )
 
 
-def get_adapter(info: RuntimeInfo) -> ClaudeCodeAdapter:
-    """按 RuntimeInfo 取适配器；当前仅 claude-code，其余返回 None 语义。
+class CodexCliAdapter(BaseCliAdapter):
+    """Codex CLI 的 build_invocation/parse_output 适配器（ISS-126，DEC-030）。
+
+    调用合同（0.147.0 实证；形态与 ISS-126 防破坏负例验证一致）::
+
+        <codex> exec --json --ephemeral --ignore-user-config --ignore-rules
+               --skip-git-repo-check -s read-only -C <隔离cwd>
+               -c model_reasoning_effort=low
+        # 无 prompt 位置参数：载荷经 stdin（exec 官方形态；实测提示行
+        # "Reading prompt from stdin..." 与内部日志均进 stderr，stdout 纯 JSONL）
+        cwd=<隔离空目录>  env={PATH, HOME}  认证=CODEX_HOME 下用户 auth.json（CLI 自行读取）
+
+    防破坏硬边界（DEC-030）：``-s read-only`` 是 OS 级 Seatbelt 只读沙箱。
+    负例实证（worktree evidence/REPORT-pm-negatives.md，2026-09-30）：写/
+    删/破坏性命令在模型层被规避（e1b/e1c/e1d/e2，目标文件零变化），OS 层
+    同机制有直接拒绝证据（035E E4 exit=134、e1e/e1f/e3 PermissionError）；
+    e1d 步骤 1 的读命令 exit=0 证明命令通道可用，排除「模型没能力执行」的
+    替代解释。读取任意本机文件与联网是用户裁决（2026-09-30）允许的能力，
+    由设置页文案如实披露，不构成失败条件。
+
+    载荷只支持 stdin：codex exec 的 prompt 位置参数形态会把载荷暴露给本机
+    同用户进程（ps），且 ``-`` 开头的载荷文本可占据 flag 位置，因此不提供
+    argv 回退（与 claude 适配器经真实复验的 argv 回退不同）。
+    """
+
+    id = "codex-cli"
+
+    def build_invocation(
+        self,
+        payload: str,
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        payload_mode: str = "stdin",
+    ) -> Invocation:
+        """构建受控调用。cwd 必须是隔离空目录；载荷只经 stdin。"""
+        if payload_mode != "stdin":
+            raise ValueError("payload_mode 只支持 stdin（codex 不提供 argv 载荷形态）")
+        if not isinstance(payload, str) or not payload.strip():
+            raise ValueError("payload 必须是非空字符串")
+        exe = self.info.executable
+        argv = [
+            exe, "exec",
+            "--json",                   # stdout 输出 JSONL 事件流
+            "--ephemeral",              # 不落盘会话
+            "--ignore-user-config",     # 不加载 ~/.codex/config.toml
+            "--ignore-rules",           # 不加载 execpolicy .rules
+            "--skip-git-repo-check",    # 隔离 cwd 不是 git 仓库
+            "-s", "read-only",          # OS 级只读沙箱（防破坏硬边界，不可省略）
+            "-C", str(cwd),             # 工作根同隔离 cwd（与进程 cwd 一致）
+            "-c", "model_reasoning_effort=low",  # 合成分析载荷用低推理预算
+        ]
+        return Invocation(
+            argv=argv,
+            cwd=cwd,
+            env=dict(env) if env is not None else build_minimal_env(),
+            stdin_bytes=payload.encode("utf-8"),
+        )
+
+    def parse_output(self, run: RunResult) -> ParsedOutput:
+        """三关中的第二、三关：JSONL 事件流的应用层错误判定与结构验证。
+
+        成功 = ``turn.completed`` + 非空 agent_message（exit 0 由 runner
+        保证）。降级 error item（WebSocket→HTTPS transport）与成功回复
+        共存是实测成功形态（035E E1-E5 与 ISS-126 负例全部如此，本机到
+        ChatGPT 后端网络抖动常态），因此 error item 在响应完整时只计数
+        披露、不阻断；响应缺失/不完整时以可辨 reason_code 归因应用层。
+        非 JSON 行跳过并计数（stdout 实测纯 JSONL，坏行出现即诊断信号；
+        无任何可解析事件则结构验证失败）。
+        """
+        if run.outcome is not RunOutcome.OK:
+            return ParsedOutput(
+                ok=False, reason_code=f"runner_{run.outcome.value}",
+                detail=run.detail or f"runner 结局 {run.outcome.value}",
+            )
+
+        events: list[dict] = []
+        bad_lines = 0
+        for line in run.stdout_text.splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                ev = json.loads(text)
+            except json.JSONDecodeError:
+                bad_lines += 1
+                continue
+            if isinstance(ev, dict):
+                events.append(ev)
+            else:
+                bad_lines += 1
+        if not events:
+            return ParsedOutput(
+                ok=False, reason_code="parse_failed_no_events",
+                detail=f"stdout 无任何可解析 JSONL 事件（非 JSON 行 {bad_lines} 条）",
+            )
+
+        thread_id: str | None = None
+        usage: dict | None = None
+        turn_completed = False
+        turn_failed: list[dict] = []
+        agent_texts: list[str] = []
+        error_items: list[str] = []
+        for ev in events:
+            etype = ev.get("type")
+            if etype == "thread.started":
+                tid = ev.get("thread_id")
+                if isinstance(tid, str):
+                    thread_id = tid
+            elif etype == "turn.completed":
+                turn_completed = True
+                if isinstance(ev.get("usage"), dict):
+                    usage = ev["usage"]
+            elif etype == "turn.failed":
+                turn_failed.append(ev)
+            elif etype == "item.completed":
+                item = ev.get("item")
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                    agent_texts.append(item["text"])
+                elif item.get("type") == "error":
+                    msg = item.get("message")
+                    error_items.append(
+                        msg if isinstance(msg, str)
+                        else json.dumps(item, ensure_ascii=False)[:200]
+                    )
+
+        if turn_failed:
+            return ParsedOutput(
+                ok=False, reason_code="app_error_turn_failed",
+                detail=f"turn.failed 事件：{json.dumps(turn_failed[0], ensure_ascii=False)[:200]}",
+            )
+
+        result_text = "\n\n".join(t for t in agent_texts if t.strip()).strip()
+        if not turn_completed or not result_text:
+            # 响应缺失/不完整：error item（流断连降级仍空响应）优先归因应用层。
+            if error_items:
+                return ParsedOutput(
+                    ok=False, reason_code="app_error_stream_degraded",
+                    detail=(
+                        f"响应不完整（agent_message={'非空' if result_text else '空'}、"
+                        f"turn.completed={'是' if turn_completed else '否'}）；"
+                        f"error item {len(error_items)} 条，首条：{error_items[0][:200]}"
+                    ),
+                )
+            return ParsedOutput(
+                ok=False, reason_code="parse_failed_missing_agent_message",
+                detail=(
+                    f"缺完整 agent_message（turn.completed="
+                    f"{'是' if turn_completed else '否'}，agent_message "
+                    f"{len(agent_texts)} 条，非 JSON 行 {bad_lines} 条）"
+                ),
+            )
+        return ParsedOutput(
+            ok=True, reason_code=None,
+            value={
+                "result": result_text,
+                "thread_id": thread_id,
+                "turn_completed": True,
+                # 降级等非致命 error item 与坏行如实计数披露（成功不掩盖网络抖动）。
+                "error_items": len(error_items),
+                "skipped_non_json_lines": bad_lines,
+                "usage": usage,
+                # 事件流不报告模型名（-m 未固定、用户可经网关换模型），不猜测。
+                "model": None,
+            },
+        )
+
+
+def get_adapter(info: RuntimeInfo) -> BaseCliAdapter:
+    """按 RuntimeInfo 取适配器；READY 家各自分发，签名不变。
 
     ISS-035E 接缝：新增候选适配器时在此分发，签名不变。
     """
     if info.id == ClaudeCodeAdapter.id:
         return ClaudeCodeAdapter(info)
+    if info.id == CodexCliAdapter.id:
+        return CodexCliAdapter(info)
     raise UnsupportedRuntimeError(f"候选 {info.id} 尚无适配器（{info.reason_code}）")
 
 
@@ -1244,7 +1443,7 @@ class DispatchResult:
 
 
 def dispatch_request(
-    adapter: ClaudeCodeAdapter,
+    adapter: BaseCliAdapter,
     runner: AgentCliRunner,
     payload: str,
     *,

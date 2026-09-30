@@ -104,10 +104,10 @@ function runtimeInfo(id, overrides = {}) {
     "codex-cli": {
       id: "codex-cli", display_name: "Codex CLI", identity: "OpenAI Codex CLI",
       identity_evidence: "x", official_docs: "https://learn.chatgpt.com/docs/sandboxing",
-      availability: "unsupported", reason_code: "tool_gate_absent_by_design",
+      availability: "ready", reason_code: "verified_version",
       detail: "", executable: "/fixture/bin/codex", resolved_target: "/fixture/bin/codex",
-      version: "0.42.0", adapter_contract_version: 1, auth_status: "unknown",
-      capability_cap: "unsupported", notes: [],
+      version: "0.147.0", adapter_contract_version: 1, auth_status: "unknown",
+      capability_cap: "ready", notes: [],
     },
     "hermes-agent": {
       id: "hermes-agent", display_name: "Hermes Agent", identity: "Nous Research hermes-agent",
@@ -555,11 +555,17 @@ async function main() {
     const zReason = await page.textContent(
       "[data-test='analysis-runtime-row'][data-runtime-id='zcode'] [data-test='analysis-reason']");
     record("settings.unsupported-reason-shown", zReason.includes("工具"), zReason.trim().slice(0, 50));
+    const codexNote = await page.textContent(
+      "[data-test='analysis-runtime-row'][data-runtime-id='codex-cli'] [data-test='analysis-cap-note']");
+    record("settings.codex-cap-note-disclosed (DEC-030)",
+      codexNote.includes("只读沙箱") && codexNote.includes("读取本机任意文件") &&
+        codexNote.includes("联网"),
+      codexNote.trim().slice(0, 80));
     const hermesBadges = await page.textContent(
       "[data-test='analysis-runtime-row'][data-runtime-id='hermes-agent']");
     record("settings.not-found-shown", hermesBadges.includes("未安装"), "");
     const pickable = await page.$$("[data-test='analysis-pick-btn']");
-    record("settings.only-ready-pickable", pickable.length === 1, `pickable=${pickable.length}`);
+    record("settings.only-ready-pickable", pickable.length === 2, `pickable=${pickable.length}`);
     await page.screenshot({ path: path.join(evidenceDir, "settings-detect-980x640.png") });
 
     /* ---------- 授权确认 + PUT + revision 提示 ---------- */

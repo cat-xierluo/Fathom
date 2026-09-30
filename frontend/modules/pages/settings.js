@@ -1127,8 +1127,9 @@ async function loadPermissionHub() {
  * 2026-09-29）：
  * - 检测只经用户点击触发（POST /api/analysis/runtimes/detect；探测只读，
  *   不发送业务数据）；
- * - 四家候选全部列出：Claude Code 首位 + 「推荐」徽章（用户裁决），
- *   ZCode/Codex/Hermes 不隐藏不折叠——不支持/未安装/启动异常如实显示原因；
+ * - 四家候选全部列出：Claude Code 首位 + 「推荐」徽章（用户裁决）；
+ *   Codex 按 DEC-030 防破坏门可选（能力边界在行内披露），ZCode/Hermes
+ *   不隐藏不折叠——不支持/未安装/启动异常如实显示原因；
  * - --version 成功不等于已登录：ready 家 auth_status=unknown 时显示
  *   「认证待确认」，任何路径不出现「已登录」表述（反例 1 的断言锚点）；
  * - 只有 availability=ready 的候选可选中；选择必经授权确认层——发送对象
@@ -1167,6 +1168,17 @@ const ANALYSIS_REASON_LABELS = {
   tool_disable_ineffective_by_design: "仅支持按工具名逐个禁用，无全部禁用或白名单开关（实测禁用被其余工具绕过）",
   tool_gate_absent_by_design: "无工具级禁用参数或配置键；只读沙箱实测允许运行只读命令并读取工作目录外文件",
   tool_events_unobservable: "调用形态无法观察工具事件",
+};
+
+/* ready 家的能力边界披露（DEC-030：用户裁决允许读任意本机文件、允许联网，
+ * 防破坏是硬底线——如实分写各家在分析期间对本身机的实际能力边界，
+ * 与授权确认层的发送对象/本地保存说明互补）。 */
+const ANALYSIS_RUNTIME_CAP_NOTES = {
+  "claude-code":
+    "运行时禁用全部工具：只产出文本解读，不执行命令、不读写本机文件、不联网。",
+  "codex-cli":
+    "运行于系统级只读沙箱：不可写入、删除文件或执行破坏性命令（系统层强制拦截）；" +
+    "可读取本机任意文件、可联网访问其模型服务。",
 };
 
 /* 认证三态：unknown 是探测的真实结论（--version 不解释登录态）。 */
@@ -1232,6 +1244,7 @@ function renderAnalysisRuntimes(body, cfgAnalysis, detectResult, detecting) {
     const avail = ANALYSIS_AVAIL_BADGES[info.availability] ||
       { text: String(info.availability), cls: "miss" };
     const reasonText = ANALYSIS_REASON_LABELS[info.reason_code] || info.reason_code || "";
+    const capNote = ANALYSIS_RUNTIME_CAP_NOTES[id];   // 仅 ready 家登记（DEC-030 披露）
     const auth = ANALYSIS_AUTH_BADGES[info.auth_status];
     const selectable = info.availability === "ready";
     const active = enabled && runtime && runtime.id === id;
@@ -1252,6 +1265,7 @@ function renderAnalysisRuntimes(body, cfgAnalysis, detectResult, detecting) {
           ${versionText ? `<span class="hint">${versionText}</span>` : ""}
         </div>
         ${reasonText ? `<p class="analysis-reason" data-test="analysis-reason">${escapeHtml(reasonText)}${info.detail && info.availability !== "ready" ? `：${escapeHtml(info.detail)}` : ""}</p>` : ""}
+        ${selectable && capNote ? `<p class="analysis-reason" data-test="analysis-cap-note">${escapeHtml(capNote)}</p>` : ""}
         ${drift ? `<p class="analysis-reason cfg-error">检测到的入口与已保存路径不同；重新选择会更新保存的引擎。</p>` : ""}
         ${selectable ? `
         <div class="analysis-runtime-actions">

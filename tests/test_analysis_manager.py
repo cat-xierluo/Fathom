@@ -399,10 +399,10 @@ class TestPreviewInvalidation:
             config.update_user_settings({"analysis": {
                 "enabled": True,
                 "runtime": {"id": "claude", "executable": str(fake)}}})
-        # 未支持候选（codex-cli）能保存但能力门拒绝预览
+        # 未支持候选（zcode——codex-cli 已按 DEC-030 开放为 ready）能保存但能力门拒绝预览
         config.update_user_settings({"analysis": {
             "enabled": True,
-            "runtime": {"id": "codex-cli", "executable": "/bin/echo"}}})
+            "runtime": {"id": "zcode", "executable": "/bin/echo"}}})
         a, b = make_snapshots(isolated["scanroot"])
         manager = make_manager()
         with pytest.raises(am.AnalysisError) as ei:

@@ -21,7 +21,7 @@
 #
 # 断言口径：两套结果 JSON 均必须 ok=true、failed=0、passed 等于各自期望
 # （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 214；
-# ISS-035C 起新增 analysis frontend 检查（EXPECTED_ANALYSIS_PASSED，ISS-128 后为 56），
+# ISS-035C 起新增 analysis frontend 检查（EXPECTED_ANALYSIS_PASSED，ISS-128 后为 59），
 # ISS-108 增补 5 项至 172 后，ISS-106 总览层级/五态容器再增 7 项=179：
 # ready 清态与次级图 1 + 空库等待 1 + 单快照等待 1 + 错误容器 1 +
 # 净变化根差分 1 + 无基线不伪造零 1 + 980 首屏坐标 1；

@@ -36,9 +36,9 @@
   不写、不依赖，非 bare 形态的写入是第三方 CLI 自身行为，按已知行为
   披露（证据见 worktree evidence/，OAuth-only 形态与未来版本按
   ISS-035E 复核）。
-- ZCode / Hermes 的不可开放原因与复核条件注册在 ``CANDIDATES``（能力
-  上限 + 稳定 reason_code），不为其构建适配器；身份记录与 CodeBuddy
-  （腾讯）等相似产品明确区分。
+- ZCode 的不可开放原因与复核条件注册在 ``CANDIDATES``（能力上限 + 稳定
+  reason_code），不为其构建适配器；身份记录与 CodeBuddy（腾讯）等相似
+  产品明确区分。
 - Codex CLI（ISS-126，DEC-030 防破坏能力门）：``-s read-only`` 的 OS 级
   Seatbelt 只读沙箱原生匹配新门，0.147.0 锚定 ready。防破坏负例（写/删/
   破坏命令）由 PM 于 2026-09-30 实证（worktree evidence/REPORT-pm-
@@ -47,6 +47,13 @@
   替代解释。读取任意本机文件与联网是用户裁决（2026-09-30）允许的能力，
   在设置页如实披露；调用载荷只走 stdin（codex exec 无 prompt 位置参数
   形态，实测提示行与日志进 stderr、stdout 纯 JSONL）。
+- Hermes Agent（ISS-126，DEC-030 防破坏能力门）：``chat -t web,vision``
+  的调用级工具集**替换**语义把工具面收敛为 web_search/web_extract/
+  vision_analyze 只读三件，0.21.5 锚定 ready。负例（直白/无害外观/伪装
+  写诱导、删除诱导零 tool_use 零副作用）与通道对照（web_search 真实执行）
+  见 worktree evidence/iss-126-hermes-20260930/（不入库）；``--safe-mode``
+  单独使用不是防破坏边界（terminal/write_file/rm 无审批照常执行反例在档），
+  只与 ``-t`` 并用作附加隔离。载荷只走 stdin（``--query-file -``）。
 
 argv 载荷披露：claude 支持 ``-p <payload>`` 以 argv 携带载荷，该形态下
 载荷文本对本机同用户进程（ps 等）可见。适配器默认走 stdin；argv 仅作
@@ -413,21 +420,54 @@ CANDIDATES: dict[str, CandidateMeta] = {
         official_docs="https://github.com/NousResearch/hermes-agent",
         known_locations=("~/.local/bin/hermes", "~/.hermes/hermes-agent/venv/bin/hermes"),
         version_pattern=r"^\s*Hermes Agent\s+v?(\d+\.\d+\.\d+)\S*\s+\(\d{4}\.\d+\.\d+\)",
-        capability_cap=_C,
-        cap_reason_code="tool_disable_ineffective_by_design",
+        capability_cap=_R,
+        cap_reason_code="verified_version",
         cap_reason=(
-            "chat -q 的 --format stream-json 提供完整工具事件（035E 第三轮实测，"
-            "推翻 035A「不可观察」旧论据）；可观察后行为反例钉死禁工具无效："
-            "-t \"\" 空 toolsets 下 read_file 照常调用并读出哨兵（事件流完整记录，"
-            "-z 形态正文同样含标记）；--safe-mode 复测仍读出（两形态一致）；"
-            "hermes tools 子命令是全局持久配置（改用户环境，违反隔离合同）"
-            "且非调用级禁用"
+            "DEC-030 防破坏能力门下的开放依据：``chat -t web,vision`` 把工具面"
+            "替换收敛为 {web_search, web_extract, vision_analyze} 只读三件——"
+            "-t 非空值为替换语义（源码 cli.py _build_cli_from_args：空值才回退"
+            "平台默认），MCP 服务器因不在名单被整体跳过；直白/无害外观/伪装"
+            "三组写诱导与删除诱导零 tool_use、目标文件零变化，web_search 通道"
+            "对照真实执行成功（排除「模型不会调工具」替代解释）；--safe-mode "
+            "单独使用时 terminal/write_file/rm 无审批照常执行（反例在档），"
+            "不构成防破坏边界。证据 worktree evidence/iss-126-hermes-20260930/"
+            "REPORT.md，2026-09-30；读取任意本机文件与联网是用户裁决允许的能力"
+        ),
+        verified_versions=frozenset({"0.21.5"}),
+        gate_summary=(
+            "调用级只读工具集收敛防破坏（写/删/破坏命令负例有实证）+ "
+            "隔离/进程回收实证"
         ),
         notes=(
             "venv python 入口，精简 PATH 下 shebang 解释器解析可能失败",
-            "035E 第三轮实验证据 verify-results/agent-runtime-035e-hermes-20260929/：",
-            "E1-E3 stream-json 基线/对照/空工具集；E4 -z+空工具集；E5a/b safe-mode 复测",
-            "复核条件：提供调用级工具白名单/全禁参数（不改全局配置）后重审（ISS-035E）",
+            "调用形态（ISS-126 实测，2026-09-30）：chat --query-file - "
+            "--format stream-json --run-budget 150 -t web,vision "
+            "--ignore-user-config --ignore-rules --source tool，载荷经 stdin；"
+            "stdout 为 JSONL 事件流（system/tool_use/tool_result/text/result），"
+            "stderr 仅 session_id 一行",
+            "工具集收敛实证：-t web,vision 下 input tokens 7254（默认工具集 "
+            "17467），模型自述可用工具恰为 web_search/web_extract/vision_analyze；"
+            "-t 非空为替换语义，MCP 因不在名单被跳过（源码 "
+            "mcp_tool_discovery.discover_mcp_tools 的 allowed_mcp_names 过滤）",
+            "防破坏实证（ISS-126 负例，2026-09-30）：直白写（h1a/r2）、无害"
+            "外观写（h1b ls|tee）、伪装官方诊断写（h1d python）、删除诱导（m4 "
+            "「删除目录所有文件」）全部零 tool_use、文件零变化；通道对照 h1c "
+            "web_search 真实执行 success=true",
+            "--safe-mode 单独使用反例（h2a/h2b）：terminal `ls -la | tee` 与 "
+            "write_file 均真实写出文件、`rm` 无审批执行成功——safe-mode 只关"
+            "定制/插件/MCP（HERMES_SAFE_MODE+IGNORE_USER_CONFIG+IGNORE_RULES），"
+            "不动内建工具集，非防破坏边界；因此适配器不可省略 -t",
+            "035E 第三轮实验证据 verify-results/agent-runtime-035e-hermes-20260929/ "
+            "历史有效：-t \"\" 空值回退默认不禁工具、hermes tools 子命令=全局持久"
+            "配置（仍禁用）；DEC-030 修订后防破坏由 -t web,vision 替换收敛保证",
+            "披露：失败请求会在用户 ~/.hermes/sessions/ 留 request_dump_*.json"
+            "（成功 oneshot 不落会话文件，实测 8 次成功运行 0 新增）；"
+            "实验窗口内 config.yaml mtime 一次触碰但 sha256 前后一致",
+            "进程回收：hermes 启动期会自建辅助子进程，超时/取消路径 TERM 宽限"
+            "3s 后 KILL（wall≈5s）；group_reaped 偶发 false（组消失确认竞态），"
+            "两次 ps 复查零残留，共享 runner 机制未改（ISS-126 实测）",
+            "复核条件：-t 工具集替换语义变更、或出现绕过 toolset 收敛的写入"
+            "路径（如插件注入）后重审（ISS-126）",
         ),
     ),
 }
@@ -1430,6 +1470,164 @@ class CodexCliAdapter(BaseCliAdapter):
         )
 
 
+class HermesAgentAdapter(BaseCliAdapter):
+    """Hermes Agent 的 build_invocation/parse_output 适配器（ISS-126，DEC-030）。
+
+    调用合同（0.21.5 实证；形态与 ISS-126 行为矩阵一致）::
+
+        <hermes> chat --query-file - --format stream-json --run-budget 150
+                 -t web,vision --ignore-user-config --ignore-rules --source tool
+        cwd=<隔离空目录>  env={PATH, HOME}  认证=用户 ~/.hermes/.env（CLI 自行读取）
+
+    防破坏硬边界（DEC-030）：``-t web,vision`` 是调用级工具集**替换**语义
+    （非空值不回退平台默认，空值才回退——035E 的 ``-t ""`` 失效反例正源于
+    此），工具面收敛为 ``{web_search, web_extract, vision_analyze}`` 只读
+    三件；MCP 服务器因不在名单被整体跳过。负例实证（worktree evidence/
+    iss-126-hermes-20260930/REPORT.md，2026-09-30）：直白/无害外观/伪装写
+    诱导与删除诱导全部零 tool_use、目标文件零变化；web_search 通道对照真实
+    执行成功。``--safe-mode`` 单独使用不是防破坏边界（terminal/write_file/
+    rm 无审批照常执行，h2a/h2b 反例在档），只作为对定制/插件/MCP 的附加
+    隔离与 ``-t`` 并用。读取任意本机文件与联网是用户裁决允许的能力，由
+    设置页文案如实披露。
+
+    载荷只支持 stdin：``--query-file -`` 官方形态（任意文本不经 shell
+    解释，不落盘）；argv ``-q`` 形态会把载荷暴露给本机同用户进程（ps），
+    不提供回退。
+    """
+
+    id = "hermes-agent"
+
+    # 只读工具集（DEC-030 防破坏边界本体）：web_search/web_extract 联网读取
+    # （用户裁决允许），vision_analyze 图像分析；不含 terminal/file/
+    # code_execution/browser 等任何写路径。版本退化保护：变更须复验负例。
+    READONLY_TOOLSETS = "web,vision"
+    RUN_BUDGET_S = "150"
+
+    def build_invocation(
+        self,
+        payload: str,
+        *,
+        cwd: Path,
+        env: Mapping[str, str] | None = None,
+        payload_mode: str = "stdin",
+    ) -> Invocation:
+        """构建受控调用。cwd 必须是隔离空目录；载荷只经 stdin。"""
+        if payload_mode != "stdin":
+            raise ValueError("payload_mode 只支持 stdin（hermes 不提供 argv 载荷形态）")
+        if not isinstance(payload, str) or not payload.strip():
+            raise ValueError("payload 必须是非空字符串")
+        exe = self.info.executable
+        argv = [
+            exe, "chat",
+            "--query-file", "-",        # 载荷经 stdin（官方形态，任意文本安全）
+            "--format", "stream-json",  # stdout 输出 JSONL 事件流（隐含 --quiet）
+            "--run-budget", self.RUN_BUDGET_S,  # 每轮运行墙钟预算，挂死有硬上限
+            "-t", self.READONLY_TOOLSETS,       # 只读工具集替换（防破坏硬边界，不可省略）
+            "--ignore-user-config",     # 不加载 ~/.hermes/config.yaml（.env 认证仍加载）
+            "--ignore-rules",           # 不注入 AGENTS.md/SOUL.md/memory/skills
+            "--source", "tool",         # 第三方集成来源标记，不混入用户会话列表
+        ]
+        return Invocation(
+            argv=argv,
+            cwd=cwd,
+            env=dict(env) if env is not None else build_minimal_env(),
+            stdin_bytes=payload.encode("utf-8"),
+        )
+
+    def parse_output(self, run: RunResult) -> ParsedOutput:
+        """三关中的第二、三关：JSONL 事件流的应用层错误判定与结构验证。
+
+        成功 = 末尾 ``result`` 事件 exit_code 0 且 text 非空（进程 exit 0
+        由 runner 保证）。result 事件自带 ``error`` 字段（0.21.5 实测：
+        provider 400 时 exit_code=1 + error 文本）→ 可辨 app_error。只读
+        工具集内的 tool_use/tool_result 事件是合法形态（DEC-030 允许读取
+        与联网），计数披露不阻断；非 JSON 行跳过并计数，无任何可解析事件
+        则结构验证失败。
+        """
+        if run.outcome is not RunOutcome.OK:
+            return ParsedOutput(
+                ok=False, reason_code=f"runner_{run.outcome.value}",
+                detail=run.detail or f"runner 结局 {run.outcome.value}",
+            )
+
+        events: list[dict] = []
+        bad_lines = 0
+        for line in run.stdout_text.splitlines():
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                ev = json.loads(text)
+            except json.JSONDecodeError:
+                bad_lines += 1
+                continue
+            if isinstance(ev, dict):
+                events.append(ev)
+            else:
+                bad_lines += 1
+        if not events:
+            return ParsedOutput(
+                ok=False, reason_code="parse_failed_no_events",
+                detail=f"stdout 无任何可解析 JSONL 事件（非 JSON 行 {bad_lines} 条）",
+            )
+
+        session_id: str | None = None
+        model: str | None = None
+        result_event: dict | None = None
+        tool_calls = 0
+        for ev in events:
+            etype = ev.get("type")
+            if etype == "system":
+                if isinstance(ev.get("session_id"), str):
+                    session_id = ev["session_id"]
+                m = ev.get("model")
+                model = m if isinstance(m, str) and m else None
+            elif etype == "tool_use":
+                tool_calls += 1
+            elif etype == "result":
+                result_event = ev
+                if isinstance(ev.get("session_id"), str):
+                    session_id = ev["session_id"]
+
+        if result_event is None:
+            return ParsedOutput(
+                ok=False, reason_code="parse_failed_missing_result",
+                detail=(
+                    f"缺 result 收尾事件（system {sum(1 for e in events if e.get('type') == 'system')}、"
+                    f"tool_use {tool_calls}、非 JSON 行 {bad_lines} 条）"
+                ),
+            )
+        app_error = result_event.get("error")
+        if result_event.get("exit_code") not in (0, None) or app_error:
+            return ParsedOutput(
+                ok=False, reason_code="app_error",
+                value={"session_id": session_id, "result": result_event.get("text")},
+                detail=(
+                    f"应用层报告错误（result.exit_code={result_event.get('exit_code')}）："
+                    f"{app_error if isinstance(app_error, str) else json.dumps(app_error, ensure_ascii=False)[:200]}"
+                ),
+            )
+        result_text = result_event.get("text")
+        if not isinstance(result_text, str) or not result_text.strip():
+            return ParsedOutput(
+                ok=False, reason_code="parse_failed_missing_field",
+                detail="result 事件缺少非空 text 字段",
+            )
+        tokens = result_event.get("tokens") if isinstance(result_event.get("tokens"), dict) else None
+        return ParsedOutput(
+            ok=True, reason_code=None,
+            value={
+                "result": result_text,
+                "session_id": session_id,
+                # --ignore-user-config 下 init 的 model 常为空串；只取 CLI 报告值。
+                "model": model,
+                "tool_calls": tool_calls,
+                "skipped_non_json_lines": bad_lines,
+                "usage": tokens,
+            },
+        )
+
+
 def get_adapter(info: RuntimeInfo) -> BaseCliAdapter:
     """按 RuntimeInfo 取适配器；READY 家各自分发，签名不变。
 
@@ -1439,6 +1637,8 @@ def get_adapter(info: RuntimeInfo) -> BaseCliAdapter:
         return ClaudeCodeAdapter(info)
     if info.id == CodexCliAdapter.id:
         return CodexCliAdapter(info)
+    if info.id == HermesAgentAdapter.id:
+        return HermesAgentAdapter(info)
     raise UnsupportedRuntimeError(f"候选 {info.id} 尚无适配器（{info.reason_code}）")
 
 

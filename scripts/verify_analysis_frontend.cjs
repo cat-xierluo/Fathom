@@ -336,6 +336,20 @@ function createFixture() {
     if (p === "/api/analysis/runtimes/detect" && req.method === "POST") {
       if (!req.headers["x-fathom-token"]) return json(res, 403, { detail: "令牌无效" });
       state.detects += 1;
+      if (state.scenario === "hermes-ready") {
+        // ISS-126：hermes 按注册表翻转为 ready 后，检测行与能力披露断言场景。
+        return json(res, 200, {
+          ...DETECT_ALL,
+          runtimes: {
+            ...DETECT_ALL.runtimes,
+            "hermes-agent": runtimeInfo("hermes-agent", {
+              availability: "ready", reason_code: "verified_version",
+              executable: "/fixture/bin/hermes", resolved_target: "/fixture/bin/hermes",
+              version: "0.21.5", capability_cap: "ready",
+            }),
+          },
+        });
+      }
       return json(res, 200, DETECT_ALL);
     }
 
@@ -608,6 +622,26 @@ async function main() {
       `chip=${chipAfterFail.trim()}`);
     await page.evaluate(() => fetch("/__set?sc=enabled"));
     // 夹具恢复 enabled 场景（变化页用）；设置页授权态由夹具 state 保留
+
+    /* ---------- ISS-126：hermes ready 行与能力披露（DEC-030） ---------- */
+    await page.evaluate(() => fetch("/__set?sc=hermes-ready"));
+    await page.click("[data-test='analysis-detect-btn']");
+    await page.waitForFunction(() =>
+      document.querySelector(
+        "[data-test='analysis-runtime-row'][data-runtime-id='hermes-agent']"
+      )?.textContent.includes("0.21.5"));
+    const hermesReadyRow = await page.textContent(
+      "[data-test='analysis-runtime-row'][data-runtime-id='hermes-agent']");
+    const hermesReadyNote = await page.textContent(
+      "[data-test='analysis-runtime-row'][data-runtime-id='hermes-agent'] [data-test='analysis-cap-note']");
+    record("settings.hermes-cap-note-disclosed (DEC-030)",
+      hermesReadyRow.includes("可用") && hermesReadyRow.includes("已验证版本") &&
+        hermesReadyNote.includes("只读工具集") && hermesReadyNote.includes("联网") &&
+        hermesReadyNote.includes("不读取本机文件"),
+      hermesReadyNote.trim().slice(0, 80));
+    await page.evaluate(() => fetch("/__set?sc=enabled"));
+    await page.click("[data-test='analysis-detect-btn']");
+    await page.waitForSelector("[data-test='analysis-pick-btn']");
 
     /* ---------- 变化页：R4 铺垫 + 预览 + 确认 + 运行中 ---------- */
     await page.evaluate(() => { location.hash = "#/changes"; });

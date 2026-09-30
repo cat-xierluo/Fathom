@@ -925,8 +925,15 @@ async function main() {
 
     await page.reload();
     await waitForText(page, "#diff-status", "已对比快照");
-    record("changes.128-reentry-marks-terminal",
-      (await readAttempt())?.terminal === true,
+    // 标记是异步落地的（要等 analyses 读层返回），轮询等它到位而不是
+    // 刷新后立刻读一次——那会把测试自身的时序竞态误报成缺陷。
+    const markedOnReentry = await page.waitForFunction(() => {
+      const k = Object.keys(sessionStorage).find((x) => x.startsWith("fathom-aidem:"));
+      if (!k) return false;
+      try { return JSON.parse(sessionStorage.getItem(k)).terminal === true; }
+      catch (_) { return false; }
+    }, { timeout: 10000 }).then(() => true).catch(() => false);
+    record("changes.128-reentry-marks-terminal", markedOnReentry,
       `刷新后 terminal=${(await readAttempt())?.terminal}`);
     await page.click("[data-test='analysis-rerun-btn']", { timeout: 10000 });
     await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });

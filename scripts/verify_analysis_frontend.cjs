@@ -279,6 +279,16 @@ function createFixture() {
       if (q.has("sc")) state.scenario = q.get("sc");
       if (q.has("slowPreviewMs")) state.slowPreviewMs = Number(q.get("slowPreviewMs")) || 0;
       if (q.get("armPreview409") === "1") state.previewOnceArmed = true;
+      // 模拟「用户离页期间后台跑完」：服务端把在途 job 直接推到终态，
+      // 此时页面没有在轮询，因此观察不到终态，只能靠下次重入读记录层发现。
+      if (q.get("forceTerminal") === "1") {
+        for (const j of state.jobs.values()) {
+          if (j.status === "running" || j.status === "starting") {
+            j.status = "succeeded"; j.analysis_id = 77;
+            j.finished_at = "2026-09-14T12:01:20"; j.duration_ms = 79000;
+          }
+        }
+      }
       if (q.get("reset") === "1") {
         state.jobsPosted = 0; state.jobPhase = 0; state.jobs.clear();
         state.cancelRequested.clear(); state.analysesDeleted = 0; state.puts = [];
@@ -831,7 +841,6 @@ async function main() {
         afterFirst.status === "succeeded" && Boolean(afterFirst.job_id),
       JSON.stringify(afterFirst));
     const firstJobId = afterFirst?.job_id;
-    let firstJobId2 = null;
     const dispatchedAfterFirst = fixture.state.jobs.size;
 
     // 第二次：同一区间、同一事实（digest 不变）重新分析
@@ -841,7 +850,7 @@ async function main() {
     await page.waitForSelector("[data-test='analysis-state-done']", { timeout: 15000 })
       .catch(() => {});
     const afterSecond = await readAttempt();
-    firstJobId2 = afterSecond?.job_id;
+    const secondJobId = afterSecond?.job_id;
     // 注意：夹具的 jobsPosted 在去重之前自增，统计的是 POST 请求数（含重放），
     // 不能用来判断「是否新派发」；真正的新派发看 state.jobs 的条目数。
     record("changes.128-rerun-issues-new-dispatch",
@@ -863,7 +872,6 @@ async function main() {
       sessionStorage.setItem(k, JSON.stringify({ ...raw, terminal: false, status: "running" }));
       return raw;
     });
-    record("changes.128-record-present-for-replay", forced !== null, JSON.stringify(forced));
     const dispatchedBeforeReplay = fixture.state.jobs.size;
     // 缺陷实现下页面可能卡在没有重跑入口的死角（正是本卡要治的病）。把交互
     // 失败降级为断言失败，让缺陷以可读的 FAIL 呈现，而不是整个脚本抛异常。
@@ -889,9 +897,48 @@ async function main() {
         stuckRunning ? "重放终态后仍停在运行中" : replayText.replace(/\s+/g, " ").slice(0, 70));
       record("changes.128-replay-reuses-key-no-extra-dispatch",
         fixture.state.jobs.size === dispatchedBeforeReplay &&
-          (await readAttempt())?.job_id === firstJobId2,
+          (await readAttempt())?.job_id === secondJobId,
         `重放复用同键同 job，不应新增派发：${dispatchedBeforeReplay} → ${fixture.state.jobs.size}`);
     }
+
+    /* ---------- ISS-128 补：重入路径也必须把尝试标为终态 ----------
+     * 独立审查（REQUEST_CHANGES）发现：markAnalysisAttemptTerminal 原本只挂在
+     * 派发/轮询路径，刷新重入（loadAnalysisPanel 读记录层早返回）不标，于是
+     * 「离页期间 job 跑完 → 刷新 → 重跑」仍复用旧键、零新派发。
+     * request_digest 只由 prompt 字节决定，引擎名/版本只进 manifest 不进
+     * prompt，所以切引擎时 digest 不变——terminal 标志是唯一防线。 */
+    await page.evaluate(() => fetch("/__set?sc=enabled&reset=1"));
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    await page.click("[data-test='analysis-preview-btn']");
+    await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
+    await page.click("[data-test='analysis-confirm-btn']");
+    await page.waitForSelector("[data-test='analysis-state-running']", { timeout: 10000 });
+
+    // 离页期间后台跑完：服务端推到终态，页面此刻不在轮询、观察不到
+    await page.evaluate(() => fetch("/__set?forceTerminal=1"));
+    const dispatchedBeforeReentry = fixture.state.jobs.size;
+    const keyBeforeReentry = (await readAttempt())?.key;
+    const terminalWhileAway = (await readAttempt())?.terminal;
+    record("changes.128-terminal-not-seen-while-away",
+      terminalWhileAway !== true, "页面离页期间不应已标终态（保证测的是重入路径）");
+
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    record("changes.128-reentry-marks-terminal",
+      (await readAttempt())?.terminal === true,
+      `刷新后 terminal=${(await readAttempt())?.terminal}`);
+    await page.click("[data-test='analysis-rerun-btn']", { timeout: 10000 });
+    await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
+    await page.click("[data-test='analysis-confirm-btn']");
+    await page.waitForSelector("[data-test='analysis-state-done']", { timeout: 15000 }).catch(() => {});
+    const afterReentry = await readAttempt();
+    record("changes.128-reentry-rerun-new-dispatch",
+      fixture.state.jobs.size === dispatchedBeforeReentry + 1,
+      `刷新后重跑必须新派发：${dispatchedBeforeReentry} → ${fixture.state.jobs.size}`);
+    record("changes.128-reentry-rerun-new-key",
+      Boolean(afterReentry) && afterReentry.key !== keyBeforeReentry,
+      `key ${keyBeforeReentry} → ${afterReentry?.key}`);
 
     /* ---------- 预览失效（409 preview_expired）→ 回未分析 ---------- */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&armPreview409=1"));

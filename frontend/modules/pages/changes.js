@@ -1344,6 +1344,11 @@ async function loadAnalysisPanel() {
   }
   const latest = records.find((x) => !x.revoked) || null;
   if (latest) {
+    // 存在未撤销的解读记录 ⇒ 该区间已有 job 达成终态。刷新/重入也必须把
+    // 本次尝试标为已结束，否则重跑会复用旧键、后端重放上一次的结果
+    // （ISS-128）。这条路径是刷新后最常见的落点，漏掉它等于修复在 R4
+    // 场景下完全失效。
+    markAnalysisAttemptTerminal({ job_id: null, status: "succeeded" }, sel);
     renderAnalysis({ state: latest.expired ? "expired" : "done", record: latest });
     return;
   }
@@ -1366,7 +1371,9 @@ async function loadAnalysisPanel() {
         }
         if (job.status === "succeeded") {
           // succeeded 但 analyses 无未撤销记录：刚撤销或提交与查询竞态——
-          // 再查一次记录层（权威），仍无则回落未分析态。
+          // 再查一次记录层（权威），仍无则回落未分析态。无论是否查得到，
+          // 这个 job 已经终态，都要标掉本次尝试（ISS-128）。
+          markAnalysisAttemptTerminal(job, sel);
           try {
             const r2 = await fetchJSON(`/api/analyses?a=${encodeURIComponent(sel.a)}&b=${encodeURIComponent(sel.b)}`);
             if (!request.current()) return;

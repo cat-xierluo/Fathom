@@ -616,6 +616,8 @@ class AnalysisManager:
             if existing["request_digest"] != request_digest:
                 raise AnalysisError(
                     "idempotency_conflict", "该幂等键已被不同请求使用")
+            # 重放不启动 job，租约不交给工作线程，必须在此释放。
+            lease.release()
             return existing, True
 
         refuse_if_upgrade_txn()
@@ -650,6 +652,8 @@ class AnalysisManager:
             conn.rollback()
             existing = self._find_job_by_idempotency(idempotency_key)
             if existing is not None and existing["request_digest"] == request_digest:
+                # 同上：唯一键竞争的败者不启动 job，租约在此释放。
+                lease.release()
                 return existing, True
             raise AnalysisError(
                 "idempotency_conflict", "该幂等键已被并发请求占用") from None

@@ -539,6 +539,139 @@ class TestDispatchDedup:
 
 
 # ==========================================================================
+# 反例：幂等重放分支不释放分析租约（ISS-130）
+# ==========================================================================
+
+
+class TestReplayReleasesLease:
+    """重放不启动 job，租约不交给工作线程，必须在返回前释放。
+
+    fd 是普通整数、不随对象回收自动 close，泄漏会让后续分析与升级持续
+    报 analysis_busy，直到服务进程退出。
+    """
+
+    @staticmethod
+    def _acquire_or_busy(manager: am.AnalysisManager) -> "am.AnalysisLease":
+        return am.AnalysisLease.acquire(manager._lock_path, source="lease-probe")
+
+    def test_same_key_replay_uses_pre_lease_fast_path(self, ok_setup):
+        """常规同键重放在取租约之前就返回（start_job 幂等快检）。
+
+        这条路径本来就不取租约，因此不是泄漏点；把它钉住是为了说明
+        真正的两个泄漏点在下面的竞争路径上。
+        """
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "lease-after")
+        wait_terminal(manager, job["job_id"])
+
+        acquired: list = []
+        original = am.AnalysisLease.acquire
+
+        def tracking_acquire(path, *, source):
+            lease = original(path, source=source)
+            acquired.append(lease)
+            return lease
+
+        am.AnalysisLease.acquire = staticmethod(tracking_acquire)
+        try:
+            replayed, replay = manager.start_job(preview.preview_id,
+                                                 preview.request_digest,
+                                                 "lease-after")
+        finally:
+            am.AnalysisLease.acquire = original
+        assert replay is True and replayed["job_id"] == job["job_id"]
+        assert acquired == [], "幂等快检命中时不应再取租约"
+        lease = self._acquire_or_busy(manager)
+        lease.release()
+
+    def test_replay_inside_lease_releases_lease(self, ok_setup, monkeypatch):
+        """首查 miss、租约内重查 hit（双击竞争形态）也必须释放。"""
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "lease-race")
+        wait_terminal(manager, job["job_id"])
+
+        preview2 = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        original_find = manager._find_job_by_idempotency
+        calls = 0
+
+        def racing_find(key):
+            nonlocal calls
+            calls += 1
+            return None if calls == 1 else original_find(key)
+
+        monkeypatch.setattr(manager, "_find_job_by_idempotency", racing_find)
+        replayed, replay = manager.start_job(preview2.preview_id,
+                                             preview2.request_digest, "lease-race")
+        assert replay is True and replayed["job_id"] == job["job_id"]
+        monkeypatch.undo()
+        lease = self._acquire_or_busy(manager)
+        lease.release()
+
+    def test_integrity_error_replay_releases_lease(self, ok_setup,
+                                                   monkeypatch):
+        """唯一键冲突（IntegrityError）后的重放出口同样必须释放。"""
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "lease-integrity-warm")
+        wait_terminal(manager, job["job_id"])
+
+        preview2 = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        # 竞争者已在库中占住同一幂等键：首查被强制 miss，让 INSERT 真的撞唯一约束。
+        planted = dict(run_row(job["job_id"]))
+        planted["job_id"] = "planted" + planted["job_id"][:20]
+        planted["idempotency_key"] = "lease-integrity"
+        cols = ",".join(planted)
+        marks = ",".join("?" * len(planted))
+        conn = db.connect(manager._db_path)
+        try:
+            conn.execute(
+                f"INSERT INTO analysis_runs({cols}) VALUES ({marks})",
+                tuple(planted.values()))
+            conn.commit()
+        finally:
+            conn.close()
+
+        original_find = manager._find_job_by_idempotency
+        calls = 0
+
+        def racing_find(key):
+            nonlocal calls
+            calls += 1
+            return None if calls <= 1 else original_find(key)
+
+        monkeypatch.setattr(manager, "_find_job_by_idempotency", racing_find)
+        replayed, replay = manager.start_job(preview2.preview_id,
+                                             preview2.request_digest,
+                                             "lease-integrity")
+        monkeypatch.undo()
+        assert calls == 2, "应走 INSERT 撞唯一约束再重查的重放路径"
+        assert replay is True and replayed["job_id"] == planted["job_id"]
+        lease = self._acquire_or_busy(manager)
+        lease.release()
+
+    def test_active_job_still_blocks_concurrent_analysis(self, ok_setup):
+        """释放只发生在重放出口；活跃任务期间的跨进程互斥不得被削弱。"""
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "lease-active")
+        with pytest.raises(am.AnalysisBusy):
+            self._acquire_or_busy(manager)
+        with pytest.raises(am.AnalysisError) as ei:
+            preview2 = manager.create_preview(ok_setup["a"], ok_setup["b"])
+            manager.start_job(preview2.preview_id, preview2.request_digest,
+                              "lease-active-2")
+        assert ei.value.reason_code == "analysis_busy"
+        manager.cancel_job(job["job_id"])
+        wait_terminal(manager, job["job_id"])
+
+
+# ==========================================================================
 # 反例③：cancel 与完成竞态；超时
 # ==========================================================================
 

@@ -1342,6 +1342,28 @@ async function loadAnalysisPanel() {
       : `AI 解读记录加载失败：${e.message}`);
     return;
   }
+  // 在途任务优先于已保存的旧报告（ISS-135）：新窗口/新会话里 sessionStorage
+  // 是空的，若先渲染历史记录，正在跑的分析就被旧报告挡住，用户只看到一个
+  // 早已完成的解读。GET /api/analysis/jobs?a=&b= 是纯读、无副作用、不重派。
+  let active = [];
+  try {
+    const r = await fetchJSON(
+      `/api/analysis/jobs?a=${encodeURIComponent(sel.a)}&b=${encodeURIComponent(sel.b)}`);
+    if (!request.current()) return;
+    active = Array.isArray(r.jobs) ? r.jobs : [];
+  } catch (_) {
+    // 查询失败不是致命：退回既有的历史/重入路径，页面仍可用，用户可刷新重试。
+    active = [];
+  }
+  const activeJob = active.find((j) => sameAnalysisRange(j, sel)) || null;
+  if (activeJob) {
+    analysisJob = activeJob;
+    renderAnalysis({ state: "running", job: activeJob,
+                     cancelling: activeJob.status === "cancelling" });
+    scheduleAnalysisPoll(activeJob.job_id);
+    return;
+  }
+
   const latest = records.find((x) => !x.revoked) || null;
   if (latest) {
     // 存在未撤销的解读记录 ⇒ 该区间已有 job 达成终态。刷新/重入也必须把
@@ -1353,9 +1375,8 @@ async function loadAnalysisPanel() {
     return;
   }
 
-  // 无有效历史：重入查原 job（sessionStorage 记录的 job_id；GET 纯读，
-  // 不隐式重发）。跨会话（本浏览器会话无记录）无法发现他方在途 job——
-  // 该发现缺口已回写 035B 接缝缺陷；届时用户显式确认会得到 409 提示。
+  // 无在途、无有效历史：按 sessionStorage 记录的 job_id 精确重入（GET 纯读，
+  // 不隐式重发）。跨会话的发现已由上面的区间查询覆盖，这里是同会话的精确定位。
   const savedJobId = analysisSavedJobId(sel);
   if (savedJobId) {
     try {

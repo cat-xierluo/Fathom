@@ -230,6 +230,7 @@ function createFixture() {
     previewOnceArmed: false,
     jobsPosted: 0,                  // POST /api/analysis/jobs 计数（R4 断言）
     jobPhase: 0,                    // 轮询推进计数：>=2 转 scenario 终态
+    holdRunning: false,             // true 时 job 不自动收敛（构造旧报告+在途并存）
     jobSeq: 1,
     jobs: new Map(),                // idempotency_key -> job 视图
     cancelRequested: new Set(),
@@ -279,6 +280,7 @@ function createFixture() {
       if (q.has("sc")) state.scenario = q.get("sc");
       if (q.has("slowPreviewMs")) state.slowPreviewMs = Number(q.get("slowPreviewMs")) || 0;
       if (q.get("armPreview409") === "1") state.previewOnceArmed = true;
+      if (q.has("holdRunning")) state.holdRunning = q.get("holdRunning") === "1";
       // 模拟「用户离页期间后台跑完」：服务端把在途 job 直接推到终态，
       // 此时页面没有在轮询，因此观察不到终态，只能靠下次重入读记录层发现。
       if (q.get("forceTerminal") === "1") {
@@ -385,6 +387,17 @@ function createFixture() {
       return json(res, 200, payload);
     }
 
+    /* ISS-120/135：按区间查在途 job（纯读，仅非终态）。跨会话发现用。 */
+    if (p === "/api/analysis/jobs" && req.method === "GET") {
+      const qa = Number(url.searchParams.get("a"));
+      const qb = Number(url.searchParams.get("b"));
+      const active = [...state.jobs.values()]
+        .filter((j) => j.a_snapshot_id === qa && j.b_snapshot_id === qb)
+        .filter((j) => !jobView(j).terminal)
+        .map(jobView);
+      return json(res, 200, { a: qa, b: qb, jobs: active });
+    }
+
     if (p === "/api/analysis/jobs" && req.method === "POST") {
       if (!req.headers["x-fathom-token"]) return json(res, 403, { detail: "令牌无效" });
       const parsed = JSON.parse(body || "{}");
@@ -423,7 +436,7 @@ function createFixture() {
             job.status = "failed"; job.reason_code = "runner_timed_out";
             job.finished_at = "2026-09-14T12:02:01"; job.duration_ms = 120000;
           }
-        } else if (state.jobPhase >= 2) {
+        } else if (state.jobPhase >= 2 && !state.holdRunning) {
           job.status = "succeeded"; job.analysis_id = 77;
           job.finished_at = "2026-09-14T12:01:20"; job.duration_ms = 79000;
         }
@@ -946,6 +959,73 @@ async function main() {
     record("changes.128-reentry-rerun-new-key",
       Boolean(afterReentry) && afterReentry.key !== keyBeforeReentry,
       `key ${keyBeforeReentry} → ${afterReentry?.key}`);
+
+    /* ---------- ISS-135：跨会话发现同区间在途任务（纯 GET，不重派） ----------
+     * 清空 sessionStorage 模拟「新窗口/新会话」：此时前端没有任何 job_id，
+     * 只能靠 ISS-120 的区间查询重新发现后台正在跑的分析。 */
+    await page.evaluate(() => fetch("/__set?sc=enabled&reset=1"));
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    await page.click("[data-test='analysis-preview-btn']");
+    await page.waitForSelector("[data-test='analysis-state-preview']");
+    await page.click("[data-test='analysis-confirm-btn']");
+    await page.waitForSelector("[data-test='analysis-state-running']", { timeout: 10000 });
+
+    // 抹掉本会话记忆：这是「另一个会话」的等价物
+    await page.evaluate(() => { sessionStorage.clear(); });
+    const postedBefore135 = fixture.state.jobs.size;
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    const resumed135 = await page.waitForSelector("[data-test='analysis-state-running']",
+      { timeout: 10000 }).then(() => true).catch(() => false);
+    const body135 = await page.textContent("[data-test='analysis-body']");
+    record("changes.135-cross-session-discovers-inflight",
+      resumed135 && !body135.includes("还没有 AI 解读"),
+      body135.replace(/\s+/g, " ").slice(0, 70));
+    record("changes.135-no-extra-dispatch",
+      fixture.state.jobs.size === postedBefore135,
+      `跨会话恢复不得派发新任务：${postedBefore135} → ${fixture.state.jobs.size}`);
+
+    /* ---- 在途任务优先于旧报告：同区间既有已保存解读、又有在途 job ----
+     * 步骤固定：先让一个 job 成功（记录层出现解读），再让新 job 停在 running。
+     * 跨会话重入时若先渲染旧报告，用户看到的是「已完成」而非正在跑的分析。 */
+    await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&holdRunning=0"));
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    await page.click("[data-test='analysis-preview-btn']");
+    await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
+    await page.click("[data-test='analysis-confirm-btn']");
+    await page.waitForSelector("[data-test='analysis-state-done']", { timeout: 15000 });
+
+    await page.evaluate(() => fetch("/__set?holdRunning=1"));
+    await page.click("[data-test='analysis-rerun-btn']", { timeout: 10000 });
+    await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
+    await page.click("[data-test='analysis-confirm-btn']");
+    await page.waitForSelector("[data-test='analysis-state-running']", { timeout: 10000 });
+
+    const oldCount = await page.evaluate(async () =>
+      ((await (await fetch("/api/analyses?a=2&b=1")).json()).analyses || []).length);
+    const inflightCount = await page.evaluate(async () =>
+      ((await (await fetch("/api/analysis/jobs?a=2&b=1")).json()).jobs || []).length);
+    record("changes.135-fixture-old-report-plus-inflight",
+      oldCount >= 1 && inflightCount >= 1,
+      `旧解读 ${oldCount} 条、在途 job ${inflightCount} 个`);
+
+    await page.evaluate(() => { sessionStorage.clear(); });
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+    const running135 = await page.waitForSelector("[data-test='analysis-state-running']",
+      { timeout: 10000 }).then(() => true).catch(() => false);
+    const done135 = await page.$("[data-test='analysis-state-done']");
+    record("changes.135-inflight-not-shadowed-by-old-report",
+      running135 && !done135,
+      running135 ? (done135 ? "旧报告遮住了在途任务" : "在途优先呈现")
+                 : "未恢复在途态（旧报告抢先）");
+
+    // 收尾：解除 hold 让 job 收敛，页面回到有重跑入口的完成态
+    await page.evaluate(() => fetch("/__set?holdRunning=0"));
+    await page.waitForSelector("[data-test='analysis-state-done'], [data-test='analysis-state-failure']",
+      { timeout: 15000 }).catch(() => {});
 
     /* ---------- 预览失效（409 preview_expired）→ 回未分析 ---------- */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&armPreview409=1"));

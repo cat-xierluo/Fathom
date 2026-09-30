@@ -355,7 +355,7 @@ CANDIDATES: dict[str, CandidateMeta] = {
             "DEC-030 防破坏能力门下的开放依据：-s read-only 为 OS 级 Seatbelt 只读"
             "沙箱，写文件/删除/破坏性命令被模型层规避且被 OS 层拒绝（e1d 决定性对照："
             "读命令 exit=0 真实执行、写步骤模型改跑 ls 核查并如实报告不存在；"
-            "e1e/e1f/e3 OS 层 PermissionError；证据 worktree evidence/"
+            "e1e/e1f/e3 模型转述的 OS 拒绝形态（PermissionError/operation not permitted）；证据 worktree evidence/"
             "REPORT-pm-negatives.md，2026-09-30）；读取任意本机文件与联网是用户"
             "裁决（2026-09-30）允许的能力，在设置页如实披露，不作失败条件"
         ),

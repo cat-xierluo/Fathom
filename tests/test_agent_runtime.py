@@ -948,8 +948,12 @@ def test_codex_parse_clean_success_without_error(tmp_path):
     assert p.value["error_items"] == 0
 
 
-def test_codex_parse_multi_agent_message_joined(tmp_path):
-    """多条 agent_message（e1e 实测形态）：拼接为完整正文，不丢段。"""
+def test_codex_parse_multi_agent_message_takes_final(tmp_path):
+    """多条 agent_message（e1d/e1e 实测形态）：最终输出是最后一条。
+
+    0.147.0 的 item 只有 id/text/type，没有 phase 字段可区分进度与结论，
+    因此按协议取 turn.completed 前的最后一条作为最终输出，不再拼接。
+    """
     adapter = ar.CodexCliAdapter(fake_codex_runtime_info(str(tmp_path / "c")))
     events = [
         {"type": "thread.started", "thread_id": "t-1"},
@@ -961,7 +965,80 @@ def test_codex_parse_multi_agent_message_joined(tmp_path):
     ]
     p = adapter.parse_output(_run_ok(_codex_jsonl(*events)))
     assert p.ok is True
-    assert p.value["result"] == "第一段说明。\n\n第二段结论。"
+    assert p.value["result"] == "第二段结论。"
+
+
+def test_codex_parse_three_agent_messages_takes_final(tmp_path):
+    """e1d 实测的三条消息形态：只有最后一条是最终输出。"""
+    adapter = ar.CodexCliAdapter(fake_codex_runtime_info(str(tmp_path / "c")))
+    events = [
+        {"type": "thread.started", "thread_id": "t-1"},
+        {"type": "item.completed", "item": {
+            "id": "item_1", "type": "agent_message", "text": "我会分两步执行。"}},
+        {"type": "item.completed", "item": {
+            "id": "item_4", "type": "agent_message", "text": "第一步完成，现在执行第二步。"}},
+        {"type": "item.completed", "item": {
+            "id": "item_6", "type": "agent_message", "text": "两步均已完成。"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 40}},
+    ]
+    p = adapter.parse_output(_run_ok(_codex_jsonl(*events)))
+    assert p.ok is True
+    assert p.value["result"] == "两步均已完成。"
+
+
+def test_codex_progress_does_not_corrupt_final_json(tmp_path):
+    """核心反例（ISS-131）：进度消息不得污染合法的最终 JSON。
+
+    拼接形态会让最终 JSON 前面粘上进度文字，被下游单 JSON 验证判为
+    not_json；这里要经真实的结构验证器确认最终正文可用。
+    """
+    adapter = ar.CodexCliAdapter(fake_codex_runtime_info(str(tmp_path / "c")))
+    final = json.dumps({"result": "容量解读正文", "items": []}, ensure_ascii=False)
+    events = [
+        {"type": "thread.started", "thread_id": "t-1"},
+        {"type": "item.completed", "item": {
+            "id": "item_1", "type": "agent_message",
+            "text": "我会先检查这些变化。"}},
+        {"type": "item.completed", "item": {
+            "id": "item_2", "type": "agent_message", "text": final}},
+        {"type": "turn.completed", "usage": {"input_tokens": 40}},
+    ]
+    p = adapter.parse_output(_run_ok(_codex_jsonl(*events)))
+    assert p.ok is True
+    # 解析层交给下游的正文必须正好是那一个 JSON，不带进度前缀。
+    assert p.value["result"] == final
+    # 拼接形态（修复前）会把进度文字粘在前面，下游单 JSON 验证必然失败。
+    assert not p.value["result"].startswith("我会先检查")
+
+
+def test_codex_blank_final_message_falls_back_to_previous(tmp_path):
+    """末尾消息为空时不应把空串当最终输出。"""
+    adapter = ar.CodexCliAdapter(fake_codex_runtime_info(str(tmp_path / "c")))
+    events = [
+        {"type": "thread.started", "thread_id": "t-1"},
+        {"type": "item.completed", "item": {
+            "id": "item_1", "type": "agent_message", "text": "最终结论。"}},
+        {"type": "item.completed", "item": {
+            "id": "item_2", "type": "agent_message", "text": "   "}},
+        {"type": "turn.completed", "usage": {"input_tokens": 40}},
+    ]
+    p = adapter.parse_output(_run_ok(_codex_jsonl(*events)))
+    assert p.ok is True
+    assert p.value["result"] == "最终结论。"
+
+
+def test_codex_all_messages_blank_is_parse_failure(tmp_path):
+    """全部消息为空仍须失败，不得放宽成成功。"""
+    adapter = ar.CodexCliAdapter(fake_codex_runtime_info(str(tmp_path / "c")))
+    events = [
+        {"type": "thread.started", "thread_id": "t-1"},
+        {"type": "item.completed", "item": {
+            "id": "item_1", "type": "agent_message", "text": "  "}},
+        {"type": "turn.completed", "usage": {"input_tokens": 40}},
+    ]
+    p = adapter.parse_output(_run_ok(_codex_jsonl(*events)))
+    assert p.ok is False
+    assert p.reason_code == "parse_failed_missing_agent_message"
 
 
 def test_codex_parse_bad_lines_skipped_but_counted(tmp_path):

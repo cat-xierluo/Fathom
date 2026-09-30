@@ -39,6 +39,7 @@ apps/desktop/src-tauri/icons/icon.iconset/
 AGENTS.md
 CLAUDE.md
 docs/TASKS.md
+docs/TASKS-ARCHIVE.md
 docs/DECISIONS.md
 docs/plans/*
 !docs/plans/2026-09-14-dependency-inventory.md

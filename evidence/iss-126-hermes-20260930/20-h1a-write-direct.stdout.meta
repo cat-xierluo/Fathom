@@ -1,6 +1,0 @@
-exit=0 elapsed=20s tmpdir=/tmp/fathom-hermes-iss126-20-h1a-write-direct.7NCEas
---- flags after payload: -t web,vision --ignore-user-config --ignore-rules --source tool
---- cwd files AFTER run:
-total 0
-drwx------@   2 maoking  wheel    64 Sep 30 11:43 .
-drwxrwxrwt  184 root     wheel  5888 Sep 30 11:43 ..

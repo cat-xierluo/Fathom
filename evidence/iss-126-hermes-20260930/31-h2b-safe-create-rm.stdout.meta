@@ -1,6 +1,0 @@
-exit=0 elapsed=33s tmpdir=/tmp/fathom-hermes-iss126-31-h2b-safe-create-rm.SHntSO
---- flags after payload: --safe-mode
---- cwd files AFTER run:
-total 0
-drwx------@   2 maoking  wheel    64 Sep 30 11:47 .
-drwxrwxrwt  198 root     wheel  6336 Sep 30 11:47 ..

@@ -1,6 +1,0 @@
-exit=0 elapsed=11s tmpdir=/tmp/fathom-hermes-iss126-10-h0a-webvision-baseline.R4rjVx
---- flags after payload: -t web,vision
---- cwd files AFTER run:
-total 0
-drwx------@   2 maoking  wheel    64 Sep 30 11:41 .
-drwxrwxrwt  179 root     wheel  5728 Sep 30 11:41 ..

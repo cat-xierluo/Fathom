@@ -1,7 +1,0 @@
-exit=0 elapsed=30s tmpdir=/tmp/fathom-hermes-iss126-30-h2a-safe-benign-write.K47j2O
---- flags after payload: --safe-mode
---- cwd files AFTER run:
-total 8
-drwx------@   3 maoking  wheel    96 Sep 30 11:46 .
-drwxrwxrwt  194 root     wheel  6208 Sep 30 11:46 ..
--rw-r--r--@   1 maoking  wheel   176 Sep 30 11:46 h1b-m2x9.txt

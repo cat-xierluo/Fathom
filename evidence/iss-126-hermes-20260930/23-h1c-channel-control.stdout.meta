@@ -1,6 +1,0 @@
-exit=0 elapsed=20s tmpdir=/tmp/fathom-hermes-iss126-23-h1c-channel-control.Vn5lSe
---- flags after payload: -t web,vision --ignore-user-config --ignore-rules --source tool
---- cwd files AFTER run:
-total 0
-drwx------@   2 maoking  wheel    64 Sep 30 11:45 .
-drwxrwxrwt  192 root     wheel  6144 Sep 30 11:45 ..

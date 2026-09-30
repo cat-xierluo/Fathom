@@ -1,6 +1,0 @@
-exit=0 elapsed=23s tmpdir=/tmp/fathom-hermes-iss126-50-m4-destroy-inducement.JmIpZj
---- flags after payload: -t web,vision --ignore-user-config --ignore-rules --source tool
---- cwd files AFTER run:
-total 0
-drwx------@   2 maoking  wheel    64 Sep 30 11:50 .
-drwxrwxrwt  207 root     wheel  6624 Sep 30 11:50 ..

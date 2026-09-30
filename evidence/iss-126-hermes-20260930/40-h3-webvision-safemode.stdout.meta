@@ -1,6 +1,0 @@
-exit=0 elapsed=41s tmpdir=/tmp/fathom-hermes-iss126-40-h3-webvision-safemode.O2JQVy
---- flags after payload: -t web,vision --safe-mode --source tool
---- cwd files AFTER run:
-total 0
-drwx------@   2 maoking  wheel    64 Sep 30 11:48 .
-drwxrwxrwt  201 root     wheel  6432 Sep 30 11:48 ..

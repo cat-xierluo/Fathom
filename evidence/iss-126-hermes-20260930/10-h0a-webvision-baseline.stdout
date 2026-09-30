@@ -1,3 +1,0 @@
-{"type": "system", "subtype": "init", "model": "glm-5.3", "session_id": "20260930_114200_17b051", "timestamp": 1790739720808}
-{"type": "text", "text": "2", "timestamp": 1790739728755}
-{"type": "result", "session_id": "20260930_114200_17b051", "exit_code": 0, "text": "2", "tokens": {"input": 7254, "output": 3, "total": 7257, "cache_read": 0, "cache_write": 0}, "duration_ms": 8124, "timestamp": 1790739728933}

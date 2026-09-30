@@ -130,9 +130,9 @@ node scripts/verify_frontend_refresh.cjs | tee "$refresh_out"
 assert_result_json "$refresh_out" "$expected_refresh" "frontend refresh"
 
 # ISS-035C：AI 解读前端回归（同 refresh 机制：纯 Node 合成 API + Playwright，
-# 随机端口）。47 项——七态/检测列表/授权层/世代守卫/幂等/HTML 转义/双视口。
+# 随机端口）。48 项——七态/检测列表/授权层/世代守卫/幂等/HTML 转义/双视口；ISS-126 起 codex 披露断言。
 # 失败自身非零退出，pipefail 直通判红；计数漂移由 EXPECTED_ANALYSIS_PASSED
 # 兜底（同 refresh 门禁口径）。
 node scripts/verify_analysis_frontend.cjs | tee "$analysis_out"
-expected_analysis="${EXPECTED_ANALYSIS_PASSED:-47}"
+expected_analysis="${EXPECTED_ANALYSIS_PASSED:-48}"
 assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"

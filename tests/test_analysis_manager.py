@@ -554,7 +554,8 @@ class TestReplayReleasesLease:
     def _acquire_or_busy(manager: am.AnalysisManager) -> "am.AnalysisLease":
         return am.AnalysisLease.acquire(manager._lock_path, source="lease-probe")
 
-    def test_same_key_replay_uses_pre_lease_fast_path(self, ok_setup):
+    def test_same_key_replay_uses_pre_lease_fast_path(self, ok_setup,
+                                                      monkeypatch):
         """常规同键重放在取租约之前就返回（start_job 幂等快检）。
 
         这条路径本来就不取租约，因此不是泄漏点；把它钉住是为了说明
@@ -574,13 +575,11 @@ class TestReplayReleasesLease:
             acquired.append(lease)
             return lease
 
-        am.AnalysisLease.acquire = staticmethod(tracking_acquire)
-        try:
-            replayed, replay = manager.start_job(preview.preview_id,
-                                                 preview.request_digest,
-                                                 "lease-after")
-        finally:
-            am.AnalysisLease.acquire = original
+        monkeypatch.setattr(am.AnalysisLease, "acquire",
+                            staticmethod(tracking_acquire))
+        replayed, replay = manager.start_job(preview.preview_id,
+                                             preview.request_digest,
+                                             "lease-after")
         assert replay is True and replayed["job_id"] == job["job_id"]
         assert acquired == [], "幂等快检命中时不应再取租约"
         lease = self._acquire_or_busy(manager)
@@ -606,8 +605,9 @@ class TestReplayReleasesLease:
         monkeypatch.setattr(manager, "_find_job_by_idempotency", racing_find)
         replayed, replay = manager.start_job(preview2.preview_id,
                                              preview2.request_digest, "lease-race")
-        assert replay is True and replayed["job_id"] == job["job_id"]
         monkeypatch.undo()
+        assert calls == 2, "应走「预检 miss → 租约内重查 hit」的出口"
+        assert replay is True and replayed["job_id"] == job["job_id"]
         lease = self._acquire_or_busy(manager)
         lease.release()
 
@@ -642,14 +642,18 @@ class TestReplayReleasesLease:
         def racing_find(key):
             nonlocal calls
             calls += 1
-            return None if calls <= 1 else original_find(key)
+            # 调用点：start_job 预查(1) / 租约内重查(2) / INSERT 冲突后重查(3)。
+            # 前两次都必须 miss，INSERT 才会真正执行并撞上唯一约束——
+            # 只让第 1 次 miss 会在租约内重查就命中，根本走不到
+            # IntegrityError 分支，这条测试就成了第一个出口的重复。
+            return None if calls <= 2 else original_find(key)
 
         monkeypatch.setattr(manager, "_find_job_by_idempotency", racing_find)
         replayed, replay = manager.start_job(preview2.preview_id,
                                              preview2.request_digest,
                                              "lease-integrity")
         monkeypatch.undo()
-        assert calls == 2, "应走 INSERT 撞唯一约束再重查的重放路径"
+        assert calls == 3, "应走 INSERT 撞唯一约束再重查的重放路径"
         assert replay is True and replayed["job_id"] == planted["job_id"]
         lease = self._acquire_or_busy(manager)
         lease.release()

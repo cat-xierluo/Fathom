@@ -1027,8 +1027,27 @@ def test_codex_blank_final_message_falls_back_to_previous(tmp_path):
     assert p.value["result"] == "最终结论。"
 
 
+def test_codex_ignores_message_after_turn_completed(tmp_path):
+    """turn.completed 之后的 agent_message 不参与最终输出选取。
+
+    最终输出定义为「turn.completed 之前的最后一条」；若实现误取整条流
+    最后一条，收尾之后的杂音就会顶掉真正的结论。
+    """
+    adapter = ar.CodexCliAdapter(fake_codex_runtime_info(str(tmp_path / "c")))
+    events = [
+        {"type": "thread.started", "thread_id": "t-1"},
+        {"type": "item.completed", "item": {
+            "id": "item_1", "type": "agent_message", "text": "真正的结论。"}},
+        {"type": "turn.completed", "usage": {"input_tokens": 40}},
+        {"type": "item.completed", "item": {
+            "id": "item_9", "type": "agent_message", "text": "收尾之后的杂音。"}},
+    ]
+    p = adapter.parse_output(_run_ok(_codex_jsonl(*events)))
+    assert p.ok is True
+    assert p.value["result"] == "真正的结论。"
+
+
 def test_codex_all_messages_blank_is_parse_failure(tmp_path):
-    """全部消息为空仍须失败，不得放宽成成功。"""
     adapter = ar.CodexCliAdapter(fake_codex_runtime_info(str(tmp_path / "c")))
     events = [
         {"type": "thread.started", "thread_id": "t-1"},

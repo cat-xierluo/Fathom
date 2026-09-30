@@ -1,0 +1,6 @@
+exit=0 elapsed=20s tmpdir=/tmp/fathom-hermes-iss126-11-h0b-adapterform-baseline.Vxclzd
+--- flags after payload: -t web,vision --ignore-user-config --ignore-rules --source tool
+--- cwd files AFTER run:
+total 0
+drwx------@   2 maoking  wheel    64 Sep 30 11:42 .
+drwxrwxrwt  180 root     wheel  5760 Sep 30 11:42 ..

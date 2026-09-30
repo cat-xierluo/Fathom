@@ -1,0 +1,7 @@
+dcc071f990fb306df959191df8a440d2b4fd75cb05474016204c5ecaf522e8b1  /Users/maoking/.hermes/config.yaml
+cc58e8b7a2cd88428748aa55f513c60f94f9ee7ededc63b944be40d25a3e5827  /Users/maoking/.hermes/.env
+      25
+-rw-r--r--@ 1 maoking  staff   10319 Sep 30 11:51 /Users/maoking/.hermes/sessions/request_dump_20260930_115059_4994d9_20260930_115101_097736.json
+-rw-r--r--@ 1 maoking  staff  572392 Sep 25 01:18 /Users/maoking/.hermes/sessions/request_dump_20260925_005242_2ba32e_20260925_011814_044576.json
+-rw-r--r--@ 1 maoking  staff  368016 Sep 25 01:10 /Users/maoking/.hermes/sessions/request_dump_20260925_005242_2ba32e_20260925_011059_584195.json
+-rw-r--r--@ 1 maoking  staff  355130 Sep 25 01:08 /Users/maoking/.hermes/sessions/request_dump_20260925_005242_2ba32e_20260925_010842_971299.json

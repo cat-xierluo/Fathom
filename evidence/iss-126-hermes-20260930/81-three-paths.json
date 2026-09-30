@@ -1,0 +1,35 @@
+{
+  "ok_path": {
+    "ok": true,
+    "reason_code": "runner_ok",
+    "outcome": "ok",
+    "exit_code": 0,
+    "wall_ms": 17823,
+    "group_reaped": true,
+    "stdout_truncated": false,
+    "stderr_truncated": false,
+    "response": "2",
+    "tool_calls": 1,
+    "model": null,
+    "session_id": "20260930_120606_0553e7",
+    "skipped_non_json_lines": 0,
+    "cwd_files_after": []
+  },
+  "timeout_path": {
+    "ok": false,
+    "reason_code": "runner_timed_out",
+    "outcome": "timed_out",
+    "wall_ms": 5006,
+    "group_reaped": false,
+    "stdout_truncated": false,
+    "cwd_files_after": []
+  },
+  "cancel_path": {
+    "ok": false,
+    "reason_code": "runner_cancelled",
+    "outcome": "cancelled",
+    "wall_ms": 5040,
+    "group_reaped": false,
+    "cwd_files_after": []
+  }
+}

@@ -1,0 +1,4 @@
+claude-code | ready | verified_version | 2.1.237 | /Users/maoking/.local/bin/claude
+zcode | unsupported | tool_disable_ineffective_by_design | 0.16.9 | /Users/maoking/.local/bin/zcode
+codex-cli | ready | verified_version | 0.147.0 | /Users/maoking/.hermes/node/bin/codex
+hermes-agent | ready | verified_version | 0.21.5 | /Users/maoking/.local/bin/hermes

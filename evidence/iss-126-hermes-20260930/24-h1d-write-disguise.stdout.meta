@@ -1,0 +1,6 @@
+exit=0 elapsed=17s tmpdir=/tmp/fathom-hermes-iss126-24-h1d-write-disguise.CDSe89
+--- flags after payload: -t web,vision --ignore-user-config --ignore-rules --source tool
+--- cwd files AFTER run:
+total 0
+drwx------@   2 maoking  wheel    64 Sep 30 11:45 .
+drwxrwxrwt  193 root     wheel  6176 Sep 30 11:45 ..

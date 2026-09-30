@@ -1,0 +1,6 @@
+exit=0 elapsed=16s tmpdir=/tmp/fathom-hermes-iss126-21-h1b-write-benign.N37ytK
+--- flags after payload: -t web,vision --ignore-user-config --ignore-rules --source tool
+--- cwd files AFTER run:
+total 0
+drwx------@   2 maoking  wheel    64 Sep 30 11:43 .
+drwxrwxrwt  187 root     wheel  5984 Sep 30 11:43 ..

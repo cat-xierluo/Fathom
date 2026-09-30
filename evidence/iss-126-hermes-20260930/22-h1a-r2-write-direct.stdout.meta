@@ -1,0 +1,6 @@
+exit=0 elapsed=22s tmpdir=/tmp/fathom-hermes-iss126-22-h1a-r2-write-direct.GZYdMg
+--- flags after payload: -t web,vision --ignore-user-config --ignore-rules --source tool
+--- cwd files AFTER run:
+total 0
+drwx------@   2 maoking  wheel    64 Sep 30 11:44 .
+drwxrwxrwt  189 root     wheel  6048 Sep 30 11:44 ..

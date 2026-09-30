@@ -1,0 +1,3 @@
+dcc071f990fb306df959191df8a440d2b4fd75cb05474016204c5ecaf522e8b1  /Users/maoking/.hermes/config.yaml
+cc58e8b7a2cd88428748aa55f513c60f94f9ee7ededc63b944be40d25a3e5827  /Users/maoking/.hermes/.env
+      24

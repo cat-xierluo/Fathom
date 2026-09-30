@@ -1128,8 +1128,9 @@ async function loadPermissionHub() {
  * - 检测只经用户点击触发（POST /api/analysis/runtimes/detect；探测只读，
  *   不发送业务数据）；
  * - 四家候选全部列出：Claude Code 首位 + 「推荐」徽章（用户裁决）；
- *   Codex 按 DEC-030 防破坏门可选（能力边界在行内披露），ZCode/Hermes
- *   不隐藏不折叠——不支持/未安装/启动异常如实显示原因；
+ *   Codex（OS 级只读沙箱）与 Hermes（调用级只读工具集）按 DEC-030 防破坏
+ *   门可选（能力边界在行内披露），ZCode 不隐藏不折叠——不支持/未安装/
+ *   启动异常如实显示原因；
  * - --version 成功不等于已登录：ready 家 auth_status=unknown 时显示
  *   「认证待确认」，任何路径不出现「已登录」表述（反例 1 的断言锚点）；
  * - 只有 availability=ready 的候选可选中；选择必经授权确认层——发送对象
@@ -1179,6 +1180,9 @@ const ANALYSIS_RUNTIME_CAP_NOTES = {
   "codex-cli":
     "运行于系统级只读沙箱：不可写入、删除文件或执行破坏性命令（系统层强制拦截）；" +
     "可读取本机任意文件、可联网访问其模型服务。",
+  "hermes-agent":
+    "以只读工具集运行（仅网页搜索/网页读取/图像分析）：不可写入、删除文件或执行命令，" +
+    "不读取本机文件；可联网访问其模型服务并搜索网页。",
 };
 
 /* 认证三态：unknown 是探测的真实结论（--version 不解释登录态）。 */

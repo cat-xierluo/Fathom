@@ -585,7 +585,7 @@ class TestReplayReleasesLease:
         lease = self._acquire_or_busy(manager)
         lease.release()
 
-    def test_replay_inside_lease_releases_lease(self, ok_setup, monkeypatch):
+    def test_replay_inside_lease_releases_lease(self, ok_setup):
         """首查 miss、租约内重查 hit（双击竞争形态）也必须释放。"""
         manager = make_manager()
         preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
@@ -602,17 +602,30 @@ class TestReplayReleasesLease:
             calls += 1
             return None if calls == 1 else original_find(key)
 
-        monkeypatch.setattr(manager, "_find_job_by_idempotency", racing_find)
-        replayed, replay = manager.start_job(preview2.preview_id,
-                                             preview2.request_digest, "lease-race")
-        monkeypatch.undo()
+        # 不用 monkeypatch：它是 function-scoped 单实例，与 isolated 夹具共用，
+        # undo() 会把夹具的 config 隔离补丁一并撤销（analysis 退回未启用）。
+        manager._find_job_by_idempotency = racing_find
+        try:
+            replayed, replay = manager.start_job(preview2.preview_id,
+                                                 preview2.request_digest,
+                                                 "lease-race")
+        finally:
+            manager._find_job_by_idempotency = original_find
         assert calls == 2, "应走「预检 miss → 租约内重查 hit」的出口"
         assert replay is True and replayed["job_id"] == job["job_id"]
         lease = self._acquire_or_busy(manager)
         lease.release()
 
-    def test_integrity_error_replay_releases_lease(self, ok_setup,
-                                                   monkeypatch):
+        # 不止「锁能再取」：重放之后必须真能启动一个新任务跑到终态。
+        # 只断言取锁是根因的代理，覆盖不到 manager 后续能否继续工作。
+        preview3 = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        fresh, replayed3 = manager.start_job(preview3.preview_id,
+                                             preview3.request_digest,
+                                             "lease-after-race")
+        assert replayed3 is False
+        assert wait_terminal(manager, fresh["job_id"])["status"] == "succeeded"
+
+    def test_integrity_error_replay_releases_lease(self, ok_setup):
         """唯一键冲突（IntegrityError）后的重放出口同样必须释放。"""
         manager = make_manager()
         preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
@@ -648,18 +661,24 @@ class TestReplayReleasesLease:
             # IntegrityError 分支，这条测试就成了第一个出口的重复。
             return None if calls <= 2 else original_find(key)
 
-        monkeypatch.setattr(manager, "_find_job_by_idempotency", racing_find)
-        replayed, replay = manager.start_job(preview2.preview_id,
-                                             preview2.request_digest,
-                                             "lease-integrity")
-        monkeypatch.undo()
+        manager._find_job_by_idempotency = racing_find
+        try:
+            replayed, replay = manager.start_job(preview2.preview_id,
+                                                 preview2.request_digest,
+                                                 "lease-integrity")
+        finally:
+            manager._find_job_by_idempotency = original_find
         assert calls == 3, "应走 INSERT 撞唯一约束再重查的重放路径"
         assert replay is True and replayed["job_id"] == planted["job_id"]
         lease = self._acquire_or_busy(manager)
         lease.release()
 
     def test_active_job_still_blocks_concurrent_analysis(self, ok_setup):
-        """释放只发生在重放出口；活跃任务期间的跨进程互斥不得被削弱。"""
+        """释放只发生在重放出口；活跃任务期间的分析互斥不得被削弱。
+
+        「升级」半边由 tests/test_analysis_upgrade_gate.py 的
+        test_prepare_refused_while_analysis_in_flight 覆盖，不在本类重复。
+        """
         manager = make_manager()
         preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
         job, _ = manager.start_job(preview.preview_id, preview.request_digest,

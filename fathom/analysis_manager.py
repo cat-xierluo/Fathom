@@ -807,6 +807,20 @@ class AnalysisManager:
                     _LOG.info("analysis success dropped job_id=%s status=%s",
                               rec.job_id, row["status"] if row else None)
                     return
+                if row["status"] == "cancelling":
+                    # 取消已被受理（cancel_job 返回非终态 cancelling），但 worker
+                    # 在本提交边界前已跑完。取消先到即取消胜：迟到成功一律丢弃，
+                    # 且必须在此把任务收敛到终态 cancelled——否则 job 永远停在
+                    # 非终态 cancelling，UI 一直转圈。不落正文。
+                    conn.execute(
+                        "UPDATE analysis_runs SET status='cancelled',"
+                        " reason_code='cancelled', finished_at=?, duration_ms=?"
+                        " WHERE job_id=? AND status='cancelling'",
+                        (_now(), duration_ms, rec.job_id))
+                    conn.commit()
+                    _LOG.info("analysis success dropped by accepted cancel "
+                              "job_id=%s", rec.job_id)
+                    return
                 if gate is not None:
                     # 提交资格已撤销：记 cancelled（带原因），不落正文。
                     conn.execute(
@@ -939,15 +953,24 @@ class AnalysisManager:
         return self.job_view(job_id)
 
     def _mark_cancelling(self, job_id: str) -> None:
-        conn = db.connect(self._db_path)
-        try:
-            conn.execute(
-                "UPDATE analysis_runs SET status='cancelling' WHERE "
-                "job_id=? AND status IN ('starting','running')",
-                (job_id,))
-            conn.commit()
-        finally:
-            conn.close()
+        """受理取消：与成功提交共用 ``_commit_lock``，使「取消」与「完成」
+        在同一提交边界线性化。
+
+        取锁前不加概率性延迟——两个出口的先后由锁与库内状态共同决定：
+        取消先拿到锁则本次成功在提交时会看到 cancelling 并被判负；成功先
+        提交则本 UPDATE 的 ``status IN ('starting','running')`` 条件不成立、
+        rowcount 为 0，终态不被改写。
+        """
+        with self._commit_lock:
+            conn = db.connect(self._db_path)
+            try:
+                conn.execute(
+                    "UPDATE analysis_runs SET status='cancelling' WHERE "
+                    "job_id=? AND status IN ('starting','running')",
+                    (job_id,))
+                conn.commit()
+            finally:
+                conn.close()
 
     # ------------------------------------------------------------ 查询
 

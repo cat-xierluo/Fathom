@@ -696,26 +696,46 @@ function sameAnalysisRange(obj, sel) {
     String(obj.b_snapshot_id ?? obj.b) === String(sel.b);
 }
 
-/** 会话幂等键（确认仅一次的载体）：按区间存 sessionStorage；
- * 绑定 request_digest——digest 变了（新预览）就换新键，避免
- * idempotency_conflict；同 digest 重入则重放同一 job（不重发）。 */
-function analysisIdemKey(sel, digest, { create } = {}) {
-  const storeKey = `fathom-aidem:${sel.a}->${sel.b}`;
+/** 读回本区间当前尝试的幂等记录（含是否已终态）。 */
+function analysisIdemRecord(sel) {
   try {
-    const raw = sessionStorage.getItem(storeKey);
-    if (raw) {
-      const saved = JSON.parse(raw);
-      if (saved && saved.key && saved.digest === digest) return saved.key;
-    }
-  } catch (_) { /* 隐私模式等场景不可用：退化为内存键 */ }
-  if (!create) return null;
-  const key = (crypto.randomUUID ? crypto.randomUUID() : `idem-${Date.now()}-${Math.random()}`);
-  try { sessionStorage.setItem(storeKey, JSON.stringify({ key, digest })); } catch (_) { /* 同上 */ }
-  return key;
+    const raw = sessionStorage.getItem(`fathom-aidem:${sel.a}->${sel.b}`);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    return saved && typeof saved.key === "string" ? saved : null;
+  } catch (_) { return null; }  /* 隐私模式等场景不可用 */
 }
 
-function clearAnalysisIdemKey(sel) {
-  try { sessionStorage.removeItem(`fathom-aidem:${sel.a}->${sel.b}`); } catch (_) { /* noop */ }
+/** 记下本次尝试的 job，供刷新/离页后按 job_id 纯读重入。 */
+function saveAnalysisAttempt(sel, { key, digest, job, replayed }) {
+  try {
+    sessionStorage.setItem(`fathom-aidem:${sel.a}->${sel.b}`, JSON.stringify({
+      key, digest,
+      job_id: job?.job_id ?? null,
+      status: job?.status ?? null,
+      terminal: Boolean(job?.terminal),
+    }));
+  } catch (_) { /* 隐私模式等场景：仅当前会话内可恢复 */ }
+}
+
+/** 会话幂等键（确认仅一次的载体）：按区间存 sessionStorage；
+ * 绑定 request_digest——digest 变了（新预览）就换新键，避免
+ * idempotency_conflict。
+ *
+ * 键的生命周期绑定「一次用户授权的尝试」，而不是区间（ISS-128）：
+ *  - 同 digest 且上次尝试**仍在途** → 复用该键。这是传输层重试与双击，
+ *    它们属于同一次尝试，必须收敛到同一份派发。
+ *  - 同 digest 但上次尝试**已终态** → 新的用户尝试（重跑、取消后重试、
+ *    撤销后再次分析、换引擎跑同一事实）发新键。否则后端只会重放旧终态，
+ *    用户点了「重新分析」却看到上一次的旧结果。
+ * 刷新重入不走这里：它用 analysisSavedJobId 做纯 GET，不会重复派发。 */
+function analysisIdemKey(sel, digest, { create } = {}) {
+  const saved = analysisIdemRecord(sel);
+  if (saved && saved.digest === digest && !saved.terminal) return saved.key;
+  if (!create) return null;
+  const key = (crypto.randomUUID ? crypto.randomUUID() : `idem-${Date.now()}-${Math.random()}`);
+  saveAnalysisAttempt(sel, { key, digest, job: null, replayed: false });
+  return key;
 }
 
 /** 改选区间/清空结果时重置会话态；hide=true 同时收起解读区。 */
@@ -888,16 +908,21 @@ async function confirmAnalysisSend(preview) {
     });
     if (!request.current()) return;
     const data = await r.json();
-    // 记录原 job 供刷新/离页后重入恢复（GET jobs/{id} 纯读）；
-    // 同 digest 重放同一 job，刷新页面不会产生第二次发送。
-    try {
-      sessionStorage.setItem(`fathom-aidem:${sel.a}->${sel.b}`,
-        JSON.stringify({ key, digest, job_id: data.job?.job_id }));
-    } catch (_) { /* 隐私模式等场景：仅当前会话内可恢复 */ }
+    // 记录原 job 供刷新/离页后重入恢复（GET jobs/{id} 纯读）。
+    saveAnalysisAttempt(sel, { key, digest, job: data.job, replayed: data.replayed });
     analysisPreview = null;
     analysisJob = data.job;
+    // 重放（replayed=true）不等于「正在运行」（ISS-128）：后端可能返回的是
+    // 一个**已终态**的旧 job——此前这里无条件渲染 running 且不轮询，页面会
+    // 永远停在运行中。现在按 job 自身的终态标记分流。
+    if (data.job?.terminal) {
+      await onAnalysisJobTerminal(data.job);
+      return;
+    }
     renderAnalysis({ state: "running", job: data.job });
-    if (!data.replayed) scheduleAnalysisPoll(data.job.job_id);
+    // 重放在途说明别处已有一次同键派发（典型是本会话较早的尝试）：继续轮询
+    // 把它收敛到终态，而不是当作已经结束。
+    scheduleAnalysisPoll(data.job.job_id);
   } catch (e) {
     if (!request.current()) return;
     handleAnalysisSendError(e);
@@ -971,13 +996,31 @@ function scheduleAnalysisPoll(jobId) {
 }
 
 async function onAnalysisJobTerminal(job) {
+  // 无论哪种终态，都把本次尝试标记为「已结束」：下一次用户发起的尝试会因此
+  // 拿到新键，不会重放这一次的旧终态（ISS-128）。此前只在部分状态下清键，
+  // 且恰好漏掉 succeeded——成功保留旧键，用户点「重新分析」只会拿到上一次的
+  // 结果。job_id 仍保留，刷新重入（纯 GET）不受影响。
+  markAnalysisAttemptTerminal(job);
   if (job.status === "succeeded") {
     // 终态成功：以 analyses 读取层为准（含过期评估），不自行渲染 stdout
     await loadAnalysisPanel();
     return;
   }
   renderAnalysis({ state: "failure", job });
-  if (job.status !== "cancelled") clearAnalysisIdemKey(analysisSel());
+}
+
+/** 把指定区间（默认当前区间）的尝试标记为已终态；保留 job_id 供重入。 */
+function markAnalysisAttemptTerminal(job, sel = analysisSel()) {
+  const saved = analysisIdemRecord(sel);
+  if (!saved) return;
+  try {
+    sessionStorage.setItem(`fathom-aidem:${sel.a}->${sel.b}`, JSON.stringify({
+      ...saved,
+      job_id: job?.job_id ?? saved.job_id ?? null,
+      status: job?.status ?? null,
+      terminal: true,
+    }));
+  } catch (_) { /* 隐私模式等场景：仅当前会话内可恢复 */ }
 }
 
 async function cancelAnalysisJob() {
@@ -1336,7 +1379,8 @@ async function loadAnalysisPanel() {
           } catch (_) { /* 记录层查询失败：按未分析呈现，可手动刷新 */ }
         } else {
           renderAnalysis({ state: "failure", job });
-          if (job.status !== "cancelled") clearAnalysisIdemKey(sel);
+          // 重入读到终态：同样标记尝试已结束，下一次用户尝试才拿新键。
+          markAnalysisAttemptTerminal(job, sel);
           return;
         }
       }

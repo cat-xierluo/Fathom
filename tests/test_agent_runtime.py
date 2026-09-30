@@ -809,6 +809,13 @@ def test_registry_records_four_candidates_with_caps():
         assert meta.capability_cap is ar.Availability.UNSUPPORTED
         assert meta.cap_reason_code
         assert meta.cap_reason
+    # ISS-126 ZCode 轮（DEC-030 防破坏门重审，2026-09-30）：plan 模式封死内置写类
+    # 但系统层放行非破坏 MCP 工具且无 MCP 禁用参数，全名枚举不可穷尽 → 不过门
+    zcode = ar.get_candidate("zcode")
+    assert zcode.cap_reason_code == "no_readonly_enforcement"
+    assert "--mode plan" in zcode.cap_reason             # 判定基于 plan 只读形态实测
+    assert "MCP" in zcode.cap_reason                     # 写路径残余=MCP 通道
+    assert any("复核条件" in note for note in zcode.notes)  # 复核条件在案
     for meta in ar.CANDIDATES.values():
         assert meta.identity and meta.identity_evidence and meta.official_docs
         assert meta.known_locations

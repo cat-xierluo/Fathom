@@ -317,13 +317,17 @@ CANDIDATES: dict[str, CandidateMeta] = {
         known_locations=("~/.local/bin/zcode", "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs"),
         version_pattern=r"^\s*(\d+\.\d+\.\d+)\s*$",
         capability_cap=_C,
-        cap_reason_code="tool_disable_ineffective_by_design",
+        cap_reason_code="no_readonly_enforcement",
         cap_reason=(
-            "0.16.9 实测（--output-format stream-json 事件流可观察工具调用）："
-            "--disallowed-tools 按名称精确匹配，\"*\" 为字面量不匹配任何工具，"
-            "禁用后 Read 工具仍读出哨兵文件；逐一枚举工具名禁用也被其余工具"
-            "绕过（内置会话/工作流工具与用户配置的 MCP 工具随环境扩展）；"
-            "无 --allowed-tools 白名单，--mode plan 官方语义即允许只读工具"
+            "0.16.9 实测（DEC-030 防破坏门重审，stream-json 事件流+文件系统对照）："
+            "--mode plan 能把内置写类（Write/Edit/Bash 写命令）在权限层真实封死"
+            "（直白/伪装/重定向/解释器写诱导全部零副作用，只读 Bash 命令有逐命令"
+            "白名单分析照常放行）；但同一模式系统层放行全部未自我声明破坏性的"
+            "MCP 工具（plan 下 MCP 检索工具真实执行成功，而 node_repl 经 JS 写"
+            "文件在 yolo 对照实测可行）；ZCode 无禁用 MCP 加载的 CLI 参数"
+            "（--strict-mcp-config 类不存在），--disallowed-tools 仅支持逐个"
+            "全名枚举且用户 MCP 工具集随环境动态扩展（实测 5 个 MCP 服务器），"
+            "枚举不可穷尽——MCP 写路径仅剩模型自律，非系统级硬边界"
         ),
         notes=(
             "入口为 node shebang 脚本，精简 PATH 下 shebang 解释器解析可能失败",
@@ -331,8 +335,22 @@ CANDIDATES: dict[str, CandidateMeta] = {
             "「不可观察」论据，但可观察后证实禁工具设计性无效——权限检查为"
             "disallowedTools 集合精确匹配（Set.has），无全禁/白名单机制；"
             "实验证据见 035E worktree evidence/（05-10 号）",
-            "复核条件：官方提供工具白名单（--allowed-tools 类）或等效"
-            "「全部禁用」开关后重审（ISS-035E）",
+            "ISS-126 2026-09-30 DEC-030 防破坏门重审（0.16.9）：11 组行为矩阵"
+            "（plan 单独/叠加禁用/破坏诱导/MCP 强诱导/yolo 对照）+ 静态判定链"
+            "复核。--mode plan 对内置写类有效：checkPlanMode 对非只读非 MCP 工具"
+            "deny(mode.plan.nonReadOnly)，Bash 有逐命令只读分析器"
+            "（isRuntimeReadOnlyBashCommand，无 python/node 等解释器，rm/mv/"
+            "重定向不在白名单）；但 checkPlanMode 对 permissionName===\"mcp\""
+            "且非破坏的工具无条件 allow(mode.plan.mcp)，MCP 工具 destructive "
+            "仅取协议 annotations.destructiveHint（缺省 false），无 MCP 禁用"
+            "参数，全名枚举叠加有效（M2b 实测移除 node_repl）但不可穷尽",
+            "判不过门与 Codex 的本质差异：Codex read-only 是 OS 级硬边界"
+            "（模型发起写仍被系统拒绝）；ZCode plan 下 MCP 写路径仅由模型自律"
+            "隔离（诱导实验全部零副作用是模型未发起，非系统拦截）",
+            "复核条件（满足任一后重跑 M1-M4 负例矩阵）：官方提供 MCP 禁用/"
+            "白名单 CLI 参数（--strict-mcp-config 类或 --allowed-tools）；或 "
+            "mode.plan.mcp 分支收紧为需声明 readOnlyHint=true 才放行；或 "
+            "--disallowed-tools 支持 mcp__* 服务器级通配",
         ),
     ),
     "codex-cli": CandidateMeta(

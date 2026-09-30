@@ -207,6 +207,55 @@ class TestSuccessPath:
         assert manifest["request_digest"] == preview.request_digest
         assert run_row(job["job_id"])["status"] == "succeeded"
 
+    def test_cli_reported_model_persisted(self, ok_setup):
+        """CLI 报告的模型身份要落库（ISS-133）。
+
+        正文 schema 严格拒绝额外字段，model 留在正文里等于永远存不下来；
+        它必须作为元数据从适配器报告处独立传递。
+        """
+        script = ok_setup["script"].read_text(encoding="utf-8")
+        script = script.replace(
+            '"num_turns": 1',
+            '"model": "cli-reported-model", "num_turns": 1')
+        ok_setup["script"].write_text(script, encoding="utf-8")
+
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "key-model")
+        view = wait_terminal(manager, job["job_id"])
+        assert view["status"] == "succeeded", view
+
+        record = manager.get_analysis(view["analysis_id"])
+        assert record["runtime"]["model"] == "cli-reported-model", record["runtime"]
+        assert agent_rows()[0]["model"] == "cli-reported-model"
+
+    def test_unreported_model_stays_none(self, ok_setup):
+        """CLI 未报告 model 时不猜测，保持 None。"""
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "key-nomodel")
+        view = wait_terminal(manager, job["job_id"])
+        assert view["status"] == "succeeded", view
+        record = manager.get_analysis(view["analysis_id"])
+        assert record["runtime"]["model"] is None, record["runtime"]
+
+    def test_body_extra_field_still_rejected(self, ok_setup):
+        """model 不得混进受验证正文：正文里多一个字段仍须整份拒绝。"""
+        import fathom.analysis_contract as ac
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        rejected = ac.validate_analysis_result(
+            json.dumps({"schema_version": 1, "summary": "s", "findings": [],
+                        "limitations": [], "inspect_next": [],
+                        "model": "injected"}, ensure_ascii=False),
+            preview.facts)
+        assert rejected.ok is False, "正文白名单被放宽了"
+        # 合法的同族正文仍应通过——否则本测试可能只是整体拒收。
+        accepted = ac.validate_analysis_result(_INNER_RESULT, preview.facts)
+        assert accepted.ok is True
+
     def test_history_view_and_evidence(self, ok_setup):
         manager = make_manager()
         preview = manager.create_preview(ok_setup["a"], ok_setup["b"])

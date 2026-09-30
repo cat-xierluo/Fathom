@@ -779,7 +779,15 @@ class AnalysisManager:
                 self._finish(rec, "failed",
                              f"result_{validated.reason_code}", duration_ms)
                 return
-            self._commit_success(rec, validated.value, duration_ms)
+            # 模型身份是**元数据**，与受验证正文分开传递（ISS-133）：正文
+            # schema 严格拒绝额外字段，所以 model 永远不会出现在
+            # validated.value 里，只能从适配器报告处取。只保存 CLI 实际
+            # 报告的值，不推断、不回填，CLI 未报告时保持 None。
+            reported = value.get("model")
+            reported_model = reported if isinstance(reported, str) and reported \
+                else None
+            self._commit_success(rec, validated.value, duration_ms,
+                                 reported_model=reported_model)
             return
         if dispatch.run.outcome is ar.RunOutcome.CANCELLED:
             self._finish(rec, "cancelled", "cancelled", duration_ms)
@@ -789,10 +797,16 @@ class AnalysisManager:
             return
         self._finish(rec, "failed", dispatch.reason_code, duration_ms)
 
-    def _commit_success(self, rec: JobRecord, result: dict, duration_ms: int) -> None:
+    def _commit_success(self, rec: JobRecord, result: dict, duration_ms: int,
+                        *, reported_model: str | None = None) -> None:
         """成功提交（线性化点）：提交门通过才允许可信正文 + succeeded
         同事务落库；门未过（授权撤销/切 Runtime/升级停写）或已被取消/
-        完成，则只有竞争的另一方生效，绝不复活、绝不双写。"""
+        完成，则只有竞争的另一方生效，绝不复活、绝不双写。
+
+        ``reported_model`` 是适配器从 CLI 元数据里读到的模型身份，走独立
+        参数而非塞进 ``result``——正文经严格 schema 验证，多一个字段就会
+        整份被拒，model 留在正文里等于永远存不下来。
+        """
         with self._commit_lock:
             gate = self._commit_gate(rec)
             conn = db.connect(self._db_path)
@@ -837,7 +851,8 @@ class AnalysisManager:
                     _LOG.info("analysis success dropped by accepted cancel "
                               "job_id=%s", rec.job_id)
                     return
-                analysis_id = self._insert_analysis(conn, rec, result)
+                analysis_id = self._insert_analysis(
+                    conn, rec, result, reported_model)
                 conn.execute(
                     "UPDATE analysis_runs SET status='succeeded',"
                     " reason_code=NULL, finished_at=?, duration_ms=? "
@@ -875,7 +890,8 @@ class AnalysisManager:
         return None
 
     def _insert_analysis(self, conn: sqlite3.Connection, rec: JobRecord,
-                         result: dict) -> int:
+                         result: dict,
+                         reported_model: str | None = None) -> int:
         preview = rec.preview
         payload = preview.facts.payload
         # dataset_root 存**真实根**（本地审计字段，不进模型输入——事实包
@@ -899,7 +915,7 @@ class AnalysisManager:
              preview.bundle.prompt_version,
              preview.runtime.adapter_contract_version, preview.runtime.id,
              preview.runtime.version,
-             result.get("model") if isinstance(result.get("model"), str) else None,
+             reported_model,
              json.dumps(result, ensure_ascii=False),
              preview.facts.canonical_json.decode("utf-8"),
              json.dumps(preview.bundle.manifest, ensure_ascii=False),

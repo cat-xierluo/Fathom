@@ -796,6 +796,117 @@ class TestCancelAndTimeout:
 
 
 # ==========================================================================
+# 反例：取消已受理后，迟到的成功仍被落库（ISS-129）
+# ==========================================================================
+
+
+class TestAcceptedCancelWins:
+    """cancel_job 返回非终态 cancelling 之后到达的成功必须判负。
+
+    取消与成功共用 ``_commit_lock``：谁先拿到提交边界谁赢。这里用 barrier
+    精确制造「取消已受理、worker 才走到 settle」的顺序，不依赖 sleep 概率。
+    """
+
+    @staticmethod
+    def _paused_settle(manager, barrier: threading.Event,
+                       resume: threading.Event) -> None:
+        """把 worker 卡在 settle 之前，等取消受理后再放行。"""
+        original = manager._settle
+
+        def paused(rec, dispatch, duration_ms):
+            barrier.set()
+            assert resume.wait(20), "测试未在 20s 内放行 worker"
+            return original(rec, dispatch, duration_ms)
+
+        manager._settle = paused
+
+    def test_cancel_accepted_before_commit_discards_result(self, ok_setup):
+        manager = make_manager()
+        barrier = threading.Event()
+        resume = threading.Event()
+        self._paused_settle(manager, barrier, resume)
+
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "cancel-window")
+        assert barrier.wait(20), "worker 未在 20s 内到达 settle"
+
+        accepted = manager.cancel_job(job["job_id"])
+        assert accepted["status"] == "cancelling", accepted
+        assert accepted["terminal"] is False
+
+        resume.set()
+        final = wait_terminal(manager, job["job_id"], timeout=20)
+        # 取消先受理 → 取消胜：终态 cancelled，且一条正文都不落。
+        assert final["status"] == "cancelled", final
+        assert final["analysis_id"] is None, final
+        assert agent_rows() == []
+        row = run_row(job["job_id"])
+        assert row["status"] == "cancelled" and row["finished_at"]
+
+    def test_success_committed_before_cancel_stays_succeeded(self, ok_setup):
+        """反向顺序：先提交成功再取消，仍是 succeeded 且正文保留。"""
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "commit-first")
+        final = wait_terminal(manager, job["job_id"])
+        assert final["status"] == "succeeded", final
+
+        view = manager.cancel_job(job["job_id"])
+        assert view["terminal"] is True and view["status"] == "succeeded"
+        assert len(agent_rows()) == 1
+
+    def test_cancel_never_leaves_job_stuck_in_cancelling(self, ok_setup):
+        """取消受理后的 job 必须收敛到终态，不得永久停在 cancelling。"""
+        manager = make_manager()
+        barrier = threading.Event()
+        resume = threading.Event()
+        self._paused_settle(manager, barrier, resume)
+
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "not-stuck")
+        assert barrier.wait(20)
+        manager.cancel_job(job["job_id"])
+        resume.set()
+
+        final = wait_terminal(manager, job["job_id"], timeout=20)
+        assert final["terminal"] is True
+        assert final["status"] in ("cancelled", "succeeded")
+        # 无论哪一侧胜，终态与正文必须自洽。
+        assert (final["status"] == "succeeded") == bool(agent_rows())
+
+    def test_policy_revocation_reason_not_masked_by_cancel(self, ok_setup):
+        """授权撤销优先于「取消已受理」，reason_code 不得退化成笼统值。
+
+        refresh_policy（关授权/切 Runtime）也把 job 置为 cancelling。若
+        _commit_success 先判 cancelling 再判 gate，记录的 reason_code 会从
+        analysis_disabled / policy_changed 退化成 'cancelled'，丢掉诊断信息。
+        既有 test_disable_during_run_revokes_commit 接受三值（含 'cancelled'），
+        罩不住这个退化，故单独钉住。
+        """
+        manager = make_manager()
+        barrier = threading.Event()
+        resume = threading.Event()
+        self._paused_settle(manager, barrier, resume)
+
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "policy-first")
+        assert barrier.wait(20)
+        config.update_user_settings({"analysis": {"enabled": False}})
+        manager.refresh_policy()
+        resume.set()
+
+        final = wait_terminal(manager, job["job_id"], timeout=20)
+        assert final["status"] == "cancelled", final
+        assert final["reason_code"] in ("analysis_disabled", "policy_changed"), \
+            f"撤销原因被掩盖：{final['reason_code']}"
+        assert agent_rows() == []
+
+
+# ==========================================================================
 # 反例①/⑥延伸：授权撤销与升级停写的提交资格撤销
 # ==========================================================================
 

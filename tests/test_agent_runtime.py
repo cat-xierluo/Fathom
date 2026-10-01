@@ -110,6 +110,84 @@ def make_stubborn_script(tmp_path: Path, name: str) -> tuple[Path, Path]:
     return p, pidfile
 
 
+def make_polite_script(
+    tmp_path: Path, name: str, ready_marker: Path, *, handler_delay_s: float = 0.0
+) -> Path:
+    """TERM 协作退出的合成 CLI（Python 版）及其 handler 就绪标记。
+
+    子进程在 ``signal.signal`` 安装处理器**之后**才写 ready 标记：标记
+    存在 ⇔ 协作处理器已注册。ISS-142 前的旧形态没有标记与等待——冷启动/
+    调度延误下 0.4s 期限可先于安装触发 TERM，默认处置击杀 → exit 143 ≠ 7
+    （CI run36912240424 原生 Intel 反例）。``handler_delay_s`` 在注册前
+    受控延迟，供验证就绪握手对迟注册的耐受。
+    """
+    p = tmp_path / name
+    p.write_text(
+        "import signal, sys, time\n"
+        "from pathlib import Path\n"
+        f"time.sleep({handler_delay_s!r})\n"
+        "def _on_term(sig, frame):\n"
+        "    sys.exit(7)\n"
+        "signal.signal(signal.SIGTERM, _on_term)\n"
+        f"Path({str(ready_marker)!r}).write_text('ready')\n"
+        "while True:\n"
+        "    time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    p.chmod(0o755)
+    return p
+
+
+def _reap_own_group(proc: subprocess.Popen) -> None:
+    """按自有 Popen 凭据组级回收（start_new_session 下 pid 即 pgid），有界。
+
+    仅在就绪握手失败路径使用：TERM → 有界宽限 → KILL → reap；对「已退出
+    未 reap」死组的 killpg EPERM（ISS-119）与生产侧同口径容忍。
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+    stop = time.monotonic() + 2.0
+    while proc.poll() is None and time.monotonic() < stop:
+        time.sleep(0.02)
+    if proc.poll() is None:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def await_handler_ready(
+    proc: subprocess.Popen, ready_marker: Path, *, budget_s: float = 10.0
+) -> None:
+    """ISS-142 有界就绪握手：标记出现才放行；缺失/超时=真实失败且无残留。
+
+    挂在 ``AgentCliRunner`` 的 popen_factory 接缝上：``run()`` 的超时
+    deadline 在 ``_collect_output`` 内、即本函数返回后才起算，被测期限
+    不变不扩大。标记是事件条件（文件存在），轮询间隔 0.02s 只是采样率，
+    不是"睡固定秒后假设就绪"：
+    - 标记出现（处理器已注册）→ 放行，TERM 必落在安装之后；
+    - 子进程先退出（就绪缺失）→ reap 后真实失败；
+    - 预算耗尽（永不就绪）→ 自有组回收后真实失败，不悬挂不残留。
+    """
+    stop = time.monotonic() + budget_s
+    while time.monotonic() < stop:
+        if ready_marker.exists():
+            return
+        if proc.poll() is not None:
+            proc.wait()  # reap 自有子进程
+            pytest.fail(
+                f"就绪握手失败：子进程在 handler 就绪前退出（exit={proc.returncode}）")
+        time.sleep(0.02)
+    _reap_own_group(proc)
+    pytest.fail(f"就绪握手超时（>{budget_s:g}s）：handler 从未就绪")
+
+
 def spy_eperm_probe(monkeypatch) -> list[int]:
     """旁观记录 sig=0 组存活探测命中的 PermissionError（ISS-119 沙箱征兆）。
 
@@ -282,30 +360,53 @@ def test_runner_timeout_killpg_eperm_sandbox(tmp_path, monkeypatch):
     assert r.wall_ms < 10000
 
 
-def test_runner_term_kills_cooperative_child_quickly(tmp_path):
-    """正常子进程在 TERM 即退：超时回收不依赖 KILL。
+def test_runner_term_kills_cooperative_child_quickly(tmp_path, monkeypatch):
+    """正常子进程在 TERM 即退：超时回收不依赖 KILL（ISS-142 就绪握手）。
 
     用 Python 处理器转发退出码（同款热解释器）：bash ``trap "exit 7"
     TERM`` 存在 TERM 偶发直接击杀的固有竞态（exit 143 ≠ 7），Python
     信号处理器无此竞态；被测合同（TERM 转发退出码）与语言无关。
+
+    ISS-142：旧形态没有就绪条件——冷启动/调度延误下 0.4s 期限可先于
+    handler 安装触发 TERM，默认处置击杀 → 143（CI run36912240424 原生
+    Intel 反例，期望 7 得 143）。现经 popen_factory 接缝做有界就绪握手
+    （见 ``await_handler_ready``）：ready 标记出现前不把 Popen 交还
+    runner，期限在 spawn 返回后才起算（0.4s 不变不扩大），TERM 必落在
+    安装之后 → 稳定 7。含可控迟注册一轮：握手对注册延迟同样成立。
+    就绪缺失/超时保持真实失败、有界、无自有进程残留（helper 内收敛）。
     """
-    p = tmp_path / "polite.py"
-    p.write_text(
-        "import signal, sys, time\n"
-        "def _on_term(sig, frame):\n"
-        "    sys.exit(7)\n"
-        "signal.signal(signal.SIGTERM, _on_term)\n"
-        "while True:\n"
-        "    time.sleep(0.1)\n",
-        encoding="utf-8",
-    )
-    p.chmod(0o755)
-    r = make_runner(term_grace_s=2.0).run(ar.Invocation(
-        argv=[sys.executable, str(p)], cwd=tmp_path,
-        env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"}),
-        timeout_s=0.4)
-    assert r.outcome is ar.RunOutcome.TIMED_OUT
-    assert r.exit_code == 7  # 转发了 TERM 处理后的退出码
+    eperm_seen = spy_eperm_probe(monkeypatch)
+    for handler_delay_s in (0.0, 0.25):
+        case = tmp_path / f"ld{handler_delay_s}"
+        case.mkdir()
+        ready = case / "handler-ready"
+        script = make_polite_script(case, "polite.py", ready,
+                                    handler_delay_s=handler_delay_s)
+        spawned: dict = {}
+
+        def spawn_when_handler_ready(*args, **kwargs) -> subprocess.Popen:
+            proc = subprocess.Popen(*args, **kwargs)
+            spawned["pid"] = proc.pid
+            await_handler_ready(proc, ready)
+            return proc
+
+        r = make_runner(term_grace_s=2.0,
+                        popen_factory=spawn_when_handler_ready).run(ar.Invocation(
+            argv=[sys.executable, str(script)], cwd=case,
+            env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"}),
+            timeout_s=0.4)
+        # 握手真实生效：标记在 signal.signal 之后才写，存在即处理器确实注册
+        assert ready.exists()
+        assert r.outcome is ar.RunOutcome.TIMED_OUT
+        assert r.exit_code == 7  # TERM 落在注册后：转发了处理后的退出码
+        if eperm_seen:
+            # CI macOS 沙箱（ISS-119）：死组探测报 EPERM，产品如实报告
+            assert r.group_reaped in (True, False)
+        else:
+            assert r.group_reaped is True
+        # 收尾核验：自有组确已消失（成功路径与失败收尾同一口径）
+        with pytest.raises((ProcessLookupError, PermissionError)):
+            os.killpg(spawned["pid"], 0)
 
 
 def test_runner_cancel_event(tmp_path):

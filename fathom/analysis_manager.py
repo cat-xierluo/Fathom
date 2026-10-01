@@ -660,7 +660,6 @@ class AnalysisManager:
         finally:
             conn.close()
 
-        rec.cwd = Path(tempfile.mkdtemp(prefix="fathom-analysis-"))
         with self._lock:
             self._jobs[job_id] = rec
         # 占位行已提交、worker 尚未确认运行：这段里的任何异常都必须把占位行
@@ -669,6 +668,11 @@ class AnalysisManager:
         # reconcile 才消失。thread.start() 一旦成功，后续没有任何可抛异常的
         # 操作，租约所有权即正式随 rec 移交 worker。
         try:
+            # 临时目录分配必须落在保护段内（PM 批审 CHANGES_REQUESTED 项）：
+            # 占位行已提交，此处的失败与 discard/view/start 同属「无 worker 的
+            # 启动失败」，都要走 _reap_unstarted_job 收敛，否则 starting 幽灵
+            # 会被在途查询返回。JobRecord.cwd 默认 None，reap 对未赋值安全。
+            rec.cwd = Path(tempfile.mkdtemp(prefix="fathom-analysis-"))
             self._discard_preview(preview.preview_id)  # 单次消费
             # 视图在 thread.start() **之前**构造（ISS-136）。原实现把 job_view
             # 留在 start() 之后，它一旦抛错会冒泡到 start_job 的
@@ -701,7 +705,8 @@ class AnalysisManager:
         import shutil
         with self._lock:
             self._jobs.pop(rec.job_id, None)
-        shutil.rmtree(rec.cwd, ignore_errors=True)
+        if rec.cwd is not None:
+            shutil.rmtree(rec.cwd, ignore_errors=True)
         conn = db.connect(self._db_path)
         try:
             conn.execute(

@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前主干期望值为 pytest **1079**、API/浏览器 **39**、前端 refresh **214**、AI 解读前端 **70**、Rust 单测 **69**。[ISS-114 合并候选 CI](https://github.com/cat-xierluo/Fathom/actions/runs/36416710137) 六项通过，本地也按这些计数复跑；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前主干期望值为 pytest **1079**、API/浏览器 **39**、前端 refresh **214**、AI 解读前端 **77**、Rust 单测 **69**。[ISS-114 合并候选 CI](https://github.com/cat-xierluo/Fathom/actions/runs/36416710137) 六项通过，本地也按这些计数复跑；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -44,7 +44,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1079
 
 ```bash
 /bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 1079（+ISS-136b 临时目录分配回归 1 项）
-/bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 214 + AI 解读 70
+/bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 214 + AI 解读 77
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 69
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
   rustup run stable cargo check --target x86_64-apple-darwin --locked --offline \
@@ -208,6 +208,10 @@ bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
 2. 检查原生初始化诊断：selector/ABI 可用时回弹 mask 被设为 0；不支持的路径应安全诊断，不影响窗口启动。该证据证明接线，不能证明物理回弹已消失。
 3. 五页在短/长内容和 980×640 下测试正常上下滚动、顶部/底部越界输入、侧栏/顶栏命中区、页面切换、详情与模态返回、键盘及图表。比较外框、主导航、顶栏、内容四层位置，手势中观察，不只在回弹结束后截图。
 4. 浏览器 wheel/scrollTop/坐标回归与原生 mask 探针均为辅助证据。物理触控板或鼠标连续手势未完成时标记 NOT_VERIFIED，父卡限位验收保持未关闭；不可把 Chromium 通过重新扩大为所有 macOS 输入已通过。
+
+### 已受理解读请求的浏览器响应丢失回归
+
+`node scripts/verify_analysis_frontend.cjs` 使用真实 Chromium 与隔离合成 HTTP 夹具。新增场景先受理 POST 建立在途 job，再在浏览器侧丢失响应；检查重试复用幂等键和同一 job、没有重复派发、仍可取消、终态重跑使用新键，以及刷新恢复不额外 POST。两份临时沙盒的刻意逻辑破坏用于检验新增断言的敏感性。其结果证明此夹具下的前端行为；真实 Python 后端语义、Tauri WebView 和真实网络栈的同场景仍需各自证据。
 
 ### 冻结 helper 的解读生命周期回归
 

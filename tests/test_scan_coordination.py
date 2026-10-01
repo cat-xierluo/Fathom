@@ -480,10 +480,11 @@ def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
         child_pid = int(child_file.read_text())
         # terminate 前 du 必然存活（尚无任何人发信号），此刻采集的身份
         # 凭据即「该 PID 属于本测试 du」的基准，供失败路径兜底复核。
+        # 探针带界：ps 挂起时 TimeoutExpired 如实令本测试失败并走 finally。
         identity_probe = subprocess.run(
             ["ps", "-p", str(child_pid),
              "-o", "lstart=", "-o", "sess=", "-o", "args="],
-            capture_output=True, text=True)
+            capture_output=True, text=True, timeout=2)
         if identity_probe.returncode == 0 and identity_probe.stdout:
             du_identity = identity_probe.stdout
         proc.terminate()
@@ -519,11 +520,17 @@ def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
         # 本测试进程，保守跳过不会残留自家 sleep。成功路径 du 回收已被
         # 真实断言钉住，不再对旧 PID 发任何信号。
         if child_pid is not None and not du_reaped and du_identity:
-            probe = subprocess.run(
-                ["ps", "-p", str(child_pid),
-                 "-o", "lstart=", "-o", "sess=", "-o", "args="],
-                capture_output=True, text=True)
-            if probe.returncode == 0 and probe.stdout == du_identity:
+            try:
+                probe = subprocess.run(
+                    ["ps", "-p", str(child_pid),
+                     "-o", "lstart=", "-o", "sess=", "-o", "args="],
+                    capture_output=True, text=True, timeout=2)
+            except subprocess.TimeoutExpired:
+                # 复核探针挂起＝身份未知：保守不发信号，保留原始失败
+                # 原因继续传播，不以吞错制造绿（本分支只影响兜底回收）。
+                probe = None
+            if probe is not None and probe.returncode == 0 \
+                    and probe.stdout == du_identity:
                 os.kill(child_pid, 9)
 
 

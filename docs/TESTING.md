@@ -208,3 +208,15 @@ bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
 2. 检查原生初始化诊断：selector/ABI 可用时回弹 mask 被设为 0；不支持的路径应安全诊断，不影响窗口启动。该证据证明接线，不能证明物理回弹已消失。
 3. 五页在短/长内容和 980×640 下测试正常上下滚动、顶部/底部越界输入、侧栏/顶栏命中区、页面切换、详情与模态返回、键盘及图表。比较外框、主导航、顶栏、内容四层位置，手势中观察，不只在回弹结束后截图。
 4. 浏览器 wheel/scrollTop/坐标回归与原生 mask 探针均为辅助证据。物理触控板或鼠标连续手势未完成时标记 NOT_VERIFIED，父卡限位验收保持未关闭；不可把 Chromium 通过重新扩大为所有 macOS 输入已通过。
+
+### 冻结 helper 的解读生命周期回归
+
+`scripts/verify_frozen_analysis.py` 接受已构建的生产 helper，通过真实 `serve` 与 HTTP API 验证解读成功入库、在途取消、关闭授权以及 helper 停机时的子进程回收。使用临时运行根、合成快照和 task-local CLI 替身，不读取生产数据、不调用真实模型。
+
+```bash
+python scripts/verify_frozen_analysis.py \
+  --helper /absolute/path/to/fathom-helper \
+  --output verify-results/frozen-analysis
+```
+
+helper 构建需已有 pinned PyInstaller 环境，按 `scripts/build_helper.sh` 准备；脚本不自动安装或构建。其输出记录 helper 指纹、HTTP/DB/进程断言及失败原因，失败退出非零。替身输出只证明产品接线和生命周期；真实模型质量、Tauri WebView、实机升级、双架构、签名及新账户发行验收仍需各自证据。

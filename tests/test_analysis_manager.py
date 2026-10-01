@@ -845,6 +845,117 @@ class TestCancelAndTimeout:
 
 
 # ==========================================================================
+# 反例：启动接缝在 worker 运行期间提前释放分析租约（ISS-136）
+# ==========================================================================
+
+
+class TestLeaseHandoffOnStart:
+    """thread.start() 之后不得再有任何可抛异常的操作（ISS-136）。
+
+    原实现最后一句 `return self.job_view(job_id), False` 在 start() 之后：
+    job_view 抛错会冒泡到 start_job 的 except BaseException 提前
+    lease.release()——worker 仍在运行而锁已消失，并发分析与升级 prepare
+    都能插进整个剩余任务期间。
+    """
+
+    def test_job_view_failure_reaps_placeholder_and_releases(self, ok_setup):
+        """job_view 抛错 → 无 worker 启动、占位行收敛终态、租约正确释放。
+
+        占位行若停在 starting，会被 find_active_jobs（ISS-135 区间在途查询）
+        当成幽灵在途任务渲染。
+        """
+        manager = make_manager()
+        original_view = manager.job_view
+
+        def exploding_view(job_id):
+            raise RuntimeError("合成：视图构造失败")
+
+        manager.job_view = exploding_view
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        with pytest.raises(RuntimeError):
+            manager.start_job(preview.preview_id, preview.request_digest,
+                              "key-136-view")
+        manager.job_view = original_view
+
+        row = run_row_from(manager, "key-136-view")
+        assert row["status"] == "interrupted", dict(row)
+        assert row["reason_code"] == "startup_aborted"
+        assert row["finished_at"], "占位行必须带 finished_at，不留幽灵在途"
+        assert manager.find_active_jobs(ok_setup["a"], ok_setup["b"]) == []
+        lease = am.AnalysisLease.acquire(manager._lock_path, source="probe-136")
+        lease.release()
+        assert agent_rows() == []
+
+    def test_discard_preview_failure_reaps_placeholder(self, ok_setup):
+        """同类出口：占位行提交后 _discard_preview 抛错也必须收敛。"""
+        manager = make_manager()
+        original = manager._discard_preview
+
+        def exploding_discard(pid):
+            raise RuntimeError("合成：预览消费失败")
+
+        manager._discard_preview = exploding_discard
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        with pytest.raises(RuntimeError):
+            manager.start_job(preview.preview_id, preview.request_digest,
+                              "key-136-discard")
+        manager._discard_preview = original
+
+        row = run_row_from(manager, "key-136-discard")
+        assert row["status"] == "interrupted"
+        assert row["reason_code"] == "startup_aborted"
+        assert manager.find_active_jobs(ok_setup["a"], ok_setup["b"]) == []
+
+    def test_normal_path_unaffected(self, ok_setup):
+        """正常路径零变化：视图先行构造返回，job 正常跑到终态。"""
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        job, replayed = manager.start_job(preview.preview_id,
+                                          preview.request_digest, "key-136-ok")
+        assert replayed is False and job["job_id"]
+        final = wait_terminal(manager, job["job_id"])
+        assert final["status"] == "succeeded"
+        lease = am.AnalysisLease.acquire(manager._lock_path, source="probe-136b")
+        lease.release()
+
+    def test_running_job_blocks_concurrent_and_prepare(self, isolated):
+        """互斥不因重构弱化：活跃 job 期间并发分析与锁探针均被拒。
+
+        用 sleep 模式假 CLI 保持任务在途——ok 模式跑得太快，探针前 job 可能
+        已完成并正常释放，测试会因自身时序而闪红。升级 prepare 的互斥由
+        tests/test_analysis_upgrade_gate.py::
+        test_prepare_refused_while_analysis_in_flight 覆盖（同一把锁）。
+        """
+        bin_dir = isolated["runtime"] / "bin"
+        bin_dir.mkdir()
+        enable_analysis(make_fake_claude(bin_dir, mode="sleep"))
+        a, b = make_snapshots(isolated["scanroot"])
+        manager = make_manager(run_timeout_s=30)
+        preview = manager.create_preview(a, b)
+        job, _ = manager.start_job(preview.preview_id, preview.request_digest,
+                                   "key-136-busy")
+        with pytest.raises(am.AnalysisError) as ei:
+            preview2 = manager.create_preview(a, b)
+            manager.start_job(preview2.preview_id, preview2.request_digest,
+                              "key-136-busy2")
+        assert ei.value.reason_code == "analysis_busy"
+        with pytest.raises(am.AnalysisBusy):
+            am.AnalysisLease.acquire(manager._lock_path, source="probe-136c")
+        manager.cancel_job(job["job_id"])
+        wait_terminal(manager, job["job_id"], timeout=30)
+
+
+def run_row_from(manager, idempotency_key):
+    conn = db.connect(manager._db_path)
+    try:
+        return conn.execute(
+            "SELECT * FROM analysis_runs WHERE idempotency_key=?",
+            (idempotency_key,)).fetchone()
+    finally:
+        conn.close()
+
+
+# ==========================================================================
 # 反例：取消已受理后，迟到的成功仍被落库（ISS-129）
 # ==========================================================================
 

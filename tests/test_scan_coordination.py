@@ -425,6 +425,14 @@ def test_api_shutdown_cancels_its_du_and_marks_interrupted(tmp_path, monkeypatch
 
 
 def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
+    """ISS-139：SIGTERM 后 CLI 回收自建 du、落 interrupted、释放真实 flock。
+
+    child PID 文件由子进程合成 Popen 经同目录临时文件原子发布（写完再
+    rename），消除 CI #230（run 36894724038）实证的「创建→写入」空窗：
+    consumer 仅 exists() 即读会拿到空串（int('') ValueError）。consumer
+    在 terminate 前采集 du 的 ps 身份凭据（lstart/sess/args），失败路径
+    收尾须凭据复核相等才对 du 兜底 SIGKILL，防误杀被复用的第三方 PID。
+    """
     runtime = tmp_path / "runtime"
     root = tmp_path / "root"
     root.mkdir()
@@ -441,7 +449,12 @@ def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
             proc = real_popen(['/bin/sleep', '30'], stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, start_new_session=True,
                               pass_fds=kwargs.get('pass_fds', ()))
-            child_file.write_text(str(proc.pid))
+            # 原子发布：child_file 一旦存在，内容必然完整（rename 契约）。
+            # 采集进程凭据等重活绝不能挤进此处——SIGTERM 若在 Popen 与
+            # CLI 注册 du 之间到达，回收 handler 找不到 du 会留孤儿。
+            staged = child_file.with_name(child_file.name + '.publish')
+            staged.write_text(str(proc.pid))
+            staged.replace(child_file)
             return proc
         scanner.subprocess.Popen = sleeping_popen
         raise SystemExit(cli.main(['--runtime-dir', str(runtime), '--scan-root',
@@ -452,26 +465,73 @@ def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
         cwd=Path(__file__).parents[1], env=_env(),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    deadline = time.monotonic() + 5
-    while not child_file.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert child_file.exists()
-    child_pid = int(child_file.read_text())
-    proc.terminate()
-    stdout, stderr = proc.communicate(timeout=8)
-    assert proc.returncode == 130, (stdout, stderr)
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
-    conn = sqlite3.connect(runtime / "data" / "fathom.db")
+    child_pid: int | None = None
+    du_reaped = False
+    du_identity: str | None = None
     try:
-        assert conn.execute(
-            "SELECT status FROM scan_runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()[0] == "interrupted"
+        deadline = time.monotonic() + 5
+        while not child_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not child_file.exists():
+            out, err = proc.communicate(timeout=5)
+            raise AssertionError(
+                f"producer 未在 5s 内原子发布 child-pid"
+                f"（rc={proc.returncode}，stdout={out!r}，stderr={err!r}）")
+        child_pid = int(child_file.read_text())
+        # terminate 前 du 必然存活（尚无任何人发信号），此刻采集的身份
+        # 凭据即「该 PID 属于本测试 du」的基准，供失败路径兜底复核。
+        # 探针带界：ps 挂起时 TimeoutExpired 如实令本测试失败并走 finally。
+        identity_probe = subprocess.run(
+            ["ps", "-p", str(child_pid),
+             "-o", "lstart=", "-o", "sess=", "-o", "args="],
+            capture_output=True, text=True, timeout=2)
+        if identity_probe.returncode == 0 and identity_probe.stdout:
+            du_identity = identity_probe.stdout
+        proc.terminate()
+        stdout, stderr = proc.communicate(timeout=8)
+        assert proc.returncode == 130, (stdout, stderr)
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        du_reaped = True
+        conn = sqlite3.connect(runtime / "data" / "fathom.db")
+        try:
+            assert conn.execute(
+                "SELECT status FROM scan_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0] == "interrupted"
+        finally:
+            conn.close()
+        lock_path = runtime / "data" / "fathom.db.scan.lock"
+        lease = scan_coordinator.ScanLease.acquire(lock_path, source="cli")
+        lease.release()
     finally:
-        conn.close()
-    lock_path = runtime / "data" / "fathom.db.scan.lock"
-    lease = scan_coordinator.ScanLease.acquire(lock_path, source="cli")
-    lease.release()
+        # 失败有界收尾。producer 经 Popen 句柄回收（poll/terminate/kill
+        # 作用于自建进程对象，无裸 PID 复用风险）。
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate(timeout=5)
+        # du 兜底回收仅限失败路径（du_reaped 未置位：du 回收尚未被上方
+        # 断言确认），且身份凭据复核相等（对同 PID 重查同一 ps 快照、
+        # 逐字节比对）才 SIGKILL。PID 已回收（ps 无此进程）或凭据不符
+        # （含被系统复用为第三方进程）一律不发信号——此时该 PID 上已无
+        # 本测试进程，保守跳过不会残留自家 sleep。成功路径 du 回收已被
+        # 真实断言钉住，不再对旧 PID 发任何信号。
+        if child_pid is not None and not du_reaped and du_identity:
+            try:
+                probe = subprocess.run(
+                    ["ps", "-p", str(child_pid),
+                     "-o", "lstart=", "-o", "sess=", "-o", "args="],
+                    capture_output=True, text=True, timeout=2)
+            except subprocess.TimeoutExpired:
+                # 复核探针挂起＝身份未知：保守不发信号，保留原始失败
+                # 原因继续传播，不以吞错制造绿（本分支只影响兜底回收）。
+                probe = None
+            if probe is not None and probe.returncode == 0 \
+                    and probe.stdout == du_identity:
+                os.kill(child_pid, 9)
 
 
 class TestScanTimeoutConfigurable:

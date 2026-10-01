@@ -216,7 +216,8 @@ bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
 ```bash
 python scripts/verify_frozen_analysis.py \
   --helper /absolute/path/to/fathom-helper \
+  --build-ready /absolute/path/to/helper-build.json \
   --output verify-results/frozen-analysis
 ```
 
-helper 构建需已有 pinned PyInstaller 环境，按 `scripts/build_helper.sh` 准备；脚本不自动安装或构建。其输出记录 helper 指纹、HTTP/DB/进程断言及失败原因，失败退出非零。替身输出只证明产品接线和生命周期；真实模型质量、Tauri WebView、实机升级、双架构、签名及新账户发行验收仍需各自证据。
+helper 构建需已有 pinned PyInstaller 环境，按 `scripts/build_helper.sh` 准备；脚本不自动安装或构建。`--build-ready` 必填，使用可移植 JSON 来源记录，至少含 `ok: true` 和实际 helper 的 64 位 `helper_sha256`；可同时记录构建时的 `source_sha`。构建完成后保存该次产物指纹和源提交，不能用另一份产物或事后猜测的来源替代。manifest 缺失、非法或指纹不符时失败关闭；不依赖 Agent 私有会话目录。其输出记录 helper 指纹、HTTP/DB/进程断言及失败原因，失败退出非零。取消、撤权和停机之前必须观测自有替身进程已在途，之后复核该身份的回收和无迟到正文，不能用“从未启动所以没有残留”判为通过。替身输出只证明产品接线和生命周期；真实模型质量、Tauri WebView、实机升级、双架构、签名及新账户发行验收仍需各自证据。

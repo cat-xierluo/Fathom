@@ -1,0 +1,108 @@
+# ISS-140 · Intel 原生冻结 helper 解读回归流水线
+#
+# 设计边界（任务卡 + 现行 CI 约定）：
+# - 补齐 ISS-138 尚无 x86_64 冻结产物的真实证据：在原生 macos-15-intel
+#   runner 上冻结 helper（复用 scripts/build_helper.sh，PyInstaller pin 由
+#   其内部断言），绑定产物身份（源 40 位 SHA/真实 SHA256/Mach-O cputype/
+#   版本），再跑 scripts/verify_frozen_analysis.py 的 33 项真实
+#   serve/HTTP/DB/子进程生命周期回归。arm64 本机或交叉编译不能替代实测。
+# - 触发合同（合并前 Intel 真实验收）：workflow_dispatch 要求 workflow 文件
+#   已存在于 default branch，无法承担合并前验证，故本流水线由限定路径、
+#   目标 main 的 pull_request 触发（PR head SHA 显式检出=被测固定 head，
+#   由 ci_frozen_analysis.py 记进 manifest source_sha 并经 33 项实测）；
+#   另保留 workflow_dispatch 供合并后 PM 复跑。不挂 push 触发，避免
+#   push+PR 双重重复消耗 Intel 分钟。
+# - 非 release 验证：无 Release 写入、不打 tag、不签名；不引用任何
+#   secrets 上下文（GITHUB_TOKEN 权限收敛为 contents: read）。
+# - 无跳过语义：任一步失败即 job 失败（不挂任何容错续跑标记、无 skip、
+#   冻结失败不得发布成功 manifest——由 scripts/ci_frozen_analysis.py
+#   fail-closed 保证，manifest ok=false 且 verify 不被调用、原退出码保留）。
+# - 第三方 action 固定完整 commit SHA（沿 ci.yml 已验证的同源 SHA，
+#   取自 api.github.com git/ref/tags，2026-09-13；不引入新 action、不猜 SHA）。
+# - 依赖安装仅在 runner 临时 venv：requirements-runtime(-build) +
+#   constraints 精确锁闭包（与 release.yml 冻结闭包同口径）；本机 worker
+#   不安装任何依赖。证据（manifest/33 项 report/日志）回显进 job 日志
+#   留存，不上传制品、不引用私有路径。
+# - Python 版本与 ci.yml 同口径（3.14.6）；PyInstaller 6.22.3 pin 由
+#   packaging/requirements-runtime-build.txt 锁定并经 build_helper.sh 断言。
+
+name: Frozen Analysis (Intel native)
+
+on:
+  # 合并前主路径：目标 main、限定本流水线相关路径的 PR（见上方触发合同）。
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/frozen-analysis.yml
+      - scripts/ci_frozen_analysis.py
+      - scripts/build_helper.sh
+      - scripts/verify_frozen_analysis.py
+      - tests/test_ci_frozen_analysis.py
+      - packaging/requirements-runtime.txt
+      - packaging/requirements-runtime-build.txt
+      - packaging/constraints.txt
+  # 合并后/PM 复跑路径：文件已进 default branch 后可手动触发。
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '可选：固定检出 ref（40 位 SHA / 分支 / tag；默认触发 ref）'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frozen-analysis-intel
+  cancel-in-progress: false  # 证据型 run 不被后续触发取消
+
+env:
+  PYTHON_VERSION: "3.14.6"
+
+jobs:
+  frozen-analysis-intel:
+    name: 冻结解读回归 33 项（x86_64 原生）
+    runs-on: macos-15-intel
+    timeout-minutes: 40
+    steps:
+      - name: 断言原生 runner 架构 x86_64
+        run: |
+          set -euo pipefail
+          echo "uname -m = $(uname -m)"
+          sw_vers
+          [ "$(uname -m)" = "x86_64" ]
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: 'false'
+          # 被测固定 head：PR 事件显式检出 PR head SHA（非 merge commit，
+          # manifest source_sha 必须等于这个被检出的 40 位 head）；
+          # dispatch 沿用可选 ref 输入，缺省触发 ref。
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.ref }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: 安装锁定依赖（runner 临时 venv + constraints，冻结闭包）
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/fathom-venv"
+          "$RUNNER_TEMP/fathom-venv/bin/python" --version
+          # 与 release.yml 冻结闭包同口径：运行时 pin + PyInstaller pin，
+          # 全闭包由 constraints 精确锁定（build_helper.sh 另行断言 pin 版本）。
+          "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
+            -r packaging/requirements-runtime.txt \
+            -r packaging/requirements-runtime-build.txt \
+            -c packaging/constraints.txt
+
+      - name: 冻结 + 身份绑定 + ISS-138 33 项真实回归（fail-closed，无跳过）
+        run: |
+          set -euo pipefail
+          # 固定 head 证据：manifest 记录本检出的 40 位源 SHA 与产物指纹；
+          # 期望架构 x86_64 以 Mach-O 头执法，arm64/交叉产物在此被拒绝。
+          "$RUNNER_TEMP/fathom-venv/bin/python" scripts/ci_frozen_analysis.py run \
+            --venv "$RUNNER_TEMP/fathom-venv" \
+            --work-dir "$RUNNER_TEMP/iss140-frozen-analysis" \
+            --expected-arch x86_64

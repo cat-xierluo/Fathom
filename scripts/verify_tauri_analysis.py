@@ -345,37 +345,97 @@ def ps_identity(pid: int) -> dict[str, str] | None:
     ucomm, _, args = line.partition(" ")
     ucomm = ucomm.strip()
     args = args.strip()
+    # macOS 上已终止但父进程未 wait 的进程显示为 <defunct>。它是**已被信号
+    # 终止**的证据（等父进程收割），不是「PID 被复用」。必须单独识别，
+    # 否则会被误判为身份漂移而拒绝记账（返修 episode 2 实测）。
+    zombie = ucomm == "<defunct>" or args == "<defunct>" or ucomm.startswith("Z")
     return {"comm": ucomm, "args": args,
-            "path": args.split(" ")[0] if args else ""}
+            "path": args.split(" ")[0] if args else "",
+            "zombie": zombie}
 
 
 @dataclass(frozen=True)
 class OwnedProcess:
-    """自有进程凭据：pid + 可执行名 + 可执行路径 + bundle id。
+    """自有进程凭据：pid + 可执行名 + **可执行绝对路径** + 启动 argv 凭证。
 
-    所有权**只**来自 driver launch 句柄 / resolve-app 消歧；不来自
-    「启动前后集合差」——那会收养别人的同名进程。
+    所有权**只**来自 driver launch 句柄 / resolve-app 消歧 / 本 runtime
+    instance；不来自「启动前后集合差」——那会收养别人的同名进程。
+
+    R2：`start_args` / `executable_path` 是**取得 pid 当时用 ps_identity 钉住
+    的启动凭证**。仅凭「名字包含 fathom-helper」无法证明自有：pid 被复用为
+    任何其他同名 helper（含生产 Fathom 实例）时名字匹配即成立 → 误杀。
     """
     pid: int
-    executable: str          # CFBundleExecutable，如 fathom-desktop
-    executable_path: str
+    executable: str          # ucomm 短名，如 fathom-desktop / fathom-helper
+    executable_path: str     # 钉住的 argv[0] 绝对路径（不可为空）
     bundle_id: str
     role: str                # gui | helper
+    start_args: str = ""     # 钉住的完整 argv
+    instance_nonce: str = ""  # 本 runtime instance 凭据（helper 角色必须有）
 
     def matches(self, observed: dict[str, str], *, app_path: Path) -> bool:
-        """信号前复核：ucomm 必须是自有可执行短名，且 args 落在本轮 app 内。
+        """信号前复核：ucomm + **argv[0] 绝对路径** + （helper）nonce 佐证。
 
         拒绝 foreign（别人的同名进程）与 reused（PID 已被新进程占用）。
-        `comm` 取自 `ps -o ucomm=`（短名），不依赖会截断的 `comm=`。
+        路径比较用「等于或以 app 路径为前缀且后接分隔符」，避免
+        `Fathom.app.backup` 这类前缀碰撞。
         """
         if observed is None:
             return False
         if observed.get("comm") != self.executable:
             return False
-        args = observed.get("args", "")
+        path = observed.get("path", "")
+        if not self.executable_path:
+            # 没有钉住绝对路径 = 没有可用凭证 → 拒绝发信号
+            return False
+        if path != self.executable_path:
+            return False
         if self.role == "gui":
-            return str(app_path) in args
-        return "fathom-helper" in args or "fathom-helper" in observed.get("path", "")
+            return _path_within(path, app_path)
+        # helper：argv[0] 必须落在本 app bundle 内，且与钉住凭证完全一致
+        if not _path_within(path, app_path):
+            return False
+        if self.start_args and observed.get("args", "") != self.start_args:
+            return False
+        if not self.instance_nonce:
+            # R2：helper 必须有本 runtime instance 凭证，否则拒绝
+            return False
+        # instance nonce 是**捕获时**从本 runtime 根的 instance 文件读到的绑定
+        # （pid + port + nonce 同源），故此处只要求它非空作为凭证存在性证明；
+        # 不要求出现在 argv 里——runtime 根经环境变量下发，不在 argv 中，
+        # 拿 argv 匹配会导致合法 helper 一律被拒。真正的归属证明是
+        # 「argv[0] 精确等于钉住路径」+「位于本 app bundle 内」+「完整 args 一致」。
+        return _path_within(path, app_path)
+
+    def rejection_reason(self, observed: dict[str, str] | None,
+                         *, app_path: Path) -> str:
+        if observed is None:
+            return "dead: 进程已不存在"
+        if observed.get("comm") != self.executable:
+            return f"reused/foreign: ucomm={observed.get('comm')} != {self.executable}"
+        if not self.executable_path:
+            return "无启动凭证（executable_path 为空），拒绝发信号"
+        if observed.get("path", "") != self.executable_path:
+            return (f"reused: argv[0]={observed.get('path')} != 钉住的 "
+                    f"{self.executable_path}")
+        if self.role == "helper":
+            if not self.instance_nonce:
+                return "无本 runtime instance nonce，拒绝发信号"
+            if not _path_within(observed.get("path", ""), app_path):
+                return "helper argv[0] 不在本 app bundle 内"
+        return "身份不符"
+
+
+def _path_within(path: str, parent: Path) -> bool:
+    """path 是否等于 parent 或位于其下（按分隔符边界，避免前缀碰撞）。"""
+    if not path:
+        return False
+    try:
+        target = os.path.realpath(path)
+        root = os.path.realpath(str(parent))
+    except OSError:
+        return False
+    return target == root or target.startswith(root + os.sep)
 
 
 def reclaim_owned(
@@ -387,11 +447,14 @@ def reclaim_owned(
     回收失败原样记入 result（不吞错、不假绿）。
     """
     report: dict[str, Any] = {"reclaimed": [], "skipped_identity": [],
-                              "still_alive": [], "errors": []}
+                              "signalled": [], "still_alive": [], "errors": []}
 
     def note(action: str, detail: str) -> None:
         with log.open("a", encoding="utf-8") as handle:
             handle.write(f"[reclaim] {action}: {detail}\n")
+
+    def signalled_pid(pid: int) -> bool:
+        return any(item.get("pid") == pid for item in report["signalled"])
 
     for proc in owned:
         if proc.pid <= 1:
@@ -399,13 +462,15 @@ def reclaim_owned(
                 {"pid": proc.pid, "role": proc.role, "reason": "invalid_pid"})
             continue
         observed = ps_identity(proc.pid)
-        if observed is None:
+        if observed is None or observed.get("zombie"):
             note("already-gone", f"pid={proc.pid} role={proc.role}")
-            report["reclaimed"].append(
-                {"pid": proc.pid, "role": proc.role, "how": "already_exited"})
+            report["reclaimed"].append({
+                "pid": proc.pid, "role": proc.role,
+                "how": "signal_terminated" if signalled_pid(proc.pid)
+                       else "already_exited"})
             continue
         if not proc.matches(observed, app_path=app_path):
-            reason = f"身份不符 comm={observed['comm']} args={observed['args'][:120]}"
+            reason = proc.rejection_reason(observed, app_path=app_path)
             note("refuse-signal", f"pid={proc.pid} {reason}")
             report["skipped_identity"].append(
                 {"pid": proc.pid, "role": proc.role, "observed": observed,
@@ -414,6 +479,9 @@ def reclaim_owned(
         try:
             os.kill(proc.pid, 15)
             note("sigterm", f"pid={proc.pid} role={proc.role}")
+            # R3：记录确实发过信号（how=sigterm），供正例断言核对
+            report["signalled"].append({"pid": proc.pid, "role": proc.role,
+                                        "signal": "SIGTERM"})
         except (ProcessLookupError, PermissionError) as exc:
             report["errors"].append({"pid": proc.pid, "error": str(exc)})
             continue
@@ -422,23 +490,30 @@ def reclaim_owned(
 
     for proc in owned:
         observed = ps_identity(proc.pid)
-        if observed is None:
-            continue
+        if observed is None or observed.get("zombie"):
+            continue          # 已终止（僵尸等父进程收割），不升级信号
         if not proc.matches(observed, app_path=app_path):
             report["skipped_identity"].append(
                 {"pid": proc.pid, "role": proc.role, "observed": observed,
-                 "reason": "SIGTERM 后身份已变（可能 PID 复用），不再升级信号"})
+                 "reason": proc.rejection_reason(observed, app_path=app_path)
+                           + "（SIGTERM 后身份已变，可能 PID 复用，不再升级信号）"})
             continue
         try:
             os.kill(proc.pid, 9)
             note("sigkill", f"pid={proc.pid} role={proc.role}")
+            report["signalled"].append({"pid": proc.pid, "role": proc.role,
+                                        "signal": "SIGKILL"})
         except (ProcessLookupError, PermissionError) as exc:
             report["errors"].append({"pid": proc.pid, "error": str(exc)})
 
     time.sleep(0.5)
     for proc in owned:
         observed = ps_identity(proc.pid)
-        if observed is None:
+        if observed is None or observed.get("zombie"):
+            # R3：确认「因信号而终止」——reclaimed 里 how 必须如实反映
+            if signalled_pid(proc.pid):
+                report["reclaimed"].append(
+                    {"pid": proc.pid, "role": proc.role, "how": "signal_terminated"})
             continue
         if proc.matches(observed, app_path=app_path):
             report["still_alive"].append({"pid": proc.pid, "role": proc.role})
@@ -779,7 +854,52 @@ def collect_product_evidence(
 # ==========================================================================
 
 
+def exit_code_for(verdict: str, halt_kind: str | None) -> int:
+    """verdict/中断态 → 真实退出码（R1：成功必须 0）。
+
+    0 全过（可含 NOT_VERIFIED-需前台）/ 1 断言失败 / 3 全局阻塞。
+    核心产品路径未验时 recorder 记 blocked ⇒ verdict=PASS_WITH_NOT_VERIFIED，
+    仍是 0（因为可执行断言确实全过），但 result.json 的 not_verified 会
+    如实列出未验项，PM 不得只看退出码就当产品验收通过。
+    """
+    if halt_kind == "BLOCKED":
+        return 3
+    if halt_kind:
+        return 1
+    if verdict == "FAIL":
+        return 1
+    return 0
+
+
+class _SignalShutdown(SystemExit):
+    """收到 SIGTERM/SIGHUP/SIGINT 时抛出，走 finally 有界清理后以 3 退出。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(3)          # 3 = 全局阻塞/中断，非成功
+        self.message = message
+
+
+def install_signal_handlers() -> None:
+    """R4：把信号转成异常路径，确保 finally 里的 reclaim 执行。
+
+    默认 SIGTERM/SIGHUP 会**立即**终止解释器、不跑 finally → 已启动的
+    app/helper 与临时根全部遗留。这里显式接管。
+    """
+    import signal
+
+    def handler(signum: int, _frame: object) -> None:
+        raise _SignalShutdown(f"收到信号 {signum}，进入有界清理")
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        try:
+            signal.signal(sig, handler)
+        except (OSError, ValueError, AttributeError):
+            # 不支持该信号的平台/线程环境：保持默认行为，不假装已接管
+            continue
+
+
 def run_verification(args: argparse.Namespace) -> int:
+    install_signal_handlers()
     output = Path(args.output).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
     screenshots = output / "screenshots"
@@ -902,14 +1022,31 @@ def run_verification(args: argparse.Namespace) -> int:
         if helper_pid == app_pid:
             raise GateError("helper pid 与 GUI pid 相同，身份混淆，拒绝继续")
         assert_port_owned(port, instance, pid=helper_pid)
-        owned.append(OwnedProcess(pid=helper_pid, executable="fathom-helper",
-                                  executable_path="", bundle_id="",
-                                  role="helper"))
+        # R2：取得 pid 的**当时**就钉住完整启动凭证。后续回收时要求
+        # argv[0] 与此完全一致 —— 仅凭「名字含 fathom-helper」无法证明自有
+        # （pid 被复用为任何其他同名 helper 时名字匹配即成立）。
+        helper_obs = ps_identity(helper_pid)
+        if helper_obs is None:
+            raise GateError(f"helper pid={helper_pid} 读取身份失败，拒绝继续")
+        expected_helper_bin = str(app_path / HELPER_RELATIVE_PATH)
+        if helper_obs.get("path") != expected_helper_bin:
+            raise GateError(
+                f"helper 可执行路径不符：期望 {expected_helper_bin} "
+                f"实测 {helper_obs.get('path')}（不确定自有身份，不进入击杀流程）")
+        nonce = str(instance.get("nonce") or runtime_dir)
+        owned.append(OwnedProcess(
+            pid=helper_pid, executable=helper_obs["comm"],
+            executable_path=helper_obs["path"], bundle_id="",
+            role="helper", start_args=helper_obs["args"],
+            instance_nonce=nonce))
         summary["helper_pid"] = helper_pid
+        summary["helper_credential"] = {
+            "argv0": helper_obs["path"], "args": helper_obs["args"],
+            "nonce": nonce}
         recorder.record(
             "helper-identity", "pass",
             f"helper pid={helper_pid} port={port}（与 GUI pid={app_pid} 严格分开；"
-            f"instance 与端口归属一致）")
+            f"instance 与端口归属一致；已钉住 argv0={helper_obs['path']} 启动凭证）")
 
         # ---- 阶段 5：/api/config 扫描根硬门 -------------------------
         status, config_body = http_json(f"http://127.0.0.1:{port}/api/config")
@@ -1004,6 +1141,11 @@ def run_verification(args: argparse.Namespace) -> int:
         ]
         summary["not_verified"] = list(recorder.blocked)
 
+    except _SignalShutdown as exc:
+        # R4：信号打断 → 先记失败事实，finally 仍会按身份回收
+        summary["halt_kind"] = "BLOCKED"
+        summary["halt_detail"] = f"信号中断：{exc.message}"
+        recorder.record("signal-halt", "fail", summary["halt_detail"])
     except (BlockedError, GateError) as exc:
         kind = "BLOCKED" if isinstance(exc, BlockedError) else "FAIL"
         summary["halt_kind"] = kind
@@ -1029,7 +1171,8 @@ def run_verification(args: argparse.Namespace) -> int:
             json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"[verdict] {summary['verdict']} -> {output / 'result.json'}", flush=True)
 
-    return 3 if summary.get("halt_kind") == "BLOCKED" else 1
+    return exit_code_for(summary.get("verdict", "FAIL"),
+                         summary.get("halt_kind"))
 
 
 def run_gen_manifest(args: argparse.Namespace) -> int:

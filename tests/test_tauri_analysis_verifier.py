@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -431,53 +432,61 @@ def test_free_port_never_returns_production_port() -> None:
 
 
 def test_owned_process_matches_own_gui_process(fake_app: Path) -> None:
+    """R2 后 GUI 也要求钉住绝对路径（不再只做 app_path 子串包含）。"""
+    exe = f"{fake_app}/Contents/MacOS/fathom-desktop"
     proc = vta.OwnedProcess(pid=4242, executable="fathom-desktop",
-                            executable_path="", bundle_id="com.x", role="gui")
-    observed = {"comm": "fathom-desktop", "path": "x",
-                "args": f"{fake_app}/Contents/MacOS/fathom-desktop"}
+                            executable_path=exe, bundle_id="com.x", role="gui")
+    observed = {"comm": "fathom-desktop", "path": exe, "args": exe}
     assert proc.matches(observed, app_path=fake_app) is True
 
 
 def test_owned_process_rejects_foreign_comm(fake_app: Path) -> None:
-    """别人的同名/异名进程一律不认。"""
+    exe = f"{fake_app}/Contents/MacOS/fathom-desktop"
     proc = vta.OwnedProcess(pid=4242, executable="fathom-desktop",
-                            executable_path="", bundle_id="com.x", role="gui")
-    observed = {"comm": "finder", "path": "/usr/bin/finder",
-                "args": "/usr/bin/finder"}
+                            executable_path=exe, bundle_id="com.x", role="gui")
+    observed = {"comm": "finder", "path": "/usr/bin/finder", "args": "/usr/bin/finder"}
     assert proc.matches(observed, app_path=fake_app) is False
+    assert "reused" in proc.rejection_reason(observed, app_path=fake_app)
 
 
 def test_owned_process_rejects_same_name_other_app(fake_app: Path) -> None:
-    """同可执行名但不在本轮 app 路径下 → 拒绝（防收养他人实例）。"""
+    """同可执行名但 argv[0] 在别处 → 拒绝（防收养他人实例）。"""
+    exe = f"{fake_app}/Contents/MacOS/fathom-desktop"
     proc = vta.OwnedProcess(pid=4242, executable="fathom-desktop",
-                            executable_path="", bundle_id="com.x", role="gui")
-    observed = {"comm": "fathom-desktop",
-                "path": "/other/Fathom.app/Contents/MacOS/fathom-desktop",
-                "args": "/other/Fathom.app/Contents/MacOS/fathom-desktop"}
+                            executable_path=exe, bundle_id="com.x", role="gui")
+    other = "/other/Fathom.app/Contents/MacOS/fathom-desktop"
+    observed = {"comm": "fathom-desktop", "path": other, "args": other}
     assert proc.matches(observed, app_path=fake_app) is False
+    assert "reused" in proc.rejection_reason(observed, app_path=fake_app)
 
 
 def test_owned_process_rejects_dead(fake_app: Path) -> None:
+    exe = f"{fake_app}/Contents/MacOS/fathom-desktop"
     proc = vta.OwnedProcess(pid=4242, executable="fathom-desktop",
-                            executable_path="", bundle_id="com.x", role="gui")
+                            executable_path=exe, bundle_id="com.x", role="gui")
     assert proc.matches(None, app_path=fake_app) is False
+    assert "dead" in proc.rejection_reason(None, app_path=fake_app)
 
 
 def test_owned_process_rejects_reused_pid(fake_app: Path) -> None:
-    """PID 被复用：comm 变了 → 拒绝升级信号。"""
+    """PID 被复用：ucomm 变了 → 拒绝升级信号。"""
+    exe = f"{fake_app}/Contents/MacOS/fathom-desktop"
     proc = vta.OwnedProcess(pid=4242, executable="fathom-desktop",
-                            executable_path="", bundle_id="com.x", role="gui")
+                            executable_path=exe, bundle_id="com.x", role="gui")
     reused = {"comm": "sleep", "path": "/bin/sleep", "args": "sleep 999"}
     assert proc.matches(reused, app_path=fake_app) is False
 
 
-def test_helper_role_matches_by_helper_name() -> None:
+def test_helper_role_requires_nonzero_nonce_and_exact_args(fake_app: Path) -> None:
+    exe = f"{fake_app}/{vta.HELPER_RELATIVE_PATH}"
     proc = vta.OwnedProcess(pid=77, executable="fathom-helper",
-                            executable_path="", bundle_id="", role="helper")
-    assert proc.matches({"comm": "fathom-helper", "path": "fathom-helper",
-                        "args": "fathom-helper"}, app_path=Path("/x")) is True
-    assert proc.matches({"comm": "python3", "path": "python3",
-                        "args": "python3 x.py"}, app_path=Path("/x")) is False
+                            executable_path=exe, bundle_id="", role="helper",
+                            start_args=exe, instance_nonce="nonce-1")
+    good = {"comm": "fathom-helper", "path": exe, "args": exe}
+    assert proc.matches(good, app_path=fake_app) is True
+    # args 漂移（启动凭证不再一致）→ 拒
+    drifted = {"comm": "fathom-helper", "path": exe, "args": exe + " --flag"}
+    assert proc.matches(drifted, app_path=fake_app) is False
 
 
 def test_reclaim_refuses_invalid_pid(fake_app: Path, tmp_path: Path) -> None:
@@ -512,32 +521,10 @@ def test_reclaim_never_signals_foreign_process(fake_app: Path, tmp_path: Path) -
         victim.wait(timeout=10)
 
 
-def test_reclaim_kills_only_own_process(fake_app: Path, tmp_path: Path) -> None:
-    """正例：可执行名与路径都对得上 → 确实回收。
-
-    必须用**真实二进制副本**而不是 shebang 脚本：脚本的 comm 会解析成
-    解释器（/bin/sh），身份复核就永远不成立。
-    """
-    real = shutil.which("sleep")
-    if not real:
-        pytest.skip("本机无 sleep")
-    binary = tmp_path / "fathom-desktop"
-    # 用 cp 而非 shutil.copy2：copy2 会 chflags，pytest 临时盘上会 EPERM
-    subprocess.run(["cp", real, str(binary)], check=True, timeout=60)
-    binary.chmod(0o755)
-    victim = subprocess.Popen([str(binary), "30"])
-    try:
-        proc = vta.OwnedProcess(pid=victim.pid, executable="fathom-desktop",
-                                executable_path=str(binary),
-                                bundle_id="com.x", role="gui")
-        report = vta.reclaim_owned([proc], app_path=fake_app,
-                                   log=tmp_path / "log", grace_s=0.2)
-        assert report["still_alive"] == [], report
-        victim.wait(timeout=10)
-    finally:
-        if victim.poll() is None:
-            victim.kill()
-            victim.wait(timeout=10)
+# R3：原 test_reclaim_kills_only_own_process（cp /bin/sleep 副本）已删除——
+# 该平台二进制副本在本机 exec 即被 SIGKILL，进程自始僵尸，测试空洞通过
+# 且在 CI（arm/Intel）上 victim.wait(10s) 超时失败。正例改由
+# test_r3_positive_reclaim_really_happens（clang 合成助手）承担。
 
 
 def test_ps_identity_uses_short_name_not_truncated_path() -> None:
@@ -1055,3 +1042,301 @@ def test_non_bundle_app_blocks_before_launch(tmp_path: Path) -> None:
     result = json.loads((tmp_path / "o" / "result.json").read_text("utf-8"))
     assert result["halt_kind"] == "BLOCKED"
     assert result["cleanup"]["reclaimed"] == []
+
+
+# ==========================================================================
+# R2 / R3 / R4：真实合成消费者探针
+#
+# 上轮教训：`cp /bin/sleep` 副本在本机 exec 即被 SIGKILL（exit 137，平台
+# 二进制副本限制），进程自始为僵尸 → 正例回收测试**空洞通过**。本轮改为
+# 用 clang 现场编译的极小合成助手，编译到**真实 helper 布局路径**下，
+# 做 ready 握手后再回收，并断言回收前确实活着、确实由信号终止。
+# 不靠 skip / 不吞 Timeout / 不扩到 10s / 不容忍死亡假绿。
+# ==========================================================================
+
+PROBE_C = r"""
+#include <stdio.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    if (argc < 2) { fprintf(stderr, "usage: probe <readyfile>\n"); return 2; }
+    FILE *f = fopen(argv[1], "w");
+    if (!f) return 3;
+    fprintf(f, "%d\n", (int)getpid());
+    fclose(f);
+    for (;;) pause();
+    return 0;
+}
+"""
+
+
+def _clang() -> str:
+    for name in ("clang", "cc"):
+        found = shutil.which(name)
+        if found:
+            return found
+    pytest.skip("本机无 clang/cc，无法编译合成助手")
+
+
+@pytest.fixture
+def helper_binary(tmp_path: Path) -> Path:
+    """把合成助手编译到真实 helper 布局路径下（fathom-helper 短名）。"""
+    app = tmp_path / "Fathom.app"
+    binary = app / "Contents/Resources/helper/fathom-helper/fathom-helper"
+    binary.parent.mkdir(parents=True)
+    source = tmp_path / "probe.c"
+    source.write_text(PROBE_C, encoding="utf-8")
+    proc = subprocess.run([_clang(), "-O0", "-o", str(binary), str(source)],
+                          capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0 or not binary.is_file():
+        pytest.fail(f"合成助手编译失败：{proc.stderr[:400]}")
+    return binary
+
+
+def _spawn_probe(binary: Path, ready: Path) -> subprocess.Popen:
+    """启动合成助手并等 ready 握手，断言它**真的活着**（非僵尸）。"""
+    proc = subprocess.Popen([str(binary), str(ready)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 20
+    while time.time() < deadline and not ready.is_file():
+        time.sleep(0.05)
+    if not ready.is_file():
+        proc.kill()
+        pytest.fail("合成助手未完成 ready 握手")
+    # 关键：回收前必须确认进程真的活着（ucomm 正确且 args 非 <defunct>）
+    observed = vta.ps_identity(proc.pid)
+    assert observed is not None, "ready 后 ps 读不到进程"
+    assert observed["comm"] == "fathom-helper", observed
+    assert "<defunct>" not in observed["args"], f"进程自始为僵尸：{observed}"
+    return proc
+
+
+def _owned_for(binary: Path, ready: Path, app: Path, pid: int,
+               role: str = "helper") -> "vta.OwnedProcess":
+    observed = vta.ps_identity(pid)
+    assert observed is not None
+    return vta.OwnedProcess(
+        pid=pid, executable=observed["comm"], executable_path=observed["path"],
+        bundle_id="", role=role, start_args=observed["args"],
+        instance_nonce=str(ready))
+
+
+def test_r3_positive_reclaim_really_happens(helper_binary: Path,
+                                            tmp_path: Path) -> None:
+    """R3 正例：身份匹配 → SIGTERM → **真实终止**。断言 reclaimed 内容。"""
+    app = helper_binary.parents[4]
+    ready = tmp_path / "ready-a"
+    victim = _spawn_probe(helper_binary, ready)
+    try:
+        owned = _owned_for(helper_binary, ready, app, victim.pid)
+        report = vta.reclaim_owned([owned], app_path=app,
+                                   log=tmp_path / "log", grace_s=0.5)
+        # 确实发过信号
+        assert any(s["pid"] == victim.pid for s in report["signalled"]), report
+        # 确实因信号终止（不是 already_exited —— 那就是空洞通过）
+        reclaimed = [r for r in report["reclaimed"] if r["pid"] == victim.pid]
+        assert reclaimed, f"reclaimed 必须含该 pid：{report}"
+        assert reclaimed[0]["how"] == "signal_terminated", report
+        # 不得被记为跳过（身份复核必须通过）
+        assert not [s for s in report["skipped_identity"] if s["pid"] == victim.pid]
+        # 真实终止：进程已消失或已成僵尸（僵尸=已被信号终止，等父进程收割）
+        after = vta.ps_identity(victim.pid)
+        assert after is None or after["zombie"], f"进程应已终止：{after}"
+        assert report["still_alive"] == []
+        # 由子进程自身确认：被信号终止（负返回码）
+        rc = victim.wait(timeout=15)
+        assert rc < 0, f"应由信号终止，实际 returncode={rc}"
+    finally:
+        if victim.poll() is None:
+            victim.kill()
+            victim.wait(timeout=10)
+
+
+def test_r3_ignores_zombie_as_reclaim_success(helper_binary: Path,
+                                              tmp_path: Path) -> None:
+    """进程已死（僵尸）时只能记 already_exited，**不得**记 signal_terminated。"""
+    app = helper_binary.parents[4]
+    ready = tmp_path / "ready-b"
+    victim = _spawn_probe(helper_binary, ready)
+    owned = _owned_for(helper_binary, ready, app, victim.pid)
+    victim.kill()
+    victim.wait(timeout=15)
+    report = vta.reclaim_owned([owned], app_path=app,
+                               log=tmp_path / "log", grace_s=0.0)
+    assert report["signalled"] == [], "已死进程不得发信号"
+    assert all(r["how"] != "signal_terminated" for r in report["reclaimed"])
+
+
+def test_r3_negative_foreign_process_never_signalled(tmp_path: Path) -> None:
+    """R3 负例：身份不符 → 不发信号，进程仍活着。"""
+    foreign = subprocess.Popen(
+        ["sleep", "30"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        forged = vta.OwnedProcess(
+            pid=foreign.pid, executable="fathom-helper",
+            executable_path=f"/somewhere/Fathom.app/Contents/MacOS/fathom-helper",
+            bundle_id="", role="helper", start_args="sleep 30",
+            instance_nonce="/nope")
+        report = vta.reclaim_owned([forged], app_path=Path("/nonexistent-app"),
+                                   log=tmp_path / "log", grace_s=0.0)
+        assert report["signalled"] == [], "foreign 不得发信号"
+        assert report["skipped_identity"], report
+        assert foreign.poll() is None, "foreign 进程被杀掉了！"
+    finally:
+        foreign.kill()
+        foreign.wait(timeout=10)
+
+
+def test_r2_helper_without_path_credential_is_refused(tmp_path: Path) -> None:
+    """R2：没有钉住绝对路径 → 拒绝（仅名字包含不足以证明自有）。"""
+    proc = vta.OwnedProcess(pid=1234, executable="fathom-helper",
+                            executable_path="", bundle_id="", role="helper",
+                            start_args="fathom-helper", instance_nonce="x")
+    observed = {"comm": "fathom-helper", "path": "/a/fathom-helper",
+                "args": "fathom-helper"}
+    assert proc.matches(observed, app_path=Path("/a")) is False
+    assert "无启动凭证" in proc.rejection_reason(observed, app_path=Path("/a"))
+
+
+def test_r2_helper_without_nonce_is_refused(tmp_path: Path) -> None:
+    """R2：helper 缺本 runtime instance nonce → 拒绝。"""
+    app = Path("/Apps/Fathom.app")
+    proc = vta.OwnedProcess(
+        pid=1234, executable="fathom-helper",
+        executable_path="/Apps/Fathom.app/Contents/Resources/helper/fathom-helper/fathom-helper",
+        bundle_id="", role="helper", start_args="…/fathom-helper", instance_nonce="")
+    observed = {"comm": "fathom-helper",
+                "path": "/Apps/Fathom.app/Contents/Resources/helper/fathom-helper/fathom-helper",
+                "args": "/Apps/Fathom.app/Contents/Resources/helper/fathom-helper/fathom-helper"}
+    assert proc.matches(observed, app_path=app) is False
+    assert "nonce" in proc.rejection_reason(observed, app_path=app)
+
+
+def test_r2_reused_pid_with_same_name_is_refused(tmp_path: Path) -> None:
+    """R2 关键：pid 被复用为**其他**同名 helper → 名字匹配也必须拒杀。"""
+    app = Path("/Apps/Fathom.app")
+    pinned = "/Apps/Fathom.app/Contents/Resources/helper/fathom-helper/fathom-helper"
+    proc = vta.OwnedProcess(pid=1234, executable="fathom-helper",
+                            executable_path=pinned, bundle_id="", role="helper",
+                            start_args=pinned, instance_nonce="n")
+    # 同一个 ucomm，但 argv[0] 是别人的 app
+    observed = {"comm": "fathom-helper",
+                "path": "/Other/Fathom.app/Contents/Resources/helper/fathom-helper/fathom-helper",
+                "args": "/Other/Fathom.app/…/fathom-helper"}
+    assert proc.matches(observed, app_path=app) is False
+    assert "reused" in proc.rejection_reason(observed, app_path=app)
+
+
+def test_r2_path_prefix_collision_is_refused() -> None:
+    """非阻断项：Fathom.app.backup 不应被当作 Fathom.app 内。"""
+    app = Path("/Apps/Fathom.app")
+    proc = vta.OwnedProcess(
+        pid=1, executable="fathom-desktop",
+        executable_path="/Apps/Fathom.app/Contents/MacOS/fathom-desktop",
+        bundle_id="", role="gui")
+    assert proc.matches(
+        {"comm": "fathom-desktop",
+         "path": "/Apps/Fathom.app.backup/Contents/MacOS/fathom-desktop",
+         "args": "x"}, app_path=app) is False
+
+
+def test_r4_signal_triggers_bounded_cleanup(helper_binary: Path,
+                                            tmp_path: Path) -> None:
+    """R4 端到端：子进程收到 SIGTERM → 有界清理 → 自有子进程被收割。"""
+    app = helper_binary.parents[4]
+    ready = tmp_path / "ready-sig"
+    driver = tmp_path / "driver.py"
+    report_path = tmp_path / "sig-report.json"
+    victim = _spawn_probe(helper_binary, ready)
+    driver.write_text(
+        "import importlib.util, json, pathlib, sys, time\n"
+        f"spec = importlib.util.spec_from_file_location('v', {str(MODULE_PATH)!r})\n"
+        "m = importlib.util.module_from_spec(spec); sys.modules['v'] = m\n"
+        "spec.loader.exec_module(m)\n"
+        "m.install_signal_handlers()\n"
+        f"obs = m.ps_identity({victim.pid})\n"
+        f"owned = m.OwnedProcess(pid={victim.pid}, executable=obs['comm'],"
+        f" executable_path=obs['path'], bundle_id='', role='helper',"
+        f" start_args=obs['args'], instance_nonce={str(ready)!r})\n"
+        "try:\n"
+        "    time.sleep(120)\n"
+        "except m._SignalShutdown as exc:\n"
+        f"    rep = m.reclaim_owned([owned], app_path={str(app)!r},"
+        f" log=pathlib.Path({str(tmp_path / 'drv.log')!r}), grace_s=1.0)\n"
+        f"    json.dump(rep, open({str(report_path)!r}, 'w'))\n"
+        "    print('SIGNALLED', exc.message)\n"
+        "    sys.exit(3)\n", encoding="utf-8")
+    child = subprocess.Popen(
+        [sys.executable, str(driver)], stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True)
+    try:
+        time.sleep(1.5)
+        assert child.poll() is None, "driver 提前退出"
+        assert vta.ps_identity(victim.pid) is not None, "信号前探针应活着"
+        child.terminate()          # SIGTERM
+        stdout, stderr = child.communicate(timeout=30)
+        assert "SIGNALLED" in stdout, f"stdout={stdout!r} stderr={stderr!r}"
+        assert child.returncode == 3, child.returncode
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert any(s["pid"] == victim.pid for s in report["signalled"]), report
+        assert any(r["pid"] == victim.pid and r["how"] == "signal_terminated"
+                   for r in report["reclaimed"]), report
+        assert report["still_alive"] == [], report
+        after = vta.ps_identity(victim.pid)
+        assert after is None or after["zombie"], f"探针应已被收割：{after}"
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=10)
+        if victim.poll() is None:
+            victim.kill()
+            victim.wait(timeout=10)
+
+
+def test_r4_signal_handlers_are_installed() -> None:
+    import signal
+
+    vta.install_signal_handlers()
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        assert signal.getsignal(sig) is not signal.SIG_DFL, \
+            f"{sig} 未被接管，提前退出会跳过 finally"
+
+
+# ==========================================================================
+# R1：verdict/中断态 → 退出码
+# ==========================================================================
+
+
+def test_r1_success_returns_zero() -> None:
+    assert vta.exit_code_for("PASS", None) == 0
+    assert vta.exit_code_for("PASS_WITH_NOT_VERIFIED", None) == 0
+
+
+def test_r1_failure_returns_one() -> None:
+    assert vta.exit_code_for("FAIL", None) == 1
+    assert vta.exit_code_for("PASS", "GATE") == 1
+
+
+def test_r1_blocked_returns_three() -> None:
+    assert vta.exit_code_for("FAIL", "BLOCKED") == 3
+    assert vta.exit_code_for("PASS", "BLOCKED") == 3
+
+
+def test_r1_signal_shutdown_carries_exit_three() -> None:
+    exc = vta._SignalShutdown("SIGTERM")
+    assert exc.code == 3
+    assert isinstance(exc, SystemExit)
+
+
+# 注意：episode 2 合同禁止本 worker 执行真实 run --app（会触发 NSWorkspace
+# 真实启动）。故成功路径的退出码只以 exit_code_for 纯函数三态测试覆盖
+# （test_r1_success_returns_zero / failure / blocked），不写「跑真 run 断言
+# 退出码」的用例——那正是上轮越界启动的成因。
+# 真实 run 的退出码由 PM 实机执行时观察。
+
+
+def test_r1_core_product_unverified_cannot_be_silent_green(tmp_path: Path) -> None:
+    """R1：核心产品未验时 not_verified 必须非空，verdict 不得是纯 PASS。"""
+    recorder = vta.Recorder(tmp_path / "ev")
+    recorder.record("product-stage-not-requested", "blocked", "未进入产品交互")
+    assert recorder.blocked
+    assert recorder.verdict() != "PASS"

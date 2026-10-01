@@ -425,6 +425,12 @@ def test_api_shutdown_cancels_its_du_and_marks_interrupted(tmp_path, monkeypatch
 
 
 def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
+    """ISS-139：SIGTERM 后 CLI 回收自建 du、落 interrupted、释放真实 flock。
+
+    child PID 文件由子进程合成 Popen 经同目录临时文件原子发布（写完再
+    rename），消除 CI #230（run 36894724038）实证的「创建→写入」空窗：
+    consumer 仅 exists() 即读会拿到空串（int('') ValueError）。
+    """
     runtime = tmp_path / "runtime"
     root = tmp_path / "root"
     root.mkdir()
@@ -441,7 +447,10 @@ def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
             proc = real_popen(['/bin/sleep', '30'], stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, start_new_session=True,
                               pass_fds=kwargs.get('pass_fds', ()))
-            child_file.write_text(str(proc.pid))
+            # 原子发布：child_file 一旦存在，内容必然完整（rename 契约）。
+            staged = child_file.with_name(child_file.name + '.publish')
+            staged.write_text(str(proc.pid))
+            staged.replace(child_file)
             return proc
         scanner.subprocess.Popen = sleeping_popen
         raise SystemExit(cli.main(['--runtime-dir', str(runtime), '--scan-root',
@@ -452,26 +461,48 @@ def test_cli_sigterm_reaps_its_du_and_releases_lock(tmp_path):
         cwd=Path(__file__).parents[1], env=_env(),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
-    deadline = time.monotonic() + 5
-    while not child_file.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert child_file.exists()
-    child_pid = int(child_file.read_text())
-    proc.terminate()
-    stdout, stderr = proc.communicate(timeout=8)
-    assert proc.returncode == 130, (stdout, stderr)
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
-    conn = sqlite3.connect(runtime / "data" / "fathom.db")
+    child_pid: int | None = None
     try:
-        assert conn.execute(
-            "SELECT status FROM scan_runs ORDER BY id DESC LIMIT 1"
-        ).fetchone()[0] == "interrupted"
+        deadline = time.monotonic() + 5
+        while not child_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not child_file.exists():
+            out, err = proc.communicate(timeout=5)
+            raise AssertionError(
+                f"producer 未在 5s 内原子发布 child-pid"
+                f"（rc={proc.returncode}，stdout={out!r}，stderr={err!r}）")
+        child_pid = int(child_file.read_text())
+        proc.terminate()
+        stdout, stderr = proc.communicate(timeout=8)
+        assert proc.returncode == 130, (stdout, stderr)
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        conn = sqlite3.connect(runtime / "data" / "fathom.db")
+        try:
+            assert conn.execute(
+                "SELECT status FROM scan_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0] == "interrupted"
+        finally:
+            conn.close()
+        lock_path = runtime / "data" / "fathom.db.scan.lock"
+        lease = scan_coordinator.ScanLease.acquire(lock_path, source="cli")
+        lease.release()
     finally:
-        conn.close()
-    lock_path = runtime / "data" / "fathom.db.scan.lock"
-    lease = scan_coordinator.ScanLease.acquire(lock_path, source="cli")
-    lease.release()
+        # 失败路径只回收自建 producer 与身份核对的 du（child-pid 即本测试
+        # 合成 Popen 写出的 PID）：SIGTERM 已触发 CLI 回收 du，KILL 仅兜底
+        # CLI 失去响应的极端情形，不留 30s sleep。
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate(timeout=5)
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, 9)
+            except ProcessLookupError:
+                pass
 
 
 class TestScanTimeoutConfigurable:

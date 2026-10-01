@@ -123,6 +123,12 @@ class Http:
         return self.request("PUT", path, body, use_token=True, **kw)
 
 
+def _write_report(out_dir: Path, report: dict[str, Any]) -> None:
+    """report.json 与 status 单一来源（NB4）：内层失败与最终态写同一文件。"""
+    (out_dir / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
@@ -244,6 +250,8 @@ def seed_snapshots(runtime_dir: Path, scan_root: Path) -> list[int]:
             ("2026-01-01T00:00:00", 5, 10, 0),
             ("2026-01-02T00:00:00", 4, 10, 0),
             ("2026-01-03T00:00:00", 4, 24, 0),
+            ("2026-01-04T00:00:00", 4, 24, 0),
+            ("2026-01-05T00:00:00", 4, 36, 0),
         ]
         for created_at, entries, size_kb, _ in spec:
             cur = conn.execute(
@@ -289,6 +297,69 @@ def analysis_settings_payload(shim: Path) -> dict[str, Any]:
 
 def set_shim_delay(shim_dir: Path, seconds: float) -> None:
     (shim_dir / "shim_delay").write_text(str(seconds), encoding="utf-8")
+
+
+def _pgrep_full(pattern: str) -> list[int]:
+    """列出 argv 含 pattern 的 pid（不用 pgrep 自身，避免自匹配）。"""
+    out: list[int] = []
+    try:
+        proc = subprocess.run(["ps", "-Ao", "pid=,command="],
+                              capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return out
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        pid_s, _, cmd = line.partition(" ")
+        if pattern in cmd and pid_s.isdigit():
+            pid = int(pid_s)
+            if pid != os.getpid():  # 只认自己启动的替身，不含本脚本
+                out.append(pid)
+    return out
+
+
+def observe_shim(shim: Path, deadline_s: float, exclude: set[int] | None = None
+                 ) -> dict[str, Any]:
+    """有界轮询直到观测到自启动的 task-local 替身活跃进程/进程组。
+
+    只 seeing job starting/running 不能证明 spawn；本函数是 spawn 的唯一证据源。
+    exclude 是已归属到前一个场景的 pid，避免把旧替身算作本次观测。
+    """
+    exclude = exclude or set()
+    end = time.monotonic() + deadline_s
+    pattern = str(shim)
+    while time.monotonic() < end:
+        pids = [p for p in _pgrep_full(pattern) if p not in exclude]
+        if pids:
+            groups: dict[int, list[int]] = {}
+            for pid in pids:
+                try:
+                    groups.setdefault(os.getpgid(pid), []).append(pid)
+                except (ProcessLookupError, PermissionError):
+                    continue
+            return {"observed": True, "pids": sorted(pids),
+                    "pgids": sorted(groups), "members": {str(k): sorted(v)
+                                                        for k, v in groups.items()}}
+        time.sleep(0.1)
+    return {"observed": False, "pids": [], "pgids": [], "members": {},
+            "detail": f"{deadline_s}s 内未观测到替身子进程（pattern={pattern}）"}
+
+
+def assert_shim_gone(shim: Path, seen: dict[str, Any], deadline_s: float
+                     ) -> dict[str, Any]:
+    """校验此前记录的自有子进程 pid/进程组确实全部消失（只读观测，不发信号）。"""
+    pattern = str(shim)
+    recorded = list(seen.get("pids") or [])
+    end = time.monotonic() + deadline_s
+    alive: list[int] = []
+    while time.monotonic() < end:
+        current = set(_pgrep_full(pattern))
+        alive = sorted(current.intersection(recorded)) if recorded else sorted(current)
+        if not alive:
+            return {"reaped": True, "still_alive": [], "recorded": recorded}
+        time.sleep(0.2)
+    return {"reaped": False, "still_alive": alive, "recorded": recorded}
 
 
 # --------------------------------------------------------------------------
@@ -400,15 +471,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="ISS-138 冻结 helper 解读生命周期验证")
     ap.add_argument("--helper", required=True, help="冻结 Mach-O helper 可执行文件路径")
     ap.add_argument("--output", required=True, help="证据输出目录")
-    ap.add_argument("--build-ready", default=None,
-                    help="BUILD_READY.json 路径（默认 .claude/agent-sessions/iss-138/BUILD_READY.json）")
+    ap.add_argument("--build-ready", required=True, metavar="PATH",
+                    help="可移植来源 manifest 路径（build receipt）。必填："
+                         "本脚本不依赖任何 session 私有目录。")
     args = ap.parse_args()
 
     helper = Path(args.helper).expanduser().resolve()
     out_dir = Path(args.output).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    build_ready = Path(args.build_ready) if args.build_ready else (
-        REPO_ROOT / ".claude/agent-sessions/iss-138/BUILD_READY.json")
+    build_ready = Path(args.build_ready).expanduser().resolve()
     checks = Checks()
     report: dict[str, Any] = {
         "task": "ISS-138",
@@ -425,8 +496,7 @@ def main() -> int:
     if not helper.is_file() or not os.access(helper, os.X_OK):
         report["status"] = "NOT_VERIFIED"
         report["reason"] = f"helper 不存在或不可执行：{helper}"
-        (out_dir / "report.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_report(out_dir, report)
         print(f"[NOT_VERIFIED] {report['reason']}", file=sys.stderr)
         return 2
     helper_sha = sha256_of(helper)
@@ -434,35 +504,50 @@ def main() -> int:
     report["helper_bytes"] = helper.stat().st_size
     checks.record("helper_exists", True, f"{helper} ({helper.stat().st_size} 字节)")
 
-    build_info: dict[str, Any] | None = None
-    if build_ready.is_file():
-        try:
-            build_info = json.loads(build_ready.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            build_info = {"ok": False, "error": f"BUILD_READY 非合法 JSON：{exc}"}
-    if not build_info or build_info.get("ok") is not True:
+    # 来源 manifest 必填且严格：缺失/非法/ok!=true/指纹缺失/指纹不符一律非零退出，
+    # 不放宽、不自动猜测 SHA。manifest 字段：ok(bool,须 true)、helper_sha256(64 hex)、
+    # source_sha(来源提交，可选记录)、helper(可选路径记录)。
+    report["build_ready_path"] = str(build_ready)
+    if not build_ready.is_file():
         report["status"] = "NOT_VERIFIED"
-        report["reason"] = ("BUILD_READY.json 缺失或 ok!=true；按任务卡不得自行构建"
-                            f"（{build_ready}）")
-        report["build_ready"] = build_info
-        (out_dir / "report.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report["reason"] = f"来源 manifest 缺失：{build_ready}（--build-ready 必填）"
+        _write_report(out_dir, report)
+        print(f"[NOT_VERIFIED] {report['reason']}", file=sys.stderr)
+        return 2
+    try:
+        build_info = json.loads(build_ready.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        report["status"] = "NOT_VERIFIED"
+        report["reason"] = f"来源 manifest 非合法 JSON：{build_ready}：{exc}"
+        _write_report(out_dir, report)
         print(f"[NOT_VERIFIED] {report['reason']}", file=sys.stderr)
         return 2
     report["build_ready"] = build_info
-    declared_sha = build_info.get("helper_sha256") or build_info.get("sha256")
+    if not isinstance(build_info, dict) or build_info.get("ok") is not True:
+        report["status"] = "NOT_VERIFIED"
+        report["reason"] = (f"来源 manifest 缺 ok=true（按任务卡不得自行构建）："
+                            f"{build_ready}；内容={str(build_info)[:200]}")
+        _write_report(out_dir, report)
+        print(f"[NOT_VERIFIED] {report['reason']}", file=sys.stderr)
+        return 2
+    declared_sha = build_info.get("helper_sha256")
     report["build_ready_sha256"] = declared_sha
-    if declared_sha and declared_sha != helper_sha:
+    if not isinstance(declared_sha, str) or len(declared_sha) != 64:
         report["status"] = "FAILED"
-        report["reason"] = (f"BUILD_READY 记录 SHA {declared_sha} 与实测 "
-                            f"{helper_sha} 不一致")
-        (out_dir / "report.json").write_text(
-            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report["reason"] = (f"来源 manifest 缺有效 helper_sha256（64 hex）：{build_ready}；"
+                            f"得到 {declared_sha!r}")
+        _write_report(out_dir, report)
+        print(f"[FAIL] {report['reason']}", file=sys.stderr)
+        return 1
+    if declared_sha != helper_sha:
+        report["status"] = "FAILED"
+        report["reason"] = (f"来源 manifest 指纹 {declared_sha} 与实测 {helper_sha} 不一致")
+        _write_report(out_dir, report)
         print(f"[FAIL] {report['reason']}", file=sys.stderr)
         return 1
     checks.expect("helper_sha_bound", True,
-                  f"SHA256={helper_sha}；build_ready source_sha="
-                  f"{build_info.get('source_sha') or build_info.get('source') or 'n/a'}")
+                  f"SHA256={helper_sha} 与 manifest 指纹一致；source_sha="
+                  f"{build_info.get('source_sha') or 'n/a'}")
 
     # ---- 2. 隔离环境 ----
     work = Path(tempfile.mkdtemp(prefix="iss138-"))
@@ -523,7 +608,7 @@ def main() -> int:
             db_path = cands[0]
         report["db_path"] = str(db_path)
         report["snapshot_ids"] = snap_ids
-        checks.expect("synthetic_snapshots_seeded", len(snap_ids) >= 3,
+        checks.expect("synthetic_snapshots_seeded", len(snap_ids) >= 5,
                       f"经公共 schema helper 插入合成快照 {snap_ids}")
 
         # 分析授权：只经产品生产入口 PUT /api/config 写入（不预写 settings.json）
@@ -533,8 +618,8 @@ def main() -> int:
                       f"PUT /api/config analysis.enabled=true → status={status} "
                       f"body={str(put_body)[:160]}")
 
-        a1, b1 = snap_ids[0], snap_ids[1]
-        a2, b2 = snap_ids[1], snap_ids[2]
+        a1, b1 = snap_ids[0], snap_ids[1]   # A 成功区间
+        a2, b2 = snap_ids[1], snap_ids[2]   # C 撤权区间（与 A/B 均不重叠）
 
         # ---- 4. 场景 A：成功正文入库 ----
         set_shim_delay(shim_dir, 0.0)
@@ -571,8 +656,11 @@ def main() -> int:
                       f"analysis_runs={runs}")
 
         # ---- 5. 场景 B：在途取消不写可信正文 ----
+        # B 用独立快照对 (aB,bB)，与 A/C 归因隔离
+        aB, bB = snap_ids[3], snap_ids[4]
         set_shim_delay(shim_dir, 12.0)
-        _, job_b, _ = start_job(http, a2, b2, "iss138-cancel")
+        _, job_b, _ = start_job(http, aB, bB, "iss138-cancel")
+        # 前置视图强断言：必须确切观测到自启动的替身进程组（spawn 唯一证据源）
         deadline = time.monotonic() + 20
         running = False
         while time.monotonic() < deadline:
@@ -586,28 +674,56 @@ def main() -> int:
             time.sleep(0.1)
         checks.expect("B_job_in_flight_before_cancel", running,
                       f"cancel 前状态轮询到在途={running}")
+        seen_b = observe_shim(shim, deadline_s=20.0)
+        report["B_shim_observation"] = seen_b
+        checks.expect("B_shim_child_observed", seen_b.get("observed") is True,
+                      f"取消前观测自有替身 pids={seen_b.get('pids')} "
+                      f"pgids={seen_b.get('pgids')}；{seen_b.get('detail','')}")
         status, cancel_body = http.post(f"/api/analysis/jobs/{job_b['job_id']}/cancel")
-        checks.record("B_cancel_accepted", status in (200, 409),
+        checks.expect("B_cancel_accepted", status in (200, 409),
                       f"POST .../cancel → status={status} body={str(cancel_body)[:160]}")
         view_b = wait_terminal(http, job_b["job_id"])
         report["job_cancel_view"] = view_b
         checks.expect("B_job_cancelled", view_b.get("status") == "cancelled",
                       f"在途取消终态 status={view_b.get('status')}")
+        reaped_b = assert_shim_gone(shim, seen_b, deadline_s=20.0)
+        report["B_shim_reaped"] = reaped_b
+        checks.expect("B_shim_child_reaped", reaped_b.get("reaped") is True,
+                      f"取消后自有替身 pid 残留={reaped_b.get('still_alive')} "
+                      f"（记录 pid={reaped_b.get('recorded')}）")
         rows_b = db_rows(db_path,
                          "SELECT id FROM agent_analyses "
-                         "WHERE a_snapshot_id=? AND b_snapshot_id=?", (a2, b2))
+                         "WHERE a_snapshot_id=? AND b_snapshot_id=?", (aB, bB))
         checks.expect("B_no_body_persisted", len(rows_b) == 0,
                       f"取消后 agent_analyses 行数={len(rows_b)}（必须 0）")
-        _, listed_b = http.get(f"/api/analyses?a={a2}&b={b2}")
+        _, listed_b = http.get(f"/api/analyses?a={aB}&b={bB}")
         checks.expect("B_no_analysis_listed",
                       len((listed_b or {}).get("analyses") or []) == 0,
                       "取消后 GET /api/analyses 为空")
+        # 迟到正文复查：替身已回收 + 有界 settle 后复检，不无限等待
+        time.sleep(2.0)
+        rows_b2 = db_rows(db_path,
+                          "SELECT id FROM agent_analyses "
+                          "WHERE a_snapshot_id=? AND b_snapshot_id=?", (aB, bB))
+        checks.expect("B_no_late_body_after_settle", len(rows_b2) == 0,
+                      f"settle 后复查 agent_analyses 行数={len(rows_b2)}（必须 0，无迟到正文）")
         set_shim_delay(shim_dir, 0.0)
 
         # ---- 6. 场景 C：撤销授权后收敛、无迟到正文 ----
         set_shim_delay(shim_dir, 12.0)
         _, job_c, _ = start_job(http, a2, b2, "iss138-consent")
-        time.sleep(1.0)
+        # C 前置视图强断言：撤权前必须观测到自启动的替身进程组
+        seen_c = observe_shim(shim, deadline_s=20.0)
+        report["C_shim_observation"] = seen_c
+        checks.expect("C_shim_child_observed", seen_c.get("observed") is True,
+                      f"撤权前观测自有替身 pids={seen_c.get('pids')} "
+                      f"pgids={seen_c.get('pgids')}；{seen_c.get('detail','')}")
+        _, pre_c = http.get(f"/api/analysis/jobs/{job_c['job_id']}")
+        pre_status = ((pre_c or {}).get("job") or {}).get("status")
+        report["C_job_pre_revoke"] = pre_status
+        checks.expect("C_job_in_flight_before_revoke",
+                      pre_status in ("running", "starting"),
+                      f"撤权前 job 状态={pre_status}")
         # GET /api/config 的 analysis 是只读视图（含 defaults/source 等非入参键），
         # 回写必须按产品白名单重建，否则 400 analysis 含未知字段。
         status, cfg = http.get("/api/config")
@@ -624,9 +740,10 @@ def main() -> int:
             "consent_revision": int(cur_analysis.get("consent_revision", 1) or 1) + 1,
         }
         status, put_body = http.put("/api/config", {"analysis": new_analysis})
-        checks.record("C_consent_revoked", status == 200,
+        applied = bool((put_body or {}).get("applied")) if isinstance(put_body, dict) else False
+        checks.expect("C_consent_revoked", status == 200 and applied,
                       f"PUT /api/config enabled=false consent_revision+1 → status={status} "
-                      f"body={str(put_body)[:160]}")
+                      f"applied={applied} body={str(put_body)[:160]}")
         view_c = wait_terminal(http, job_c["job_id"], deadline_s=60)
         report["job_consent_view"] = view_c
         checks.expect("C_converges_without_body",
@@ -645,6 +762,11 @@ def main() -> int:
                           "WHERE a_snapshot_id=? AND b_snapshot_id=?", (a2, b2))
         checks.expect("C_no_late_body_after_settle", len(rows_c2) == 0,
                       "settle 后复查仍无正文")
+        reaped_c = assert_shim_gone(shim, seen_c, deadline_s=20.0)
+        report["C_shim_reaped"] = reaped_c
+        checks.expect("C_shim_child_reaped", reaped_c.get("reaped") is True,
+                      f"撤权收敛后自有替身 pid 残留={reaped_c.get('still_alive')} "
+                      f"（记录 pid={reaped_c.get('recorded')}）")
         set_shim_delay(shim_dir, 0.0)
 
         # ---- 7. 场景 D：serve 退出时子进程组回收 + 实例记录清理 ----
@@ -656,24 +778,32 @@ def main() -> int:
                       f"重新授权（consent_revision=2）→ status={status} "
                       f"body={str(reenable)[:120]}")
         set_shim_delay(shim_dir, 25.0)
-        d1 = snap_ids[0]
-        _, job_d, _ = start_job(http, d1, snap_ids[1], "iss138-shutdown")
-        time.sleep(1.0)
+        aD, bD = snap_ids[2], snap_ids[3]   # D 独立区间
+        _, job_d, _ = start_job(http, aD, bD, "iss138-shutdown")
+        # D 前置视图强断言：停机前必须观测到自有替身进程组（否则停机回收无从谈起）
+        seen_d = observe_shim(shim, deadline_s=20.0)
+        report["D_shim_observation"] = seen_d
+        checks.expect("D_shim_child_observed", seen_d.get("observed") is True,
+                      f"停机前观测自有替身 pids={seen_d.get('pids')} "
+                      f"pgids={seen_d.get('pgids')}；{seen_d.get('detail','')}")
         _, body_d = http.get(f"/api/analysis/jobs/{job_d['job_id']}")
+        pre_d = ((body_d or {}).get("job") or {}).get("status")
         report["job_shutdown_view"] = (body_d or {}).get("job")
+        checks.expect("D_job_in_flight_before_shutdown",
+                      pre_d in ("running", "starting"),
+                      f"停机前 job 状态={pre_d}")
         exit_code = serve.stop(signal.SIGTERM)
         report["serve_exit_code"] = exit_code
         checks.expect("D_serve_exits_cleanly", exit_code == 0,
                       f"SIGTERM 后 helper 退出码={exit_code}")
-        try:
-            leftover = subprocess.run(
-                ["pgrep", "-f", str(shim)], capture_output=True, text=True, timeout=15)
-            leftover_pids = [p for p in leftover.stdout.split() if p.strip()]
-        except (OSError, subprocess.TimeoutExpired):
-            leftover_pids = []
+        reaped_d = assert_shim_gone(shim, seen_d, deadline_s=25.0)
+        leftover_pids = reaped_d.get("still_alive") or []
         report["leftover_shim_pids"] = leftover_pids
-        checks.expect("D_child_group_reaped", not leftover_pids,
-                      f"helper 停机后残留替身子进程={leftover_pids or '无'}")
+        report["D_shim_reaped"] = reaped_d
+        checks.expect("D_child_group_reaped", reaped_d.get("reaped") is True,
+                      f"helper 停机后自有替身 pid 残留={leftover_pids or '无'}"
+                      f"（记录 pid={reaped_d.get('recorded')}，pgids="
+                      f"{seen_d.get('pgids')}）")
         try:
             subprocess.run(["pgrep", "-f", f"fathom.db-wal"], capture_output=True,
                            text=True, timeout=10)

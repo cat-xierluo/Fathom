@@ -1117,6 +1117,13 @@ async function main() {
     await page.evaluate(() => fetch("/__set?failJobsLookup=1"));
     await page.reload();
     await waitForText(page, "#diff-status", "已对比快照");
+    // CI 实录（PR #231 run 36898067729）：diff 完成时解读区查询链
+    // （config → analyses → GET jobs 500）可能仍未收敛，body 停在
+    // 「解读状态加载中…」占位，立即取样会把加载态当最终态。有界等待
+    // 真实提示出现（产品自身渲染，非伪造 DOM）；超时不吞——等不到时
+    // failNote 仍为空，原断言照常失败并携带实际正文。
+    await page.waitForSelector("[data-test='analysis-active-query-failed']",
+      { timeout: 10000 }).catch(() => {});
     const failNote = await page.$("[data-test='analysis-active-query-failed']");
     const failBody = await page.textContent("[data-test='analysis-body']");
     record("changes.135-query-failure-disclosed",

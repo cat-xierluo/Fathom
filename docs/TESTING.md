@@ -212,3 +212,16 @@ bash scripts/release_candidate_record.sh --build      # 重跑三命令并登记
 ### 已受理解读请求的浏览器响应丢失回归
 
 `node scripts/verify_analysis_frontend.cjs` 使用真实 Chromium 与隔离合成 HTTP 夹具。新增场景先受理 POST 建立在途 job，再在浏览器侧丢失响应；检查重试复用幂等键和同一 job、没有重复派发、仍可取消、终态重跑使用新键，以及刷新恢复不额外 POST。两份临时沙盒的刻意逻辑破坏用于检验新增断言的敏感性。其结果证明此夹具下的前端行为；真实 Python 后端语义、Tauri WebView 和真实网络栈的同场景仍需各自证据。
+
+### 冻结 helper 的解读生命周期回归
+
+`scripts/verify_frozen_analysis.py` 接受已构建的生产 helper，通过真实 `serve` 与 HTTP API 验证解读成功入库、在途取消、关闭授权以及 helper 停机时的子进程回收。使用临时运行根、合成快照和 task-local CLI 替身，不读取生产数据、不调用真实模型。
+
+```bash
+python scripts/verify_frozen_analysis.py \
+  --helper /absolute/path/to/fathom-helper \
+  --build-ready /absolute/path/to/helper-build.json \
+  --output verify-results/frozen-analysis
+```
+
+helper 构建需已有 pinned PyInstaller 环境，按 `scripts/build_helper.sh` 准备；脚本不自动安装或构建。`--build-ready` 必填，使用可移植 JSON 来源记录，至少含 `ok: true` 和实际 helper 的 64 位 `helper_sha256`；可同时记录构建时的 `source_sha`。构建完成后保存该次产物指纹和源提交，不能用另一份产物或事后猜测的来源替代。manifest 缺失、非法或指纹不符时失败关闭；不依赖 Agent 私有会话目录。其输出记录 helper 指纹、HTTP/DB/进程断言及失败原因，失败退出非零。取消、撤权和停机之前必须观测自有替身进程已在途，之后复核该身份的回收和无迟到正文，不能用“从未启动所以没有残留”判为通过。替身输出只证明产品接线和生命周期；真实模型质量、Tauri WebView、实机升级、双架构、签名及新账户发行验收仍需各自证据。

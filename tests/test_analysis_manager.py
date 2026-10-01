@@ -906,6 +906,41 @@ class TestLeaseHandoffOnStart:
         assert row["reason_code"] == "startup_aborted"
         assert manager.find_active_jobs(ok_setup["a"], ok_setup["b"]) == []
 
+    def test_tempdir_allocation_failure_reaps_placeholder(self, ok_setup,
+                                                          monkeypatch):
+        """PM 批审 CHANGES_REQUESTED 项：临时目录分配失败不得留幽灵。
+
+        mkdtemp 原在保护 try 之外——占位行已提交而分配失败时，无 reap，
+        行保持 starting 且被 find_active_jobs 返回（ISS-135 在途查询渲染
+        幽灵）。复现方式与 PM 独立探针同构：只注入 fathom-analysis- 前缀。
+        """
+        import tempfile as _tempfile
+        manager = make_manager()
+        real_mkdtemp = _tempfile.mkdtemp
+
+        def failing_mkdtemp(prefix=None, **kw):
+            if prefix == "fathom-analysis-":
+                raise OSError("合成：临时目录分配失败")
+            return real_mkdtemp(prefix=prefix, **kw)
+
+        monkeypatch.setattr("fathom.analysis_manager.tempfile.mkdtemp",
+                            failing_mkdtemp)
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        with pytest.raises(OSError):
+            manager.start_job(preview.preview_id, preview.request_digest,
+                              "key-136b-tempdir")
+
+        row = run_row_from(manager, "key-136b-tempdir")
+        assert row["status"] == "interrupted", dict(row)
+        assert row["reason_code"] == "startup_aborted"
+        assert row["finished_at"]
+        assert manager.find_active_jobs(ok_setup["a"], ok_setup["b"]) == []
+        with manager._lock:
+            assert not manager._jobs, "启动失败的 job 不得残留在进程内注册表"
+        lease = am.AnalysisLease.acquire(manager._lock_path, source="probe-136b")
+        lease.release()
+        assert agent_rows() == []
+
     def test_normal_path_unaffected(self, ok_setup):
         """正常路径零变化：视图先行构造返回，job 正常跑到终态。"""
         manager = make_manager()

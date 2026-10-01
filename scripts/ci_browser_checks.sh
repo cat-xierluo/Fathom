@@ -21,7 +21,7 @@
 #
 # 断言口径：两套结果 JSON 均必须 ok=true、failed=0、passed 等于各自期望
 # （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 214；
-# ISS-035C 起新增 analysis frontend 检查（EXPECTED_ANALYSIS_PASSED，ISS-128 后为 59），
+# ISS-035C 起新增 analysis frontend 检查（EXPECTED_ANALYSIS_PASSED，ISS-128 后为 59，ISS-137 后为 77），
 # ISS-108 增补 5 项至 172 后，ISS-106 总览层级/五态容器再增 7 项=179：
 # ready 清态与次级图 1 + 空库等待 1 + 单快照等待 1 + 错误容器 1 +
 # 净变化根差分 1 + 无基线不伪造零 1 + 980 首屏坐标 1；
@@ -132,8 +132,10 @@ assert_result_json "$refresh_out" "$expected_refresh" "frontend refresh"
 # ISS-035C：AI 解读前端回归（同 refresh 机制：纯 Node 合成 API + Playwright，
 # 随机端口）。70 项——七态/检测列表/授权层/世代守卫/幂等/HTML 转义/双视口；
 # ISS-126 起 codex/hermes 披露断言；ISS-128 起 +7 项幂等键生命周期与重放终态；审查后 +3 项重入终态标记（59 项）；ISS-135 起 +7 项跨会话在途发现/区间守卫/查询失败/取消 = 70 项。
+# ISS-137 起 +7 项已受理 POST 响应丢失：如实报错回 idle、重试复用同键单派发、
+# 重放 running 可取消、终态重跑新键、在途 reload 查询恢复不再 POST = 77 项。
 # 失败自身非零退出，pipefail 直通判红；计数漂移由 EXPECTED_ANALYSIS_PASSED
 # 兜底（同 refresh 门禁口径）。
 node scripts/verify_analysis_frontend.cjs | tee "$analysis_out"
-expected_analysis="${EXPECTED_ANALYSIS_PASSED:-70}"
+expected_analysis="${EXPECTED_ANALYSIS_PASSED:-77}"
 assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"

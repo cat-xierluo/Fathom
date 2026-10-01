@@ -15,6 +15,12 @@
  *                              980 视口无横向溢出
  *  R6 历史分析刚完成就显示过期 → analyses expired=true 显示过期原因+证据仍可查，
  *                              不当作新鲜完成
+ *  ISS-137 首个 POST 已受理但响应丢失（受理后销毁连接，非 500 假反例）→
+ *                              如实报错回 idle；重试复用同幂等键收敛同一 job
+ *                              （replayed=true、单派发）；重放 running 仍可取消；
+ *                              终态重跑新键新派发；在途 reload 查询恢复不再 POST。
+ *                              敏感性反例见 verify-results/iss137/（沙盒破坏
+ *                              偷换键/重放早退不绑 job 时上述断言必须转 FAIL）。
  *
  * 另断言（方案 §7 合同）：Claude Code 首位+推荐徽章（用户裁决 2026-09-29）、
  * 四候选全列出不可用项不隐藏、授权确认层发送对象/撤销文案、确认幂等
@@ -229,6 +235,10 @@ function createFixture() {
     slowPreviewMs: 0,
     previewOnceArmed: false,
     jobsPosted: 0,                  // POST /api/analysis/jobs 计数（R4 断言）
+    postedKeys: [],                 // 每次 POST 的 idempotency_key（ISS-137：重试是否复用同键）
+    replayHits: 0,                  // 同键重放命中次数（replayed=true 分支）
+    dropPostResponses: 0,           // >0 时下一次 POST 受理后销毁连接（真实响应丢失，ISS-137）
+    droppedResponses: 0,            // 已实际丢掉的响应数（证明故障注入真的发生）
     jobPhase: 0,                    // 轮询推进计数：>=2 转 scenario 终态
     holdRunning: false,             // true 时 job 不自动收敛（构造旧报告+在途并存）
     failJobsLookup: false,          // true 时区间在途查询返回 500（构造查询失败）
@@ -239,7 +249,10 @@ function createFixture() {
     puts: [],                       // PUT /api/config body 记录
     detects: 0,
   };
-  const nextJobId = () => `job-${String(state.jobSeq++).padStart(12, "0")}`;
+  // job_id 带随机段：产品 UI 只显示前 8 位，若所有 id 都以 job-0000… 开头，
+  // 「页面显示的是受理的那个 job」断言将失去区分度（ISS-137 敏感性实测发现）。
+  const nextJobId = () =>
+    `job-${Math.random().toString(36).slice(2, 10)}-${String(state.jobSeq++).padStart(4, "0")}`;
 
   function configView() {
     return {
@@ -283,6 +296,11 @@ function createFixture() {
       if (q.get("armPreview409") === "1") state.previewOnceArmed = true;
       if (q.has("holdRunning")) state.holdRunning = q.get("holdRunning") === "1";
       if (q.has("failJobsLookup")) state.failJobsLookup = q.get("failJobsLookup") === "1";
+      // ISS-137：武装「受理后丢响应」——仅影响下一次 POST /api/analysis/jobs，
+      // job 会先完整建立（服务端已在跑）再销毁连接，浏览器拿不到任何状态码。
+      if (q.has("dropPostResponse")) {
+        state.dropPostResponses = Number(q.get("dropPostResponse")) || 0;
+      }
       // 模拟「用户离页期间后台跑完」：服务端把在途 job 直接推到终态，
       // 此时页面没有在轮询，因此观察不到终态，只能靠下次重入读记录层发现。
       if (q.get("forceTerminal") === "1") {
@@ -296,6 +314,8 @@ function createFixture() {
       if (q.get("reset") === "1") {
         state.jobsPosted = 0; state.jobPhase = 0; state.jobs.clear();
         state.cancelRequested.clear(); state.analysesDeleted = 0; state.puts = [];
+        state.postedKeys = []; state.replayHits = 0;
+        state.dropPostResponses = 0; state.droppedResponses = 0;
       }
       return json(res, 200, { ok: true });
     }
@@ -407,8 +427,10 @@ function createFixture() {
       if (!req.headers["x-fathom-token"]) return json(res, 403, { detail: "令牌无效" });
       const parsed = JSON.parse(body || "{}");
       state.jobsPosted += 1;
+      state.postedKeys.push(parsed.idempotency_key);
       // 幂等：同 key 返回同一 job（replayed=true），不发新任务
       if (state.jobs.has(parsed.idempotency_key)) {
+        state.replayHits += 1;
         return json(res, 202, { job: jobView(state.jobs.get(parsed.idempotency_key)),
                                 replayed: true });
       }
@@ -427,6 +449,15 @@ function createFixture() {
       };
       state.jobs.set(parsed.idempotency_key, job);
       state.jobPhase = 0;
+      // ISS-137 故障点：请求已完整送达并被受理（jobs map 已有该 job、服务端
+      // 已在跑），此刻销毁连接——响应丢失，浏览器 fetch reject（TypeError）。
+      // 这不是「返回 500 却不受理」的假反例：受理真实发生且可观察。
+      if (state.dropPostResponses > 0) {
+        state.dropPostResponses -= 1;
+        state.droppedResponses += 1;
+        res.destroy();
+        return;
+      }
       return json(res, 202, { job: jobView(job), replayed: false });
     }
 
@@ -1105,6 +1136,159 @@ async function main() {
     await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
     await page.click("[data-test='analysis-confirm-btn']");
     await page.waitForSelector("[data-test='analysis-state-done']", { timeout: 15000 });
+
+    /* ---------- ISS-137：首个 POST 已受理但响应丢失 → 重试复用键、单派发 ----------
+     * 故障点是真实的传输层丢失，双保险注入：
+     *  - 服务端：夹具先完整受理 POST（jobs map 建立条目、服务端已在跑），
+     *    再销毁连接；
+     *  - 浏览器侧：Playwright route 把该 POST 经 route.fetch() 真实送达夹具
+     *    （受理可从夹具 state 观察）后 abort，浏览器 fetch reject（TypeError）。
+     * 仅靠服务端 destroy 不够：实测 Chromium 会把复用连接上「响应未开始即断」
+     * 的 POST 透明重发一次（jobsPosted 变 2），网络栈替前端完成了重试，测不到
+     * 产品代码；浏览器侧 abort 是决定性的，不触发该透明重发。这与「返回 500
+     * 却不受理」的假反例不同：受理真实发生（dispatched=1、dropped=1 可观察）。
+     * ISS-128/135 之后的修复合同：
+     *  - 前端把传输失败如实呈现为可重试错误（不假 running、不卡死）；
+     *  - 重试（重新预览+确认）复用同一幂等键 → 后端 replayed=true 收敛
+     *    同一 job，不派发第二个任务；
+     *  - 重放回来的 running job 必须绑定轮询与取消（analysisJob 有值，
+     *    否则取消按钮点不动）；
+     *  - 取消终态后重跑 → 新键新派发；
+     *  - 重跑 job 在途时 reload → 区间查询恢复，不发 POST。
+     * holdRunning=1 贯穿：保证响应丢失后重试时 job 仍在途（幂等重放前提）。 */
+    await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&holdRunning=1"));
+    await page.reload();
+    await waitForText(page, "#diff-status", "已对比快照");
+
+    // 武装「受理后丢响应」：仅下一次 POST jobs 生效（服务端 destroy + 浏览器 abort）
+    await page.evaluate(() => fetch("/__set?dropPostResponse=1"));
+    let dropNextPost137 = true;
+    await page.route("**/api/analysis/jobs", async (route) => {
+      if (dropNextPost137 && route.request().method() === "POST") {
+        dropNextPost137 = false;
+        try { await route.fetch(); } catch (_) { /* 服务端同时销毁连接：受理已发生 */ }
+        await route.abort("connectionreset");
+        return;
+      }
+      await route.continue();
+    });
+    await page.click("[data-test='analysis-preview-btn']");
+    await page.waitForSelector("[data-test='analysis-state-preview']");
+    await page.click("[data-test='analysis-confirm-btn']");
+    // 前端只看到连接中断：必须如实报错回 idle（有重试入口），不得假装运行中。
+    // 等不到错误提示属未预期缺陷：以 FAIL 记录（保住证据输出），后续场景跳过。
+    const dropShown137 = await page.waitForSelector("[data-test='analysis-send-error']",
+      { timeout: 10000 }).then(() => true).catch(() => false);
+    const err137 = dropShown137
+      ? await page.textContent("[data-test='analysis-send-error']") : "";
+    const noFakeRunning137 = !(await page.$("[data-test='analysis-state-running']"));
+    record("changes.137-drop-shown-as-retryable-error",
+      dropShown137 && err137.includes("无法开始分析") && noFakeRunning137 &&
+        Boolean(await page.$("[data-test='analysis-preview-btn']")),
+      dropShown137 ? err137.trim().slice(0, 60)
+        : `丢响应后未出现可重试错误（dispatched=${fixture.state.jobs.size}，` +
+          `dropped=${fixture.state.droppedResponses}，jobsPosted=${fixture.state.jobsPosted}）`);
+    const acceptedJob = [...fixture.state.jobs.values()][0];
+    record("changes.137-first-post-accepted-then-dropped",
+      fixture.state.jobsPosted === 1 && fixture.state.jobs.size === 1 &&
+        fixture.state.droppedResponses === 1 &&
+        acceptedJob?.status === "running" && Boolean(acceptedJob?.job_id),
+      `jobsPosted=${fixture.state.jobsPosted} dispatched=${fixture.state.jobs.size} ` +
+        `dropped=${fixture.state.droppedResponses} job=${acceptedJob?.job_id}`);
+
+    if (dropShown137) {
+      // 重试：重新生成预览（request_digest 不变）→ 确认 → 复用同键，replayed 收敛
+      await page.click("[data-test='analysis-preview-btn']", { timeout: 8000 });
+      await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
+      await page.click("[data-test='analysis-confirm-btn']");
+      await page.waitForSelector("[data-test='analysis-state-running']", { timeout: 10000 });
+      const running137 = await page.textContent("[data-test='analysis-state-running']");
+      record("changes.137-retry-reuses-key-single-dispatch",
+        fixture.state.postedKeys.length === 2 &&
+          fixture.state.postedKeys[0] === fixture.state.postedKeys[1] &&
+          fixture.state.jobs.size === 1 && fixture.state.replayHits === 1,
+        `keys ${String(fixture.state.postedKeys[0]).slice(0, 8)}…/` +
+          `${String(fixture.state.postedKeys[1]).slice(0, 8)}… dispatched=${fixture.state.jobs.size} ` +
+          `replayHits=${fixture.state.replayHits}`);
+      record("changes.137-replay-shows-accepted-job",
+        Boolean(acceptedJob?.job_id) &&
+          running137.includes(acceptedJob.job_id.slice(0, 8)),
+        `页面显示任务 ${acceptedJob?.job_id?.slice(0, 8)}`);
+      await page.screenshot({ path: path.join(evidenceDir, "changes-137-replay-running-980x640.png") });
+
+      // 重放回来的 running job 必须可取消（analysisJob 已绑定、轮询在收敛）
+      const cancelBtn137 = await page.$("[data-test='analysis-cancel-btn']");
+      let cancelled137 = false;
+      if (cancelBtn137) {
+        await cancelBtn137.click();
+        cancelled137 = await page.waitForSelector("[data-test='analysis-state-failure']",
+          { timeout: 15000 }).then(() => true).catch(() => false);
+      }
+      const cancelBody137 = await page.textContent("[data-test='analysis-body']");
+      record("changes.137-replay-running-cancellable",
+        Boolean(cancelBtn137) && cancelled137 && cancelBody137.includes("分析已取消"),
+        cancelBody137.replace(/\s+/g, " ").slice(0, 60));
+      await page.screenshot({ path: path.join(evidenceDir, "changes-137-cancelled-980x640.png") });
+
+      // 终态后重跑：必须新键新派发（ISS-128 合同延伸到丢响应链路）
+      let rerun137 = true;
+      try {
+        await page.click("[data-test='analysis-retry-btn']", { timeout: 8000 });
+        await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 8000 });
+        await page.click("[data-test='analysis-confirm-btn']", { timeout: 8000 });
+        await page.waitForSelector("[data-test='analysis-state-running']", { timeout: 8000 });
+      } catch (e) {
+        rerun137 = false;
+      }
+      if (rerun137) {
+        record("changes.137-terminal-rerun-new-key-new-dispatch",
+          fixture.state.postedKeys.length === 3 &&
+            fixture.state.postedKeys[2] !== fixture.state.postedKeys[1] &&
+            fixture.state.jobs.size === 2,
+          `keys#3 ${String(fixture.state.postedKeys[2]).slice(0, 8)}… ` +
+            `dispatched=${fixture.state.jobs.size}`);
+      } else {
+        record("changes.137-terminal-rerun-new-key-new-dispatch", false,
+          "终态重跑流程无法推进（页面卡在无入口状态）");
+      }
+
+      // 重跑 job 在途时 reload：区间查询（ISS-120/135 路径）恢复，不发 POST
+      const postedBefore137Reload = fixture.state.jobsPosted;
+      const dispatchedBefore137Reload = fixture.state.jobs.size;
+      const rerunJob137 = [...fixture.state.jobs.values()].find((j) => j.status === "running");
+      await page.reload();
+      await waitForText(page, "#diff-status", "已对比快照");
+      const resumed137 = await page.waitForSelector("[data-test='analysis-state-running']",
+        { timeout: 10000 }).then(() => true).catch(() => false);
+      const resumedText137 = resumed137
+        ? await page.textContent("[data-test='analysis-state-running']") : "";
+      record("changes.137-reload-recovers-without-post",
+        resumed137 && fixture.state.jobsPosted === postedBefore137Reload &&
+          fixture.state.jobs.size === dispatchedBefore137Reload &&
+          Boolean(rerunJob137) && resumedText137.includes(rerunJob137?.job_id.slice(0, 8)),
+        `jobsPosted ${postedBefore137Reload}→${fixture.state.jobsPosted} ` +
+          `dispatched ${dispatchedBefore137Reload}→${fixture.state.jobs.size} ` +
+          `任务 ${rerunJob137?.job_id?.slice(0, 8)}`);
+
+      // 收敛：放开 holdRunning 让重跑 job 到终态，页面回完成态供 409 场景衔接
+      await page.evaluate(() => fetch("/__set?holdRunning=0"));
+      await page.waitForSelector(
+        "[data-test='analysis-state-done'], [data-test='analysis-state-failure']",
+        { timeout: 15000 }).catch(() => {});
+    } else {
+      // 前置故障未按预期呈现：其余断言全部记 FAIL（不静默跳过），再收敛现场
+      ["changes.137-retry-reuses-key-single-dispatch",
+        "changes.137-replay-shows-accepted-job",
+        "changes.137-replay-running-cancellable",
+        "changes.137-terminal-rerun-new-key-new-dispatch",
+        "changes.137-reload-recovers-without-post",
+      ].forEach((name) => record(name, false, "前置故障未如实呈现为可重试错误，场景无法推进"));
+      await page.evaluate(() => fetch("/__set?holdRunning=0"));
+      await page.waitForSelector(
+        "[data-test='analysis-state-done'], [data-test='analysis-state-failure']",
+        { timeout: 15000 }).catch(() => {});
+    }
+    await page.unroute("**/api/analysis/jobs");
 
     /* ---------- 预览失效（409 preview_expired）→ 回未分析 ---------- */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&armPreview409=1"));

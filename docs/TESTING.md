@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前主干期望值为 pytest **1191**、API/浏览器 **39**、前端 refresh **214**、AI 解读前端 **77**、Rust 单测 **69**。[ISS-114 合并候选 CI](https://github.com/cat-xierluo/Fathom/actions/runs/36416710137) 六项通过，本地也按这些计数复跑；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前代码期望值为 pytest **1235**、API/浏览器 **39**、前端 refresh **214**、AI 解读前端 **77**、Rust 单测 **69**。固定候选的实际通过数以对应 PR 的 Actions 日志为准；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh
@@ -23,7 +23,7 @@ PLAYWRIGHT_BIN="$PWD/.runtime/playwright/node_modules/.bin/playwright" \
 PW_INSTALL=1 /bin/bash scripts/ci_browser_checks.sh
 ```
 
-GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1191）和 Rust 1.88 locked build+单测（69）；浏览器/API 检查（39）与前端 refresh 功能回归（214）在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
+GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1235）和 Rust 1.88 locked build+单测（69）；浏览器/API 检查（39）与前端 refresh 功能回归（214）在 Apple Silicon 上运行。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
 
 本地/API/CLI 验收必须显式设置完整隔离边界：`FATHOM_RUNTIME_DIR` 派生 data/reports/logs，`FATHOM_SCAN_ROOT` 指定合成根，`FATHOM_RESOURCE_DIR` 指定只读资源，`FATHOM_PORT` 使用已核对的测试端口；CLI 也提供等价覆盖。旧 `FATHOM_DB` 仅作兼容，未指定运行根时其父目录成为完整运行根。`FATHOM_DU_TIMEOUT_S`（ISS-061，默认 14400 秒）设置单次 `du` 采集的安全时限：超时后本次扫描记为 `interrupted` 并保留上次有效快照；值必须是正的有限数，`0`、负数、非数字、`nan`、`inf` 一律在启动时被拒绝（不存在"无限超时"）；夹具里可用极小值（如 `0.001`）构造超时反例。端口占用须非零退出，不停止未知进程；install/uninstall/权限与真实 Finder 动作另属实机验证。驱动真实 serve/HTTP 链路时，必须先断言目标 `/health` 返回的 pid 等于自 spawn 进程且 `runtime_mode=="development"` 再继续（ISS-035B 实录：生产 helper 与开发实例同身份、`/health` 面不可区分，曾误打生产 helper，因 analysis 默认关闭两层 403 挡住而零触碰；此断言后已固化）。
 
@@ -43,7 +43,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1191
 **2026-09-15 至 09-26 历史状态**：`CI` workflow 曾因额度停用（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发），当时 push/PR 不创建 run，`gh pr checks` 为空属预期。现已恢复实跑；下列本地替代链用于额度故障时按主干同一计数复跑，与云端作业对应：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 1191（+ISS-136b 临时目录分配回归 1 项）
+/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，断言 1235（+ISS-136b 临时目录分配回归 1 项）
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 214 + AI 解读 77
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 69
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
@@ -226,6 +226,14 @@ python scripts/verify_frozen_analysis.py \
 
 helper 构建需已有 pinned PyInstaller 环境，按 `scripts/build_helper.sh` 准备；脚本不自动安装或构建。`--build-ready` 必填，使用可移植 JSON 来源记录，至少含 `ok: true` 和实际 helper 的 64 位 `helper_sha256`；可同时记录构建时的 `source_sha`。构建完成后保存该次产物指纹和源提交，不能用另一份产物或事后猜测的来源替代。manifest 缺失、非法或指纹不符时失败关闭；不依赖 Agent 私有会话目录。其输出记录 helper 指纹、HTTP/DB/进程断言及失败原因，失败退出非零。取消、撤权和停机之前必须观测自有替身进程已在途，之后复核该身份的回收和无迟到正文，不能用“从未启动所以没有残留”判为通过。替身输出只证明产品接线和生命周期；真实模型质量、Tauri WebView、实机升级、双架构、签名及新账户发行验收仍需各自证据。
 
+### Intel 原生冻结 helper 解读回归流水线
+
+`.github/workflows/frozen-analysis.yml` 在原生 `macos-15-intel` 上断言 `uname -m=x86_64`，用既有锁定 Python/PyInstaller 依赖和 `scripts/build_helper.sh` 构建冻结 helper，再由 `scripts/ci_frozen_analysis.py run` 绑定源提交、真实文件 SHA256、Mach-O 架构与版本，显式传 build-ready manifest 给 `scripts/verify_frozen_analysis.py` 跑 33 项接线及生命周期检查。默认可执行路径按真实 onedir 输出为 `apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper/fathom-helper`；目录本身不能作为 helper。构建或身份验证失败时写失败 manifest、保留原退出码，不调用后续回归；回归失败也传回真实退出码。manifest/report/日志由 job 输出留存，不发布产物。
+
+合并前由目标 `main`、限定相关文件路径的 PR 触发，并显式检出 PR head SHA；合并后可用 `workflow_dispatch` 复跑指定 ref。工作流仅 `contents: read`，无发行秘密、tag、签名或 Release 写入。入口的 30 项定向测试用 `python -m pytest tests/test_ci_frozen_analysis.py -q --maxfail=1` 执行，普通 CI 总数同步为 1235。离线夹具或本机 arm64 检查不能证明 Intel 冻结路径通过；原生 Intel job 的固定源/产物指纹与真实 33 项结果才是该路径证据。33 项使用合成 shim，仅验证接线与生命周期，不证明真实模型质量或 Tauri GUI。
+
 ### 隔离 Tauri 解读验收入口
 
-`scripts/verify_tauri_analysis.py` 与 `scripts/tauri_analysis_driver.swift` 提供隔离实机验证入口；112 项定向测试验证清单和失败路径。单元测试、Swift 编译及 app 构建不证明真实产品交互或模型发送成功；实际 GUI 验收须另记录结果及 NOT_VERIFIED 范围。
+`scripts/verify_tauri_analysis.py` 与 `scripts/tauri_analysis_driver.swift` 提供隔离实机验证入口；126 项定向测试验证清单和失败路径。单元测试、Swift 编译及 app 构建不证明真实产品交互或模型发送成功；实际 GUI 验收须另记录结果及 NOT_VERIFIED 范围。
+
+尺寸测量以真实 WKWebView AXWebArea 几何为准，外框与内容的差值仅作有界校准；AX 标题文字高度不等于标题栏高度。内容面不可读或六轮内未收敛时失败闭合，禁止固定 +28/+16 或放宽目标尺寸。后台产品点击坐标也绑定同一 web 内容面。定向测试及合成校准探针不证明真实 GUI 已通过。

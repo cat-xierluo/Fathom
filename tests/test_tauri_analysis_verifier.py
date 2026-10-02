@@ -795,15 +795,198 @@ def test_driver_measure_uses_window_level_ax() -> None:
     code = _swift_code_only(DRIVER_SOURCE.read_text(encoding="utf-8"))
     assert "kAXWindowsAttribute" in code
     assert "kAXFocusedWindowAttribute" in code
-    assert "measuredTitlebarHeight" in code
 
 
-def test_driver_measure_uses_measured_titlebar_not_constant() -> None:
+def test_driver_measures_web_area_not_title_label() -> None:
+    """第 3 轮根因修复：内容几何必须取 AXWebArea，不得用标题文字高度。"""
     raw = DRIVER_SOURCE.read_text(encoding="utf-8")
     code = _swift_code_only(raw)
-    assert "kAXTitleUIElementAttribute" in code
+    assert "webAreaElement" in code
+    assert "AXWebArea" in raw          # 常量值在字符串里，查原始源
+    # 旧的错误来源必须消失
+    assert "measuredTitlebarHeight" not in raw, "标题文字高度不得再充当标题栏高"
     assert "TITLEBAR_HEIGHT" not in code, "不得写死 28 假装实测"
-    assert '"titlebar_measured": true' in raw
+    # 标题文字高度保留但必须明确标注它不是内容差值
+    assert '"title_label_note"' in raw
+    assert "非标题栏高、非内容区差值" in raw
+
+
+def test_driver_measure_reports_content_source_and_fails_closed() -> None:
+    raw = DRIVER_SOURCE.read_text(encoding="utf-8")
+    assert 'payload["content_source"] = "ax_web_area"' in raw
+    assert 'payload["content_source"] = "unavailable"' in raw
+    assert "无法证明 WKWebView 实际内容区" in raw
+
+
+def test_driver_chrome_is_measured_difference_not_constant() -> None:
+    """chrome 高必须是 frame - web area 的实测差值。"""
+    raw = DRIVER_SOURCE.read_text(encoding="utf-8")
+    assert 'payload["chrome_height"] = Int((size.height - webSize.height).rounded())' in raw
+    assert "非假设常数" in raw
+
+
+def test_driver_click_plane_matches_content_plane() -> None:
+    """点击面必须与内容测量面同源（web area 偏移），且可要求同源否则拒投。"""
+    raw = DRIVER_SOURCE.read_text(encoding="utf-8")
+    code = _swift_code_only(raw)
+    assert "options.clickX + (webPos.x - winPos.x)" in code
+    assert "options.clickY + (webPos.y - winPos.y)" in code
+    assert "options.requireContentPlane" in code
+    assert "点击面无法与内容测量面同源" in raw
+
+
+def test_python_entry_no_hardcoded_28_offset() -> None:
+    """旧的 `content_h + 28` 写死偏移必须消失。"""
+    code = MODULE_PATH.read_text(encoding="utf-8")
+    assert "content_h + 28" not in code
+    assert "calibrate_window_size" in code
+
+
+# --------------------------------------------------------------------------
+# 第 3 轮：内容几何来源与有界校准
+# --------------------------------------------------------------------------
+
+
+class _FakeMeasureDriver:
+    """合成 driver：模拟真实 web area 几何（frame = content + chrome）。
+
+    chrome=28 用来复现「写死 28 恰好在本机成立」的巧合；另一个实例用
+    chrome=40 证明校准不依赖某个特定 chrome 值。
+    """
+
+    def __init__(self, chrome: int = 28, *, content_source: str = "ax_web_area",
+                 jitter: int = 0) -> None:
+        self.chrome = chrome
+        self.content_source = content_source
+        self.jitter = jitter
+        self.frame_w = 0
+        self.frame_h = 0
+        self.measure_calls = 0
+        self.set_calls: list[tuple[int, int]] = []
+
+    def run(self, argv, timeout=120.0):
+        if argv[0] == "measure":
+            self.measure_calls += 1
+            content_w = self.frame_w
+            content_h = self.frame_h - self.chrome
+            # jitter 模拟首轮未稳定，迫使多轮收敛
+            if self.jitter and self.measure_calls == 1:
+                content_h += self.jitter
+            payload = {
+                "content_source": self.content_source,
+                "content_width": content_w, "content_height": content_h,
+                "frame_width": self.frame_w, "frame_height": self.frame_h,
+            }
+            if self.content_source == "ax_web_area":
+                payload["chrome_height"] = self.chrome
+            else:
+                payload["content_width"] = None
+                payload["content_height"] = None
+                payload["blocker"] = "未找到 AXWebArea"
+            return payload
+        if argv[0] == "set-size":
+            width = int(argv[argv.index("--width") + 1])
+            height = int(argv[argv.index("--height") + 1])
+            self.set_calls.append((width, height))
+            self.frame_w, self.frame_h = width, height
+            return {"position_moved": False}
+        raise AssertionError(f"unexpected subcommand {argv[0]}")
+
+
+def test_r3_old_logic_counterexample_is_real() -> None:
+    """旧逻辑反例：写死 28 + 把标题文字 16 当标题栏 => 980x652。"""
+    frame_h = 640 + 28
+    title_label = 16
+    assert frame_h - title_label == 652          # PM 实机实测值
+    assert 652 != 640
+
+
+def test_r3_calibration_hits_target_with_chrome_28() -> None:
+    driver = _FakeMeasureDriver(chrome=28)
+    driver.frame_w, driver.frame_h = 800, 500
+    result = vta.calibrate_window_size(
+        driver, app_pid=1, bundle_id="com.x", window_id=1,
+        target_w=980, target_h=640)
+    assert result["content"] == (980, 640)
+    assert result["converged"] is True
+    assert all(t["content_source"] == "ax_web_area" for t in result["trace"])
+
+
+def test_r3_calibration_hits_target_with_other_chrome() -> None:
+    """校准不依赖 chrome 恰为 28。"""
+    for chrome in (0, 16, 28, 40, 52):
+        driver = _FakeMeasureDriver(chrome=chrome)
+        driver.frame_w, driver.frame_h = 500, 500
+        result = vta.calibrate_window_size(
+            driver, app_pid=1, bundle_id="com.x", window_id=1,
+            target_w=1220, target_h=820)
+        assert result["content"] == (1220, 820), chrome
+
+
+def test_r3_calibration_converges_under_jitter_within_bound() -> None:
+    driver = _FakeMeasureDriver(chrome=28, jitter=7)
+    driver.frame_w, driver.frame_h = 700, 600
+    result = vta.calibrate_window_size(
+        driver, app_pid=1, bundle_id="com.x", window_id=1,
+        target_w=980, target_h=640, max_iterations=6)
+    assert result["content"] == (980, 640)
+    assert result["iterations"] <= 6
+
+
+def test_r3_calibration_fails_closed_without_web_area() -> None:
+    """无法证明实际内容区 → 报 blocker，不伪证、不放宽容差。"""
+    driver = _FakeMeasureDriver(content_source="unavailable")
+    driver.frame_w, driver.frame_h = 800, 600
+    with pytest.raises(vta.GateError, match="无法证明 WKWebView 实际内容区"):
+        vta.calibrate_window_size(
+            driver, app_pid=1, bundle_id="com.x", window_id=1,
+            target_w=980, target_h=640)
+
+
+def test_r3_calibration_fails_closed_when_unreachable() -> None:
+    """内容面不可达目标时必须在有界轮数后失败闭合，不无限循环也不假绿。"""
+
+    class Drifting(_FakeMeasureDriver):
+        """内容面完全不对 frame 变化响应 → 真正不可达。"""
+
+        def run(self, argv, timeout=120.0):
+            if argv[0] == "measure":
+                self.measure_calls += 1
+                return {"content_source": "ax_web_area",
+                        "content_width": 500, "content_height": 500,
+                        "frame_width": self.frame_w, "frame_height": self.frame_h}
+            return super().run(argv, timeout=timeout)
+
+    driver = Drifting(chrome=28)
+    driver.frame_w, driver.frame_h = 800, 600
+    with pytest.raises(vta.GateError, match="有界校准"):
+        vta.calibrate_window_size(
+            driver, app_pid=1, bundle_id="com.x", window_id=1,
+            target_w=980, target_h=640, max_iterations=3)
+
+
+def test_r3_require_content_geometry_rejects_frame_fallback() -> None:
+    with pytest.raises(vta.GateError, match="无法证明"):
+        vta.require_content_geometry(
+            {"content_source": "frame", "content_width": 980,
+             "content_height": 640}, label="980x640")
+
+
+def test_r3_require_content_geometry_accepts_web_area() -> None:
+    assert vta.require_content_geometry(
+        {"content_source": "ax_web_area", "content_width": 980,
+         "content_height": 640}, label="980x640") == (980, 640)
+
+
+def test_r3_target_sizes_unchanged() -> None:
+    assert vta.TARGET_CONTENT_SIZES == ((980, 640), (1220, 820))
+
+
+def test_r3_chrome_never_named_as_content() -> None:
+    """不得把 frame 或标题文字称作 webview 内容。"""
+    raw = DRIVER_SOURCE.read_text(encoding="utf-8")
+    assert '"content_width": Int(size.width)' not in raw
+    assert '"content_height": Int((size.height - titlebar)' not in raw
 
 
 def test_driver_posts_clicks_via_post_to_pid() -> None:

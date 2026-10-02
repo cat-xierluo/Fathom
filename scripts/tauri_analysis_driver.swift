@@ -98,6 +98,7 @@ struct Options {
     var scanRoot = ""
     var port = ""
     var timeout: Double = 90
+    var requireContentPlane = false
 }
 
 func parseArgs(_ argv: [String]) -> Options {
@@ -135,6 +136,7 @@ func parseArgs(_ argv: [String]) -> Options {
             guard let parsed = Double(value) else { fail("--y 非法：\(value)", code: 2) }
             options.y = parsed; options.ySet = true
         case "--output": options.output = value
+        case "--require-content-plane": options.requireContentPlane = true;
         case "--click-x":
             guard let parsed = Double(value) else { fail("--click-x 非法：\(value)", code: 2) }
             options.clickX = parsed
@@ -343,9 +345,10 @@ func axPosition(_ element: AXUIElement) -> CGPoint? {
     return point
 }
 
-/// 标题栏高度：按窗口**是否真有** kAXTitleUIElement 实测；没有标题元素
-/// 就返回 0（无标题栏），不套用写死常数假装实测。
-func measuredTitlebarHeight(_ window: AXUIElement) -> Double {
+/// 标题【文字 label】高度。**这不是标题栏高、也不是内容区差值**：
+/// 旧实现把它当标题栏高度，导致 content = frame - 16 在真实窗口上偏差 +12pt
+/// （PM 实机 980x652）。此处保留仅为如实标注所测面，内容几何一律取 web area。
+func titleLabelHeight(_ window: AXUIElement) -> Double {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(window,
                                         kAXTitleUIElementAttribute as CFString,
@@ -353,6 +356,35 @@ func measuredTitlebarHeight(_ window: AXUIElement) -> Double {
           let titleElement = value as! AXUIElement? else { return 0 }
     guard let titleSize = axSize(titleElement) else { return 0 }
     return titleSize.height
+}
+
+/// AXWebArea 的公开字符串值。本机 SDK 未导出 kAXWebAreaAttribute /
+/// kAXWebAreaRole 常量，按 AppKit 公开的 AX 值使用。
+let webAreaAttributeName = "AXWebArea"
+let webAreaRoleName = "AXWebArea"
+
+/// WKWebView 的**实际内容面**：窗口的 AXWebArea 子元素。
+/// 这是唯一能直接证明「webview 内容几何」的面；取不到就如实报 unavailable，
+/// 由调用方失败闭合，绝不用 frame 或标题文字冒充内容。
+func webAreaElement(_ window: AXUIElement) -> AXUIElement? {
+    var value: CFTypeRef?
+    if AXUIElementCopyAttributeValue(window, webAreaAttributeName as CFString,
+                                      &value) == AXError.success,
+       let webArea = value as! AXUIElement? {
+        return webArea
+    }
+    // 回退：在窗口子元素里找 role == AXWebArea
+    var childrenValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString,
+                                        &childrenValue) == AXError.success,
+          let children = childrenValue as? [AXUIElement] else { return nil }
+    return children.first { element in
+        var role: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString,
+                                            &role) == AXError.success,
+              let roleValue = role else { return false }
+        return (roleValue as? String) == webAreaRoleName
+    }
 }
 
 switch options.command {
@@ -372,7 +404,14 @@ case "identify":
            let size = axSize(element) {
             entry["ax_frame_width"] = Int(size.width.rounded())
             entry["ax_frame_height"] = Int(size.height.rounded())
-            entry["titlebar_height"] = Int(measuredTitlebarHeight(element).rounded())
+            entry["title_label_height"] = Int(titleLabelHeight(element).rounded())
+            if let webArea = webAreaElement(element), let webSize = axSize(webArea) {
+                entry["web_area_width"] = Int(webSize.width.rounded())
+                entry["web_area_height"] = Int(webSize.height.rounded())
+                entry["content_source"] = "ax_web_area"
+            } else {
+                entry["content_source"] = "unavailable"
+            }
         }
         detailed.append(entry)
     }
@@ -426,31 +465,62 @@ case "measure":
         fail("窗口级 AX 读取 kAXSize 失败，拒绝用外框-常数假装实测")
     }
     let position = axPosition(window) ?? .zero
-    let titlebar = measuredTitlebarHeight(window)
-    // 内容区 = 外框实测高 - 标题栏实测高（标题栏为 0 时即整框即内容区）
-    let contentWidth = size.width
-    let contentHeight = size.height - titlebar
-    emit([
+    // 内容几何**只**取自 WKWebView 自身的 AXWebArea；取不到即如实 unavailable。
+    // 绝不再用 frame 或标题文字高度冒充内容。
+    var payload: [String: Any] = [
         "window_id": options.windowId,
         "frame_width": Int(size.width.rounded()),
         "frame_height": Int(size.height.rounded()),
         "frame_x": Int(position.x.rounded()),
         "frame_y": Int(position.y.rounded()),
-        "content_width": Int(contentWidth.rounded()),
-        "content_height": Int(contentHeight.rounded()),
-        "titlebar_height": Int(titlebar.rounded()),
-        "titlebar_measured": true,
+        "title_label_height": Int(titleLabelHeight(window).rounded()),
+        "title_label_note": "标题文字 label 高度，非标题栏高、非内容区差值",
         "cg_frame_width": Int(cgWindow.frame.width.rounded()),
         "cg_frame_height": Int(cgWindow.frame.height.rounded()),
-    ])
+    ]
+    if let webArea = webAreaElement(window),
+       let webSize = axSize(webArea) {
+        let webPos = axPosition(webArea) ?? .zero
+        payload["content_source"] = "ax_web_area"
+        payload["content_width"] = Int(webSize.width.rounded())
+        payload["content_height"] = Int(webSize.height.rounded())
+        // web area 在窗口内的偏移：点击坐标面与内容测量面同源的依据
+        payload["web_area_x_in_window"] = Int((webPos.x - position.x).rounded())
+        payload["web_area_y_in_window"] = Int((webPos.y - position.y).rounded())
+        payload["chrome_height"] = Int((size.height - webSize.height).rounded())
+        payload["chrome_note"] = "frame - web area 实测差值，非假设常数"
+    } else {
+        // 失败闭合：不产出内容几何，调用方必须报 blocker，不得伪证
+        payload["content_source"] = "unavailable"
+        payload["content_width"] = NSNull()
+        payload["content_height"] = NSNull()
+        payload["blocker"] = "未找到 AXWebArea，无法证明 WKWebView 实际内容区"
+    }
+    emit(payload)
 
 case "click":
     guard options.windowId != 0 else { fail("click 需要 --window-id", code: 2) }
     guard let target = ownedWindows().first(where: { $0.id == options.windowId }) else {
         fail("窗口 \(options.windowId) 不属于 PID \(options.pid)，拒绝投递事件")
     }
-    let screenX = target.frame.origin.x + options.clickX
-    let screenY = target.frame.origin.y + options.clickY
+    // 点击面与内容测量面同源：坐标是【web 内容区】内的相对点，先经 web area
+    // 在窗口内的偏移换算到窗口面，再换算到屏幕面。web area 取不到即拒绝投递，
+    // 避免把标题栏/frame 区域误当 webview 内容点击。
+    var offsetX = options.clickX
+    var offsetY = options.clickY
+    var contentSource = "window_relative"
+    if let window = windowElement(windowId: options.windowId),
+       let webArea = webAreaElement(window),
+       let webPos = axPosition(webArea),
+       let winPos = axPosition(window) {
+        offsetX = options.clickX + (webPos.x - winPos.x)
+        offsetY = options.clickY + (webPos.y - winPos.y)
+        contentSource = "ax_web_area"
+    } else if options.requireContentPlane {
+        fail("无法取得 AXWebArea：点击面无法与内容测量面同源，拒绝投递事件")
+    }
+    let screenX = target.frame.origin.x + offsetX
+    let screenY = target.frame.origin.y + offsetY
     guard screenX >= 0, screenY >= 0 else { fail("换算后的点击坐标越界") }
     let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                        mouseCursorPosition: CGPoint(x: screenX, y: screenY),
@@ -467,7 +537,10 @@ case "click":
                      mouseButton: .left)
     up!.postToPid(options.pid)
     emit(["window_id": target.id, "screen_x": Int(screenX.rounded()),
-          "screen_y": Int(screenY.rounded()), "posted_to_pid": Int(options.pid)])
+          "screen_y": Int(screenY.rounded()), "posted_to_pid": Int(options.pid),
+          "content_source": contentSource,
+          "offset_in_window_x": Int(offsetX.rounded()),
+          "offset_in_window_y": Int(offsetY.rounded())])
 
 case "screenshot":
     guard options.windowId != 0 else { fail("screenshot 需要 --window-id", code: 2) }

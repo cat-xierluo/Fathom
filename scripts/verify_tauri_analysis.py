@@ -898,6 +898,76 @@ def install_signal_handlers() -> None:
             continue
 
 
+def require_content_geometry(measured: dict[str, Any], *, label: str) -> tuple[int, int]:
+    """从 measure 结果取**实测内容几何**；取不到即失败闭合（不伪证）。
+
+    只接受 `content_source == "ax_web_area"`：即真正量到 WKWebView 自身的
+    AXWebArea 尺寸。旧实现的「frame 宽」与「frame 高 - 标题文字 label 高」
+    两面不同源，已废止（PM 实机 980x652 即由此而来）。
+    """
+    if measured.get("content_source") != "ax_web_area":
+        raise GateError(
+            f"{label}：无法证明 WKWebView 实际内容区"
+            f"（content_source={measured.get('content_source')!r}，"
+            f"blocker={measured.get('blocker')}）；拒绝用 frame 或标题文字伪证")
+    try:
+        return int(measured["content_width"]), int(measured["content_height"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GateError(f"{label}：measure 未给出可用内容几何（{exc}）") from exc
+
+
+def calibrate_window_size(
+    driver: Any, *, app_pid: int, bundle_id: str, window_id: int,
+    target_w: int, target_h: int, max_iterations: int = 6,
+) -> dict[str, Any]:
+    """有界校准：实测 web 内容面 → 按差值调 frame → 再实测，直到命中目标。
+
+    取代旧的「frame = content + 28」：28 是假设常数，在真实 WKWebView 上
+    必偏（PM 实机 +12pt）。本函数以**实测**的 chrome 差值为初值，再以实测
+    内容差值逐轮收敛，全程有界（默认 6 轮），收敛不了就失败闭合。
+
+    返回逐轮 trace 作为证据（明确所测面 = ax_web_area）。
+    """
+    label = f"{target_w}x{target_h}"
+    trace: list[dict[str, Any]] = []
+
+    def measure_now(round_no: int) -> tuple[int, int, int, int]:
+        measured = driver.run(["measure", "--pid", str(app_pid),
+                               "--bundle-id", bundle_id,
+                               "--window-id", str(window_id)])
+        cw, ch = require_content_geometry(measured, label=label)
+        trace.append({
+            "round": round_no,
+            "content_source": measured.get("content_source"),
+            "content_width": cw, "content_height": ch,
+            "frame_width": measured.get("frame_width"),
+            "frame_height": measured.get("frame_height"),
+            "chrome_height": measured.get("chrome_height"),
+        })
+        return cw, ch, int(measured["frame_width"]), int(measured["frame_height"])
+
+    cw, ch, frame_w, frame_h = measure_now(0)
+    for round_no in range(1, max_iterations + 1):
+        if (cw, ch) == (target_w, target_h):
+            return {"content": (cw, ch), "frame": (frame_w, frame_h),
+                    "iterations": round_no - 1, "trace": trace,
+                    "converged": True}
+        # 差值直接加到 frame 上（chrome 差值不随内容变化而变化）
+        new_frame_w = frame_w + (target_w - cw)
+        new_frame_h = frame_h + (target_h - ch)
+        driver.run(["set-size", "--pid", str(app_pid), "--bundle-id", bundle_id,
+                    "--window-id", str(window_id),
+                    "--width", str(new_frame_w), "--height", str(new_frame_h)])
+        cw, ch, frame_w, frame_h = measure_now(round_no)
+    if (cw, ch) != (target_w, target_h):
+        raise GateError(
+            f"{label}：{max_iterations} 轮有界校准后实测内容区仍为 "
+            f"{cw}x{ch}，未命中 {target_w}x{target_h}；拒绝放宽容差假绿"
+            f"（trace={trace}）")
+    return {"content": (cw, ch), "frame": (frame_w, frame_h),
+            "iterations": max_iterations, "trace": trace, "converged": True}
+
+
 def run_verification(args: argparse.Namespace) -> int:
     install_signal_handlers()
     output = Path(args.output).expanduser().resolve()
@@ -1069,27 +1139,23 @@ def run_verification(args: argparse.Namespace) -> int:
                     f"{label}：无法消歧自有窗口（匹配 {len(windows)} 个）")
             win = windows[0]
             win_id = int(win["window_id"])
-            # 不传 --x/--y：set-size 只改尺寸，不搬位置
-            driver.run(["set-size", "--pid", str(app_pid), "--bundle-id", gui_bundle,
-                        "--window-id", str(win_id), "--width", str(content_w),
-                        "--height", str(content_h + 28)])
+            # 有界校准：以实测 web 内容面（AXWebArea）为准，不再用写死 +28
+            calibrated = calibrate_window_size(
+                driver, app_pid=app_pid, bundle_id=gui_bundle, window_id=win_id,
+                target_w=content_w, target_h=content_h)
             measured = driver.run(["measure", "--pid", str(app_pid),
                                    "--bundle-id", gui_bundle,
                                    "--window-id", str(win_id)])
-            if int(measured.get("content_width", -1)) != content_w or \
-                    int(measured.get("content_height", -1)) != content_h:
-                raise GateError(
-                    f"{label}：窗口级 AX 实测内容区 "
-                    f"{measured.get('content_width')}x{measured.get('content_height')} "
-                    f"（标题栏实测 {measured.get('titlebar_height')}）与目标不符")
             shot = driver.run(["screenshot", "--pid", str(app_pid),
                                "--bundle-id", gui_bundle, "--window-id", str(win_id),
                                "--output", str(screenshots / f"window-{label}.png")])
             recorder.record(
                 f"window-size-{label}", "pass",
-                f"窗口级 AX 实测内容区 {measured['content_width']}x"
-                f"{measured['content_height']}（标题栏实测 "
-                f"{measured.get('titlebar_height')}pt，未写死 -28）；"
+                f"所测面=AXWebArea 实际内容（content_source=ax_web_area）；"
+                f"实测内容区 {calibrated['content'][0]}x{calibrated['content'][1]} "
+                f"命中目标，frame={calibrated['frame'][0]}x{calibrated['frame'][1]}，"
+                f"chrome 实测差值={measured.get('chrome_height')}pt（有界校准 "
+                f"{calibrated['iterations']} 轮收敛，未放宽容差）；"
                 f"截图 {shot.get('path')} {shot.get('width')}x{shot.get('height')}")
 
         # ---- 阶段 7：有界产品交互 + 自动采证（B5）-------------------

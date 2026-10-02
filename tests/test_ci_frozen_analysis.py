@@ -20,6 +20,13 @@
 5. 真实入口行为：--help 退出 0；真实失败路径（helper 缺失）非零退出且
    不产生成功 manifest（不 freeze、不装依赖，worker 本机合同内可跑）。
 
+repair episode 1（run 36933024493 真实 Intel CI 红）：build_helper.sh 在
+runner 上真实成功，但 onedir 可执行位于三层 fathom-helper
+（…/resources/helper/fathom-helper/fathom-helper/fathom-helper），控制器
+默认两层（指向 app 目录）致 identity exit 2、33 项未执行。本轮新增真实
+布局回归（RED 先行）与目录/缺可执行负例，修复入口默认产物路径与真实
+构建一致；不迁就入口改原打包行为。
+
 测试不访问网络、不安装依赖、不真实 freeze：所有子进程调用经
 monkeypatch 替换；对真实入口的两个子进程检查只用 --help 与
 helper 缺失路径（不触碰冻结工具链）。
@@ -59,6 +66,16 @@ def fake_macho(cputype: int, size: int = 4096) -> bytes:
 
 X86_64_BYTES = fake_macho(0x01000007)
 ARM64_BYTES = fake_macho(0x0100000C)
+
+# 真实冻结输出布局（证据双源：build_helper.sh 自身 BIN="$OUT_DIR/fathom-helper/
+# fathom-helper"、OUT_DIR=…/resources/helper/fathom-helper；以及 run 36933024493
+# 真实 Intel 日志的 OK 行与 file/--version 行）。onedir 三层：
+# distpath(…/helper/fathom-helper) → app 目录(…/fathom-helper/fathom-helper)
+# → 可执行(…/fathom-helper/fathom-helper/fathom-helper)。
+# 测试用它构造桩构建输出，独立于被测常量（避免同义反复漏检布局漂移）。
+REAL_BUILD_LAYOUT_HELPER = Path(
+    "apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper"
+    "/fathom-helper")
 
 
 def write_helper(path: Path, blob: bytes, executable: bool = True) -> Path:
@@ -254,6 +271,66 @@ def test_manifest_invalid_source_sha_rejected(tmp_path: Path,
     assert manifest.get("ok") is not True
 
 
+# ---- 2b. 真实构建布局回归（repair episode 1 / run 36933024493） ------------
+
+
+def test_default_helper_subpath_matches_real_intel_layout() -> None:
+    """控制器默认产物路径必须逐字等于真实 onedir 三层布局。
+
+    真实 Intel 冻结成功后 identity exit 2 的根因：默认路径少一层
+    fathom-helper（指向 app 目录而非可执行），33 项因此未执行。
+    """
+    assert cfa.HELPER_SUBPATH.as_posix() == REAL_BUILD_LAYOUT_HELPER.as_posix()
+
+
+def test_manifest_directory_as_helper_rejected(tmp_path: Path,
+                                               fake_run: FakeRun) -> None:
+    """--helper 指向目录（如 onedir app 目录）必须拒绝，不得当可执行绑定。"""
+    app_dir = tmp_path / "fathom-helper"
+    (app_dir / "_internal").mkdir(parents=True)
+    (app_dir / "_internal" / "keep.bin").write_bytes(b"dir-not-exe")
+    out = tmp_path / "build-ready.json"
+    rc = cfa.main(["manifest", "--helper", str(app_dir), "--out", str(out),
+                   "--source-sha", BASE_SHA, "--repo-root", str(REPO_ROOT)])
+    assert rc != 0
+    manifest = json.loads(out.read_text(encoding="utf-8"))
+    assert manifest.get("ok") is not True
+    assert "helper" in manifest.get("reason", "")
+
+
+def test_run_onedir_dir_without_executable_blocks_verify(
+        tmp_path: Path, fake_run: FakeRun) -> None:
+    """构建只留 onedir app 目录（无可执行文件）：身份门拒绝、verify 不跑。"""
+    repo = make_fake_repo(tmp_path / "repo")
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
+    (venv / "bin" / "python").chmod(0o755)
+
+    def build_dir_only(cmd, **kw):  # noqa: ANN001, ANN202
+        app_dir = repo / REAL_BUILD_LAYOUT_HELPER.parent
+        (app_dir / "_internal" / "frontend").mkdir(parents=True,
+                                                   exist_ok=True)
+        (app_dir / "_internal" / "frontend" / "index.html").write_text(
+            "<html></html>", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    fake_run.handlers.update({
+        "bash": build_dir_only,
+        "git": lambda cmd, **kw: subprocess.CompletedProcess(
+            cmd, 0, stdout=BASE_SHA + "\n", stderr=""),
+    })
+
+    work = tmp_path / "work"
+    rc = cfa.main(["run", "--venv", str(venv), "--work-dir", str(work),
+                   "--repo-root", str(repo)])
+    assert rc != 0
+    manifest = json.loads((work / "build-ready.json").read_text(encoding="utf-8"))
+    assert manifest.get("ok") is False
+    assert manifest.get("stage") == "identity"
+    assert fake_run.called("verify_frozen_analysis.py") == []
+
+
 # ---- 3. run 子命令：编排与 fail-closed ------------------------------------
 
 
@@ -272,7 +349,9 @@ def make_fake_repo(tmp_path: Path) -> Path:
 
 def install_success_fakes(fake_run: FakeRun, repo: Path,
                           verify_rc: int = 0) -> dict:
-    helper_rel = cfa.HELPER_SUBPATH
+    # 桩构建按真实 onedir 三层布局落可执行（独立于被测常量），
+    # 控制器必须在同一真实布局处找到并绑定它。
+    helper_rel = REAL_BUILD_LAYOUT_HELPER
     state: dict = {"verify_manifest_at_call": None}
 
     def build(cmd, **kw):  # noqa: ANN001, ANN202
@@ -323,12 +402,17 @@ def test_run_success_wires_manifest_into_verify(tmp_path: Path,
     manifest_path = work / "build-ready.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["ok"] is True and manifest["source_sha"] == BASE_SHA
+    # 绑定的必须是真实 onedir 三层布局上的可执行文件（repair1 回归），
+    # 不是两层 app 目录——manifest 与 verify 入参同源同路径。
+    assert manifest["helper"] == str(repo / REAL_BUILD_LAYOUT_HELPER)
     # verify 收到的就是这份 manifest（显式传 --build-ready，当时已是 ok=true）
     assert state["verify_manifest_at_call"] == manifest
     verify_cmd = fake_run.called("verify_frozen_analysis.py")[0]
     assert verify_cmd[0] == str(venv / "bin" / "python")
     for flag in ("--helper", "--output", "--build-ready"):
         assert flag in verify_cmd
+    assert verify_cmd[verify_cmd.index("--helper") + 1] == \
+        str(repo / REAL_BUILD_LAYOUT_HELPER)
     summary = json.loads((work / "ci-summary.json").read_text(encoding="utf-8"))
     assert summary["stages"]["build"]["exit"] == 0
     assert summary["stages"]["verify"]["exit"] == 0
@@ -416,7 +500,7 @@ def test_run_identity_failure_after_build_blocks_verify(
     (venv / "bin" / "python").write_text("#!/bin/sh\n", encoding="utf-8")
 
     def build_arm(cmd, **kw):  # noqa: ANN001, ANN202
-        write_helper(repo / cfa.HELPER_SUBPATH, ARM64_BYTES)
+        write_helper(repo / REAL_BUILD_LAYOUT_HELPER, ARM64_BYTES)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     fake_run.handlers.update({

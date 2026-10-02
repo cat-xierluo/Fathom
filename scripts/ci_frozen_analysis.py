@@ -46,9 +46,15 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# build_helper.sh 的冻结产物相对仓库根路径（其内部固定，勿改）
+# build_helper.sh 冻结产物的可执行文件相对仓库根路径。真实 onedir 布局为
+# 三层 fathom-helper（distpath …/resources/helper/fathom-helper → app 目录
+# …/fathom-helper/fathom-helper → 可执行 …/fathom-helper/fathom-helper/
+# fathom-helper；run 36933024493 真实 Intel 日志实测，repair episode 1
+# 曾因少一层指向 app 目录致 identity exit 2、33 项未执行）。勿改：与
+# build_helper.sh 的 BIN 逐字一致，不迁就入口改打包行为。
 HELPER_SUBPATH = Path(
-    "apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper")
+    "apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper"
+    "/fathom-helper")
 
 TASK = "ISS-140"
 BUILD_TIMEOUT_S = 2400.0

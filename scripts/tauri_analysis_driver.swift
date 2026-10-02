@@ -373,18 +373,77 @@ func webAreaElement(_ window: AXUIElement) -> AXUIElement? {
        let webArea = value as! AXUIElement? {
         return webArea
     }
-    // 回退：在窗口子元素里找 role == AXWebArea
-    var childrenValue: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString,
-                                        &childrenValue) == AXError.success,
-          let children = childrenValue as? [AXUIElement] else { return nil }
-    return children.first { element in
-        var role: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString,
-                                            &role) == AXError.success,
-              let roleValue = role else { return false }
-        return (roleValue as? String) == webAreaRoleName
+    // 回退：BFS 遍历窗口 AX 树找 role == AXWebArea。实测它挂在
+    // window→AXGroup→AXGroup→AXScrollArea 下，不在窗口直接子层；
+    // 只查一层会漏掉真实存在的 web 内容面。
+    var queue: [AXUIElement] = [window]
+    var depth = 0
+    var visited = 0
+    while !queue.isEmpty && depth < 6 && visited < 128 {
+        var next: [AXUIElement] = []
+        for element in queue {
+            visited += 1
+            var roleValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString,
+                                             &roleValue) == AXError.success,
+               (roleValue as? String) == webAreaRoleName {
+                return element
+            }
+            var childrenValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString,
+                                             &childrenValue) == AXError.success,
+               let children = childrenValue as? [AXUIElement] {
+                next.append(contentsOf: children)
+            }
+        }
+        queue = next
+        depth += 1
     }
+    return nil
+}
+
+/// WKWebView 默认不向外部 AX 客户端暴露 web 内容树；按辅助功能客户端对
+/// WKWebView 的公开启用机制，对 AX 元素设置 AXManualAccessibility /
+/// AXEnhancedUserInterface 后，AXWebArea 才会在 WebView 元素下出现。
+/// 不支持的元素返回 attributeUnsupported 属正常，逐个忽略。
+func enableWebAccessibility(_ root: AXUIElement) -> Int {
+    var queue: [AXUIElement] = [root]
+    var visited = 0
+    var depth = 0
+    while !queue.isEmpty && depth < 6 && visited < 128 {
+        var next: [AXUIElement] = []
+        for element in queue {
+            visited += 1
+            AXUIElementSetAttributeValue(element,
+                                         "AXManualAccessibility" as CFString,
+                                         kCFBooleanTrue)
+            AXUIElementSetAttributeValue(element,
+                                         "AXEnhancedUserInterface" as CFString,
+                                         kCFBooleanTrue)
+            var childrenValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString,
+                                                &childrenValue) == AXError.success,
+                  let children = childrenValue as? [AXUIElement] else { continue }
+            next.append(contentsOf: children)
+        }
+        queue = next
+        depth += 1
+    }
+    return visited
+}
+
+/// 先外部启用 web AX，再轮询等 AXWebArea 出现。每轮都重新 enable：
+/// WebView 的 AX 元素是在启用后才长进树里的，首轮 BFS 触不到它，
+/// 新节点必须补设 AXManualAccessibility。超时仍取不到返回 nil，
+/// 调用方保持 fail-closed，不用 frame 伪证。
+func webAreaElementActivated(_ window: AXUIElement) -> AXUIElement? {
+    let app = appElement()
+    for _ in 0..<12 {
+        _ = enableWebAccessibility(app)
+        if let webArea = webAreaElement(window) { return webArea }
+        usleep(500_000)
+    }
+    return webAreaElement(window)
 }
 
 switch options.command {
@@ -405,7 +464,7 @@ case "identify":
             entry["ax_frame_width"] = Int(size.width.rounded())
             entry["ax_frame_height"] = Int(size.height.rounded())
             entry["title_label_height"] = Int(titleLabelHeight(element).rounded())
-            if let webArea = webAreaElement(element), let webSize = axSize(webArea) {
+            if let webArea = webAreaElementActivated(element), let webSize = axSize(webArea) {
                 entry["web_area_width"] = Int(webSize.width.rounded())
                 entry["web_area_height"] = Int(webSize.height.rounded())
                 entry["content_source"] = "ax_web_area"
@@ -478,7 +537,7 @@ case "measure":
         "cg_frame_width": Int(cgWindow.frame.width.rounded()),
         "cg_frame_height": Int(cgWindow.frame.height.rounded()),
     ]
-    if let webArea = webAreaElement(window),
+    if let webArea = webAreaElementActivated(window),
        let webSize = axSize(webArea) {
         let webPos = axPosition(webArea) ?? .zero
         payload["content_source"] = "ax_web_area"
@@ -510,7 +569,7 @@ case "click":
     var offsetY = options.clickY
     var contentSource = "window_relative"
     if let window = windowElement(windowId: options.windowId),
-       let webArea = webAreaElement(window),
+       let webArea = webAreaElementActivated(window),
        let webPos = axPosition(webArea),
        let winPos = axPosition(window) {
         offsetX = options.clickX + (webPos.x - winPos.x)

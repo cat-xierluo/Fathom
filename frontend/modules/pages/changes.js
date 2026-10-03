@@ -590,8 +590,8 @@ async function loadDetailTrend(path) {
     const ys = pts.map((p) => p.size_kb || 0);
     const chart = echarts.init(target);
     chart.setOption({
-      tooltip: { trigger: "axis", formatter: (ps) => ps.map((p, i) =>
-        `${xs[i]}<br/>${fmtKB(ys[i])}`).join("<br/>") },
+      tooltip: { trigger: "axis", formatter: (ps) => ps.map((p) =>
+        `${escapeHtml(pts[p.dataIndex].created_at || "")}<br/>${fmtKB(ys[p.dataIndex])}`).join("<br/>") },
       grid: { left: 50, right: 8, top: 8, bottom: 22 },
       xAxis: { type: "category", data: xs, axisLabel: { fontSize: 10 } },
       yAxis: { type: "value", axisLabel: { formatter: (v) => fmtKB(v), fontSize: 10 }, scale: true },

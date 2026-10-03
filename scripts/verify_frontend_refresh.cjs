@@ -19,6 +19,12 @@ const { chromium } = require("playwright");
 const REPO = path.resolve(__dirname, "..");
 const ROOT = "/fixture/root";
 const TOKEN = "iss023-fixture-token";
+// ISS-143：不同日期、不同容量及同日二次扫描，捕获详情悬停错用序列索引。
+const DETAIL_TREND_POINTS = [
+  { created_at: "2026-09-24T10:00:00", size_kb: 525 * 1024 ** 2 },
+  { created_at: "2026-09-28T10:00:00", size_kb: 545 * 1024 ** 2 },
+  { created_at: "2026-09-28T18:30:00", size_kb: 550 * 1024 ** 2 },
+];
 const evidenceDir = fs.mkdtempSync(path.join(os.tmpdir(), "fathom-iss027-"));
 const checks = [];
 
@@ -343,6 +349,11 @@ function createFixture() {
         matched_count: truncated ? 47 : 2,
         node_count: truncated ? 20000 : 2,
         node_limit: 20000,
+      });
+    }
+    if (url.pathname === "/api/trend") {
+      return json(res, 200, {
+        path: url.searchParams.get("path"), points: DETAIL_TREND_POINTS,
       });
     }
     if (url.pathname === "/api/browse") {
@@ -2658,6 +2669,34 @@ async function main() {
     record("journey-daily-detail-opens",
       detail.title === "目录详情" && detail.path && detail.closeBtn === "关闭详情",
       JSON.stringify(detail));
+    // ISS-143：读取图表像素坐标后用真实鼠标悬停，不调用 formatter/showTip。
+    await page.waitForSelector("#detail-trend-chart canvas");
+    await page.locator("#detail-trend-chart").scrollIntoViewIfNeeded();
+    const trendTargets = await page.evaluate((points) => {
+      const target = document.getElementById("detail-trend-chart");
+      const chart = echarts.getInstanceByDom(target);
+      const box = target.getBoundingClientRect();
+      return points.map((point, index) => {
+        const pixel = chart.convertToPixel({ seriesIndex: 0 }, [index, point.size_kb]);
+        return { x: box.x + pixel[0], y: box.y + pixel[1] };
+      });
+    }, DETAIL_TREND_POINTS);
+    const detailTrendShots = [];
+    for (const [index, point] of DETAIL_TREND_POINTS.entries()) {
+      await page.mouse.move(trendTargets[index].x, trendTargets[index].y);
+      // ECharts 默认轴提示延时 0，留出渲染和位置动画时间后读取可见 DOM。
+      await page.waitForTimeout(350);
+      const tooltipText = await page.locator("#detail-trend-chart").innerText();
+      const date = index === 2 ? point.created_at : point.created_at.slice(5, 10);
+      const size = `${(point.size_kb / 1024 ** 2).toFixed(1)} GB`;
+      record(`iss143-detail-trend-hover-point-${index + 1}`,
+        tooltipText.includes(date) && tooltipText.includes(size),
+        JSON.stringify({ expectedDate: date, expectedSize: size, tooltipText,
+          mouse: trendTargets[index] }));
+      const shot = path.join(evidenceDir, `iss143-detail-trend-point-${index + 1}.png`);
+      await page.screenshot({ path: shot });
+      detailTrendShots.push(shot);
+    }
     // Esc 关闭，焦点返回触发行
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => document.getElementById("changes-detail").hidden);
@@ -4313,6 +4352,7 @@ async function main() {
         bigfilesPermShot, bigfilesNoMatchShot, permHubShot,
         permOverShot, permEmptyShot,
         packagedDefaultShot, packagedOpenShot,
+        ...detailTrendShots,
         ...viewportScreens],
       checks,
     }, null, 2) + "\n");

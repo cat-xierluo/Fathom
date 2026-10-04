@@ -8,7 +8,7 @@
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 1219）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 1233）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -61,7 +61,9 @@ cd "$(dirname "$0")/.."
 # 去重/降级三态）（1147 → 1176）。
 # ISS-150 +32：tests/test_bigfiles_scoped.py——限定目录的 largest/recent
 # 模式与范围约束（两反例 + 越界/竞态/去重/预算披露）（1176 → 1208）。
-expected="${EXPECTED_PYTEST_PASSED:-1219}"
+# ISS-149 +14：tests/test_trend_anchor.py——trend 锚定/缺测窗口/排除
+# 隔离（反例①②③红测先行 + 兼容钉住）（1208 → 1233）。
+expected="${EXPECTED_PYTEST_PASSED:-1233}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

@@ -52,6 +52,8 @@
 # 单独实机证据；ISS-112 深链按钮 hidden 计算样式互斥断言再增 4 项=212；
 # ISS-118 深链降级 fallback 镜像互斥断言再增 2 项=214。
 # ISS-143 目录详情历史首/中/末点真实鼠标悬停再增 3 项=217。
+# ISS-149 树形套件 +14：trend 锚定窗口/缺测 null/排除隔离/等价表格
+# 键盘读数/真实悬停缺测标注/a-b 迟到响应不恢复旧曲线（60 → 74）。
 # verify 脚本自身任一检查失败都会以非零退出（pipefail 直通，不走门禁
 # 兜底），计数门禁只拦空跑与静默漂移。
 set -euo pipefail
@@ -168,5 +170,5 @@ assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
 # 三视口无横向溢出、AI 区与排行/日报次级可达。失败自身非零退出，
 # pipefail 直通判红；计数漂移由 EXPECTED_TREE_PASSED 兜底（同上口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_tree_changes_frontend.cjs | tee "$tree_out"
-expected_tree="${EXPECTED_TREE_PASSED:-60}"
+expected_tree="${EXPECTED_TREE_PASSED:-74}"
 assert_result_json "$tree_out" "$expected_tree" "tree changes frontend"

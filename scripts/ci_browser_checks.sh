@@ -168,5 +168,5 @@ assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
 # 三视口无横向溢出、AI 区与排行/日报次级可达。失败自身非零退出，
 # pipefail 直通判红；计数漂移由 EXPECTED_TREE_PASSED 兜底（同上口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_tree_changes_frontend.cjs | tee "$tree_out"
-expected_tree="${EXPECTED_TREE_PASSED:-53}"
+expected_tree="${EXPECTED_TREE_PASSED:-60}"
 assert_result_json "$tree_out" "$expected_tree" "tree changes frontend"

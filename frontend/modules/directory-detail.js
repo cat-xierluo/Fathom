@@ -5,13 +5,17 @@
  * #detail-trend-chart 画布——既有回归（refresh/ISS-143 悬停）按这些
  * 选择器断言，组件化不改合同。
  *
- * 区间与最新两条口径（ISS-148 交互合同「详情绑定当前 a/b，最新记录
- * 另标时间」）：
+ * 区间与趋势两条口径（ISS-148 交互合同「详情绑定当前 a/b，最新记录
+ * 另标时间」；ISS-149 趋势改锚定所选区间）：
  * - 区间证据：之前/现在/净变化/状态来自调用方传入的树行（绑定当前
- *   a/b 快照对），并以「区间 #a → #b」明示口径；
- * - 最新口径：/api/trend 与 /api/browse 恒绑定最新快照（后端合同，
- *   ISS-024/AUD-09），与区间无关——分区标题标注「最新快照口径」，
- *   并把最新记录时间单列一行，不与区间值混排。
+ *   a/b 快照对），并以「区间 #a → #b」明示口径；a/b 区间读数以
+ *   /api/diff/children（ISS-147）为准，趋势曲线不替代它；
+ * - 历史趋势（ISS-149）：以所选对比快照 b 为显式锚（anchor_snapshot_id）
+ *   请求 /api/trend，只画 b 所属数据集（同根同阈值同排除掩码）的窗口，
+ *   选择旧 a/b 时不再锚到最新数据集；窗口内每个快照一个点，缺条目为
+ *   null（connectNulls=false 断线呈现，不补 0），tooltip/等价表格给出
+ *   完整扫描时间与快照号，同日多次扫描可区分；响应旧形态（无锚定字段，
+ *   如旧 API）回落到既有「最新快照口径」渲染，保持兼容。
  *
  * 世代守卫：每次 open 以 `a|b|path` 为键，trend/browse 响应写回前
  * 复核键与请求域；区间变更（调用方 invalidate）后迟到的旧响应不得
@@ -68,9 +72,10 @@ export function createDirectoryDetail({
         <div><div class="stat-label">状态</div><div class="stat-value">${status}</div></div>
       </div>
       <div class="detail-section">
-        <h3>历史趋势（最新快照口径）</h3>
+        <h3>${escapeHtml(range.b ? `历史趋势（#${escapeHtml(range.b)} 锚定同数据集）` : "历史趋势（最新快照口径）")}</h3>
         <div id="detail-trend-chart" class="detail-trend">${icon("fileText", 14)} <span class="hint">加载中…</span></div>
         <p class="hint" id="detail-trend-latest" data-test="tree-detail-trend-latest" hidden></p>
+        <div id="detail-trend-table-host" hidden></div>
       </div>
       <div class="detail-section">
         <h3>当前所在（最新快照）</h3>
@@ -146,44 +151,141 @@ export function createDirectoryDetail({
     close({ restoreFocus: false });
   }
 
-  /* ---------- 最新口径数据（独立请求域 + 键守卫） ---------- */
+  /* ---------- 历史趋势（独立请求域 + 键守卫） ----------
+   *
+   * ISS-149：以所选对比快照 b 为显式锚请求 /api/trend——曲线只含 b 所属
+   * 数据集（同根同阈值同排除掩码）的窗口，选择旧 a/b 时不再锚到最新数据
+   * 集。响应锚定形态（含 dataset/anchor_snapshot_id）按窗口逐点渲染：
+   * 缺条目为 null gap（connectNulls=false），tooltip 与等价表格读完整
+   * 扫描时间 + 快照号（同日多次扫描可区分）；响应无锚定字段（旧 API）
+   * 回落既有「最新快照口径」渲染。迟到响应由 beginRequest + activeKey
+   * 双重守卫丢弃：a/b 变更后旧曲线不得恢复。 */
+
+  function trendAnchorOf() {
+    const b = rangeOf().b;
+    return /^\d+$/.test(b) ? b : null;
+  }
 
   async function loadTrend(path) {
     const target = hostEl()?.querySelector("#detail-trend-chart");
     if (!target) return;
     const request = beginRequest("detailTrend");
+    const anchor = trendAnchorOf();
+    const url = anchor
+      ? `/api/trend?path=${encodeURIComponent(path)}&anchor_snapshot_id=${encodeURIComponent(anchor)}`
+      : `/api/trend?path=${encodeURIComponent(path)}`;
     try {
-      const r = await fetchJSON(`/api/trend?path=${encodeURIComponent(path)}`);
+      const r = await fetchJSON(url);
       if (!request.current() || keyOf(rangeOf(), path) !== activeKey) return;
-      const pts = r.points || [];
-      const latestEl = hostEl()?.querySelector("#detail-trend-latest");
-      if (!pts.length) {
-        target.innerHTML = `<span class="hint">该路径此前未记录（不冒充增长）。</span>`;
-        return;
-      }
-      const xs = pts.map((p) => String(p.created_at || "").slice(5, 10));
-      const ys = pts.map((p) => p.size_kb || 0);
-      const chart = echarts.init(target);
-      chart.setOption({
-        tooltip: { trigger: "axis", formatter: (ps) => ps.map((p) =>
-          `${escapeHtml(pts[p.dataIndex].created_at || "")}<br/>${fmtKB(ys[p.dataIndex])}`).join("<br/>") },
-        grid: { left: 50, right: 8, top: 8, bottom: 22 },
-        xAxis: { type: "category", data: xs, axisLabel: { fontSize: 10 } },
-        yAxis: { type: "value", axisLabel: { formatter: (v) => fmtKB(v), fontSize: 10 }, scale: true },
-        series: [{ type: "line", smooth: true, symbol: "circle", symbolSize: 5,
-          data: ys, itemStyle: { color: cssVar("--trench") }, lineStyle: { width: 2 } }],
-      }, true);
-      if (latestEl) {
-        latestEl.textContent =
-          `最新记录：${String(pts[pts.length - 1].created_at || "").slice(0, 16).replace("T", " ")}（${pts.length} 个历史点，非当前区间口径）`;
-        latestEl.hidden = false;
-      }
+      if (anchor && r.dataset) renderAnchoredTrend(target, r, anchor);
+      else renderLegacyTrend(target, r);
     } catch (e) {
       if (!request.current() || keyOf(rangeOf(), path) !== activeKey) return;
       const host = hostEl();
       if (!host) return;
       const el = host.querySelector("#detail-trend-chart");
       if (el) el.innerHTML = `<span class="hint">趋势加载失败${e.status ? `（HTTP ${e.status}）` : ""}</span>`;
+    }
+  }
+
+  /** 锚定形态：同数据集窗口逐点渲染，缺测为 null gap 不补 0。 */
+  function renderAnchoredTrend(target, r, anchor) {
+    const host = hostEl();
+    const pts = r.points || [];
+    const recorded = pts.filter((p) => p.recorded && p.size_kb != null);
+    const latestEl = host?.querySelector("#detail-trend-latest");
+    const tableHost = host?.querySelector("#detail-trend-table-host");
+    // 窗口说明：数据集身份 + 截断如实标注（limit 截掉的是最早端）。
+    const ds = r.dataset || {};
+    const excludes = String(ds.exclude_names || "")
+      .split(";").filter(Boolean).join("、") || "无";
+    const hidden = r.truncated
+      ? `，另有 ${Number(r.total_snapshots) - pts.length} 个较早快照未显示`
+      : "";
+    if (latestEl) {
+      latestEl.textContent =
+        `锚定 #${anchor}（同数据集快照 ${Number(r.total_snapshots)} 个，窗口显示最新 ${pts.length} 个${hidden}）· ` +
+        `数据集：根 ${ds.root ?? "?"} · 阈值 ${ds.min_kb == null ? "未知" : ds.min_kb + " KB"} · 排除：${excludes}` +
+        `（缺测点为未记录：可能低于入库阈值、权限受限或已移除，不构成删除证据）`;
+      latestEl.hidden = false;
+    }
+    if (!recorded.length) {
+      // 整个窗口都无记录：不画无数据的空线，也不列全"—"表格
+      target.innerHTML =
+        `<span class="hint">该路径在 #${escapeHtml(anchor)} 所属数据集内没有已记录的历史点（窗口 ${pts.length} 个快照）。不会用 0 冒充增长。</span>`;
+      if (tableHost) { tableHost.hidden = true; tableHost.replaceChildren(); }
+      return;
+    }
+    const xs = pts.map((p) => String(p.created_at || ""));
+    const ys = pts.map((p) => (p.recorded && p.size_kb != null ? p.size_kb : null));
+    const chart = echarts.init(target);
+    chart.setOption({
+      tooltip: { trigger: "axis", formatter: (ps) => ps.map((p) => {
+        const pt = pts[p.dataIndex];
+        if (!pt) return "";
+        const head = `${pt.created_at || ""}${pt.snapshot_id != null ? `（#${pt.snapshot_id}）` : ""}`;
+        const size = pt.recorded && pt.size_kb != null ? fmtKB(pt.size_kb) : "未记录（缺测）";
+        return `${escapeHtml(head)}<br/>${escapeHtml(size)}`;
+      }).join("<br/>") },
+      grid: { left: 50, right: 8, top: 8, bottom: 22 },
+      xAxis: { type: "category", data: xs,
+        axisLabel: { fontSize: 10, formatter: (v) => String(v).slice(5, 10) } },
+      yAxis: { type: "value", axisLabel: { formatter: (v) => fmtKB(v), fontSize: 10 }, scale: true },
+      series: [{ type: "line", smooth: true, symbol: "circle", symbolSize: 5,
+        connectNulls: false,  // 缺测断线：不把未记录快照连成实测
+        data: ys, itemStyle: { color: cssVar("--trench") }, lineStyle: { width: 2 } }],
+    }, true);
+    if (tableHost) {
+      // 等价读数表：读数不依赖指针悬停，键盘 Tab 逐行聚焦可读时间与容量；
+      // 同日多次扫描按完整扫描时间（到秒）与快照号区分。
+      const body = pts.map((pt) => {
+        const at = String(pt.created_at || "").replace("T", " ");
+        const sid = pt.snapshot_id != null ? `#${pt.snapshot_id}` : "";
+        const known = pt.recorded && pt.size_kb != null;
+        const sizeText = known ? fmtKB(pt.size_kb) : "—（未记录）";
+        return `<tr tabindex="0" data-test="detail-trend-row" aria-label="扫描时间 ${escapeHtml(at)}，快照 ${escapeHtml(sid)}，` +
+          `${known ? `大小 ${escapeHtml(sizeText)}` : "未记录（缺测，不构成删除证据）"}">` +
+          `<td>${escapeHtml(at)}</td><td>${escapeHtml(sid)}</td>` +
+          `<td class="num">${known ? escapeHtml(sizeText) : `<span class="delta-none">—</span>`}</td></tr>`;
+      }).join("");
+      tableHost.innerHTML =
+        `<p class="hint" style="margin:6px 0 2px">各快照读数（缺测行如实标注；键盘 Tab 逐行可读）</p>` +
+        `<div style="max-height:160px;overflow:auto;border:1px solid var(--border,#e0e0e0);border-radius:4px">` +
+        `<table style="width:100%;border-collapse:collapse;font-size:12px" data-test="detail-trend-table">` +
+        `<thead><tr><th style="text-align:left;padding:3px 6px">扫描时间</th>` +
+        `<th style="text-align:left;padding:3px 6px">快照</th>` +
+        `<th style="text-align:right;padding:3px 6px">大小</th></tr></thead>` +
+        `<tbody>${body}</tbody></table></div>`;
+      tableHost.hidden = false;
+    }
+  }
+
+  /** 旧形态（无锚定字段）：保持 ISS-143 悬停合同不变。 */
+  function renderLegacyTrend(target, r) {
+    const pts = r.points || [];
+    const latestEl = hostEl()?.querySelector("#detail-trend-latest");
+    const tableHost = hostEl()?.querySelector("#detail-trend-table-host");
+    if (tableHost) { tableHost.hidden = true; tableHost.replaceChildren(); }
+    if (!pts.length) {
+      target.innerHTML = `<span class="hint">该路径此前未记录（不冒充增长）。</span>`;
+      return;
+    }
+    const xs = pts.map((p) => String(p.created_at || "").slice(5, 10));
+    const ys = pts.map((p) => p.size_kb || 0);
+    const chart = echarts.init(target);
+    chart.setOption({
+      tooltip: { trigger: "axis", formatter: (ps) => ps.map((p) =>
+        `${escapeHtml(pts[p.dataIndex].created_at || "")}<br/>${fmtKB(ys[p.dataIndex])}`).join("<br/>") },
+      grid: { left: 50, right: 8, top: 8, bottom: 22 },
+      xAxis: { type: "category", data: xs, axisLabel: { fontSize: 10 } },
+      yAxis: { type: "value", axisLabel: { formatter: (v) => fmtKB(v), fontSize: 10 }, scale: true },
+      series: [{ type: "line", smooth: true, symbol: "circle", symbolSize: 5,
+        data: ys, itemStyle: { color: cssVar("--trench") }, lineStyle: { width: 2 } }],
+    }, true);
+    if (latestEl) {
+      latestEl.textContent =
+        `最新记录：${String(pts[pts.length - 1].created_at || "").slice(0, 16).replace("T", " ")}（${pts.length} 个历史点，非当前区间口径）`;
+      latestEl.hidden = false;
     }
   }
 

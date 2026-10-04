@@ -306,22 +306,26 @@ func appElement() -> AXUIElement { AXUIElementCreateApplication(options.pid) }
 /// 窗口级 AX 元素：从 application 元素的 kAXWindowsAttribute 取，
 /// 优先 focused window，其次唯一窗口。**不在 application 元素上读
 /// kAXSize/kAXPosition**（窗口属性在应用元素上通常 attributeUnsupported）。
+/// app 刚启动时 AX 服务器可能尚未挂上窗口（实测偶发），有界重试等就绪。
 func windowElement(windowId: Int) -> AXUIElement? {
-    var value: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(appElement(),
+    for _ in 0..<10 {
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement(),
                                         kAXWindowsAttribute as CFString,
                                         &value) == AXError.success,
-          let windows = value as? [AXUIElement], !windows.isEmpty else { return nil }
-
-    // 有 focused window 就用它（真实前台语义无关，属性最完整）
-    var focused: CFTypeRef?
-    if AXUIElementCopyAttributeValue(appElement(),
-                                     kAXFocusedWindowAttribute as CFString,
-                                     &focused) == AXError.success,
-       let focusedElement = focused {
-        return focusedElement as! AXUIElement
+           let windows = value as? [AXUIElement], !windows.isEmpty {
+            var focused: CFTypeRef?
+            if AXUIElementCopyAttributeValue(appElement(),
+                                             kAXFocusedWindowAttribute as CFString,
+                                             &focused) == AXError.success,
+               let focusedElement = focused {
+                return focusedElement as! AXUIElement
+            }
+            if windows.count == 1 { return windows[0] }
+            return nil
+        }
+        usleep(500_000)
     }
-    if windows.count == 1 { return windows[0] }
     return nil
 }
 

@@ -344,6 +344,66 @@ class TestScopeResolution:
         assert "outside" not in str(ei.value)
 
 
+class TestRootScopeNormalization:
+    """default_root=/（整盘范围，ISS-155 消费前置）时前缀规范化。
+
+    缺陷背景（ISS-150 审计返修）：根为 ``/`` 时前缀判断拼成 ``//``，
+    所有子路径被误拒为越界。修复后任何输入不得拼出 ``//``，且非根默认
+    路径的既有守卫（相似前缀根、``..``、越界拒绝）行为不变。
+    本类只做路径解析（字符串检查 + resolve + is_dir），不触发 find 遍历。
+    """
+
+    def test_root_default_accepts_subpath(self):
+        """反例复现：default_root=/ 时 /etc 等子路径必须解析成功。"""
+        resolved = bigfiles.resolve_query_root("/etc", default_root=Path("/"))
+        assert resolved == Path("/etc").resolve()
+        assert Path("/").resolve() in resolved.parents
+
+    def test_root_default_accepts_root_itself(self):
+        """raw 即根 / 时解析成功，resolved_root 归一为 /（无尾斜杠、无 //）。"""
+        resolved = bigfiles.resolve_query_root("/", default_root=Path("/"))
+        assert resolved == Path("/")
+        assert str(resolved) == "/"
+
+    def test_root_default_accepts_synthetic_subpath(self, tmp_path):
+        """合成锚点：tmp_path（位于 / 之下）作为 / 的子路径同样解析成功。"""
+        sub = tmp_path / "sub"
+        sub.mkdir(parents=True)
+        resolved = bigfiles.resolve_query_root(str(sub), default_root=Path("/"))
+        assert resolved == sub.resolve()
+
+    def test_non_root_prefix_sibling_still_rejected(self, tmp_path):
+        """回归锚点：非根默认下 /a vs /ab 相似前缀守卫仍拒绝（防修复放宽）。"""
+        root = tmp_path / "r"
+        root.mkdir()
+        sibling = tmp_path / "rab"
+        sibling.mkdir()
+        with pytest.raises(bigfiles.BigfilesScopeError) as ei:
+            bigfiles.resolve_query_root(str(sibling), default_root=root)
+        assert ei.value.status == 400
+
+    def test_non_root_dotdot_still_rejected(self, tmp_path):
+        """回归锚点：非根默认下 ``..`` 折叠越界仍拒绝。"""
+        root = tmp_path / "r"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        with pytest.raises(bigfiles.BigfilesScopeError) as ei:
+            bigfiles.resolve_query_root(str(root / ".." / "outside"),
+                                        default_root=root)
+        assert ei.value.status == 400
+
+    def test_non_root_behavior_unchanged(self, tmp_path):
+        """回归锚点：非根默认路径行为不变（合法子路径成功、外部路径拒绝）。"""
+        root = tmp_path / "r"
+        (root / "sub").mkdir(parents=True)
+        got = bigfiles.resolve_query_root(str(root / "sub"), default_root=root)
+        assert got == (root / "sub").resolve()
+        with pytest.raises(bigfiles.BigfilesScopeError):
+            bigfiles.resolve_query_root(str(tmp_path / "elsewhere"),
+                                        default_root=root)
+
+
 # ---------- 键与去重（mode / scope_version 接缝） ----------
 
 class TestModeKeySemantics:

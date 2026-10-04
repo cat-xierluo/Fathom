@@ -8,7 +8,7 @@
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 1273）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 1281）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -75,7 +75,7 @@ cd "$(dirname "$0")/.."
 # tests/test_storage_dataset_identity.py 身份隔离十三路（换卷/换 plan
 # 不可比、同容器不同卷分组、同日替换/保留按计划隔离、淘汰 expired 与
 # AI 证据不级联、轮次/容量样本辅助）（1253 → 1273）。
-expected="${EXPECTED_PYTEST_PASSED:-1273}"
+expected="${EXPECTED_PYTEST_PASSED:-1281}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

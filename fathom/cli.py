@@ -212,12 +212,27 @@ def cmd_report(args: argparse.Namespace) -> int:
 
 
 def cmd_bigfiles(args: argparse.Namespace) -> int:
-    files = bigfiles.find_big_files(days=args.days, min_mb=args.min_mb, topn=args.topn)
+    mode = getattr(args, "mode", "recent")
+    raw_path = getattr(args, "path", None)
+    try:
+        root = bigfiles.resolve_query_root(raw_path)
+    except bigfiles.BigfilesScopeError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
+    try:
+        files = bigfiles.find_big_files(root=root, days=args.days, min_mb=args.min_mb,
+                                        topn=args.topn, mode=mode)
+    except bigfiles.BigfilesError as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
     for f in files:
         size_gb = f["size"] / 1024**3
         print(f"{size_gb:8.2f} GB  {f['mtime']}  {f['path']}")
     if not files:
-        print(f"近 {args.days} 天没有 >= {args.min_mb}MB 的文件修改")
+        if mode == "largest":
+            print(f"目录内没有 >= {args.min_mb}MB 的普通文件（当前逻辑大小）")
+        else:
+            print(f"近 {args.days} 天没有 >= {args.min_mb}MB 的文件修改")
     return 0
 
 
@@ -616,10 +631,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--with-bigfiles", action="store_true", help="附加近期大文件清单")
     p.set_defaults(func=cmd_report)
 
-    p = sub.add_parser("bigfiles", help="近期大文件清单")
+    p = sub.add_parser("bigfiles", help="近期大文件 / 当前最大文件清单")
     p.add_argument("--days", type=int, default=7)
     p.add_argument("--min-mb", type=int, default=100)
     p.add_argument("--topn", type=int, default=30)
+    p.add_argument("--mode", choices=("recent", "largest"), default="recent",
+                   help="recent=近 N 天修改（默认）；largest=当前逻辑大小最大"
+                        "（不受 mtime 限制，需完整遍历才算最大）")
+    p.add_argument("--path", default=None,
+                   help="限定查询目录（默认扫描根；仅接受根内的规范化子目录，"
+                        "拒绝 ..、相似前缀根与符号链接越界）")
     p.set_defaults(func=cmd_bigfiles)
 
     p = sub.add_parser("status", help="状态总览")

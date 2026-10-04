@@ -39,6 +39,7 @@ import hashlib
 import logging
 import os
 import resource
+import selectors
 import subprocess
 import threading
 import time
@@ -62,16 +63,31 @@ class BigfilesState(str, enum.Enum):
     EXPIRED = "expired"
 
 
+_BIGFILE_MODES = ("recent", "largest")
+
+
 @dataclass(frozen=True, slots=True)
 class BigfilesQuery:
+    """一次大文件查询的参数。
+
+    ``mode``（ISS-150）：``recent`` 保持既有行为（近 N 天修改，mtime 过滤）；
+    ``largest`` 按当前 st_size 逻辑大小排序、不带 mtime 过滤。
+    ``scope_version`` 是允许范围配置版本的接缝（155 引入 allowlisted scope
+    身份时递增即可使旧缓存/去重失效）；缓存与并发去重键由
+    (规范根, mode, days, min_mb, topn, scope_version) 组成。
+    """
+
     root: Path
     days: int
     min_mb: int
     topn: int
+    mode: str = "recent"
+    scope_version: int = 0
 
     @property
     def key(self) -> tuple:
-        return (str(self.root), int(self.days), int(self.min_mb), int(self.topn))
+        return (str(self.root), str(self.mode), int(self.days), int(self.min_mb),
+                int(self.topn), int(self.scope_version))
 
 
 @dataclass(slots=True)
@@ -84,6 +100,8 @@ class BigfilesStats:
     find_exit_code: int = 0
     find_stderr_lines: int = 0
     permission_denied_lines: int = 0
+    started_at: float = 0.0          # 查询开始（epoch 秒）
+    finished_at: float = 0.0         # 查询结束（epoch 秒）
 
 
 @dataclass(slots=True)
@@ -96,6 +114,9 @@ class BigfilesResult:
     cache_age_s: Optional[float] = None
     truncated: bool = False
     raw_truncated: bool = False
+    # ISS-150：find 未完成全量遍历（时间/输出预算提前截断）时为 True；
+    # 此时结果只代表「已检查文件中的较大项」，不代表目录的当前最大文件。
+    incomplete: bool = False
 
 
 # find stderr 中“权限拒绝”行的关键消息段（与 ISS-018 同源语义：仅 stderr 每行
@@ -144,6 +165,53 @@ def _classify_find(exit_code: int, stderr: str, raw_lines: int, result_cap: int)
     if raw_lines == 0:
         return BigfilesState.NO_MATCH, perm_lines, stderr_lines
     return BigfilesState.OK, perm_lines, stderr_lines
+
+
+class BigfilesScopeError(ValueError):
+    """查询目录越界/不可用（ISS-150）。
+
+    ``status`` 指示 API 应映射的 HTTP 状态码：400 = 越界/坏参数，
+    404 = 路径不存在或不是目录（可能已被移动或删除）。错误消息只包含
+    监控根本身（调用方已知），不回显解析后的用户路径。
+    """
+
+    def __init__(self, message: str, *, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def resolve_query_root(raw: Optional[str], *,
+                       default_root: Optional[Path] = None) -> Path:
+    """把用户请求的查询目录解析为允许范围内的规范目录（ISS-150）。
+
+    合同：
+    - ``raw=None`` / 未显式请求 → ``default_root`` 或 ``config.DEFAULT_ROOT``；
+    - 字符串层拒绝相对路径与前缀同名根（``/root-evil`` 不是 ``/root``）；
+    - resolve 层拒绝 ``..`` 折叠与符号链接越界（与 /api/reveal 同源语义）；
+    - 目标不存在或不是目录 → ``status=404``（路径可能已被移动或删除），
+      不与越界 400 混淆，也不产生空结果；
+    - 返回 ``resolve()`` 后的规范路径；不因历史路径存在而允许读取任意盘。
+    """
+    base = Path(default_root) if default_root is not None else Path(config.DEFAULT_ROOT)
+    if raw is None:
+        return base
+    if not isinstance(raw, str) or not raw:
+        raise BigfilesScopeError("path 参数必须是非空字符串")
+    root_str = str(base).rstrip("/") or "/"
+    if not (raw == root_str or raw.startswith(root_str + "/")):
+        raise BigfilesScopeError(
+            f"path 参数必须是监控根 {root_str} 之内的绝对路径")
+    try:
+        root_real = base.resolve()
+        resolved = Path(raw).resolve()
+    except (OSError, ValueError, RuntimeError):
+        raise BigfilesScopeError("path 参数无法规范化") from None
+    if resolved != root_real and root_real not in resolved.parents:
+        raise BigfilesScopeError("path 参数规范化后位于监控根之外，已拒绝")
+    if not resolved.is_dir():
+        raise BigfilesScopeError(
+            "path 参数不存在或不是目录（可能已被移动或删除）", status=404)
+    return resolved
 
 
 def _sanitize_path_for_log(path: str) -> str:
@@ -277,14 +345,22 @@ class BigfilesManager:
         min_mb: int | None = None,
         topn: int = 30,
         *,
+        mode: str = "recent",
         timeout: Optional[float] = None,
         force_refresh: bool = False,
+        scope_version: Optional[int] = None,
     ) -> BigfilesFuture:
         """显式触发一次查询；并发同参数请求共享同一 ``BigfilesFuture``。
 
         ``root=None`` 使用 ``config.DEFAULT_ROOT``；``timeout=None`` 使用
         ``default_timeout_s``；``force_refresh=True`` 跳过缓存直接启动新 find
         （仍遵守同参数去重）。
+
+        ``mode``（ISS-150）：``recent``（默认，保持既有行为）或 ``largest``
+        （按当前 st_size 逻辑大小排序，不带 mtime 过滤）。``scope_version``
+        缺省取 ``config.BIGFILE_SCOPE_VERSION``；缓存/去重键由
+        (规范根, mode, days, min_mb, topn, scope_version) 组成，不同模式或
+        不同范围配置版本互不共享。
 
         过期语义（ISS-032 修复）：缓存条目超过 ``cache_ttl_s`` 即视为不存在
         ——首个这样的调用在锁内丢弃过期条目，随后与缓存未命中完全一致地走
@@ -293,11 +369,16 @@ class BigfilesManager:
         ``state=expired`` 终态 future；``EXPIRED`` 枚举仅为兼容 API 状态
         字段合同而保留。
         """
+        if mode not in _BIGFILE_MODES:
+            raise ValueError(f"mode 必须是 {' 或 '.join(_BIGFILE_MODES)}，收到 {mode!r}")
         root_path = Path(root) if root is not None else config.DEFAULT_ROOT
         eff_days = config.BIGFILE_DEFAULT_DAYS if days is None else int(days)
         eff_mb = config.BIGFILE_DEFAULT_MB if min_mb is None else int(min_mb)
+        eff_scope = (config.BIGFILE_SCOPE_VERSION if scope_version is None
+                     else int(scope_version))
         query = BigfilesQuery(root=root_path, days=eff_days,
-                              min_mb=eff_mb, topn=int(topn))
+                              min_mb=eff_mb, topn=int(topn),
+                              mode=mode, scope_version=eff_scope)
         key = query.key
         effective_timeout = self._default_timeout_s if timeout is None else timeout
 
@@ -434,6 +515,14 @@ class BigfilesManager:
 
     def _run_find(self, query: BigfilesQuery, task: _RunningTask,
                   timeout: Optional[float]) -> BigfilesResult:
+        """按查询模式分派执行（ISS-150）：recent 走既有路径，largest 走
+        增量读取 + 时间/输出预算路径。"""
+        if query.mode == "largest":
+            return self._run_find_largest(query, task, timeout)
+        return self._run_find_recent(query, task, timeout)
+
+    def _run_find_recent(self, query: BigfilesQuery, task: _RunningTask,
+                         timeout: Optional[float]) -> BigfilesResult:
         root = query.root
         min_bytes = query.min_mb * 1024 * 1024
         args = [
@@ -446,11 +535,12 @@ class BigfilesManager:
             "-print0",
         ]
         _LOG.info(
-            "bigfiles 启动：sanitized_root=%s days=%d min_mb=%d topn=%d timeout=%s",
-            _sanitize_path_for_log(str(root)), query.days, query.min_mb,
+            "bigfiles 启动：sanitized_root=%s mode=%s days=%d min_mb=%d topn=%d timeout=%s",
+            _sanitize_path_for_log(str(root)), query.mode, query.days, query.min_mb,
             query.topn, timeout,
         )
 
+        started = time.time()
         start = time.monotonic()
         try:
             proc = self._popen_factory(
@@ -495,6 +585,8 @@ class BigfilesManager:
                 find_exit_code=proc.returncode if proc.returncode is not None else -1,
                 find_stderr_lines=sum(1 for ln in stderr.splitlines() if ln.strip()) if stderr else 0,
                 permission_denied_lines=0,
+                started_at=started,
+                finished_at=time.time(),
             )
             raise _FindFailure(f"find 超时（>{timeout}s）", stats=stats)
 
@@ -513,6 +605,8 @@ class BigfilesManager:
                 find_exit_code=proc.returncode if proc.returncode is not None else -1,
                 find_stderr_lines=sum(1 for ln in stderr.splitlines() if ln.strip()) if stderr else 0,
                 permission_denied_lines=0,
+                started_at=started,
+                finished_at=time.time(),
             )
             if cancelled_alive:
                 self._terminate_group(proc)
@@ -521,6 +615,7 @@ class BigfilesManager:
             raise _Cancelled(stats=stats)
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
+        finished = time.time()
         rusage = resource.getrusage(resource.RUSAGE_CHILDREN)
         stderr_text = stderr.decode("utf-8", errors="replace") if stderr else ""
         stdout_text = stdout or b""
@@ -530,24 +625,7 @@ class BigfilesManager:
         raw_count = sum(1 for r in raw_paths if r)
         raw_truncated = raw_count >= self._result_cap
 
-        # 限制 stat 调用次数：topn 决定返回数量，但若 result_cap 截断，仍按
-        # topn 取前 N 个 stat
-        stat_limit = min(len(raw_paths), max(query.topn, self._result_cap))
-        files: list[dict] = []
-        for raw in raw_paths[:stat_limit]:
-            if not raw:
-                continue
-            path = os.fsdecode(raw)
-            try:
-                st = self._stat_fn(path)
-            except OSError:
-                continue
-            files.append({
-                "path": path,
-                "size": st.st_size,
-                "mtime": _format_mtime(st.st_mtime),
-            })
-        files.sort(key=lambda x: x["size"], reverse=True)
+        files = self._stat_and_rank(raw_paths, query, extended=False)
         truncated = len(files) > query.topn
         files = files[:query.topn]
 
@@ -562,6 +640,8 @@ class BigfilesManager:
             find_exit_code=proc.returncode if proc.returncode is not None else -1,
             find_stderr_lines=stderr_lines,
             permission_denied_lines=perm_lines,
+            started_at=started,
+            finished_at=finished,
         )
 
         if state == BigfilesState.OK and truncated:
@@ -590,6 +670,238 @@ class BigfilesManager:
             error_message=error_message,
             truncated=truncated or raw_truncated,
             raw_truncated=raw_truncated,
+        )
+
+    def _stat_and_rank(self, raw_paths: list[bytes], query: BigfilesQuery,
+                       *, extended: bool) -> list[dict]:
+        """对 find 输出路径做 stat 并按当前 st_size 逻辑大小降序排列。
+
+        ``extended=True``（largest）时条目附 ``blocks``（物理占用字节）与
+        ``sparse``（物理占用小于逻辑大小的稀疏标识）；recent 保持
+        ``{path, size, mtime}`` 三字段合同不变。stat 失败（路径在遍历与
+        stat 之间被移动/删除）的条目跳过。返回列表未做 topn 截断。
+        """
+        stat_limit = min(len(raw_paths), max(query.topn, self._result_cap))
+        files: list[dict] = []
+        for raw in raw_paths[:stat_limit]:
+            if not raw:
+                continue
+            path = os.fsdecode(raw)
+            try:
+                st = self._stat_fn(path)
+            except OSError:
+                continue
+            entry = {
+                "path": path,
+                "size": st.st_size,
+                "mtime": _format_mtime(st.st_mtime),
+            }
+            if extended:
+                blocks = st.st_blocks * 512
+                entry["blocks"] = blocks
+                entry["sparse"] = st.st_size > 0 and blocks < st.st_size
+            files.append(entry)
+        files.sort(key=lambda x: x["size"], reverse=True)
+        return files
+
+    def _run_find_largest(self, query: BigfilesQuery, task: _RunningTask,
+                          timeout: Optional[float]) -> BigfilesResult:
+        """largest 模式（ISS-150）：当前逻辑大小最大的文件，不带 mtime 过滤。
+
+        与 recent 的差别：
+        - find 不带 ``-mtime``，其余过滤参数（-xdev/-type/-size/-print0）
+          一致；find 默认不跟随目录符号链接（-P），配合调用方的
+          ``resolve_query_root`` 范围解析，遍历不会越出规范根。
+        - 增量读取 stdout/stderr（selectors，bufsize=0 直读）：时间预算
+          ``timeout`` 到点或输出预算 ``BIGFILE_LARGEST_MAX_OUTPUT_BYTES``
+          触顶时回收进程，返回已解析部分并标记 ``incomplete=True``——
+          按 ISS-150 合同仅称「已检查文件中的较大项」，不作为 FAILED
+          丢弃已收集数据。
+        - 完整遍历（双管道 EOF + find 自然退出）才允许 OK / NO_MATCH 语义。
+        - 取消合同与 recent 相同：spawn 窗口补投组信号（ISS-123）、
+          取消只作用于本请求 key 的进程。
+        """
+        root = query.root
+        min_bytes = query.min_mb * 1024 * 1024
+        args = [
+            self._find_path,
+            str(root),
+            "-xdev",
+            "-type", "f",
+            "-size", f"+{min_bytes}c",
+            "-print0",
+        ]
+        _LOG.info(
+            "bigfiles 启动：sanitized_root=%s mode=%s days=%d min_mb=%d topn=%d timeout=%s",
+            _sanitize_path_for_log(str(root)), query.mode, query.days, query.min_mb,
+            query.topn, timeout,
+        )
+
+        started = time.time()
+        start = time.monotonic()
+        try:
+            proc = self._popen_factory(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                bufsize=0,  # raw 流，配合 os.read 增量读取
+            )
+        except FileNotFoundError:
+            raise _FindFailure(f"未找到 find：{self._find_path}")
+        except OSError as exc:
+            raise _FindFailure(f"无法启动 find：{exc}")
+        task.proc = proc
+        if task.cancel_event.is_set():
+            # spawn 窗口取消补投（ISS-123）：与 recent 同一合同，取消已受理
+            # 即必然生效。cancel 方先置位 cancel_event 再读 task.proc，本方
+            # 先赋值 task.proc 再读 cancel_event，Event 的 happens-before
+            # 保证任一侧都不会双向错过。
+            try:
+                os.killpg(proc.pid, 15)  # SIGTERM
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        out_chunks: list[bytes] = []
+        err_chunks: list[bytes] = []
+        partial_reason: Optional[str] = None  # None | "time" | "output"
+        deadline = (start + timeout) if timeout is not None else None
+        sel = selectors.DefaultSelector()
+        sel.register(proc.stdout, selectors.EVENT_READ, "out")
+        sel.register(proc.stderr, selectors.EVENT_READ, "err")
+        open_streams = 2
+        try:
+            while open_streams:
+                if task.cancel_event.is_set():
+                    try:
+                        os.killpg(proc.pid, 0)
+                        alive = True
+                    except (ProcessLookupError, PermissionError):
+                        alive = False
+                    if alive:
+                        self._terminate_group(proc)
+                    raise _Cancelled(stats=BigfilesStats(
+                        wall_ms=int((time.monotonic() - start) * 1000),
+                        started_at=started, finished_at=time.time(),
+                    ))
+                now = time.monotonic()
+                if deadline is not None and now >= deadline:
+                    partial_reason = "time"
+                    self._terminate_group(proc)
+                    break
+                if deadline is None:
+                    sel_timeout = 0.5
+                else:
+                    sel_timeout = max(0.001, min(0.5, deadline - now))
+                events = sel.select(timeout=sel_timeout)
+                for key, _mask in events:
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if not chunk:
+                        sel.unregister(key.fileobj)
+                        key.fileobj.close()
+                        open_streams -= 1
+                        continue
+                    if key.data == "out":
+                        out_chunks.append(chunk)
+                        if (sum(len(c) for c in out_chunks)
+                                >= config.BIGFILE_LARGEST_MAX_OUTPUT_BYTES):
+                            partial_reason = "output"
+                    else:
+                        err_chunks.append(chunk)
+                if partial_reason == "output":
+                    self._terminate_group(proc)
+                    break
+        finally:
+            sel.close()
+        # 收尸：EOF / 预算路径之后确保进程对象退出（正常路径 wait 立即返回）
+        try:
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                pass
+        # EOF 退出也可能恰逢取消（SIGTERM 使管道 EOF 先于循环内检查）：
+        # 与 recent 合同一致，cancel() 已受理（返回 True）的查询一律投递
+        # CancelledError，不把残缺输出当正常结果返回。
+        if task.cancel_event.is_set():
+            raise _Cancelled(stats=BigfilesStats(
+                wall_ms=int((time.monotonic() - start) * 1000),
+                started_at=started, finished_at=time.time(),
+            ))
+        finished = time.time()
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        rusage = resource.getrusage(resource.RUSAGE_CHILDREN)
+
+        stdout_bytes = b"".join(out_chunks)
+        stderr_text = b"".join(err_chunks).decode("utf-8", errors="replace")
+        raw_paths = stdout_bytes.split(b"\0")
+        raw_count = sum(1 for r in raw_paths if r)
+        raw_truncated = raw_count >= self._result_cap
+
+        files = self._stat_and_rank(raw_paths, query, extended=True)
+        truncated = len(files) > query.topn
+        files = files[:query.topn]
+
+        stderr_lines = sum(1 for ln in stderr_text.splitlines() if ln.strip())
+        perm_lines = sum(
+            1 for line in stderr_text.splitlines()
+            if line.strip() and line.rsplit(":", 1)[-1].strip() in _PERMISSION_TOKENS
+        )
+        exit_code = proc.returncode if proc.returncode is not None else -1
+
+        incomplete = partial_reason is not None or raw_truncated
+        if partial_reason is not None:
+            # 预算提前截断：仅称「已检查文件中的较大项」，披露不完整
+            state = BigfilesState.TRUNCATED
+            reason_cn = "时间" if partial_reason == "time" else "输出"
+            error_message = (f"{reason_cn}预算内未完成全量遍历，仅返回已检查"
+                             "文件中的较大项，结果不完整")
+            if perm_lines > 0:
+                error_message += f"；{perm_lines} 行权限受限"
+        else:
+            state, perm_cls, stderr_cls = _classify_find(
+                exit_code, stderr_text, raw_count, self._result_cap,
+            )
+            if state == BigfilesState.OK and truncated:
+                state = BigfilesState.TRUNCATED
+            elif state == BigfilesState.NO_MATCH and stderr_cls > 0 and perm_lines > 0:
+                state = BigfilesState.PERMISSION_DENIED
+            error_message = None
+            if state == BigfilesState.PERMISSION_DENIED:
+                error_message = f"find 退出 {exit_code}，{perm_lines} 行权限受限"
+            elif state == BigfilesState.FAILED:
+                sample = stderr_text.splitlines()[0] if stderr_text else ""
+                error_message = f"find 退出 {exit_code}：{sample[:160]}"
+            elif raw_truncated:
+                error_message = ("输出预算内未完成全量遍历，仅返回已检查文件中"
+                                 "的较大项，结果不完整")
+
+        stats = BigfilesStats(
+            wall_ms=elapsed_ms,
+            peak_rss_bytes=rusage.ru_maxrss,
+            find_output_lines=raw_count,
+            find_exit_code=exit_code,
+            find_stderr_lines=stderr_lines,
+            permission_denied_lines=perm_lines,
+            started_at=started,
+            finished_at=finished,
+        )
+        _LOG.info(
+            "bigfiles 完成：state=%s files=%d incomplete=%s wall_ms=%d "
+            "rss_bytes=%d exit=%d stderr_lines=%d perm_lines=%d",
+            state.value, len(files), incomplete, stats.wall_ms,
+            stats.peak_rss_bytes, exit_code, stderr_lines, perm_lines,
+        )
+        return BigfilesResult(
+            state=state,
+            files=files,
+            stats=stats,
+            error_message=error_message,
+            truncated=truncated or raw_truncated,
+            raw_truncated=raw_truncated,
+            incomplete=incomplete,
         )
 
     def _terminate_group(self, proc: subprocess.Popen) -> None:
@@ -651,6 +963,7 @@ def configure_default_manager(manager: Optional[BigfilesManager]) -> BigfilesMan
 
 def submit(root: Path | str | None = None, days: int | None = None,
            min_mb: int | None = None, topn: int = 30, *,
+           mode: str = "recent",
            timeout: Optional[float] = None,
            force_refresh: bool = False) -> BigfilesFuture:
     """便捷入口：使用模块默认管理器提交一次查询。"""
@@ -659,7 +972,7 @@ def submit(root: Path | str | None = None, days: int | None = None,
     eff_mb = config.BIGFILE_DEFAULT_MB if min_mb is None else int(min_mb)
     return _get_default_manager().submit(
         root_path, eff_days, eff_mb, topn,
-        timeout=timeout, force_refresh=force_refresh,
+        mode=mode, timeout=timeout, force_refresh=force_refresh,
     )
 
 
@@ -669,6 +982,7 @@ def find_big_files(
     min_mb: int | None = None,
     topn: int = 30,
     *,
+    mode: str = "recent",
     timeout: Optional[float] = 30.0,
 ) -> list[dict]:
     """向后兼容同步接口（api.py 现存调用方；CLI ``cmd_bigfiles`` 与
@@ -681,9 +995,11 @@ def find_big_files(
     - 缓存命中或正常返回仅取 ``files`` 字段（与旧合同一致）；
     - 返回值始终是 ``list[dict]``：``EXPIRED`` 状态一律抛 ``BigfilesError``
       而非静默返回旧 ``files``（ISS-032 修复合同；修复后 ``submit`` 不再
-      产生该状态，此守卫保证同步/报告路径永不无辨析地嵌入过期列表）。
+      产生该状态，此守卫保证同步/报告路径永不无辨析地嵌入过期列表）；
+    - ``mode``（ISS-150）：``recent``（默认，保持既有行为）或 ``largest``。
     """
-    future = submit(root=root, days=days, min_mb=min_mb, topn=topn, timeout=timeout)
+    future = submit(root=root, days=days, min_mb=min_mb, topn=topn,
+                    mode=mode, timeout=timeout)
     try:
         result = future.result(timeout=timeout)
     except concurrent.futures.CancelledError as exc:
@@ -711,7 +1027,9 @@ __all__ = [
     "BigfilesFuture",
     "BigfilesManager",
     "BigfilesError",
+    "BigfilesScopeError",
     "submit",
     "find_big_files",
+    "resolve_query_root",
     "configure_default_manager",
 ]

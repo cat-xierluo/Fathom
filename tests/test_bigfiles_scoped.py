@@ -39,9 +39,14 @@ def _make_file(path: Path, size_bytes: int, *, mtime_age_days: float = 0.0,
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         if not sparse:
-            f.write(b"\0")
-            f.seek(size_bytes - 1)
-            f.write(b"\0")
+            # dense：分块顺序写满非零字节，不 seek 跳洞。原先 seek+write
+            # 构造在 ext4 等文件系统上会留下空洞（blocks < size），dense
+            # 文件被误判为稀疏；APFS 对该模式不省块所以本地未暴露。
+            chunk = b"\xa5" * (1024 * 1024)
+            remaining = size_bytes
+            while remaining > 0:
+                f.write(chunk[: min(remaining, len(chunk))])
+                remaining -= min(remaining, len(chunk))
         else:
             # 稀疏：truncate 产生洞（APFS 实测 seek+write 不省块；truncate 块数为 0）
             f.truncate(size_bytes)

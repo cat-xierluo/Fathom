@@ -8,7 +8,9 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - GET  /api/diff             两快照差分
 - GET  /api/diff/children    绑定 a/b 区间的直属子目录差分（ISS-147）
 - GET  /api/trend?path=      单目录历史大小序列
-- GET  /api/bigfiles         近期大文件
+- GET  /api/bigfiles         近期大文件（?wait=false 立即返回 task_id 句柄）
+- GET  /api/bigfiles/status?task_id=   大文件任务状态（running/五态/cancelled）
+- POST /api/bigfiles/cancel  取消大文件任务（需写令牌；句柄即凭证）
 - GET  /api/bootstrap        发放写令牌（同源受控，ISS-022）
 - POST /api/scan             触发手动扫描（后台执行，状态入 scan_runs 表）
 - GET  /api/scan/status      查询扫描任务状态（?history=N 附最近 N 条记录）
@@ -59,7 +61,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -670,8 +672,10 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
                  min_mb: int = Query(100, ge=1, le=10240),
                  topn: int = Query(50, ge=1, le=200),
                  mode: str = Query("recent", pattern="^(recent|largest)$"),
-                 path: Optional[str] = Query(None)):
-    """近期大文件 / 当前最大文件查询（ISS-032；ISS-150 扩展 mode/path）。
+                 path: Optional[str] = Query(None),
+                 wait: bool = Query(True)):
+    """近期大文件 / 当前最大文件查询（ISS-032；ISS-150 扩展 mode/path；
+    ISS-164 扩展 task_id/wait）。
 
     显式触发语义：每次请求经 ``BigfilesManager.submit``；同参数并发请求自动
     去重；TTL 缓存可命中、过期可辨；find 进程组可被取消/超时回收。返回字段
@@ -690,6 +694,19 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
     - ``incomplete=True`` 表示时间/输出预算提前截断，``files`` 只是
       「已检查文件中的较大项」而非目录的当前最大文件。
     - ``stats.started_at``/``stats.finished_at`` 为查询起止（epoch 秒）。
+
+    ISS-164（任务句柄与取消的产品入口）：
+    - 响应新增 ``task_id``：由去重键确定性派生（``bf-`` + sha256 前 16 位），
+      同参并发去重与按句柄寻址因此落在同一条任务上；``task_id`` 不泄露
+      完整 root 路径。选确定性哈希而非 UUID 的完整理由见
+      ``bigfiles.BigfilesManager.task_id_for`` 的 docstring。
+    - ``wait=false``（新增参数，缺省 ``true`` = 旧行为）立即返回 202 +
+      ``task_id``/``state``/``scope``，**不阻塞**等 find：这是前端「离开页面
+      / 改查询范围时取消本任务」能拿到句柄的前提——浏览器中止 HTTP 请求只
+      断连接、不取消服务端 find，取消必须显式走 ``POST /api/bigfiles/cancel``。
+      此时结果本体仍从本端点（``wait=true``）按原参数取。
+    - ``wait=true`` 语义逐字段不变（仅新增 ``task_id``）：旧前端/CLI 零改动；
+      被取消/超时时 409/504 响应体附增 ``task_id`` 供前端恢复句柄。
     """
     try:
         resolved_root = bigfiles.resolve_query_root(path)
@@ -702,31 +719,45 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
         resolved_root, days=days, min_mb=min_mb, topn=topn, mode=mode,
         timeout=timeout_s,
     )
+    task_id = future.task_id
+    scope = {
+        "root": str(config.DEFAULT_ROOT),
+        "resolved_root": str(resolved_root),
+        "requested_path": path,
+        "mode": mode,
+        "days": days,
+        "min_mb": min_mb,
+        "topn": topn,
+    }
+    if not wait:
+        # 非阻塞提交：立刻交句柄（202），不碰结果本体。state 如实——缓存命中
+        # 的同参请求此时已是终态（terminal=true），前端应改走 wait=true 取本体。
+        submitted = manager.status_view(task_id)
+        return JSONResponse(
+            {"task_id": task_id, "state": submitted["state"],
+             "terminal": submitted["terminal"], "submitted": True,
+             "scope": scope},
+            status_code=202,
+        )
     try:
         result = future.result(timeout=timeout_s + 1.0)
     except concurrent.futures.CancelledError:
         return JSONResponse(
-            {"detail": "大文件查询已取消"},
+            {"detail": "大文件查询已取消", "task_id": task_id,
+             "state": "cancelled"},
             status_code=409,
         )
     except concurrent.futures.TimeoutError:
         future.cancel()
         return JSONResponse(
-            {"detail": "大文件查询超时，请稍后重试"},
+            {"detail": "大文件查询超时，请稍后重试", "task_id": task_id},
             status_code=504,
         )
     return {
         "state": result.state.value,
+        "task_id": task_id,
         "files": result.files,
-        "scope": {
-            "root": str(config.DEFAULT_ROOT),
-            "resolved_root": str(resolved_root),
-            "requested_path": path,
-            "mode": mode,
-            "days": days,
-            "min_mb": min_mb,
-            "topn": topn,
-        },
+        "scope": scope,
         "stats": {
             "wall_ms": result.stats.wall_ms,
             "peak_rss_bytes": result.stats.peak_rss_bytes,
@@ -745,6 +776,60 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
         "cache_age_s": result.cache_age_s,
         "error_message": result.error_message,
     }
+
+
+@app.get("/api/bigfiles/status")
+def api_bigfiles_status(task_id: str = Query(...)):
+    """按 task_id 查大文件任务状态（ISS-164，纯读、无副作用、无需写令牌）。
+
+    返回真实状态与既有五态对齐：在途 ``running``；终态为 ``BigfilesState``
+    六态之一或 ``cancelled``。另含 ``terminal``/``cancel_requested``/
+    ``created_at``/``finished_at``/``error_message``/``scope``（scope 不含
+    requested_path——状态查询只从句柄知道查询本身，不回显调用方原始输入）。
+
+    **不含结果本体**：``files``/``stats`` 等仍从 ``GET /api/bigfiles`` 按原
+    参数按需取（命中缓存或在途去重），状态查询保持轻量、可高频轮询。
+    未知或已超出保留期的 task_id → 404；缺参数 → 400。
+    """
+    try:
+        return _get_bigfiles_manager().status_view(task_id)
+    except bigfiles.BigfilesTaskNotFound:
+        raise HTTPException(404, "未知或已过期的 task_id")
+
+
+@app.post("/api/bigfiles/cancel")
+def api_bigfiles_cancel(payload: Optional[dict] = Body(default=None)):
+    """按 task_id 取消大文件任务（ISS-164，需写令牌 X-Fathom-Token）。
+
+    守卫：POST 走既有 ``local_boundary_guard`` 写令牌闸门（缺/伪造令牌 403），
+    与 ``POST /api/scan``/``/api/reveal``/``PUT /api/config`` 同一口径。
+
+    只取消该 task_id 对应任务：触发既有取消路径（find 进程组 SIGTERM →
+    回收窗口内升级 SIGKILL，只回收自有进程组），终态 ``cancelled``。取消受理
+    与回收完成之间是异步的——响应里的 ``state``/``terminal`` 如实反映当下，
+    前端可轮询 ``GET /api/bigfiles/status`` 确认收敛。
+
+    幂等（不报错、状态如实）：
+    - 已取消 → 200 + ``cancelled=true``；
+    - 已完成/已过期（终态非 cancelled）→ 200 + ``cancelled=false`` + 真实
+      终态，不谎称已取消、不复活终态；
+    - 未知或已超出保留期的 task_id → 404。
+
+    句柄即凭证：不校验「谁提交的」，也没有「他人任务」概念；越权面由写令牌
+    闸门承担（ISS-022 同源）。
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "请求体必须是 JSON 对象")
+    unknown = sorted(set(payload) - {"task_id"})
+    if unknown:
+        raise HTTPException(400, f"请求体含未知字段：{', '.join(unknown)}")
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise HTTPException(400, "task_id 必须是非空字符串")
+    try:
+        return _get_bigfiles_manager().cancel_task(task_id)
+    except bigfiles.BigfilesTaskNotFound:
+        raise HTTPException(404, "未知或已过期的 task_id")
 
 
 _BIGFILES_MANAGER: bigfiles.BigfilesManager | None = None

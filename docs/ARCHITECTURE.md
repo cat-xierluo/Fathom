@@ -80,7 +80,9 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | GET | /api/trees?snapshot_id=&min_kb= | 最新/指定快照目录树；默认 ≥51200 KiB；节点预算在 SQL 层生效（LIMIT+1 探测），响应含 truncated/matched_count/node_count/node_limit；截断时子孙提升为顶层且无孤儿重复；指定快照不存在 404、空库 200 snapshot_id=null、低于阈值 200 空结果；root=/ 归一化不再成为自己的孩子 |
 | GET | /api/diff?a=&b=&topn= | b 相对 a；默认 a=最新快照的同数据集前驱；不足/无同数据集前驱 409，不存在 404；a/b 跨根、跨阈值或跨排除集 400 |
 | GET | /api/trend?path=&limit= | 以最新记录该路径的快照为锚取最新 N 点后正序输出，按数据集隔离；缺失不补点（保留 gap）；无记录路径 200 空 points |
-| GET | /api/bigfiles?days=&min_mb=&topn= | 经 BigfilesManager 显式触发/去重/TTL；返回 state、scope、stats（wall_ms/peak_rss_bytes/find_output_lines/find_exit_code/…）、files、truncated、cached、cache_age_s、error_message；topn 上限 200 |
+| GET | /api/bigfiles?days=&min_mb=&topn=&mode=&path=&wait= | 经 BigfilesManager 显式触发/去重/TTL；返回 state、task_id、scope、stats（wall_ms/peak_rss_bytes/find_output_lines/find_exit_code/…）、files、truncated、cached、cache_age_s、error_message；topn 上限 200。`wait=false`（缺省 true）立即 202 返回 task_id/state/scope 不阻塞等 find（ISS-164）；`task_id` 由去重键确定性派生，同参去重与按句柄寻址指向同一任务 |
+| GET | /api/bigfiles/status?task_id= | 纯读、无需写令牌；返回真实状态（在途 running，终态为既有六态或 cancelled）+ terminal/cancel_requested/created_at/finished_at/error_message/scope；不含结果本体（仍从 /api/bigfiles 按原参数取）；未知或超出保留期 404，缺参 400 |
+| POST | /api/bigfiles/cancel | 需 `X-Fathom-Token`；body 只收 `{"task_id": ...}`（严格拒绝未知字段），只取消该句柄的 find 进程组（SIGTERM→SIGKILL，只回收自有进程）；已取消/已完成幂等 200 且状态如实，未知 404；句柄即凭证，越权面由写令牌闸门承担 |
 | POST | /api/scan | 需 `X-Fathom-Token`；先取得跨进程 `flock` 再落 running；冲突 409；成功返回 run_id；线程启动失败 503 并释放租约 |
 | GET | /api/scan/status?history= | 返回最新统一状态、source/phase/snapshot/report/notification/pruned/warnings；history=1..100 附 API/CLI/定时运行 |
 | GET | /api/browse?path= | 最新快照子目录、同数据集前驱差值、趋势、面包屑；无基线时 delta_kb=null、is_new=false |

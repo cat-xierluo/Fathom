@@ -574,22 +574,65 @@ def api_diff_children(
 
 @app.get("/api/trend")
 def api_trend(path: str = Query(..., min_length=1),
-              limit: int = Query(120, ge=2, le=2000)):
-    """单目录历史大小序列。
+              limit: int = Query(120, ge=2, le=2000),
+              anchor_snapshot_id: Optional[int] = Query(None)):
+    """单目录历史大小序列（ISS-149：显式锚定 + 缺测窗口；兼容旧形态）。
 
-    口径（ISS-024）：
-    - 数据集隔离：以"最新一条记录该路径的快照"为锚，只返回锚快照同数据集
-      （同根同 min_kb）内的点。嵌套监控根或改阈值后，同一绝对路径可能存在
-      于多个数据集，跨数据集混点会画出不可比的折线（AUD-09 同类反例）。
-    - 最新窗口：先取最新 N 条再正序输出，超过 limit 时最新点必须保留
-      （旧实现 ASC LIMIT 截掉的是最新端）。
-    - gap 语义：只返回确有记录的历史点；路径在中间某些快照缺失时缺不补点。
-    - 路径从未有记录：200 + 空 points（是"无记录"不是错误，与 400/404 区分）。
+    两种形态由 anchor_snapshot_id 区分：
+
+    - 锚定调用（anchor_snapshot_id 显式）：以该快照的**数据集身份**
+      （root, min_kb, exclude_names，经 reports.dataset_identity，153 扩展
+      身份后自动继承）取同数据集快照窗口，窗口内**每个快照一个点**（时间
+      正序）：有记录 recorded=true 且 size_kb 为实测值；无条目 size_kb=null、
+      recorded=false（缺测不补 0，前端以 connectNulls=false 断线呈现）。
+      每点带 snapshot_id 与完整扫描时间 created_at，同日多次扫描可区分。
+      limit 截"最新 N 个快照"再正序输出：数据集快照总数超过 limit 时
+      truncated=true（截掉的是最早端，最新点必在）。响应含数据集身份
+      dataset 与 total_snapshots/truncated 截断说明；锚快照不存在 → 404；
+      路径在该数据集从未记录 → 200 + 全 null 点（"窗口在、点缺"，不是错误）。
+    - 旧调用（无 anchor_snapshot_id，兼容）：以"最新一条记录该路径的快照"
+      为锚，points 只含确有记录的点（{created_at, size_kb}），ISS-024 gap
+      语义与响应形态不变（缺不补点、路径从未记录返回空 points）。
+
+    数据集隔离（ISS-024 口径 + ISS-149 收紧）：嵌套监控根、改阈值或改排除
+    掩码都会形成不同数据集，跨数据集混点会画出不可比的折线（AUD-09 同类
+    反例、ISS-066 三元组身份）；两种形态的数据集谓词统一走 reports 辅助
+    （find_same_dataset_snapshot_rows），不在本端点另写身份过滤。
     """
     conn = _get_conn()
     try:
+        if anchor_snapshot_id is not None:
+            anchor = conn.execute(
+                "SELECT * FROM snapshots WHERE id=?", (anchor_snapshot_id,)
+            ).fetchone()
+            if anchor is None:
+                raise HTTPException(404, f"快照 {anchor_snapshot_id} 不存在")
+            identity = reports.dataset_identity(anchor)
+            all_rows = reports.find_same_dataset_snapshot_rows(conn, identity)
+            truncated = len(all_rows) > limit
+            window_rows = all_rows[-limit:] if truncated else all_rows
+            recorded = {
+                r["snapshot_id"]: r["size_kb"]
+                for r in conn.execute(
+                    "SELECT snapshot_id, size_kb FROM entries WHERE path = ?", (path,))
+            }
+            points = [
+                {"snapshot_id": row["id"], "created_at": row["created_at"],
+                 "size_kb": recorded.get(row["id"]),
+                 "recorded": row["id"] in recorded}
+                for row in window_rows
+            ]
+            return {
+                "path": path,
+                "anchor_snapshot_id": anchor["id"],
+                "dataset": {"root": identity[0], "min_kb": identity[1],
+                            "exclude_names": identity[2]},
+                "points": points,
+                "total_snapshots": len(all_rows),
+                "truncated": truncated,
+            }
         anchor = conn.execute(
-            """SELECT s.id, s.root, s.min_kb FROM entries e
+            """SELECT s.* FROM entries e
                JOIN snapshots s ON s.id = e.snapshot_id
                WHERE e.path = ?
                ORDER BY s.created_at DESC, s.id DESC LIMIT 1""",
@@ -597,16 +640,27 @@ def api_trend(path: str = Query(..., min_length=1),
         ).fetchone()
         if anchor is None:
             return {"path": path, "points": []}
-        rows = conn.execute(
-            """SELECT s.created_at, e.size_kb FROM entries e
-               JOIN snapshots s ON s.id = e.snapshot_id
-               WHERE e.path = ? AND s.root = ? AND s.min_kb IS ?
-               ORDER BY s.created_at DESC, s.id DESC
-               LIMIT ?""",
-            (path, anchor["root"], anchor["min_kb"], limit),
-        ).fetchall()
-        rows.reverse()  # 输出时间正序
-        return {"path": path, "points": [dict(r) for r in rows]}
+        # 旧形态兼容：与旧实现逐点等价——数据集内该路径**有记录的点**按
+        # (created_at, id) 倒序取最新 limit 条再正序输出（缺测快照本就不
+        # 出现）。数据集身份（窗口）来自 reports 辅助，entries 只按 path 取。
+        dataset_rows = reports.find_same_dataset_snapshot_rows(
+            conn, reports.dataset_identity(anchor))
+        size_by_sid = {
+            r["snapshot_id"]: r["size_kb"]
+            for r in conn.execute(
+                "SELECT snapshot_id, size_kb FROM entries WHERE path = ?", (path,))
+        }
+        recorded_in_dataset = [
+            (row["created_at"], row["id"], size_by_sid[row["id"]])
+            for row in dataset_rows if row["id"] in size_by_sid
+        ]
+        recorded_in_dataset.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        legacy = [
+            {"created_at": created_at, "size_kb": size_kb}
+            for created_at, _sid, size_kb in recorded_in_dataset[:limit]
+        ]
+        legacy.reverse()
+        return {"path": path, "points": legacy}
     finally:
         conn.close()
 

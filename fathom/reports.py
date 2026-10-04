@@ -61,6 +61,42 @@ def same_dataset(row_a, row_b) -> bool:
             and _row_exclude_names(row_a) == _row_exclude_names(row_b))
 
 
+def dataset_identity(row: sqlite3.Row) -> tuple[str, int | None, str]:
+    """快照行的数据集身份三元组 (root, min_kb, exclude_names)。
+
+    与 same_dataset 同一口径的显式化（ISS-149）：趋势等序列查询以身份
+    取同数据集窗口，不再各自另写 root/min_kb 谓词——数据集身份扩展
+    （如 ISS-153 卷身份）时只需修改本函数与 same_dataset。
+    """
+    return (row["root"], row["min_kb"], _row_exclude_names(row))
+
+
+def find_same_dataset_snapshot_rows(
+    conn: sqlite3.Connection,
+    identity: tuple[str, int | None, str],
+    *,
+    limit: int | None = None,
+) -> list[sqlite3.Row]:
+    """按数据集身份取快照行序列：时间正序，limit 只截最新端。
+
+    身份谓词与 find_same_dataset_predecessor 一致（min_kb/exclude_names
+    用 ``IS`` 兼容 NULL/空串口径）。供 /api/trend 等序列查询复用：
+    "最新窗口"必须在同数据集序列上截取（AUD-09 同类反例），跨数据集
+    历史不得混入（ISS-149）。
+    """
+    root, min_kb, exclude_names = identity
+    sql = ("SELECT * FROM snapshots "
+           "WHERE root = ? AND min_kb IS ? AND exclude_names IS ? "
+           "ORDER BY created_at DESC, id DESC")
+    params: list[object] = [root, min_kb, exclude_names]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(sql, params).fetchall()
+    rows.reverse()  # 输出时间正序，序列消费方可直接渲染
+    return rows
+
+
 def find_same_dataset_predecessor(
     conn: sqlite3.Connection, sid: int
 ) -> sqlite3.Row | None:

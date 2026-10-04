@@ -109,13 +109,13 @@ assert os.environ.get("FATHOM_RUNTIME_DIR", "").startswith(sys.argv[1]), "拒绝
 
 from fathom import db
 
-def insert(conn, day, root, entries, min_kb=1024):
+def insert(conn, day, root, entries, min_kb=1024, exclude_names=""):
     cur = conn.execute(
         "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, "
         "total_kb, min_kb, collection_status, vanished_count, exclude_names, "
         "confirmed_missing_count, path_unverified_count) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (f"{day}T12:00:00", root, len(entries) + 1, 0, 0.0,
-         max(entries.values(), default=0), min_kb, "full", 0, "", None, None))
+         max(entries.values(), default=0), min_kb, "full", 0, exclude_names, None, None))
     sid = cur.lastrowid
     conn.executemany("INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,?)",
                      [(sid, p, s) for p, s in entries.items()])
@@ -166,6 +166,20 @@ def main(tmp):
                             {**{f"/synthetic/weird/{n}": 1000 for n in names}})
     ids["weird_b"] = insert(conn, "2026-09-15", "/synthetic/weird",
                             {**{f"/synthetic/weird/{n}": 2000 for n in names}})
+    # ISS-149 trend 锚定场景：三快照中间缺测（#17 无 leaf 条目）+ 改排除掩码
+    # 形成的新数据集（#19/#20）——历史锚不混入新数据集、旧调用不跨掩码混点。
+    ids["tg_s1"] = insert(conn, "2026-09-16", "/synthetic/trendgap",
+                          {"/synthetic/trendgap": 10000, "/synthetic/trendgap/leaf": 1000})
+    ids["tg_s2"] = insert(conn, "2026-09-17", "/synthetic/trendgap",
+                          {"/synthetic/trendgap": 10000})
+    ids["tg_s3"] = insert(conn, "2026-09-18", "/synthetic/trendgap",
+                          {"/synthetic/trendgap": 10000, "/synthetic/trendgap/leaf": 3000})
+    ids["tg_ex1"] = insert(conn, "2026-09-19", "/synthetic/trendgap",
+                           {"/synthetic/trendgap": 10000, "/synthetic/trendgap/leaf": 9000},
+                           exclude_names="node_modules")
+    ids["tg_ex2"] = insert(conn, "2026-09-20", "/synthetic/trendgap",
+                           {"/synthetic/trendgap": 10000, "/synthetic/trendgap/leaf": 9500},
+                           exclude_names="node_modules")
     counts = {k: conn.execute("SELECT COUNT(*) c FROM entries WHERE snapshot_id=?",
                               (v,)).fetchone()["c"] for k, v in ids.items()}
     conn.close()
@@ -204,7 +218,8 @@ async function main() {
   });
   const seedIds = JSON.parse(seedOut.trim().split("\n").filter((l) => l.startsWith("{")).pop());
   record("fixture-seed-ok",
-    Object.keys(seedIds.ids).length === 15 && (seedIds.ids.weird_b === 15),
+    Object.keys(seedIds.ids).length === 20 && (seedIds.ids.weird_b === 15) &&
+      (seedIds.ids.tg_ex2 === 20),
     `ids=${JSON.stringify(seedIds.ids)}`);
 
   // ---------- 2. 起真实 serve 并核对身份 ----------
@@ -250,11 +265,17 @@ async function main() {
       return tr ? Number(tr.dataset.depth) : -1;
     }, p);
 
-    /* ---- 基线：默认最新数据集（weird #14 → #15）---- */
+    /* ---- 基线：默认最新数据集（ISS-149 后最新为 trendgap 排除掩码 #19 → #20）---- */
     await page.goto(`${base}/#/changes`, { waitUntil: "networkidle" });
-    await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #14 → #15"),
+    await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #19 → #20"),
       20000, "默认对比完成");
     record("page-opens-default-diff", true, "状态行完成态出现");
+
+    // weird 基线断言：默认数据集已随 ISS-149 seed 前移，显式切到 #14 → #15
+    await page.selectOption("#sel-a", "14");
+    await page.selectOption("#sel-b", "15");
+    await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #14 → #15"),
+      20000, "weird 对比完成");
 
     const weirdRows = await rowPaths();
     record("tree-root-rows-render", weirdRows.length === 5, `rows=${weirdRows.length}`);
@@ -340,12 +361,12 @@ async function main() {
     await page.click('#changes-body tr[data-path="/synthetic/chain/child"] [data-expand]'); // 复位收起
     await waitUntil(async () => (await rowDepth("/synthetic/chain/child/grand")) === -1, 10000, "grand 复位收起");
 
-    // 详情：区间绑定 a/b + 最新口径另标时间（等 trend/browse 异步就绪）
+    // 详情：区间绑定 a/b + 锚定趋势就绪（等 trend/browse 异步完成）
     await page.click('#changes-body tr[data-path="/synthetic/chain/child"] .tree-name');
     await waitUntil(async () => page.evaluate(() =>
       !document.getElementById("changes-detail").hidden &&
       Boolean(document.querySelector("#detail-trend-chart canvas")) &&
-      (document.querySelector("[data-test='tree-detail-trend-latest']")?.textContent || "").includes("最新记录") &&
+      (document.querySelector("[data-test='tree-detail-trend-latest']")?.textContent || "").includes("锚定 #2") &&
       !document.getElementById("detail-current-info").textContent.includes("加载中")),
       10000, "详情数据就绪");
     const detail = await page.evaluate(() => ({
@@ -364,7 +385,7 @@ async function main() {
         detail.canvas && detail.closeLabel === "关闭详情",
       JSON.stringify(detail).slice(0, 220));
     record("chain-detail-latest-labeled",
-      detail.trendTitle.includes("最新快照口径") && detail.latest.includes("最新记录") &&
+      detail.trendTitle.includes("#2 锚定同数据集") && detail.latest.includes("锚定 #2") &&
         detail.current.includes("最新快照"),
       `latest=${detail.latest} current=${detail.current}`);
     await page.screenshot({ path: path.join(SHOTS, "chain-detail-open.png") });
@@ -631,12 +652,181 @@ async function main() {
       histDetail.stats.includes("#5 → #6") && histDetail.stats.includes("5.9 MB") &&
         histDetail.stats.includes("6.8 MB") && !histDetail.stats.includes("92.8 MB"),
       JSON.stringify(histDetail).slice(0, 200));
-    // 最新口径分开标注：趋势最新点是 s3（2026-09-07）；browse 区如实说明
-    // 其绑定最新快照数据集、不代表所选旧区间（最新数据集为 weird，路径越界 400）
+    // ISS-149：趋势锚定所选区间 b（#6），说明行给出同数据集窗口与身份，
+    // 不再以最新快照（#7）口径标注；browse 区如实说明其绑定最新快照、
+    // 不代表所选旧区间（最新数据集为 weird，路径越界 400）
     record("hist-detail-latest-labeled-separately",
-      histDetail.latest.includes("2026-09-07") &&
+      histDetail.latest.includes("锚定 #6") && histDetail.latest.includes("/synthetic/hist") &&
         histDetail.current.includes("最新快照") && histDetail.current.includes("不代表所选"),
       `current=${histDetail.current.slice(0, 80)} latest=${histDetail.latest}`);
+    await page.keyboard.press("Escape");
+
+    /* ---- ISS-149：trend 锚定与缺测窗口（真实 /api/trend + 生产详情实点） ---- */
+    // 场景（trendgap #16-#20）：同数据集三快照中间缺测（#17 无 leaf 条目），
+    // 改排除掩码形成新数据集（#19/#20）——历史锚不混入、旧调用不跨掩码混点。
+    const TG_LEAF = "/synthetic/trendgap/leaf";
+    const fetchTrend = (qs) => page.evaluate(async (query) => {
+      const r = await fetch(`/api/trend?${query}`);
+      return r.json();
+    }, qs);
+    const trendApi17 = await fetchTrend(
+      `path=${encodeURIComponent(TG_LEAF)}&anchor_snapshot_id=17`);
+    record("trend-api-anchor-window-null-gap",
+      trendApi17.anchor_snapshot_id === 17 &&
+        trendApi17.points.map((p) => p.snapshot_id).join(",") === "16,17,18" &&
+        trendApi17.points[1].size_kb === null && trendApi17.points[1].recorded === false &&
+        trendApi17.points[0].recorded === true &&
+        trendApi17.points[0].created_at === "2026-09-16T12:00:00" &&
+        trendApi17.points[0].size_kb === 1000,
+      JSON.stringify(trendApi17).slice(0, 260));
+    record("trend-api-dataset-identity-and-window",
+      trendApi17.dataset && trendApi17.dataset.root === "/synthetic/trendgap" &&
+        trendApi17.dataset.min_kb === 1024 && trendApi17.dataset.exclude_names === "" &&
+        trendApi17.total_snapshots === 3 && trendApi17.truncated === false,
+      JSON.stringify(trendApi17.dataset));
+    const trendApi16 = await fetchTrend(
+      `path=${encodeURIComponent(TG_LEAF)}&anchor_snapshot_id=16`);
+    record("trend-api-historical-anchor-keeps-old-dataset",
+      trendApi16.anchor_snapshot_id === 16 && trendApi16.points.length === 3 &&
+        !trendApi16.points.some((p) => p.snapshot_id >= 19) &&
+        trendApi16.points[1].size_kb === null,
+      JSON.stringify(trendApi16.points.map((p) => p.snapshot_id)));
+    const trendLegacy = await fetchTrend(`path=${encodeURIComponent(TG_LEAF)}`);
+    record("trend-api-legacy-shape-and-exclude-isolation",
+      Array.isArray(trendLegacy.points) && trendLegacy.points.length === 2 &&
+        trendLegacy.points.every((p) => p.created_at.slice(0, 10) >= "2026-09-19") &&
+        Object.keys(trendLegacy.points[0]).sort().join(",") === "created_at,size_kb" &&
+        !Array.isArray(trendLegacy.dataset),
+      JSON.stringify(trendLegacy));
+
+    // 详情实点：选 #16 → #18 打开 leaf 详情——缺测断线（data 含 null）
+    await page.selectOption("#sel-a", "16");
+    await page.selectOption("#sel-b", "18");
+    await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #16 → #18"),
+      20000, "trendgap 完成");
+    await page.click(`#changes-body tr[data-path="${TG_LEAF}"] .tree-name`);
+    await waitUntil(async () => page.evaluate(() =>
+      !document.getElementById("changes-detail").hidden &&
+      Boolean(document.querySelector("#detail-trend-chart canvas")) &&
+      (document.querySelector("[data-test='tree-detail-trend-latest']")?.textContent || "").includes("锚定 #18")),
+      10000, "trendgap 详情锚定就绪");
+    const trendTitle = await page.evaluate(() =>
+      document.querySelector("#changes-detail .detail-section h3")?.textContent || "");
+    record("trendgap-detail-title-anchored",
+      trendTitle.includes("#18 锚定同数据集"), trendTitle);
+    const trendOpt = await page.evaluate(() => {
+      const chart = echarts.getInstanceByDom(document.getElementById("detail-trend-chart"));
+      const opt = chart.getOption();
+      return { data: opt.series[0].data, connectNulls: opt.series[0].connectNulls,
+        cats: opt.xAxis[0].data };
+    });
+    record("trendgap-chart-null-gap-not-connected",
+      trendOpt.connectNulls === false && trendOpt.data.length === 3 &&
+        trendOpt.data[0] === 1000 && trendOpt.data[1] === null && trendOpt.data[2] === 3000,
+      JSON.stringify(trendOpt));
+    record("trendgap-x-categories-full-timestamps",
+      trendOpt.cats.length === 3 && trendOpt.cats[0] === "2026-09-16T12:00:00" &&
+        trendOpt.cats[1] === "2026-09-17T12:00:00",
+      JSON.stringify(trendOpt.cats));
+
+    // 等价读数表：三行、缺测行标"—（未记录）"不补 0、键盘聚焦行可读
+    const tableState = await page.evaluate(() => {
+      const host = document.getElementById("detail-trend-table-host");
+      const rows = [...host.querySelectorAll("[data-test='detail-trend-row']")];
+      return {
+        hidden: host.hidden,
+        n: rows.length,
+        firstAria: rows[0] ? rows[0].getAttribute("aria-label") || "" : "",
+        midText: rows[1] ? rows[1].textContent || "" : "",
+        midAria: rows[1] ? rows[1].getAttribute("aria-label") || "" : "",
+      };
+    });
+    record("trendgap-table-rows-first-last-readable",
+      tableState.hidden === false && tableState.n === 3 &&
+        tableState.firstAria.includes("2026-09-16 12:00:00") &&
+        tableState.firstAria.includes("快照 #16") && tableState.firstAria.includes("大小"),
+      JSON.stringify(tableState).slice(0, 260));
+    record("trendgap-table-gap-row-not-zero",
+      tableState.midText.includes("—") && !tableState.midText.includes("2.9 MB") &&
+        tableState.midAria.includes("未记录"),
+      `${tableState.midText} | aria=${tableState.midAria}`);
+    const midFocusAria = await page.evaluate(() => {
+      const row = document.querySelectorAll("#detail-trend-table-host [data-test='detail-trend-row']")[1];
+      row.focus();
+      return document.activeElement === row
+        ? (row.getAttribute("aria-label") || "") : "";
+    });
+    record("trendgap-table-keyboard-readable-gap",
+      midFocusAria.includes("2026-09-17 12:00:00") && midFocusAria.includes("未记录"),
+      midFocusAria);
+
+    // 真实鼠标悬停（不调 formatter/showTip）：首点完整时间+快照号+容量，
+    // 缺测点明确"未记录（缺测）"——不冒充实测读数。
+    await page.locator("#detail-trend-chart").scrollIntoViewIfNeeded();
+    const hoverXY = await page.evaluate(() => {
+      const target = document.getElementById("detail-trend-chart");
+      const chart = echarts.getInstanceByDom(target);
+      const box = target.getBoundingClientRect();
+      const xs = [0, 1].map((idx) => chart.convertToPixel({ xAxisIndex: 0 }, idx));
+      return xs.map((x) => ({ x: box.x + x, y: box.y + box.height / 2 }));
+    });
+    const trendShots = [];
+    const expectedHover = [
+      { date: "2026-09-16T12:00:00", sid: "#16", size: "1000.0 KB" },
+      { date: "2026-09-17T12:00:00", sid: "#17", size: "未记录（缺测）" },
+    ];
+    for (const [idx, exp] of expectedHover.entries()) {
+      await page.mouse.move(hoverXY[idx].x, hoverXY[idx].y);
+      await page.waitForTimeout(350);
+      const tooltipText = await page.locator("#detail-trend-chart").innerText();
+      record(`trendgap-hover-point-${idx + 1}`,
+        tooltipText.includes(exp.date) && tooltipText.includes(exp.sid) &&
+          tooltipText.includes(exp.size),
+        JSON.stringify({ expected: exp, tooltipText }));
+      const shot = path.join(SHOTS, `iss149-trend-gap-point-${idx + 1}.png`);
+      await page.screenshot({ path: shot });
+      trendShots.push(shot);
+    }
+
+    // 竞态：详情打开且 trend 响应被延迟时改选 a/b——详情关闭，迟到旧响应
+    // 不得恢复旧曲线；新区间重新打开后锚随新区间（#20，排除掩码数据集）。
+    // continue 需吞掉 unroute 自动放行后的二次处理（Playwright 语义）。
+    await page.keyboard.press("Escape");
+    await page.route("**/api/trend*", (route) => {
+      setTimeout(() => { route.continue().catch(() => {}); }, 1200);
+    });
+    await page.click(`#changes-body tr[data-path="${TG_LEAF}"] .tree-name`);
+    await waitUntil(async () => page.evaluate(() => !document.getElementById("changes-detail").hidden),
+      10000, "延迟详情打开");
+    await page.selectOption("#sel-a", "19");
+    await page.selectOption("#sel-b", "20");
+    await waitUntil(async () => page.evaluate(() => document.getElementById("changes-detail").hidden),
+      10000, "改选后详情关闭");
+    await page.unroute("**/api/trend*");
+    await sleep(1600);  // 迟到的旧 trend 响应到达
+    const staleTrend = await page.evaluate(() => ({
+      hidden: document.getElementById("changes-detail").hidden,
+      rows: document.querySelectorAll("#detail-trend-table-host [data-test='detail-trend-row']").length,
+    }));
+    record("trend-race-stale-response-not-restored",
+      staleTrend.hidden === true && staleTrend.rows === 0,
+      JSON.stringify(staleTrend));
+    // 新区间重新打开：锚 = #20（排除掩码数据集），身份说明可见
+    await page.click(`#changes-body tr[data-path="${TG_LEAF}"] .tree-name`);
+    await waitUntil(async () => page.evaluate(() =>
+      (document.querySelector("[data-test='tree-detail-trend-latest']")?.textContent || "").includes("锚定 #20")),
+      10000, "新区间锚定就绪");
+    const exDetail = await page.evaluate(() => ({
+      latest: document.querySelector("[data-test='tree-detail-trend-latest']")?.textContent || "",
+      cats: (() => {
+        const chart = echarts.getInstanceByDom(document.getElementById("detail-trend-chart"));
+        return chart ? chart.getOption().xAxis[0].data : [];
+      })(),
+    }));
+    record("trendgap-excluded-dataset-anchored-on-reswitch",
+      exDetail.latest.includes("锚定 #20") && exDetail.latest.includes("node_modules") &&
+        exDetail.cats.length === 2 && exDetail.cats[0] === "2026-09-19T12:00:00",
+      JSON.stringify(exDetail).slice(0, 220));
     await page.keyboard.press("Escape");
 
     /* ---- 竞态：快速改选 a/b，迟到的旧层级/详情响应不混入 ---- */

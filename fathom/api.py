@@ -6,6 +6,7 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - GET  /api/volume-trend     卷容量趋势序列
 - GET  /api/trees            某快照的目录树（旭日图数据）
 - GET  /api/diff             两快照差分
+- GET  /api/diff/children    绑定 a/b 区间的直属子目录差分（ISS-147）
 - GET  /api/trend?path=      单目录历史大小序列
 - GET  /api/bigfiles         近期大文件
 - GET  /api/bootstrap        发放写令牌（同源受控，ISS-022）
@@ -66,7 +67,7 @@ from fastapi.staticfiles import StaticFiles
 from . import SERVICE_IDENTITY, __version__, __protocol_version__
 from . import agent_runtime
 from . import analysis_manager
-from . import bigfiles, config, db, launchd, reports, scan_coordinator
+from . import bigfiles, config, db, hierarchy, launchd, reports, scan_coordinator
 
 # version 只从单一版本源 fathom.__version__ 读取（ISS-037）；本文件内
 # 禁止再出现硬编码语义化版本字面量，校验器会拦截。
@@ -444,6 +445,128 @@ def api_diff(
         return {"a": dict(meta[a]), "b": dict(meta[b]),
                 "grown": ser(diff["grown"]), "shrunk": ser(diff["shrunk"]),
                 "added": ser(diff["added"]), "removed": ser(diff["removed"])}
+    finally:
+        conn.close()
+
+
+@app.get("/api/diff/children")
+def api_diff_children(
+    a: int = Query(...),
+    b: int = Query(...),
+    path: str | None = None,
+    cursor: str | None = None,
+    limit: int = Query(hierarchy.CHILDREN_DEFAULT_LIMIT, ge=1,
+                       le=hierarchy.CHILDREN_MAX_LIMIT),
+    filter: str = Query("all"),
+    sort: str = Query("delta"),
+):
+    """绑定历史区间的同级差分（ISS-147）：a→b 区间内某目录的直属子目录。
+
+    与 /api/diff（Top25 折叠列表）和 /api/browse（恒绑定最新快照）互补，
+    为树形展开提供真实数据，不要求从折叠列表猜树：
+
+    - a/b 必填且严格绑定本次请求：old 取 a、new 取 b，不受更新快照影响；
+    - a/b 必须同数据集（同根同阈值同排除掩码），否则 400；
+    - path 按路径段落在数据集根内（默认根本身），越界/相对/含 `.`、`..`
+      段 400；两侧既无直接记录也无任何已记录后代时 404（如实说明可能
+      低于阈值或权限受限，不冒充空目录）；
+    - 行状态：measured（两侧直接记录，delta 可为 0）/ first_recorded
+      （b 首次入库，不代表文件系统新建）/ unrecorded（b 未记录，不是
+      删除证据）/ structural（双侧无直接记录、仅有已记录后代的导航
+      节点）；单侧缺测与结构节点 old/new/delta 为 null，不填 0；
+    - filter=changed 保留自身命中或有命中后代的行——父净 0 且子 +20/-20
+      抵消的整枝不被漏掉；排序只在同级内进行；
+    - 分页显式可见（total/has_more/next_cursor），游标绑定
+      a/b/path/filter/sort，任一变化即 400 需重新从首页请求；未展示分页
+      不得当作「未细分变化」；不提供子树净增量合计（目录累计不可相加）。
+    """
+    if filter not in hierarchy.FILTER_VALUES:
+        raise HTTPException(
+            400, f"filter 必须是 {'/'.join(hierarchy.FILTER_VALUES)}：{filter!r}")
+    if sort not in hierarchy.SORT_VALUES:
+        raise HTTPException(
+            400, f"sort 必须是 {'/'.join(hierarchy.SORT_VALUES)}：{sort!r}")
+    conn = _get_conn()
+    try:
+        meta: dict[int, dict] = {}
+        for sid in (a, b):
+            row = conn.execute("SELECT * FROM snapshots WHERE id=?", (sid,)).fetchone()
+            if row is None:
+                raise HTTPException(404, f"快照 {sid} 不存在")
+            meta[sid] = row
+        if not reports.same_dataset(meta[a], meta[b]):
+            raise HTTPException(
+                400,
+                f"快照 {a} 与 {b} 不属于同一数据集（同根同口径），已拒绝跨数据集对比",
+            )
+        try:
+            target = hierarchy.normalize_target(path, meta[a]["root"])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+        offset = 0
+        if cursor is not None:
+            payload = hierarchy.decode_cursor(cursor)
+            if payload is None:
+                raise HTTPException(400, "游标无效：无法解码")
+            if (not hierarchy.cursor_matches(
+                    payload, a=a, b=b, path=target, filter=filter, sort=sort)
+                    or hierarchy.cursor_offset(payload) is None):
+                raise HTTPException(
+                    400, "游标与当前查询参数（a/b/path/filter/sort）不匹配，"
+                         "请从首页重新请求")
+            offset = payload["offset"]
+
+        collected = hierarchy.collect_children(conn, a, b, target)
+        parent = collected["parent"]
+        if (not collected["children"]
+                and parent.old_kb is None and parent.new_kb is None):
+            raise HTTPException(
+                404,
+                f"路径 {target} 在快照 {a} 与 {b} 中均无记录"
+                "（可能低于入库阈值或权限受限）",
+            )
+
+        rows = list(collected["children"].values())
+        if filter == "changed":
+            rows = [r for r in rows if r.self_changed or r.has_changed_descendants]
+        rows = hierarchy.sort_rows(rows, sort)
+        total = len(rows)
+        page = rows[offset:offset + limit]
+        has_more = offset + limit < total
+        next_cursor = None
+        if has_more:
+            next_cursor = hierarchy.encode_cursor({
+                "v": 1, "a": a, "b": b, "path": target,
+                "filter": filter, "sort": sort, "offset": offset + limit,
+            })
+
+        return {
+            "a": dict(meta[a]),
+            "b": dict(meta[b]),
+            "dataset": {
+                "root": meta[a]["root"],
+                "min_kb": meta[a]["min_kb"],
+                # v5+ schema 恒有该列；NULL 不可能出现（NOT NULL DEFAULT ''）
+                "exclude_names": meta[a]["exclude_names"] or "",
+            },
+            "path": target,
+            "ancestors": [r.to_dict() for r in hierarchy.ancestor_rows(
+                conn, a, b, meta[a]["root"], target)],
+            "parent": parent.to_dict(),
+            "children": [r.to_dict() for r in page],
+            "counts": {"a_entries": collected["a_entries"],
+                       "b_entries": collected["b_entries"]},
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(page),
+                "total": total,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            },
+            "query": {"filter": filter, "sort": sort},
+        }
     finally:
         conn.close()
 

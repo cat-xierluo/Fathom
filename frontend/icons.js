@@ -106,8 +106,8 @@ export const ICON_PATHS = {
   /* 关闭详情侧栏 */
   x:
     '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
-  /* 折叠区展开指示（ISS-085 设置页「高级与诊断」等 details/summary）：
-   * 右向 chevron，details[open] 时由 CSS 旋转 90°（200ms） */
+  /* 折叠区展开指示（ISS-085 设置页「高级与诊断」等 details/summary；
+   * ISS-148 树形变化表行展开复用同几何：aria-expanded 时 CSS 旋转 90°） */
   chevron:
     '<path d="m9 18 6-6-6-6"/>',
   /* ISS-087 设置页左导航：scope（监控范围）——十字准星/同心圆靶，

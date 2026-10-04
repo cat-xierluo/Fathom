@@ -337,6 +337,72 @@ function createFixture() {
       return json(res, 200, diffFor(url.searchParams.get("a"), url.searchParams.get("b")));
     }
 
+    if (p === "/api/diff/children") {
+      // ISS-148：变化页比对明细改为消费 ISS-147 同级端点；夹具从 diff 行
+      // 数据按路径段推导层级（direct 命中写值、更深只挂导航标记），保证
+      // 证据定位（f-001 → /fixture/root/Library/Caches）在树表中可达。
+      const q = url.searchParams;
+      const sa = SNAPSHOTS.find((s) => s.id === Number(q.get("a"))) || SNAPSHOTS[0];
+      const sb = SNAPSHOTS.find((s) => s.id === Number(q.get("b"))) || SNAPSHOTS[1];
+      const ROOT_P = "/fixture/root";
+      const target = q.get("path") || ROOT_P;
+      const filter = q.get("filter") || "all";
+      const sort = q.get("sort") || "delta";
+      const segs = [
+        ...GROWN_ROWS.map((r) => ({ ...r, status: "measured" })),
+        ...SHRUNK_ROWS.map((r) => ({ ...r, status: "measured" })),
+        ...ADDED_ROWS.map((r) => ({ ...r, old_kb: null, delta_kb: null, status: "first_recorded" })),
+        ...REMOVED_ROWS.map((r) => ({ ...r, new_kb: null, delta_kb: null, status: "unrecorded" })),
+      ];
+      const kids = segs
+        .filter((r) => r.path !== target && r.path.startsWith(target + "/"))
+        .map((r) => {
+          const rest = r.path.slice(target.length + 1);
+          return { r, direct: !rest.includes("/"), name: rest.split("/")[0],
+            full: `${target}/${rest.split("/")[0]}` };
+        });
+      const byName = new Map();
+      for (const k of kids) {
+        const cur = byName.get(k.full) ||
+          { path: k.full, name: k.name, old_kb: null, new_kb: null, delta_kb: null,
+            status: "structural", has_children: false, has_changed_descendants: false };
+        if (k.direct) {
+          cur.old_kb = k.r.old_kb; cur.new_kb = k.r.new_kb;
+          cur.delta_kb = k.r.delta_kb; cur.status = k.r.status;
+        } else {
+          cur.has_children = true;
+          cur.has_changed_descendants = true;
+        }
+        byName.set(k.full, cur);
+      }
+      let children = [...byName.values()];
+      if (filter === "changed") {
+        children = children.filter((c) => c.status !== "structural" || c.has_changed_descendants);
+      }
+      const cmpDelta = (x, y) =>
+        (x.delta_kb == null) - (y.delta_kb == null) ||
+        Math.abs(y.delta_kb || 0) - Math.abs(x.delta_kb || 0) ||
+        x.name.localeCompare(y.name);
+      if (sort === "name") children.sort((x, y) => x.name.localeCompare(y.name));
+      else if (sort === "size") children.sort((x, y) =>
+        (x.new_kb == null) - (y.new_kb == null) || (y.new_kb || 0) - (x.new_kb || 0));
+      else children.sort(cmpDelta);
+      return json(res, 200, {
+        a: sa, b: sb,
+        dataset: { root: ROOT_P, min_kb: 5120, exclude_names: "" },
+        path: target,
+        ancestors: [],
+        parent: { path: target, name: target === ROOT_P ? "root" : target.slice(target.lastIndexOf("/") + 1),
+          old_kb: 300000, new_kb: 300000, delta_kb: 0, status: "measured",
+          has_children: children.length > 0, has_changed_descendants: true },
+        children,
+        counts: { a_entries: children.length, b_entries: children.length },
+        pagination: { limit: 100, offset: 0, returned: children.length,
+          total: children.length, has_more: false, next_cursor: null },
+        query: { filter, sort },
+      });
+    }
+
     if (p === "/api/trend") return json(res, 200, { points: [] });
     if (p === "/api/browse") return json(res, 200, { children: [], trend: [], size_kb: 0 });
     if (p === "/api/reports") return json(res, 200, { reports: [] });

@@ -104,7 +104,28 @@ fi
 out="$(mktemp)"
 refresh_out="$(mktemp)"
 analysis_out="$(mktemp)"
-trap 'rm -f "$out" "$refresh_out" "$analysis_out"' EXIT
+tree_out="$(mktemp)"
+trap 'rm -f "$out" "$refresh_out" "$analysis_out" "$tree_out"' EXIT
+
+# ISS-148：树形套件起真实 FastAPI，先预检解释器与 playwright 可用，
+# 缺前置时明确报错而不是在套件内表现为模糊的等待超时。脚本消费
+# FATHOM_PYTHON（同 CI pytest job 的注入口径），本机开发回退 .venv。
+tree_python="${FATHOM_PYTHON:-$(pwd)/.venv/bin/python}"
+if [ ! -x "$tree_python" ]; then
+  tree_python="${FATHOM_PYTHON:-.runtime/bin/python}"
+fi
+[ -x "$tree_python" ] || { echo "树形套件前置缺失: 解释器不可用（.venv/.runtime 均缺，或设 FATHOM_PYTHON）" >&2; exit 1; }
+export FATHOM_PYTHON="$tree_python"
+tree_node_path="${NODE_PATH:-}"
+if [ -n "$tree_node_path" ]; then
+  tree_chromium_found=0
+  IFS=':' read -r -a _pw_dirs <<< "$tree_node_path"
+  for _d in "${_pw_dirs[@]}"; do
+    if [ -d "$_d/playwright-core" ] || [ -d "$_d/playwright" ]; then tree_chromium_found=1; break; fi
+  done
+  [ "$tree_chromium_found" = "1" ] || { echo "树形套件前置缺失: NODE_PATH 中无 playwright 包（CI 先 PW_INSTALL=1）" >&2; exit 1; }
+fi
+
 node scripts/verify_api_security.cjs | tee "$out"
 
 # 两套检查同一门禁：结果 JSON 必须 ok=true、failed=0、passed==期望，
@@ -140,3 +161,12 @@ assert_result_json "$refresh_out" "$expected_refresh" "frontend refresh"
 node scripts/verify_analysis_frontend.cjs | tee "$analysis_out"
 expected_analysis="${EXPECTED_ANALYSIS_PASSED:-77}"
 assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
+
+# ISS-148：树形同级变化回归（真实 FastAPI 隔离入口 + 生产页面实点）。
+# 53 项——三层展开/聚焦/返回、父 0 子抵消、缺父结构节点、单侧未记录、
+# 分页加载更多、错误重试、a/b 与路径竞态、键盘可达、HTML 路径安全、
+# 三视口无横向溢出、AI 区与排行/日报次级可达。失败自身非零退出，
+# pipefail 直通判红；计数漂移由 EXPECTED_TREE_PASSED 兜底（同上口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_tree_changes_frontend.cjs | tee "$tree_out"
+expected_tree="${EXPECTED_TREE_PASSED:-53}"
+assert_result_json "$tree_out" "$expected_tree" "tree changes frontend"

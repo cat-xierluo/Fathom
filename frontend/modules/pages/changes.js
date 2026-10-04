@@ -1,5 +1,5 @@
-/* 变化页：快照对比（世代号防倒序 + 用户改选保护 + 404 协调）、可排序变化表、
- * 选中目录详情（侧栏 + Esc 焦点返回）、历史日报。
+/* 变化页：快照对比（世代号防倒序 + 用户改选保护 + 404 协调）、树形同级
+ * 变化表（ISS-148）、共用目录详情（directory-detail.js）、历史日报。
  *
  * 前端责任（ISS-027 模块合同）：
  * - beginRequest 世代号 + pageScoped：迟到的旧响应不能覆盖较新查询；
@@ -8,10 +8,26 @@
  * 展示（ISS-028）：
  * - 净变化口径：根同口径差分（b.total_kb − a.total_kb），缺根总量显示"无基线"，
  *   绝不把列表行求和当净变化（行含父子重叠且被截断）；
- * - 状态列：已测量 / 未记录（首次进入统计） / 受限（权限不足时不可知）；
  * - 键盘可达：表行可 Tab 聚焦、Enter 打开详情、Esc 关闭后焦点返回触发行；
  * - 长路径：可一键复制（DESIGN 关键可达性约束）；
- * - 目录详情：路径 + 净变化 + 趋势（来自 /api/trend）+ 当前大小（/api/browse）。
+ *
+ * 树形同级变化（ISS-148）：比对明细表改为消费 ISS-147 的
+ * /api/diff/children——默认聚焦数据集根，看的是「同级目录在 a→b 区间内
+ * 各变了多少」，不再把 /api/diff 的 Top25 折叠行当树（父子容量不再被
+ * 视为独立增长）：
+ * - 行状态 measured/first_recorded/unrecorded/structural 直接映射接口
+ *   口径；单侧缺测与结构节点不渲染 0（显示 —）；
+ * - 目录名（看证据/详情）与展开箭头（逐层展开同级）动作分开；展开按
+ *   路径懒加载，同名兄弟在各数据集内唯一；
+ * - 「聚焦此目录」+ 面包屑自然下钻（单一树表布局，无双布局开关）；
+ *   Esc 先关详情、再逐级返回上级聚焦；
+ * - 筛选（all/changed）与排序（delta/size/name）走接口参数，不在本地
+ *   重建 Top25；changed 筛选会隐藏无变化方向，说明行（#tree-note）
+ *   如实标注；搜索只过滤已加载行，同样在说明行标注；
+ * - 分页 has_more/next_cursor 显式呈现为「加载更多」，未加载不冒充
+ *   完整同级清单；
+ * - 树内每个请求域绑定 treeState 实例 + treeEpoch：改选 a/b、切筛选/
+ *   排序即整体作废在途层级请求，迟到的旧层级响应不混入新视图。
  *
  * 交互（ISS-093）：选择即比对——两个 select 改选后在选齐时自动加载对比，
  * 无确认按钮；未选齐保持空态 + 引导文案；对比失败在状态行内展示
@@ -20,10 +36,11 @@
  * 结果区刷新不抢焦点（改选触发的详情关闭不回焦到已销毁的行）。
  *
  * 分区（ISS-094）：页头下横向 tab 条（比对明细/增长最多/缩减最多/新出现/
- * 消失，默认比对明细；历史日报是 tab 外页尾常驻区）。数据加载逻辑不变
- * ——loadDiff 一次渲染全部分区，tab 只切可见性；隐藏分区里初始化的图表
- * 由 tabs.js 激活时经 resumeChartsIn 恢复尺寸。tab 状态记 hash
- * （#/changes/grown；刷新保持由 app.js 在路由前规范化承接，见 tabs.js）。
+ * 消失，默认比对明细；历史日报是 tab 外页尾常驻区）。增长/缩减等排行
+ * 分区仍由 /api/diff 渲染（次级可达），数据加载逻辑不变——loadDiff 一次
+ * 渲染全部分区，tab 只切可见性；隐藏分区里初始化的图表由 tabs.js 激活时
+ * 经 resumeChartsIn 恢复尺寸。tab 状态记 hash（#/changes/grown；刷新保持
+ * 由 app.js 在路由前规范化承接，见 tabs.js）。
  *
  * 共享对比上下文（ISS-107）：基线/对比 select、状态行与净变化口径行在
  * tab 条下方的共享面板中，不随明细分区隐藏——任一分区都能判断当前对比
@@ -36,6 +53,7 @@ import { fetchJSON, beginRequest, invalidateRequest, revealInFinder, apiPost, ap
 import { fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, hasChart, clearChart } from "../charts.js";
 import { initPageTabs } from "../tabs.js";
+import { createDirectoryDetail } from "../directory-detail.js";
 import { icon } from "../../icons.js";
 
 /* ISS-084：图表色与 style.css :root 语义 token 同源（单一色源，不硬编码）。
@@ -43,12 +61,17 @@ import { icon } from "../../icons.js";
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 let snapshotSelectionRevision = 0;  // 用户改选计数：晚到的快照列表不得覆盖改选结果
-let currentSort = { key: "delta", dir: -1 };
-let currentRows = [];
-let lastDiff = null;                 // 最近一次成功 diff，用于详情
-let activeDetailPath = null;          // 当前详情目录
-let activeDetailRow = null;           // 当前详情触发行（Esc 后焦点回此）
+let currentSort = { key: "delta" };  // 同级排序走接口 sort 参数；方向由接口语义固定
+let lastDiff = null;                 // 最近一次成功 diff（/api/diff），用于解读区对位
 let changesTabs = null;               // ISS-094 页内二级导航（五分区 tab）
+
+/* ISS-148 树形同级表状态：一次 diff 对应一个 treeState 实例。所有层级
+ * 请求闭包持有创建时的实例与 treeEpoch，写回前复核——改选区间/切筛选/
+ * 切排序会使旧实例整体作废（迟到响应不混入新视图）。 */
+let treeState = null;
+let treeEpoch = 0;
+
+const TREE_COLUMNS = 6;  // 目录/之前/现在/净变化/状态/操作
 
 function setDiffStatus(message) {
   // textContent 赋值整体替换子节点：若此前失败态挂了「重试」按钮，此处一并清除。
@@ -93,11 +116,14 @@ function clearDiffResults() {
     '<tr><td colspan="6" class="hint">暂无可比较数据</td></tr>';
   document.getElementById("changes-net").hidden = true;
   document.getElementById("changes-foot").hidden = true;
+  hideTreeChrome();
   // ISS-035C：解读区随对比结果一起隐藏并重置会话态（离页/改选不隐式重发）
   resetAnalysisSession({ hide: true });
-  // 关闭详情（如打开）
-  closeDetail();
-  currentRows = [];
+  // 关闭详情（如打开）：焦点留在用户当前操作处（清空不是触发行动作）
+  directoryDetail.close({ restoreFocus: false });
+  // 作废在途树层级请求
+  treeEpoch += 1;
+  treeState = null;
   lastDiff = null;
 }
 
@@ -173,69 +199,30 @@ function computeNet(d) {
   return curr - prev;
 }
 
-function synthesizeRows(d) {
-  const rows = [];
-  for (const r of d.grown || []) {
-    rows.push({
-      path: r.path, prev: r.old_kb, curr: r.new_kb, delta: r.delta_kb,
-      status: "measured", sortKey: Math.abs(r.delta_kb || 0),
-    });
-  }
-  for (const r of d.shrunk || []) {
-    rows.push({
-      path: r.path, prev: r.old_kb, curr: r.new_kb, delta: r.delta_kb,
-      status: "measured", sortKey: Math.abs(r.delta_kb || 0),
-    });
-  }
-  for (const r of d.added || []) {
-    rows.push({
-      path: r.path, prev: null, curr: r.new_kb, delta: null,
-      status: "unrecorded", sortKey: r.new_kb || 0,
-    });
-  }
-  for (const r of d.removed || []) {
-    rows.push({
-      path: r.path, prev: r.old_kb, curr: null, delta: null,
-      status: "unrecorded", sortKey: r.old_kb || 0,
-    });
-  }
-  return rows;
-}
+/* ---------- 树形同级变化表（ISS-148，消费 /api/diff/children） ---------- */
 
-function sortRows(rows) {
-  const dir = currentSort.dir;
-  const key = currentSort.key;
-  const out = rows.slice();
-  out.sort((a, b) => {
-    let av, bv;
-    if (key === "path") { av = a.path; bv = b.path; }
-    else if (key === "prev") { av = a.prev == null ? -Infinity : a.prev; bv = b.prev == null ? -Infinity : b.prev; }
-    else if (key === "curr") { av = a.curr == null ? -Infinity : a.curr; bv = b.curr == null ? -Infinity : b.curr; }
-    else { av = a.sortKey || 0; bv = b.sortKey || 0; }
-    if (av < bv) return -1 * dir;
-    if (av > bv) return 1 * dir;
-    return a.path < b.path ? -1 : 1;
-  });
-  return out;
-}
-
-function filterRows(rows, q) {
-  if (!q) return rows;
-  const needle = q.toLowerCase();
-  return rows.filter((r) => r.path.toLowerCase().includes(needle));
-}
+const TREE_STATUS_TEXT = {
+  measured: "已测量",
+  first_recorded: "首次记录",
+  unrecorded: "未记录",
+  structural: "结构节点",
+};
 
 function statusBadge(st) {
-  if (st === "unrecorded") return `<span class="st st-unrecorded"><span class="st-dot"></span>未记录</span>`;
-  if (st === "restricted") return `<span class="st st-restricted"><span class="st-dot"></span>受限</span>`;
-  return `<span class="st st-measured"><span class="st-dot"></span>已测量</span>`;
+  const text = escapeHtml(TREE_STATUS_TEXT[st] || String(st ?? ""));
+  if (st === "unrecorded") return `<span class="st st-unrecorded"><span class="st-dot"></span>${text}</span>`;
+  if (st === "first_recorded") return `<span class="st st-first"><span class="st-dot"></span>${text}</span>`;
+  if (st === "structural") return `<span class="st st-structural"><span class="st-dot"></span>${text}</span>`;
+  if (st === "restricted") return `<span class="st st-restricted"><span class="st-dot"></span>${text}</span>`;
+  return `<span class="st st-measured"><span class="st-dot"></span>${text}</span>`;
 }
 
 function deltaCell(row) {
   if (row.delta == null) {
-    if (row.status === "unrecorded") {
-      if (row.prev == null) return `<span class="delta-none">—（现有 ${escapeHtml(fmtKB(row.curr))}）</span>`;
-      return `<span class="delta-none">—（曾有 ${escapeHtml(fmtKB(row.prev))}）</span>`;
+    // 单侧缺测不渲染 0：b 未记录（曾有）与 b 首次入库（现有）分别标注
+    if (row.status === "unrecorded" || row.status === "first_recorded") {
+      if (row.prev == null && row.curr != null) return `<span class="delta-none">—（现有 ${escapeHtml(fmtKB(row.curr))}）</span>`;
+      if (row.curr == null && row.prev != null) return `<span class="delta-none">—（曾有 ${escapeHtml(fmtKB(row.prev))}）</span>`;
     }
     return `<span class="delta-none">—</span>`;
   }
@@ -243,106 +230,362 @@ function deltaCell(row) {
   return `<span class="${cls}">${escapeHtml(fmtDelta(row.delta))}</span>`;
 }
 
-function renderChangesTable() {
-  const tbody = document.getElementById("changes-body");
-  const search = (document.getElementById("changes-search")?.value || "").trim();
-  const rows = sortRows(filterRows(currentRows, search));
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="6" class="hint">${
-      search ? `当前对比结果中没有匹配“${escapeHtml(search)}”的目录。` : "暂无可比较数据"
-    }</td></tr>`;
-  } else {
-    tbody.innerHTML = rows.map((r) => {
-      const prevTxt = r.prev == null ? `<span class="delta-none">—</span>` : `<span class="num">${escapeHtml(fmtKB(r.prev))}</span>`;
-      const currTxt = r.curr == null ? `<span class="delta-none">—</span>` : `<span class="num">${escapeHtml(fmtKB(r.curr))}</span>`;
-      return `<tr class="focusable" tabindex="0" role="button"
-                  data-path="${escapeHtml(r.path)}" aria-label="查看目录详情：${escapeHtml(r.path)}">
-        <td class="path" title="${escapeHtml(r.path)}">
-          <span class="cell-path">${escapeHtml(r.path)}</span>
-          <button class="copy-path" type="button" data-copy="${escapeHtml(r.path)}"
-                  aria-label="复制路径 ${escapeHtml(r.path)}" title="复制路径">复制</button>
-        </td>
-        <td class="num">${prevTxt}</td>
-        <td class="num">${currTxt}</td>
-        <td class="num">${deltaCell(r)}</td>
-        <td>${statusBadge(r.status)}</td>
-        <td>
-          <span class="row-actions">
-            <button class="btn-mini" data-detail="${escapeHtml(r.path)}"
-                    aria-label="查看目录详情" title="查看目录详情">${icon("folderOpen", 14)}</button>
-            <button class="btn-mini" data-reveal="${escapeHtml(r.path)}"
-                    aria-label="在 Finder 中显示" title="在 Finder 中显示">${icon("folderOpen", 14)}</button>
-          </span>
-        </td>
-      </tr>`;
-    }).join("");
+/** 数据集根下的父路径（不越出根）；已是根返回 null。 */
+function parentWithinRoot(path, root) {
+  if (!path || path === root) return null;
+  const idx = path.lastIndexOf("/");
+  const parent = idx <= 0 ? "/" : path.slice(0, idx);
+  if (parent.length < root.length) return root;  // 防御：越出根时回到根
+  return parent;
+}
+
+/** 请求一个层级的同级行。append 时携带游标续页；任何写回前复核
+ * treeState 实例、treeEpoch 与请求域，三者任一变化即丢弃。 */
+async function loadTreeLevel(path, { cursor = null, append = false } = {}) {
+  const t = treeState;
+  if (!t) return null;
+  const epoch = treeEpoch;
+  const request = beginRequest(`tree:${path}`);
+  if (!append || !t.levels.has(path)) {
+    t.levels.set(path, { rows: [], pagination: null, parent: null,
+      status: "loading", error: null });
+    renderTree();
   }
-  // 更新排序表头 aria-sort
+  const level = t.levels.get(path);
+  const params = new URLSearchParams({ a: t.a, b: t.b, path });
+  params.set("filter", t.filter);
+  params.set("sort", t.sort);
+  if (cursor) params.set("cursor", cursor);
+  try {
+    const d = await fetchJSON(`/api/diff/children?${params.toString()}`);
+    if (treeState !== t || epoch !== treeEpoch || !request.current()) return null;
+    level.rows = append ? level.rows.concat(d.children || []) : (d.children || []);
+    level.pagination = d.pagination || null;
+    level.parent = d.parent || null;
+    level.status = "ready";
+    level.error = null;
+    renderTree();
+    return d;
+  } catch (e) {
+    if (treeState !== t || epoch !== treeEpoch || !request.current()) return null;
+    level.status = "error";
+    level.error = e;
+    renderTree();
+    return null;
+  }
+}
+
+/** 重置树状态并从数据集根开始加载（loadDiff 成功后调用）。 */
+function resetTree(d) {
+  treeEpoch += 1;
+  const root = (d.a && d.a.root) || "/";
+  treeState = {
+    a: String(d.a.id),
+    b: String(d.b.id),
+    root,
+    focus: root,
+    filter: document.getElementById("changes-filter")?.value || "all",
+    sort: currentSort.key,
+    levels: new Map(),
+    expanded: new Set(),
+  };
+  loadTreeLevel(root);
+}
+
+function treeAuxRow(depth, html, cls = "") {
+  const indent = `<span class="tree-indent" style="width:${depth * 18}px" aria-hidden="true"></span>`;
+  return `<tr class="tree-aux ${cls}"><td colspan="${TREE_COLUMNS}">${indent}${html}</td></tr>`;
+}
+
+function renderLevelRows(path, depth, search) {
+  const level = treeState.levels.get(path);
+  if (!level) return "";
+  if (level.status === "error") {
+    const msg = level.error.status === 0
+      ? "无法连接本地服务，同级变化暂不可用。"
+      : `同级变化加载失败${level.error.status ? `（HTTP ${level.error.status}）` : ""}：${escapeHtml(level.error.message)}`;
+    return treeAuxRow(depth,
+      `<span class="tree-error-text">${msg}</span> ` +
+      `<button class="diff-retry" type="button" data-tree-retry="${escapeHtml(path)}" ` +
+      `aria-label="重试加载 ${escapeHtml(path)} 的同级变化">重试</button>`);
+  }
+  if (level.status === "loading") {
+    return treeAuxRow(depth, `<span class="hint">正在加载同级变化…</span>`);
+  }
+  const rows = search
+    ? level.rows.filter((r) => r.path.toLowerCase().includes(search))
+    : level.rows;
+  let out = "";
+  if (!rows.length) {
+    out = treeAuxRow(depth,
+      search
+        ? `<span class="hint">已加载的同级行中没有匹配“${escapeHtml(search)}”的目录。</span>`
+        : `<span class="hint">该目录下没有已入库的子目录记录（可能全部低于入库阈值）。</span>`);
+  }
+  for (const r of rows) out += treeNodeHtml(r, depth);
+  const pg = level.pagination;
+  if (pg && pg.has_more && pg.next_cursor) {
+    const loaded = search
+      ? rows.length
+      : (pg.offset || 0) + (pg.returned || 0);
+    out += treeAuxRow(depth, `
+      <button class="tree-load-more" type="button" data-load-more="${escapeHtml(path)}"
+              data-cursor="${escapeHtml(pg.next_cursor)}" data-test="tree-load-more"
+              aria-label="加载 ${escapeHtml(path)} 的更多同级行">
+        加载更多（已显示 ${loaded} / 共 ${escapeHtml(String(pg.total))} 个同级行）</button>`);
+  }
+  // 已展开的子级插在本层末尾（保持 API 给出的同级序）
+  for (const r of rows) {
+    if (treeState.expanded.has(r.path)) out += renderLevelRows(r.path, depth + 1, search);
+  }
+  return out;
+}
+
+function treeNodeHtml(r, depth) {
+  const expanded = treeState.expanded.has(r.path);
+  const indent = `<span class="tree-indent" style="width:${depth * 18}px" aria-hidden="true"></span>`;
+  const toggle = r.has_children
+    ? `<button class="tree-toggle" type="button" data-expand="${escapeHtml(r.path)}"
+               data-test="tree-expand" aria-expanded="${expanded}"
+               aria-label="${expanded ? "收起" : "展开"} ${escapeHtml(r.name)} 的下级"
+               title="${expanded ? "收起" : "展开"}">${icon("chevron", 13)}</button>`
+    : `<span class="tree-toggle tree-toggle-leaf" aria-hidden="true"></span>`;
+  const prevTxt = r.old_kb == null ? `<span class="delta-none">—</span>` : `<span class="num">${escapeHtml(fmtKB(r.old_kb))}</span>`;
+  const currTxt = r.new_kb == null ? `<span class="delta-none">—</span>` : `<span class="num">${escapeHtml(fmtKB(r.new_kb))}</span>`;
+  return `<tr class="focusable" tabindex="0" role="button" data-path="${escapeHtml(r.path)}"
+              data-depth="${depth}" aria-label="查看目录详情：${escapeHtml(r.path)}">
+    <td class="dir-cell">${indent}${toggle}<button class="tree-name" type="button"
+            data-detail="${escapeHtml(r.path)}" title="${escapeHtml(r.path)}">${escapeHtml(r.name)}</button>
+      <button class="copy-path" type="button" data-copy="${escapeHtml(r.path)}"
+              aria-label="复制路径 ${escapeHtml(r.path)}" title="复制路径">复制</button>
+    </td>
+    <td class="num">${prevTxt}</td>
+    <td class="num">${currTxt}</td>
+    <td class="num">${deltaCell({ delta: r.delta_kb, prev: r.old_kb, curr: r.new_kb, status: r.status })}</td>
+    <td>${statusBadge(r.status)}</td>
+    <td>
+      <span class="row-actions">
+        <button class="btn-mini" data-focus="${escapeHtml(r.path)}" data-test="tree-focus"
+                aria-label="聚焦此目录" title="聚焦此目录">${icon("scope", 14)}</button>
+        <button class="btn-mini" data-reveal="${escapeHtml(r.path)}"
+                aria-label="在 Finder 中显示" title="在 Finder 中显示">${icon("folderOpen", 14)}</button>
+      </span>
+    </td>
+  </tr>`;
+}
+
+function renderTree() {
+  if (!treeState) return;
+  const tbody = document.getElementById("changes-body");
+  const search = (document.getElementById("changes-search")?.value || "").trim().toLowerCase();
+  updateTreeChrome();
+  const html = renderLevelRows(treeState.focus, 0, search);
+  tbody.innerHTML = html ||
+    `<tr><td colspan="${TREE_COLUMNS}" class="hint">该目录下没有已入库的子目录记录（可能全部低于入库阈值）。</td></tr>`;
+  updateSortIndicators();
+}
+
+/** 面包屑 / 本级目录摘要 / 动态说明（隐藏方向、搜索范围）。 */
+function updateTreeChrome() {
+  const crumbsEl = document.getElementById("tree-crumbs");
+  const parentEl = document.getElementById("tree-parent");
+  const noteEl = document.getElementById("tree-note");
+  const t = treeState;
+  const search = (document.getElementById("changes-search")?.value || "").trim().toLowerCase();
+  // 面包屑：focus 非根时展示祖先链（根 → … → 当前聚焦）
+  if (t && t.focus !== t.root) {
+    const chain = [];
+    if (t.root === "/") {
+      chain.push("/");
+      const segs = t.focus.split("/").filter(Boolean);
+      let acc = "";
+      for (const seg of segs) { acc += "/" + seg; chain.push(acc); }
+    } else {
+      chain.push(t.root);
+      const rel = t.focus.slice(t.root.length + 1);
+      let acc = t.root;
+      for (const seg of rel.split("/")) { acc += "/" + seg; chain.push(acc); }
+    }
+    const crumbs = [];
+    chain.forEach((p, i) => {
+      const name = p === "/" ? "/" : p === t.root ? t.root : p.slice(p.lastIndexOf("/") + 1);
+      if (i) crumbs.push('<span class="crumb-sep">/</span>');
+      crumbs.push(`<button class="crumb${p === t.focus ? " current" : ""}" data-crumb="${escapeHtml(p)}"
+        title="${escapeHtml(p)}">${escapeHtml(name)}</button>`);
+    });
+    crumbsEl.innerHTML = crumbs.join("");
+    crumbsEl.hidden = false;
+    crumbsEl.querySelectorAll("[data-crumb]").forEach((b) =>
+      b.addEventListener("click", () => focusTreePath(b.dataset.crumb)));
+  } else {
+    crumbsEl.hidden = true;
+    crumbsEl.innerHTML = "";
+  }
+  // 本级目录摘要：聚焦非根时展示其自身区间值（父行口径 = 含全部后代）
+  const level = t && t.levels.get(t.focus);
+  const parent = level && level.parent;
+  if (t && t.focus !== t.root && level && level.status === "ready" && parent) {
+    const oldTxt = parent.old_kb == null ? "—" : fmtKB(parent.old_kb);
+    const newTxt = parent.new_kb == null ? "—" : fmtKB(parent.new_kb);
+    const deltaTxt = parent.delta_kb == null ? "—" : fmtDelta(parent.delta_kb);
+    const unknown = parent.old_kb == null && parent.new_kb == null;
+    parentEl.innerHTML =
+      `<strong>${escapeHtml(t.focus)}</strong> ` +
+      (unknown
+        ? `<span class="hint">本级目录无直接入库记录（结构导航节点）：大小与差分未知，不以 0 冒充；展开可见其下已入库后代。</span>`
+        : `<span class="num">${escapeHtml(oldTxt)} → ${escapeHtml(newTxt)}</span>` +
+          `<span>本级净变化 <strong class="${parent.delta_kb > 0 ? "delta-grow" : parent.delta_kb < 0 ? "delta-shrink" : "delta-none"}">${escapeHtml(deltaTxt)}</strong></span>` +
+          `<span class="hint">本级大小为累计值（含全部后代），不与子行相加。</span>`) +
+      ` ${statusBadge(parent.status)}`;
+    parentEl.hidden = false;
+  } else if (parentEl) {
+    parentEl.hidden = true;
+    parentEl.innerHTML = "";
+  }
+  // 动态说明：changed 筛选的隐藏方向 + 搜索只作用于已加载行
+  const notes = [];
+  if (t && t.filter === "changed") {
+    notes.push("「仅变化」隐藏了本级无变化且无变化后代的同级行；有变化后代的目录行会保留以供展开，切换回「全部同级行」可查看完整同级清单。");
+  }
+  if (search) {
+    notes.push("路径过滤只作用于已加载的同级行；有「加载更多」时请先载入后续行再过滤。");
+  }
+  if (noteEl) {
+    if (notes.length) {
+      noteEl.textContent = notes.join("");
+      noteEl.hidden = false;
+    } else {
+      noteEl.hidden = true;
+      noteEl.textContent = "";
+    }
+  }
+}
+
+function hideTreeChrome() {
+  ["tree-crumbs", "tree-parent", "tree-note"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) { el.hidden = true; el.innerHTML = ""; }
+  });
+}
+
+function updateSortIndicators() {
+  // 接口排序语义：delta/size 为降序口径，name 为升序口径（方向不可切换）
   document.querySelectorAll("#changes-table th").forEach((th) => {
     const btn = th.querySelector(".th-sort");
     if (!btn) return;
     if (btn.dataset.sort === currentSort.key) {
-      th.setAttribute("aria-sort", currentSort.dir === -1 ? "descending" : "ascending");
+      th.setAttribute("aria-sort", currentSort.key === "name" ? "ascending" : "descending");
     } else {
       th.removeAttribute("aria-sort");
     }
   });
-  bindTableEvents();
 }
 
-function bindTableEvents() {
-  const tbody = document.getElementById("changes-body");
-  // 行点击 / Enter 键：打开详情
-  tbody.querySelectorAll("tr.focusable").forEach((tr) => {
-    tr.addEventListener("click", (e) => {
-      // 避免按钮 / 复制的点击冒泡导致详情打开
-      if (e.target.closest("button")) return;
-      openDetail(tr.dataset.path, tr);
-    });
-    tr.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        openDetail(tr.dataset.path, tr);
-      }
-    });
-  });
-  tbody.querySelectorAll("[data-detail]").forEach((b) =>
-    b.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const tr = b.closest("tr");
-      openDetail(b.dataset.detail, tr);
-    }));
-  tbody.querySelectorAll("[data-reveal]").forEach((b) =>
-    b.addEventListener("click", (e) => {
-      e.stopPropagation();
-      revealInFinder(b.dataset.reveal);
-    }));
-  tbody.querySelectorAll("[data-copy]").forEach((b) =>
-    b.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      const text = b.dataset.copy;
-      try {
-        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
-        else {
-          const ta = document.createElement("textarea");
-          ta.value = text;
-          document.body.appendChild(ta);
-          ta.select();
-          document.execCommand("copy");
-          document.body.removeChild(ta);
-        }
-        b.textContent = "已复制";
-        b.classList.add("copied");
-        setTimeout(() => {
-          b.textContent = "复制";
-          b.classList.remove("copied");
-        }, 1200);
-      } catch (_) {
-        // 复制失败：不冒充成功；保留原文字
-        b.textContent = "复制失败";
-        setTimeout(() => { b.textContent = "复制"; }, 1200);
-      }
-    }));
+function findTreeRow(path) {
+  if (!treeState) return null;
+  for (const level of treeState.levels.values()) {
+    const hit = level.rows.find((r) => r.path === path);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** 行内复制路径（DESIGN 长路径可达性）；失败不冒充成功。 */
+async function copyTreePath(btn) {
+  const text = btn.dataset.copy;
+  try {
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    btn.textContent = "已复制";
+    btn.classList.add("copied");
+    setTimeout(() => {
+      btn.textContent = "复制";
+      btn.classList.remove("copied");
+    }, 1200);
+  } catch (_) {
+    btn.textContent = "复制失败";
+    setTimeout(() => { btn.textContent = "复制"; }, 1200);
+  }
+}
+
+function toggleTreeExpand(path) {
+  if (!treeState) return;
+  if (treeState.expanded.has(path)) {
+    treeState.expanded.delete(path);
+    renderTree();
+  } else {
+    treeState.expanded.add(path);
+    if (!treeState.levels.has(path)) loadTreeLevel(path);  // 完成后自渲染
+    else renderTree();
+  }
+}
+
+/** 聚焦某目录：面包屑下钻的主入口；返回加载完成的 Promise。
+ * 先写 focus 再加载：加载中的加载态/面包屑/本级摘要按新聚焦渲染。 */
+async function focusTreePath(path) {
+  if (!treeState || !path) return;
+  treeState.focus = path;
+  if (!treeState.levels.has(path)) await loadTreeLevel(path);
+  else renderTree();
+}
+
+/** 解读证据定位（ISS-035C）：先看行是否在场；不在场则复位筛选、把焦点
+ * 切到目标父层再定位；仍不可见时如实说明，不猜行位置。 */
+async function revealTreePath(target) {
+  if (!treeState) return;
+  const rowSel = `#changes-body tr[data-path="${CSS.escape(target)}"]`;
+  let row = document.querySelector(rowSel);
+  if (!row && treeState.filter !== "all") {
+    // changed 筛选可能藏住目标行：复位为全部同级行并等重载完成
+    const sel = document.getElementById("changes-filter");
+    if (sel) sel.value = "all";
+    await onTreeFilterChange();
+    row = document.querySelector(rowSel);
+  }
+  if (!row) {
+    const parent = parentWithinRoot(target, treeState.root);
+    if (parent && parent !== treeState.focus) await focusTreePath(parent);
+    row = document.querySelector(rowSel);
+  }
+  if (!row) {
+    const noteEl = document.getElementById("tree-note");
+    if (noteEl) {
+      noteEl.textContent = "证据路径不在当前同级表中（可能未达入库阈值、或是聚焦目录本身或其祖先）；其区间值可见于本级目录摘要或上方净变化口径。";
+      noteEl.hidden = false;
+    }
+    return;
+  }
+  row.scrollIntoView({ block: "center" });
+  row.classList.add("analysis-locate-flash");
+  setTimeout(() => row.classList.remove("analysis-locate-flash"), 2400);
+}
+
+function onTreeFilterChange() {
+  if (!treeState) return Promise.resolve();
+  treeEpoch += 1;  // 作废全部在途层级请求（含续页）
+  treeState.filter = document.getElementById("changes-filter")?.value || "all";
+  treeState.levels.clear();
+  treeState.expanded.clear();
+  return loadTreeLevel(treeState.focus);
+}
+
+function onTreeSortChange(key) {
+  if (!key || key === currentSort.key) return;
+  currentSort.key = key;
+  updateSortIndicators();
+  if (!treeState) return;
+  treeEpoch += 1;
+  treeState.sort = key;
+  treeState.levels.clear();
+  treeState.expanded.clear();
+  loadTreeLevel(treeState.focus);
 }
 
 function renderNetLine(d) {
@@ -381,8 +624,9 @@ function onSelectionChange() {
     setDiffStatus("请选择基线与对比快照，选齐后自动对比。");
     return;
   }
-  // 改选使旧对比的详情侧栏失效：关闭但不回焦（焦点留在用户正在操作的 select）。
-  closeDetail({ restoreFocus: false });
+  // 改选使旧对比的详情侧栏失效：关闭并作废在途 trend/browse，迟到响应
+  // 不得写入（焦点留在用户正在操作的 select，不回焦已销毁的行）。
+  directoryDetail.invalidate();
   loadDiff();
 }
 
@@ -402,9 +646,13 @@ async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
     fillDeltaTable("tbl-shrunk-top", d.shrunk);
     fillTwoColTable("tbl-added", d.added, (r) => [r.path, fmtKB(r.new_kb)]);
     fillTwoColTable("tbl-removed", d.removed, (r) => [r.path, fmtKB(r.old_kb)]);
-    currentRows = synthesizeRows(d);
     renderNetLine(d);
-    renderChangesTable();
+    // ISS-148：树表默认聚焦数据集根，同级行来自 /api/diff/children。
+    // 根层就绪后才置完成态——状态文案出现即代表行可见（回归合同）；
+    // 根层失败不拦基础完成态：树区内部展示错误与重试。
+    resetTree(d);
+    await loadTreeLevel(treeState.focus);
+    if (!request.current()) return;
     // ISS-107：渲染已完成，状态必须是完成态——不得滞留「正在对比」。
     setDiffStatus(successMessage || `已对比快照 #${a} → #${b}`);
     // ISS-035C：基础对比就绪后加载解读区（跟随当前 a/b；可独立失败）。
@@ -488,147 +736,33 @@ function fillDeltaTable(id, rows) {
   });
 }
 
-/* ---------- 目录详情侧栏（DESIGN：选中后查看趋势与证据，Esc 关闭，焦点返回触发行） ---------- */
+/* ---------- 目录详情（ISS-148 起为共用组件 directory-detail.js） ----------
+ *
+ * 组件持有 #changes-detail 侧栏的渲染与 trend/browse 装载；变化页只负责：
+ * - 传当前 a/b（getRange）与状态徽章渲染；
+ * - 注入「聚焦此目录」动作（面包屑下钻的次级入口）；
+ * - 打开时标记触发行选中，Esc 关闭后焦点返回（DESIGN 键盘可达）。
+ */
 
-function openDetail(path, sourceRow) {
-  activeDetailPath = path;
-  activeDetailRow = sourceRow || null;
-  const el = document.getElementById("changes-detail");
-  el.hidden = false;
-  // 标记当前行为选中（视觉焦点）
-  if (activeDetailRow) {
+const directoryDetail = createDirectoryDetail({
+  getRange: () => ({
+    a: document.getElementById("sel-a")?.value || "",
+    b: document.getElementById("sel-b")?.value || "",
+  }),
+  renderStatus: (st) => statusBadge(st),
+  extraActions: [
+    { id: "focus", label: "聚焦此目录", icon: "scope", onPick: (p) => focusTreePath(p) },
+  ],
+});
+
+function openTreeDetail(path, sourceRow) {
+  const row = findTreeRow(path);
+  if (sourceRow) {
     document.querySelectorAll("#changes-body tr.focusable.selected").forEach((t) =>
       t.classList.remove("selected"));
-    activeDetailRow.classList.add("selected");
+    sourceRow.classList.add("selected");
   }
-  // 关闭按钮聚焦：键盘可达
-  el.innerHTML = renderDetailSkeleton(path);
-  const closeBtn = el.querySelector(".detail-close");
-  if (closeBtn) {
-    closeBtn.addEventListener("click", () => closeDetail());
-  }
-  // 复制路径
-  el.querySelectorAll("[data-copy]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      try {
-        await navigator.clipboard.writeText(b.dataset.copy);
-        b.textContent = "已复制";
-        b.classList.add("copied");
-        setTimeout(() => { b.textContent = "复制路径"; b.classList.remove("copied"); }, 1200);
-      } catch (_) { /* noop */ }
-    }));
-  // Finder 显示
-  el.querySelectorAll("[data-reveal]").forEach((b) =>
-    b.addEventListener("click", () => revealInFinder(b.dataset.reveal)));
-  // 加载 trend + browse（可独立失败，保持高度）
-  loadDetailTrend(path);
-  loadDetailBrowse(path);
-  closeBtn?.focus();
-}
-
-function renderDetailSkeleton(path) {
-  const row = currentRows.find((r) => r.path === path);
-  const prev = row && row.prev != null ? fmtKB(row.prev) : "—";
-  const curr = row && row.curr != null ? fmtKB(row.curr) : "—";
-  const delta = row && row.delta != null ? fmtDelta(row.delta) : "—";
-  return `
-    <div class="detail-head">
-      <h2>${icon("brandRing", 15, "detail-dr")}目录详情</h2>
-      <button class="detail-close" type="button" aria-label="关闭详情" title="关闭（Esc）">${icon("x", 14)}</button>
-    </div>
-    <div class="detail-path">${escapeHtml(path)}</div>
-    <div class="detail-stats">
-      <div><div class="stat-label">之前</div><div class="stat-value">${escapeHtml(prev)}</div></div>
-      <div><div class="stat-label">现在</div><div class="stat-value">${escapeHtml(curr)}</div></div>
-      <div><div class="stat-label">变化</div><div class="stat-value">${escapeHtml(delta)}</div></div>
-      <div><div class="stat-label">状态</div><div class="stat-value">${row ? statusBadge(row.status) : "—"}</div></div>
-    </div>
-    <div class="detail-section">
-      <h3>历史趋势</h3>
-      <div id="detail-trend-chart" class="detail-trend">${icon("fileText", 14)} <span class="hint">加载中…</span></div>
-    </div>
-    <div class="detail-section">
-      <h3>当前所在</h3>
-      <div id="detail-current-info" class="hint">加载中…</div>
-    </div>
-    <div class="detail-actions">
-      <button class="copy-path" type="button" data-copy="${escapeHtml(path)}" title="复制路径">复制路径</button>
-      <button class="btn-mini" data-reveal="${escapeHtml(path)}" aria-label="在 Finder 中显示" title="在 Finder 中显示">${icon("folderOpen", 14)}</button>
-    </div>
-  `;
-}
-
-function closeDetail({ restoreFocus = true } = {}) {
-  const el = document.getElementById("changes-detail");
-  if (el) el.hidden = true;
-  activeDetailPath = null;
-  document.querySelectorAll("#changes-body tr.focusable.selected").forEach((t) =>
-    t.classList.remove("selected"));
-  // 焦点返回触发行（DESIGN：Esc 关闭后焦点继续可用）。
-  // restoreFocus=false 用于自动刷新路径（ISS-093：改选触发时焦点应留在
-  // select 上，结果区刷新不得抢焦点）。
-  if (restoreFocus && activeDetailRow && document.body.contains(activeDetailRow)) {
-    activeDetailRow.focus();
-  }
-  activeDetailRow = null;
-}
-
-async function loadDetailTrend(path) {
-  const target = document.getElementById("detail-trend-chart");
-  if (!target) return;
-  const request = beginRequest("detailTrend");
-  try {
-    const r = await fetchJSON(`/api/trend?path=${encodeURIComponent(path)}`);
-    if (!request.current() || activeDetailPath !== path) return;
-    const pts = r.points || [];
-    if (!pts.length) {
-      target.innerHTML = `<span class="hint">该路径此前未记录（不冒充增长）。</span>`;
-      return;
-    }
-    // 简易折线（保持高度）
-    const xs = pts.map((p) => String(p.created_at || "").slice(5, 10));
-    const ys = pts.map((p) => p.size_kb || 0);
-    const chart = echarts.init(target);
-    chart.setOption({
-      tooltip: { trigger: "axis", formatter: (ps) => ps.map((p) =>
-        `${escapeHtml(pts[p.dataIndex].created_at || "")}<br/>${fmtKB(ys[p.dataIndex])}`).join("<br/>") },
-      grid: { left: 50, right: 8, top: 8, bottom: 22 },
-      xAxis: { type: "category", data: xs, axisLabel: { fontSize: 10 } },
-      yAxis: { type: "value", axisLabel: { formatter: (v) => fmtKB(v), fontSize: 10 }, scale: true },
-      series: [{ type: "line", smooth: true, symbol: "circle", symbolSize: 5,
-        data: ys, itemStyle: { color: cssVar("--trench") }, lineStyle: { width: 2 } }],
-    }, true);
-    // 当侧栏关闭或被复用时回收实例
-    request.current();
-  } catch (e) {
-    if (!request.current() || activeDetailPath !== path) return;
-    target.innerHTML = `<span class="hint">趋势加载失败${e.status ? `（HTTP ${e.status}）` : ""}</span>`;
-  }
-}
-
-async function loadDetailBrowse(path) {
-  const target = document.getElementById("detail-current-info");
-  if (!target) return;
-  const request = beginRequest("detailBrowse");
-  try {
-    const r = await fetchJSON(`/api/browse?path=${encodeURIComponent(path)}`);
-    if (!request.current() || activeDetailPath !== path) return;
-    const childN = (r.children || []).length;
-    const trendN = (r.trend || []).length;
-    target.innerHTML = `<span>当前大小：<strong>${escapeHtml(fmtKB(r.size_kb || 0))}</strong></span>` +
-      (r.delta_kb != null
-        ? `<span class="num">较上快照：${escapeHtml(fmtDelta(r.delta_kb))}</span>` : "") +
-      `<span class="hint">直属子目录 ${childN} 个；该路径同数据集历史 ${trendN} 个点</span>`;
-  } catch (e) {
-    if (!request.current() || activeDetailPath !== path) return;
-    if (e.status === 409) {
-      target.innerHTML = `<span class="hint">尚无快照，无法显示当前所在。</span>`;
-    } else if (e.status === 0) {
-      target.innerHTML = `<span class="hint">无法连接本地服务。</span>`;
-    } else {
-      target.innerHTML = `<span class="hint">当前所在加载失败（HTTP ${e.status || "?"}）</span>`;
-    }
-  }
+  directoryDetail.open({ path, row, sourceRow });
 }
 
 /* ---------- AI 解读（ISS-035C）：净变化之后、变化表之前的七主态区 ----------
@@ -1219,16 +1353,13 @@ function analysisEvidenceTablePath(entry) {
 function locateEvidenceInTable(entry) {
   const target = analysisEvidenceTablePath(entry);
   if (!target) return;
-  // 清搜索过滤，避免目标行被滤掉；切回比对明细 tab（跨分区数据一致）
+  // 清搜索过滤，避免目标行被滤掉；切回比对明细 tab（跨分区数据一致）。
+  // ISS-148 树表：定位按路径而非行索引；目标行不在当前聚焦层时由
+  // revealTreePath 复位筛选/下钻父层后再定位，仍不可见则如实说明。
   const search = document.getElementById("changes-search");
   if (search && search.value) { search.value = ""; }
   changesTabs?.activate("detail");
-  renderChangesTable();
-  const row = document.querySelector(`#changes-body tr[data-path="${CSS.escape(target)}"]`);
-  if (!row) return;
-  row.scrollIntoView({ block: "center" });
-  row.classList.add("analysis-locate-flash");
-  setTimeout(() => row.classList.remove("analysis-locate-flash"), 2400);
+  revealTreePath(target);
 }
 
 /** 撤销确认层：删除本应用保存的正文与事实包；不承诺清除引擎/服务留存。 */
@@ -1502,26 +1633,85 @@ export const changesPage = {
     ["sel-a", "sel-b"].forEach((id) => {
       document.getElementById(id).addEventListener("change", onSelectionChange);
     });
-    // 排序表头
+    // ISS-148：排序表头（delta/size/name 走接口 sort；同级内排序）
     document.querySelectorAll("#changes-table .th-sort").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const key = btn.dataset.sort;
-        if (currentSort.key === key) {
-          currentSort.dir = -currentSort.dir;
-        } else {
-          currentSort.key = key; currentSort.dir = key === "path" ? 1 : -1;
-        }
-        renderChangesTable();
-      });
+      btn.addEventListener("click", () => onTreeSortChange(btn.dataset.sort));
     });
-    // 搜索
+    // ISS-148：同级筛选（all/changed 走接口 filter）与搜索（只过滤已加载行）
+    const filterSel = document.getElementById("changes-filter");
+    if (filterSel) filterSel.addEventListener("change", onTreeFilterChange);
     const search = document.getElementById("changes-search");
-    if (search) search.addEventListener("input", () => renderChangesTable());
-    // 全局 Esc 关闭详情
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && activeDetailPath) {
+    if (search) search.addEventListener("input", () => renderTree());
+    // ISS-148：树表事件统一委托（行展开/详情/聚焦/Finder/复制/重试/续页）
+    const tbody = document.getElementById("changes-body");
+    tbody.addEventListener("click", (e) => {
+      const retry = e.target.closest("[data-tree-retry]");
+      if (retry) {
+        const path = retry.dataset.treeRetry;
+        treeState?.levels.delete(path);
+        loadTreeLevel(path);
+        return;
+      }
+      const more = e.target.closest("[data-load-more]");
+      if (more) {
+        loadTreeLevel(more.dataset.loadMore, { cursor: more.dataset.cursor, append: true });
+        return;
+      }
+      const expand = e.target.closest("[data-expand]");
+      if (expand) {
+        e.stopPropagation();
+        toggleTreeExpand(expand.dataset.expand);
+        return;
+      }
+      const focus = e.target.closest("[data-focus]");
+      if (focus) {
+        e.stopPropagation();
+        focusTreePath(focus.dataset.focus);
+        return;
+      }
+      const reveal = e.target.closest("[data-reveal]");
+      if (reveal) {
+        e.stopPropagation();
+        revealInFinder(reveal.dataset.reveal);
+        return;
+      }
+      const copy = e.target.closest("[data-copy]");
+      if (copy) {
+        e.stopPropagation();
+        copyTreePath(copy);
+        return;
+      }
+      const detail = e.target.closest("[data-detail]");
+      if (detail) {
+        e.stopPropagation();
+        openTreeDetail(detail.dataset.detail, detail.closest("tr"));
+        return;
+      }
+      const tr = e.target.closest("tr.focusable");
+      if (tr) openTreeDetail(tr.dataset.path, tr);
+    });
+    // 键盘：行 Enter/Space 打开详情；展开/聚焦等按钮自身 Enter 原生激活。
+    tbody.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target.closest("button")) return;
+      const tr = e.target.closest("tr.focusable");
+      if (tr) {
         e.preventDefault();
-        closeDetail();
+        openTreeDetail(tr.dataset.path, tr);
+      }
+    });
+    // 全局 Esc：先关详情；无详情时逐级返回上级聚焦（面包屑逆向）
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (directoryDetail.isOpen) {
+        e.preventDefault();
+        directoryDetail.close();
+        return;
+      }
+      if (treeState && treeState.focus !== treeState.root) {
+        e.preventDefault();
+        const parent = parentWithinRoot(treeState.focus, treeState.root);
+        if (parent) focusTreePath(parent);
       }
     });
   },
@@ -1534,6 +1724,9 @@ export const changesPage = {
     analysisJobTimer = null;
     analysisPreview = null;
     analysisJob = null;
-    closeDetail();
+    // ISS-148：离页关闭详情并作废全部在途树层级请求
+    directoryDetail.close({ restoreFocus: false });
+    treeEpoch += 1;
+    treeState = null;
   },
 };

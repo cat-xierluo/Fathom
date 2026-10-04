@@ -169,19 +169,33 @@
             <div class="panel-head">
               <h2>快照对比</h2>
               <div class="controls">
+                <!-- ISS-148：同级筛选走 /api/diff/children 的 filter（all/changed），
+                     不在本地重建筛选语义；changed 的隐藏说明由 changes.js 渲染 -->
+                <select id="changes-filter" class="ctl-input tree-filter" data-test="changes-filter"
+                        aria-label="同级行筛选">
+                  <option value="all">全部同级行</option>
+                  <option value="changed">仅变化（含变化后代）</option>
+                </select>
                 <input id="changes-search" class="ctl-input search" type="search"
                        placeholder="按路径过滤当前结果" aria-label="按路径过滤当前对比结果" autocomplete="off">
               </div>
             </div>
-            <p class="hint">搜索按目录路径过滤当前对比结果；改日期用上方共享的基线/对比选择。</p>
-            <p class="hint" id="changes-foot" hidden>列表包含父子目录，行值不可相加为净变化；"未记录"不等于新增或删除。</p>
+            <p class="hint">展开目录逐层看同级变化；点目录名看证据，点箭头展开，聚焦后用面包屑或 Esc 返回上级。</p>
+            <!-- ISS-148：聚焦下钻的面包屑（根 → … → 当前聚焦，crumbs 样式复用分布页） -->
+            <nav id="tree-crumbs" class="crumbs tree-crumbs" data-test="tree-crumbs" hidden
+                 aria-label="当前聚焦位置"></nav>
+            <!-- ISS-148：本级目录摘要（聚焦层的父行口径：累计值含全部后代，未知不渲染 0） -->
+            <p class="hint tree-parent" id="tree-parent" data-test="tree-parent" hidden></p>
+            <!-- ISS-148：筛选/搜索/降级的动态说明（被隐藏方向、只过滤已加载行等） -->
+            <p class="hint" id="tree-note" data-test="tree-note" hidden></p>
+            <p class="hint" id="changes-foot" hidden>目录大小为累计值（含全部后代），父行与子行不可相加；"未记录"与"首次记录"不是删除或新建的证据。</p>
             <div class="tbl-wrap">
-              <table class="tbl" id="changes-table">
+              <table class="tbl tree-tbl" id="changes-table">
                 <thead><tr>
-                  <th><button class="th-sort" data-sort="path" type="button">目录</button></th>
-                  <th class="num"><button class="th-sort" data-sort="prev" type="button">之前</button></th>
-                  <th class="num"><button class="th-sort" data-sort="curr" type="button">现在</button></th>
-                  <th class="num"><button class="th-sort" data-sort="delta" type="button">变化</button></th>
+                  <th><button class="th-sort" data-sort="name" type="button">目录</button></th>
+                  <th class="num"><span class="th-plain">之前</span></th>
+                  <th class="num"><button class="th-sort" data-sort="size" type="button">现在</button></th>
+                  <th class="num"><button class="th-sort" data-sort="delta" type="button">净变化</button></th>
                   <th>状态</th>
                   <th><span class="visually-hidden">操作</span></th>
                 </tr></thead>

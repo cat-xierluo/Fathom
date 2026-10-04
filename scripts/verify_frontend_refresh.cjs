@@ -252,6 +252,86 @@ function createFixture() {
         free_bytes: s.free_bytes,
       })));
     }
+    if (url.pathname === "/api/diff/children") {
+      // ISS-148：树形同级变化表消费真实后端的 ISS-147 端点；夹具镜像生产
+      // 响应形状（dataset/ancestors/parent/children/pagination/counts/query），
+      // 行数据与 /api/diff 的 Build/Archive 同源，另注一行稳定的 Build/Assets
+      // 供展开箭头呈现（仅夹具数据，不断言其语义）。
+      const rows = snapshots();
+      if (rows.length < 2) return json(res, 409, { detail: "至少需要两个快照才能对比" });
+      const aId = url.searchParams.get("a") || String(rows[1].id);
+      const bId = url.searchParams.get("b") || String(rows[0].id);
+      const sa = rows.find((s) => String(s.id) === String(aId));
+      const sb = rows.find((s) => String(s.id) === String(bId));
+      if (!sa || !sb) return json(res, 404, { detail: "快照不存在" });
+      const filter = url.searchParams.get("filter") || "all";
+      const sort = url.searchParams.get("sort") || "delta";
+      const target = url.searchParams.get("path") || ROOT;
+      const SEG_ROWS = [
+        { path: `${ROOT}/Build`, old_kb: 100000, new_kb: 101024, delta_kb: 1024, status: "measured" },
+        { path: `${ROOT}/Archive`, old_kb: 100000, new_kb: 98976, delta_kb: -1024, status: "measured" },
+        { path: `${ROOT}/Build/Assets`, old_kb: 1024, new_kb: 2048, delta_kb: 1024, status: "measured" },
+      ];
+      const kids = SEG_ROWS
+        .filter((r) => r.path !== target && r.path.startsWith(target === "/" ? "/" : target + "/"))
+        .map((r) => {
+          const rest = r.path.slice(target.length + 1);
+          const direct = !rest.includes("/");
+          const name = rest.split("/")[0];
+          return { r, direct, name, full: target === "/" ? `/${name}` : `${target}/${name}` };
+        });
+      const byName = new Map();
+      for (const k of kids) {
+        const cur = byName.get(k.full) ||
+          { path: k.full, name: k.name, old_kb: null, new_kb: null, delta_kb: null,
+            status: "structural", has_children: false, has_changed_descendants: false };
+        if (k.direct) {
+          cur.old_kb = k.r.old_kb; cur.new_kb = k.r.new_kb;
+          cur.delta_kb = k.r.delta_kb; cur.status = k.r.status;
+        } else {
+          cur.has_children = true;
+          cur.has_changed_descendants = true;
+        }
+        byName.set(k.full, cur);
+      }
+      let children = [...byName.values()];
+      if (filter === "changed") {
+        children = children.filter((c) =>
+          (c.old_kb != null && c.new_kb != null && c.old_kb !== c.new_kb) ||
+          (c.old_kb == null) !== (c.new_kb == null) || c.has_changed_descendants);
+      }
+      const cmpDelta = (x, y) =>
+        (x.delta_kb == null) - (y.delta_kb == null) ||
+        Math.abs(y.delta_kb || 0) - Math.abs(x.delta_kb || 0) ||
+        x.name.localeCompare(y.name);
+      const cmpSize = (x, y) =>
+        (x.new_kb == null) - (y.new_kb == null) || (y.new_kb || 0) - (x.new_kb || 0) ||
+        x.name.localeCompare(y.name);
+      if (sort === "name") children.sort((x, y) => x.name.localeCompare(y.name));
+      else if (sort === "size") children.sort(cmpSize);
+      else children.sort(cmpDelta);
+      const parentSeg = SEG_ROWS.find((r) => r.path === target);
+      const parent = {
+        path: target, name: target === "/" ? "/" : target.slice(target.lastIndexOf("/") + 1),
+        old_kb: parentSeg ? parentSeg.old_kb : 300000,
+        new_kb: parentSeg ? parentSeg.new_kb : 300100,
+        delta_kb: parentSeg ? parentSeg.delta_kb : 100,
+        status: parentSeg ? parentSeg.status : "measured",
+        has_children: children.length > 0, has_changed_descendants: true,
+      };
+      return json(res, 200, {
+        a: sa, b: sb,
+        dataset: { root: ROOT, min_kb: 5120, exclude_names: "" },
+        path: target,
+        ancestors: target === ROOT ? [] : [],
+        parent,
+        children,
+        counts: { a_entries: children.length, b_entries: children.length },
+        pagination: { limit: 100, offset: 0, returned: children.length,
+          total: children.length, has_more: false, next_cursor: null },
+        query: { filter, sort },
+      });
+    }
     if (url.pathname === "/api/diff") {
       // 总览摘要固定带 topn=5；竞态只针对摘要请求计数，不影响变化页对比
       if (state.scenario === "overview-old-success-new-500" && url.searchParams.get("topn") === "5") {

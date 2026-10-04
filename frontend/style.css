@@ -721,6 +721,19 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   z-index: 30; overflow: auto;
   padding: 18px 20px;
 }
+/* DESIGN 合同（ISS-148 审计返修）：目录详情是跨页共享侧面板，在较窄桌面
+ * 窗口改为全宽详情——窄断点（≤980，现有最小窗口 980×640）占满视口宽，
+ * 不再被 min(420px, 90vw) 压成 420px；宽窗保留右侧栏形态。 */
+@media (max-width: 980px) {
+  .changes-detail { width: 100%; border-left: none; box-shadow: none; }
+}
+/* 搜索命中已加载后代时，仅因后代命中的祖先行弱化保留（导航节点语义） */
+tr.tree-ancestor-hit .tree-name { color: var(--muted); }
+.tree-ancestor-mark {
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 5px; margin-left: 6px;
+}
 .changes-detail[hidden] { display: none; }
 .changes-detail .detail-head {
   display: flex; align-items: center; justify-content: space-between;

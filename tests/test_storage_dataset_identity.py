@@ -297,10 +297,17 @@ class TestSameDayReplacementAndRetentionIsolation:
         scanroot.mkdir()
         scanner.ensure_scan_scope(conn, "apfs-volume:uuid-A",
                                   "startup_volume")
+        scanner.ensure_scan_scope(conn, "apfs-volume:uuid-B",
+                                  "startup_volume")
         p1 = scanner.ensure_scan_plan(conn, "apfs-volume:uuid-A",
                                       str(scanroot), 1, 1, "")
-        p2 = scanner.ensure_scan_plan(conn, "apfs-volume:uuid-A",
-                                      str(scanroot), 1, 1, "skip.noindex")
+        # p2 = 同一路径但另一个卷（换卷即新计划）。实测口径与登记完全
+        # 一致，故写入合法；当日不互替只因计划身份不同——不是靠口径
+        # 不一致换取的隔离（口径不一致会被写入闸门直接拒绝，见
+        # TestPlanIdentityEnforcement）。
+        p2 = scanner.ensure_scan_plan(conn, "apfs-volume:uuid-B",
+                                      str(scanroot), 1, 1, "")
+        assert p1 != p2
         first = scanner.create_snapshot(conn, root=scanroot, min_kb=1,
                                         plan_id=p1, metric_version=1)
         other = scanner.create_snapshot(conn, root=scanroot, min_kb=1,
@@ -382,7 +389,11 @@ class TestSameDayReplacementAndRetentionIsolation:
 
         # 冻结 today=次日：keep_daily_days=0/keep_weekly_weeks=0 时当日
         # 采集的快照（created_at=真实今天）整体越过保留窗口被淘汰。
-        self._freeze_today(monkeypatch, dt.date(2026, 10, 5))
+        # 次日由真实今天推得——硬编码日期会让本用例在 authored 当天之后
+        # 变成时间炸弹（created 与 daily_cutoff 同日 → 落在「近 N 天全
+        # 保留」分支，淘汰断言必然失败）。
+        self._freeze_today(monkeypatch,
+                           dt.date.today() + dt.timedelta(days=1))
         scanner.prune_snapshots(conn, keep_daily_days=0, keep_weekly_weeks=0)
 
         member = conn.execute(
@@ -422,3 +433,194 @@ class TestSameDayReplacementAndRetentionIsolation:
         ).fetchone()
         assert member["snapshot_id"] is None
         assert member["snapshot_status"] == "expired"
+
+
+class TestPlanIdentityEnforcement:
+    """ISS-153 审计返修：快照写入前必须校验 plan 身份 vs 实际测量口径。
+
+    Codex 审计 blocking 反例：把已登记的 A 目录 plan_id 传给 B 目录（或
+    改了阈值/排除/计量版本）的实际测量，持久化路径仍接受写入；且按 plan
+    分组的同日替换会**删掉 A 当天原有快照**——跨口径写入即身份污染，
+    违反 153 卡身份合同（plan 身份含规范根/阈值/排除/计量版本）。
+
+    合同：写入前校验一致；不一致**明确拒绝**（抛明确异常），不静默重映射、
+    不静默换 plan、**不删任何既有快照**；错误信息如实且不泄漏内部路径细节。
+    """
+
+    @staticmethod
+    def _make_roots(isolated) -> tuple:
+        """两个真实存在的合成根（A = 计划登记口径，B = 跨口径实际测量根）。"""
+        root_a = isolated["scanroot"] / "plan_a"
+        root_b = isolated["scanroot"] / "plan_b"
+        for r in (root_a, root_b):
+            r.mkdir()
+            (r / "payload.bin").write_bytes(b"x" * 2048)
+        return root_a, root_b
+
+    @staticmethod
+    def _fingerprint(conn: sqlite3.Connection, sid: int):
+        """快照本体 + 条目 + 卷容量的完整指纹，用于断言「原样完好」。"""
+        row = conn.execute("SELECT * FROM snapshots WHERE id=?",
+                           (sid,)).fetchone()
+        entries = [tuple(r) for r in conn.execute(
+            "SELECT path, size_kb FROM entries WHERE snapshot_id=? "
+            "ORDER BY path", (sid,))]
+        vol = conn.execute(
+            "SELECT total_bytes, free_bytes FROM volume_stats "
+            "WHERE snapshot_id=?", (sid,)).fetchone()
+        return (dict(row) if row is not None else None, entries,
+                tuple(vol) if vol is not None else None)
+
+    def _seed_plan_a(self, conn, root_a, *, min_kb: int = 1,
+                     metric_version: int = 1,
+                     exclude_names: str = ""):
+        """登记 A 目录 plan 并落一条 A 当天快照，返回 (plan_id, sid_a)。"""
+        scanner.ensure_scan_scope(conn, "apfs-volume:uuid-A",
+                                  "startup_volume")
+        plan_a = scanner.ensure_scan_plan(
+            conn, "apfs-volume:uuid-A", str(root_a), metric_version,
+            min_kb, exclude_names)
+        sid_a = scanner.create_snapshot(conn, root=root_a, min_kb=min_kb,
+                                        plan_id=plan_a,
+                                        metric_version=metric_version)
+        return plan_a, sid_a
+
+    def _assert_rejected_and_a_intact(self, conn, sid_a, before, call, *,
+                                      leaked: tuple = (),
+                                      mentions: str = ""):
+        """被明确拒绝 + 不写库 + A 快照逐字段完好 + 信息不泄漏路径。"""
+        count_before = conn.execute(
+            "SELECT COUNT(*) FROM snapshots").fetchone()[0]
+        with pytest.raises(scanner.InvalidScanError) as exc:
+            call()
+        message = str(exc.value)
+        assert message.strip()  # 错误信息如实非空
+        if mentions:
+            assert mentions in message  # 指名不匹配的维度
+        for secret in leaked:
+            assert secret not in message  # 不泄漏内部路径细节
+        # 未写入任何新快照。
+        assert conn.execute(
+            "SELECT COUNT(*) FROM snapshots").fetchone()[0] == count_before
+        # A 当天原有快照逐字段完好（未被同日替换误删、未被改写）。
+        assert self._fingerprint(conn, sid_a) == before
+
+    def test_rejects_other_root_measurement(self, conn, isolated):
+        """反例①：根不同——以 B 目录实测 + A 的 plan_id 写入被拒。"""
+        root_a, root_b = self._make_roots(isolated)
+        plan_a, sid_a = self._seed_plan_a(conn, root_a)
+        before = self._fingerprint(conn, sid_a)
+        self._assert_rejected_and_a_intact(
+            conn, sid_a, before,
+            lambda: scanner.create_snapshot(conn, root=root_b, min_kb=1,
+                                            plan_id=plan_a,
+                                            metric_version=1),
+            leaked=(str(root_a), str(root_b)),
+            mentions="规范根",
+        )
+        # A 的计划归属未被污染：没有出现 root=B 却挂 plan_A 的行。
+        assert conn.execute(
+            "SELECT COUNT(*) FROM snapshots WHERE plan_id=? AND root=?",
+            (plan_a, str(root_b))).fetchone()[0] == 0
+
+    def test_rejects_threshold_mismatch(self, conn, isolated):
+        """反例②：阈值不同——同根同计划身份但 min_kb 不符，写入被拒。"""
+        root_a, _ = self._make_roots(isolated)
+        plan_a, sid_a = self._seed_plan_a(conn, root_a, min_kb=1)
+        before = self._fingerprint(conn, sid_a)
+        self._assert_rejected_and_a_intact(
+            conn, sid_a, before,
+            lambda: scanner.create_snapshot(conn, root=root_a, min_kb=2,
+                                            plan_id=plan_a,
+                                            metric_version=1),
+            leaked=(str(root_a),),
+            mentions="阈值",
+        )
+
+    def test_rejects_exclude_mismatch(self, conn, isolated, monkeypatch):
+        """反例③：排除掩码不同——实测排除集与计划登记不符，写入被拒。"""
+        root_a, _ = self._make_roots(isolated)
+        plan_a, sid_a = self._seed_plan_a(conn, root_a, exclude_names="")
+        before = self._fingerprint(conn, sid_a)
+        # 实测口径改用另一套排除掩码，计划身份未随之更新。
+        monkeypatch.setattr(config, "EXCLUDE_NAMES", ["skip.noindex"])
+        self._assert_rejected_and_a_intact(
+            conn, sid_a, before,
+            lambda: scanner.create_snapshot(conn, root=root_a, min_kb=1,
+                                            plan_id=plan_a,
+                                            metric_version=1),
+            leaked=(str(root_a),),
+            mentions="排除",
+        )
+
+    def test_rejects_metric_version_mismatch(self, conn, isolated):
+        """反例④：计量版本不同——写库时口径版本与计划登记不符，写入被拒。"""
+        root_a, _ = self._make_roots(isolated)
+        plan_a, sid_a = self._seed_plan_a(conn, root_a, metric_version=1)
+        before = self._fingerprint(conn, sid_a)
+        self._assert_rejected_and_a_intact(
+            conn, sid_a, before,
+            lambda: scanner.create_snapshot(conn, root=root_a, min_kb=1,
+                                            plan_id=plan_a,
+                                            metric_version=2),
+            leaked=(str(root_a),),
+            mentions="计量版本",
+        )
+
+    def test_rejects_missing_metric_version_for_registered_plan(
+        self, conn, isolated
+    ):
+        """反例⑤：已登记计划却漏传计量版本（None），不得静默补全身份。"""
+        root_a, _ = self._make_roots(isolated)
+        plan_a, sid_a = self._seed_plan_a(conn, root_a, metric_version=1)
+        before = self._fingerprint(conn, sid_a)
+        self._assert_rejected_and_a_intact(
+            conn, sid_a, before,
+            lambda: scanner.create_snapshot(conn, root=root_a, min_kb=1,
+                                            plan_id=plan_a,
+                                            metric_version=None),
+            leaked=(str(root_a),),
+            mentions="计量版本",
+        )
+
+    def test_rejects_unregistered_plan_id(self, conn, isolated):
+        """反例⑥：plan_id 从未登记——无法核验身份，必须拒绝而非照写。"""
+        root_a, _ = self._make_roots(isolated)
+        ghost = scanner.plan_identity_id("apfs-volume:uuid-A", str(root_a),
+                                         1, 1, "")
+        sid_a = scanner.create_snapshot(conn, root=root_a, min_kb=1)
+        before = self._fingerprint(conn, sid_a)
+        self._assert_rejected_and_a_intact(
+            conn, sid_a, before,
+            lambda: scanner.create_snapshot(conn, root=root_a, min_kb=1,
+                                            plan_id=ghost,
+                                            metric_version=1),
+            leaked=(str(root_a),),
+            mentions="未登记",
+        )
+
+    def test_mismatch_error_is_distinguishable_subclass(self):
+        """拒绝异常须可与「du 采集无效」区分，同时保持既有捕获面。"""
+        assert issubclass(scanner.PlanIdentityMismatchError,
+                          scanner.InvalidScanError)
+        assert scanner.PlanIdentityMismatchError is not scanner.InvalidScanError
+
+    def test_legacy_null_plan_path_unchanged(self, conn, isolated):
+        """零行为变化：默认参数（plan_id=None）路径照常写入并按 legacy 分组。"""
+        root_a, root_b = self._make_roots(isolated)
+        sid_a = scanner.create_snapshot(conn, root=root_a, min_kb=1)
+        sid_b = scanner.create_snapshot(conn, root=root_b, min_kb=1)
+        for sid, root in ((sid_a, root_a), (sid_b, root_b)):
+            row = _row(conn, sid)
+            assert row["plan_id"] is None
+            assert row["round_id"] is None
+            assert row["metric_version"] is None
+            assert row["root"] == str(root)
+        # legacy 同日重复仍是一天一行（按 root/min_kb/exclude 分组）。
+        again = scanner.create_snapshot(conn, root=root_a, min_kb=1)
+        assert conn.execute("SELECT COUNT(*) FROM snapshots WHERE id=?",
+                            (sid_a,)).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM snapshots WHERE id=?",
+                            (again,)).fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM snapshots WHERE id=?",
+                            (sid_b,)).fetchone()[0] == 1

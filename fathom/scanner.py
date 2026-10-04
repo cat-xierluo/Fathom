@@ -63,6 +63,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 from . import config
 
@@ -103,6 +104,18 @@ class InvalidScanError(RuntimeError):
     本次扫描已被整体拒绝。
 
     抛出时数据库没有任何写入，当日旧快照不受影响。
+    """
+
+
+class PlanIdentityMismatchError(InvalidScanError):
+    """计划身份与本次实际测量口径不一致，本次快照写入被整体拒绝。
+
+    ISS-153 审计返修：快照写入前必须核验 plan 身份（规范根/阈值/排除/
+    计量版本）与实际测量口径逐项一致，否则即为跨口径写入的身份污染。
+
+    继承 InvalidScanError 以复用既有「本次扫描已被整体拒绝、数据库没有
+    任何写入、当日旧快照不受影响」的捕获面与处理路径，同时让调用方可
+    把它与「du 采集无效」区分开（前者是身份/编排问题，后者是采集问题）。
     """
 
 
@@ -869,6 +882,58 @@ def _drop_same_day(
         _delete_snapshot_rows(conn, sid)
 
 
+def _reject_plan_identity_mismatch(dimension: str) -> NoReturn:
+    """身份口径不符的统一出口：指名维度，不回显路径或任何取值。"""
+    raise PlanIdentityMismatchError(
+        f"计划身份与本次实际测量口径不一致（{dimension}）；"
+        f"已拒绝本次快照写入，未做任何数据库改动"
+    )
+
+
+def _verify_plan_matches_measurement(
+    conn: sqlite3.Connection,
+    plan_id: str | None,
+    *,
+    root_str: str,
+    min_kb: int,
+    exclude_names: str,
+    metric_version: int | None,
+) -> None:
+    """写入前核验 plan 身份与实际测量口径一致（ISS-153 审计返修）。
+
+    计划身份五元组 = (scope_id, canonical_root, metric_version, min_kb,
+    exclude_names)。本次快照可观测的四个维度（规范根/阈值/排除/计量
+    版本）必须与登记行逐项相等；scope_id 不在写入侧入参内，其正确性由
+    登记侧（ensure_scan_scope/ensure_scan_plan）保证。
+
+    任一维度不符、或 plan_id 从未登记，一律抛 PlanIdentityMismatchError：
+    不静默重映射、不静默换 plan、**不进入同日替换事务**——因此当天该
+    计划的既有快照一个都不会被删。校验刻意取严格相等：身份合同的语义
+    就是「口径不同即不同计划」，容错归一会把跨口径写入重新放进来。
+
+    plan_id 为 None（legacy 路径）直接返回，行为与 v7 完全一致。
+
+    错误信息只指名不匹配的维度，不回显根路径/阈值/掩码等内部细节。
+    """
+    if plan_id is None:
+        return
+    row = conn.execute(
+        "SELECT canonical_root, metric_version, min_kb, exclude_names "
+        "FROM scan_plans WHERE plan_id = ?", (plan_id,)
+    ).fetchone()
+    if row is None:
+        _reject_plan_identity_mismatch("计划未登记")
+    if row["canonical_root"] != root_str:
+        _reject_plan_identity_mismatch("规范根不同")
+    if int(row["min_kb"]) != int(min_kb):
+        _reject_plan_identity_mismatch("阈值不同")
+    if (row["exclude_names"] or "") != exclude_names:
+        _reject_plan_identity_mismatch("排除掩码不同")
+    actual_metric = None if metric_version is None else int(metric_version)
+    if row["metric_version"] != actual_metric:
+        _reject_plan_identity_mismatch("计量版本不同")
+
+
 def create_snapshot(
     conn: sqlite3.Connection,
     root: Path | None = None,
@@ -889,6 +954,12 @@ def create_snapshot(
     轮次；metric_version 为计量版本。身份须来自 storage 发现的真实
     登记结果，不得就地伪造——legacy 路径保持不传，身份列为 NULL。
 
+    传 plan_id 时，写入前先经 _verify_plan_matches_measurement 核验计划
+    身份与本次实际测量口径一致；不一致（或 plan_id 未登记）抛
+    PlanIdentityMismatchError，在采集与事务之前拒绝：既不建新快照，也
+    不触发按计划分组的同日替换，当日既有快照一个都不删（ISS-153 审计
+    返修）。
+
     采集无效（歧义/不可解码路径、缺根记录/空输出、信号终止、非权限且
     非瞬时的真实错误或其与权限/瞬时的混合、负数大小、退出码非零但无
     权限/瞬时证据）时抛 InvalidScanError，数据库不做任何写入，
@@ -902,6 +973,14 @@ def create_snapshot(
     root = Path(root) if root else config.DEFAULT_ROOT
     min_kb = config.MIN_DIR_KB if min_kb is None else min_kb
     root_str = str(root)
+    exclude_names = ";".join(config.EXCLUDE_NAMES)  # 规范串：已排序去重
+
+    # 身份闸门先于采集与任何写入：跨口径写入在此被拒（ISS-153 审计返修）。
+    # plan_id=None 的 legacy 路径直接返回，行为与 v7 逐字节一致。
+    _verify_plan_matches_measurement(
+        conn, plan_id, root_str=root_str, min_kb=min_kb,
+        exclude_names=exclude_names, metric_version=metric_version,
+    )
 
     result = run_du(root)
     collection_status = classify_collection(result, root_str)  # 无效采集在此被拒绝
@@ -914,7 +993,6 @@ def create_snapshot(
     kept = [(p, s) for p, s in sizes.items() if s >= min_kb]
 
     now = dt.datetime.now()
-    exclude_names = ";".join(config.EXCLUDE_NAMES)  # 规范串：已排序去重
     with conn:
         _drop_same_day(conn, now.strftime("%Y-%m-%d"), root_str, min_kb,
                        exclude_names, plan_id=plan_id)

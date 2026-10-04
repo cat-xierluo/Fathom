@@ -107,10 +107,15 @@ analysis_out="$(mktemp)"
 tree_out="$(mktemp)"
 trap 'rm -f "$out" "$refresh_out" "$analysis_out" "$tree_out"' EXIT
 
-# ISS-148：树形套件起真实 FastAPI，先预检 venv 解释器与 Chromium 可用，
-# 缺前置时明确报错而不是在套件内表现为模糊的等待超时。
-tree_python="${FATHOM_PYTHON:-.runtime/bin/python}"
-[ -x "$tree_python" ] || { echo "树形套件前置缺失: 解释器 $tree_python 不存在（先建立 .runtime 或设 FATHOM_PYTHON）" >&2; exit 1; }
+# ISS-148：树形套件起真实 FastAPI，先预检解释器与 playwright 可用，
+# 缺前置时明确报错而不是在套件内表现为模糊的等待超时。脚本消费
+# FATHOM_PYTHON（同 CI pytest job 的注入口径），本机开发回退 .venv。
+tree_python="${FATHOM_PYTHON:-$(pwd)/.venv/bin/python}"
+if [ ! -x "$tree_python" ]; then
+  tree_python="${FATHOM_PYTHON:-.runtime/bin/python}"
+fi
+[ -x "$tree_python" ] || { echo "树形套件前置缺失: 解释器不可用（.venv/.runtime 均缺，或设 FATHOM_PYTHON）" >&2; exit 1; }
+export FATHOM_PYTHON="$tree_python"
 tree_node_path="${NODE_PATH:-}"
 if [ -n "$tree_node_path" ]; then
   tree_chromium_found=0

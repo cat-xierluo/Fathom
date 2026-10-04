@@ -25,7 +25,12 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 const REPO = path.resolve(__dirname, "..");
-const PY = path.join(REPO, ".venv", "bin", "python");
+// 解释器解析：FATHOM_PYTHON（ci_browser_checks.sh 注入）→ .venv（开发机）→
+// .runtime（CI 既有约定）。ci.sh 的预检只保证其一存在，这里不做兜底猜测。
+const PY = process.env.FATHOM_PYTHON
+  || (fs.existsSync(path.join(REPO, ".venv", "bin", "python"))
+    ? path.join(REPO, ".venv", "bin", "python")
+    : path.join(REPO, ".runtime", "bin", "python"));
 
 const args = process.argv.slice(2);
 const shotsIdx = args.indexOf("--shots");

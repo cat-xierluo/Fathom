@@ -209,7 +209,7 @@ const TREE_STATUS_TEXT = {
 };
 
 function statusBadge(st) {
-  const text = TREE_STATUS_TEXT[st] || st;
+  const text = escapeHtml(TREE_STATUS_TEXT[st] || String(st ?? ""));
   if (st === "unrecorded") return `<span class="st st-unrecorded"><span class="st-dot"></span>${text}</span>`;
   if (st === "first_recorded") return `<span class="st st-first"><span class="st-dot"></span>${text}</span>`;
   if (st === "structural") return `<span class="st st-structural"><span class="st-dot"></span>${text}</span>`;

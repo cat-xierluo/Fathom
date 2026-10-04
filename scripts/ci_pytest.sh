@@ -8,7 +8,7 @@
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 1109）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 1147）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -51,7 +51,12 @@ cd "$(dirname "$0")/.."
 # 近亲形态 4 参数 400 且旧值不动）（781 → 800）。
 # ISS-116 +14：errno 路径分类、v5→v6 迁移/API/日报/通知，
 # 长路径通知覆盖质量优先保留反例。
-expected="${EXPECTED_PYTEST_PASSED:-1109}"
+# ISS-147 +38：tests/test_diff_children.py 绑定历史区间的同级差分
+# /api/diff/children——任务卡三反例红测（Top25 折叠丢父级 / 父净 0 被
+# 净变化筛选漏 / browse 时点错位）+ 分页游标绑定 + 四态行/结构节点 +
+# root=/ 与相似前缀段边界 + HTML/换行目录名 + 参数与数据集错误语义 +
+# 同级三序（1109 → 1147）。
+expected="${EXPECTED_PYTEST_PASSED:-1147}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

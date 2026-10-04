@@ -64,12 +64,16 @@ env:
   # fail-safe、prefetch 决策分支、downloaded ready 载荷合同；ISS-113 修复
   # episode 1 +2：预下载独占门门序两钉子——持门期间 install 被拒 busy /
   # CAS 失败放弃不扰动既有门；ISS-114 原生 mask ABI 拒绝路径 +2；
-# ISS-110 prepare 期望 pid/导航 URL/失败话术 +3（1 项原地改写）=69。
+# ISS-110 prepare 期望 pid/导航 URL/失败话术 +3（1 项原地改写）=69；
+# ISS-147 后 pytest 1147 = 1109 + 38(tests/test_diff_children.py——绑定
+# 历史区间的同级差分 /api/diff/children：任务卡三反例红测 + 分页游标
+# 绑定 + 四态行/结构节点 + root=/ 与相似前缀段边界 + HTML/换行目录名 +
+# 参数与数据集错误语义 + 同级三序)。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "1109"
+  EXPECTED_PYTEST_PASSED: "1147"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "77"
@@ -109,7 +113,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 1109 项通过）
+      - name: pytest（断言 1147 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh

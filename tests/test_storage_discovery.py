@@ -541,6 +541,87 @@ class TestBudget:
         assert recorded == [storage.DISCOVERY_TIMEOUT_S]
 
 
+# ---------- 身份硬化：UUID 缺失/空白/重复不得生成稳定 ID ----------
+
+class TestIdentityHardening:
+    """上游审计返修（ISS-152 P2-1）：合成 plist 移除/重复 UUID 后，
+    不得以 status=ok 放行 ``apfs-container:``/``apfs-volume:`` 空前缀
+    伪身份；身份缺失必须降级且 ``errors`` 可观测。
+    """
+
+    def _discover_with_mutated_apfs_list(self, mutate):
+        runner = build_main_runner()
+        base_list = load_plist("apfs_list.plist")
+        for container in base_list["Containers"]:
+            if container["ContainerReference"] == "disk3":
+                mutate(container)
+        runner.add_plist(("diskutil", "apfs", "list", "-plist"), base_list)
+        return storage.discover_startup(
+            runner=runner, now=lambda: FIXED_NOW, platform="darwin",
+            stat=FakeStat(default_stat_map()))
+
+    def test_container_missing_uuid_degrades_observable(self):
+        result = self._discover_with_mutated_apfs_list(
+            lambda c: c.pop("APFSContainerUUID", None))
+        assert result.status is not storage.DiscoveryStatus.OK
+        assert result.status is storage.DiscoveryStatus.UNAVAILABLE
+        assert result.startup_container is None
+        # 不得残留空前缀伪身份。
+        assert result.startup_container is None or \
+            result.startup_container.container_id != "apfs-container:"
+        assert any(err.startswith("identity-missing:")
+                   for err in result.errors)
+
+    def test_volume_missing_uuid_key_degrades_observable(self):
+        def mutate(container):
+            for volume in container["Volumes"]:
+                if volume["DeviceIdentifier"] == "disk3s6":
+                    volume.pop("APFSVolumeUUID", None)
+
+        result = self._discover_with_mutated_apfs_list(mutate)
+        assert result.status is not storage.DiscoveryStatus.OK
+        assert result.status is storage.DiscoveryStatus.UNAVAILABLE
+        for volume in result.startup_volumes:
+            assert volume.volume_id != "apfs-volume:"
+        assert any("identity-missing:" in err and "disk3s6" in err
+                   for err in result.errors)
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_volume_blank_uuid_degrades_observable(self, blank):
+        def mutate(container):
+            for volume in container["Volumes"]:
+                if volume["DeviceIdentifier"] == "disk3s6":
+                    volume["APFSVolumeUUID"] = blank
+
+        result = self._discover_with_mutated_apfs_list(mutate)
+        assert result.status is not storage.DiscoveryStatus.OK
+        assert result.status is storage.DiscoveryStatus.UNAVAILABLE
+        for volume in result.startup_volumes:
+            assert volume.volume_id != "apfs-volume:"
+        assert any("identity-missing:" in err and "disk3s6" in err
+                   for err in result.errors)
+
+    def test_duplicate_volume_uuid_degrades_observable(self):
+        # 两卷重复同一 UUID：稳定身份不再唯一，不得带着重复 ID 放行。
+        def mutate(container):
+            vols = container["Volumes"]
+            dup = next(v["APFSVolumeUUID"]
+                       for v in vols if v["DeviceIdentifier"] == "disk3s2")
+            for volume in vols:
+                if volume["DeviceIdentifier"] == "disk3s6":
+                    volume["APFSVolumeUUID"] = dup
+
+        result = self._discover_with_mutated_apfs_list(mutate)
+        assert result.status is not storage.DiscoveryStatus.OK
+        assert result.status is storage.DiscoveryStatus.UNAVAILABLE
+        ids = [v.volume_id for v in result.startup_volumes]
+        assert len(ids) == len(set(ids))
+        for volume in result.startup_volumes:
+            assert volume.volume_id != "apfs-volume:"
+        assert any(err.startswith("identity-duplicate:")
+                   for err in result.errors)
+
+
 # ---------- 真实命令行拼写（守卫：不执行，只构造） ----------
 
 def test_discovery_command_forms_readonly_plist():

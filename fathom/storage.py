@@ -16,7 +16,9 @@
 - **稳定身份 = UUID，不是路径**：``volume_id = "apfs-volume:<UUID>"``。
   同路径换 UUID 保持两个独立身份；同 UUID 换挂载点身份不变；无法权威
   确认归属的入口（如快照根匹配不到 system 卷）``volume_id`` 为 None，
-  绝不用路径伪造稳定 ID。
+  绝不用路径伪造稳定 ID。容器/卷 UUID 缺失、空白或重复时拒绝生成
+  空前缀/重复伪身份：整体降级 ``unavailable`` + ``identity-missing:``/
+  ``identity-duplicate:`` 错误可观测（``status=ok`` 不伴随身份缺失）。
 - **可见路径与物理路径映射**：``visible_entries`` 记录实测到的可见入口
   （卷挂载点 ``via="mount"``；启动根系统卷快照 ``via="snapshot_mount"``，
   经 ``APFSVolumeGroupID`` + system 角色权威匹配归属）。macOS firmlink
@@ -700,7 +702,15 @@ def discover_startup(
             f"container-not-found: {container_reference} not in apfs list")
         return unavailable()
 
-    container_id = f"apfs-container:{container.get('APFSContainerUUID', '')}"
+    container_uuid = str(container.get("APFSContainerUUID") or "").strip()
+    if not container_uuid:
+        # 容器 UUID 缺失：空 prefix 的 container_id 是可碰撞伪身份，
+        # 整体降级 unavailable（与 container-not-found 同构）。
+        errors.append(
+            f"identity-missing: apfs container {container_reference}:"
+            " APFSContainerUUID missing/blank")
+        return unavailable()
+    container_id = f"apfs-container:{container_uuid}"
 
     # ---- 逐卷 info（预算约束） ----
     raw_volumes = [v for v in container.get("Volumes", [])
@@ -727,9 +737,25 @@ def discover_startup(
         probed.append((raw, volume_info))
 
     volumes: list[DiscoveredVolume] = []
+    seen_uuids: dict[str, str] = {}
     for raw, volume_info in probed:
         devid = str(raw.get("DeviceIdentifier") or "")
-        uuid = str(raw.get("APFSVolumeUUID") or "")
+        uuid = str(raw.get("APFSVolumeUUID") or "").strip()
+        if not uuid:
+            # 卷 UUID 缺失/空白：空前缀 volume_id 是可碰撞伪身份，
+            # 整体降级 unavailable，绝不用路径或设备名顶替。
+            errors.append(
+                f"identity-missing: apfs volume {devid}:"
+                " APFSVolumeUUID missing/blank")
+            return unavailable()
+        prior_owner = seen_uuids.get(uuid)
+        if prior_owner is not None:
+            # 两卷同一 UUID：稳定身份不再唯一，降级并观测冲突双方。
+            errors.append(
+                f"identity-duplicate: apfs volume uuid {uuid}:"
+                f" {prior_owner},{devid}")
+            return unavailable()
+        seen_uuids[uuid] = devid
         roles = tuple(str(role).lower()
                       for role in raw.get("Roles", []) if isinstance(role, str))
         mount = None

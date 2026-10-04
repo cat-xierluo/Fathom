@@ -198,7 +198,11 @@ def resolve_query_root(raw: Optional[str], *,
     if not isinstance(raw, str) or not raw:
         raise BigfilesScopeError("path 参数必须是非空字符串")
     root_str = str(base).rstrip("/") or "/"
-    if not (raw == root_str or raw.startswith(root_str + "/")):
+    # 根为 / 时前缀即 "/" 本身，不得拼成 "//"（ISS-150 审计返修）；
+    # root_str 经 rstrip 后只可能是 "/" 或无尾斜杠路径，此写法对任何
+    # 输入都不会产生 "//"。
+    prefix = "/" if root_str == "/" else root_str + "/"
+    if not (raw == root_str or raw.startswith(prefix)):
         raise BigfilesScopeError(
             f"path 参数必须是监控根 {root_str} 之内的绝对路径")
     try:

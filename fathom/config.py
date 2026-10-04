@@ -315,6 +315,13 @@ BIGFILE_CACHE_TTL_S = 30.0        # 成功结果缓存 TTL（可分辨 expired�
 BIGFILE_LOG_RETENTION_DAYS = 7     # 大文件查询相关本地日志保留天数
 BIGFILE_REPORT_RETENTION_DAYS = 35 # 大文件查询产生的诊断报告保留天数
 
+# largest 模式预算（ISS-150）：全量遍历才称「当前最大」，预算提前截断时
+# 仅返回「已检查文件中的较大项」并披露 incomplete。
+BIGFILE_LARGEST_TIMEOUT_S = 60.0       # largest 单次全量遍历时间预算（秒）
+BIGFILE_LARGEST_MAX_OUTPUT_BYTES = 8 * 1024 * 1024  # stdout 增量累积上限（字节）
+BIGFILE_SCOPE_VERSION = 1              # 允许范围配置版本；进缓存/去重键，
+                                       # 155 接入 allowlisted scope 身份时递增使旧缓存失效
+
 # du 采集超时（ISS-061）。原 3600s 硬编码在 2026-09-14/15 把生产扫描
 # 截断为 status=interrupted / message="du 超过 3600 秒安全时限"（生产根
 # 生产根（约 1100 万文件、93.7 万目录）一次扫描远超 1 小时），当日

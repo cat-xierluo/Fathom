@@ -72,11 +72,13 @@ env:
 # ISS-152 +29（28+返修 B-1 降级用例 1）：tests/test_storage_discovery.py
 # 启动盘容器与卷发现适配器（共享 free 唯一权威/UUID 稳定身份/可见路径
 # 归属与 firmlink 去重/卸载锁定未知态/降级三态，plist 结构化输出）。
+# ISS-150 +32：tests/test_bigfiles_scoped.py——限定目录的 largest/recent
+# 模式与范围约束（两反例 + 越界/竞态/去重/预算披露）。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "1176"
+  EXPECTED_PYTEST_PASSED: "1208"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "77"
@@ -116,7 +118,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 1176 项通过）
+      - name: pytest（断言 1208 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh

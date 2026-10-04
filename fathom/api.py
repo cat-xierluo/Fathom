@@ -57,6 +57,7 @@ import sqlite3
 import subprocess
 import threading
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -613,8 +614,10 @@ def api_trend(path: str = Query(..., min_length=1),
 @app.get("/api/bigfiles")
 def api_bigfiles(days: int = Query(7, ge=1, le=90),
                  min_mb: int = Query(100, ge=1, le=10240),
-                 topn: int = Query(50, ge=1, le=200)):
-    """近期大文件查询（ISS-032）。
+                 topn: int = Query(50, ge=1, le=200),
+                 mode: str = Query("recent", pattern="^(recent|largest)$"),
+                 path: Optional[str] = Query(None)):
+    """近期大文件 / 当前最大文件查询（ISS-032；ISS-150 扩展 mode/path）。
 
     显式触发语义：每次请求经 ``BigfilesManager.submit``；同参数并发请求自动
     去重；TTL 缓存可命中、过期可辨；find 进程组可被取消/超时回收。返回字段
@@ -623,14 +626,30 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
     /``error_message``/``raw_truncated``，前端据此展示进度、范围、失败、截断
     与过期缓存。失败/权限受限返回 200 + ``state`` 字段（语义可辨），仅坏参
     数由全局 ``RequestValidationError`` 处理器返回 400。
+
+    ISS-150：
+    - ``mode=largest`` 按当前 st_size 逻辑大小排序，不带 mtime 过滤；
+      ``mode=recent``（缺省）保持既有行为，旧 GET 调用不变。
+    - ``path`` 限定查询目录：仅接受监控根内的规范化目录（经
+      ``bigfiles.resolve_query_root``，拒绝 ``..``/相似前缀根/符号链接越界，
+      路径已移走返回 404）；不传即监控根。
+    - ``incomplete=True`` 表示时间/输出预算提前截断，``files`` 只是
+      「已检查文件中的较大项」而非目录的当前最大文件。
+    - ``stats.started_at``/``stats.finished_at`` 为查询起止（epoch 秒）。
     """
+    try:
+        resolved_root = bigfiles.resolve_query_root(path)
+    except bigfiles.BigfilesScopeError as exc:
+        raise HTTPException(exc.status, str(exc))
+    timeout_s = (config.BIGFILE_LARGEST_TIMEOUT_S if mode == "largest"
+                 else config.BIGFILE_FIND_TIMEOUT_S)
     manager = _get_bigfiles_manager()
     future = manager.submit(
-        config.DEFAULT_ROOT, days=days, min_mb=min_mb, topn=topn,
-        timeout=config.BIGFILE_FIND_TIMEOUT_S,
+        resolved_root, days=days, min_mb=min_mb, topn=topn, mode=mode,
+        timeout=timeout_s,
     )
     try:
-        result = future.result(timeout=config.BIGFILE_FIND_TIMEOUT_S + 1.0)
+        result = future.result(timeout=timeout_s + 1.0)
     except concurrent.futures.CancelledError:
         return JSONResponse(
             {"detail": "大文件查询已取消"},
@@ -647,6 +666,9 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
         "files": result.files,
         "scope": {
             "root": str(config.DEFAULT_ROOT),
+            "resolved_root": str(resolved_root),
+            "requested_path": path,
+            "mode": mode,
             "days": days,
             "min_mb": min_mb,
             "topn": topn,
@@ -658,9 +680,12 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
             "find_exit_code": result.stats.find_exit_code,
             "find_stderr_lines": result.stats.find_stderr_lines,
             "permission_denied_lines": result.stats.permission_denied_lines,
+            "started_at": result.stats.started_at,
+            "finished_at": result.stats.finished_at,
         },
         "truncated": result.truncated,
         "raw_truncated": result.raw_truncated,
+        "incomplete": result.incomplete,
         "expired": result.state == bigfiles.BigfilesState.EXPIRED,
         "cached": result.cached,
         "cache_age_s": result.cache_age_s,

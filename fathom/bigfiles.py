@@ -21,6 +21,13 @@
   permitted 视为权限受限；其他非零退出或 stderr 报错视为 FAILED。
 - 原始路径只进本地必要日志（``fathom.bigfiles`` logger），日志形如
   ``<sha8>.../<basename>``，完整路径永不进入日志或返回值之外。
+- 任务句柄与取消入口（ISS-164）：每次查询（含缓存命中）都在管理器内登记一条
+  ``BigfilesTask`` 记录，句柄 ``task_id`` 由去重键确定性派生，因此「同参并发
+  去重」与「按句柄寻址/取消」指向同一条任务。``status_view`` 返回与既有五态
+  对齐的真实状态（在途 ``running``、取消 ``cancelled`` + 既有六态终态），
+  ``cancel_task`` 只取消该句柄对应任务的进程组；终态句柄在 ``task_retention_s``
+  内保留以支撑幂等取消，超出保留期按未知句柄处理。浏览器中止 HTTP 请求不写
+  任何服务端状态，取消必须走此入口（API 层 ``POST /api/bigfiles/cancel``）。
 
 实现层面：
 - ``BigfilesManager`` 维护进程级单例：参数 -> in-flight Future 与缓存；
@@ -63,7 +70,22 @@ class BigfilesState(str, enum.Enum):
     EXPIRED = "expired"
 
 
+class BigfilesTaskState(str, enum.Enum):
+    """任务生命周期状态（ISS-164），与 ``BigfilesState`` 终态对齐。
+
+    只新增查询在途与被取消两态；``ok``/``no_match``/``permission_denied``/
+    ``failed``/``truncated``/``expired`` 六态仍由 ``BigfilesState`` 给出，
+    两个枚举不在查询结果里混用：``BigfilesResult.state`` 永不为本枚举值。
+    """
+
+    RUNNING = "running"
+    CANCELLED = "cancelled"
+
+
 _BIGFILE_MODES = ("recent", "largest")
+
+# 句柄前缀：只用于让 task_id 在日志/前端一眼可辨（不含任何路径信息）
+_TASK_ID_PREFIX = "bf-"
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,10 +282,20 @@ class BigfilesFuture:
     def query(self) -> BigfilesQuery:
         return self._query
 
+    @property
+    def task_id(self) -> str:
+        """产品入口句柄（ISS-164）：由去重键确定性派生，见
+        ``BigfilesManager.task_id_for`` 的选型理由。"""
+        return self._manager.task_id_for(self._key)
+
     def cancel(self) -> bool:
         if self._inner.done():
             return False
         self._cancel_event.set()
+        # 取消受理即在句柄表留痕（ISS-164）：无论取消来自产品入口
+        # （cancel_task）、超时回收还是内部调用方，状态查询都能看到
+        # 「取消已受理但仍在回收」的中间态。
+        self._manager._mark_cancel_requested(self._key, self)
         return self._manager._request_cancel(self._key)
 
     def cancelled(self) -> bool:
@@ -300,6 +332,57 @@ class _RunningTask:
         self.key = key
 
 
+class BigfilesTaskNotFound(LookupError):
+    """未知或已超出保留期的 task_id（ISS-164）；API 层映射 404。
+
+    句柄即凭证：不存在「他人任务」概念，也不区分 404 的两种成因（从未
+    登记 / 保留期已过），避免把句柄空间变成可枚举的存在性预言机。
+    """
+
+    def __init__(self, task_id: str) -> None:
+        super().__init__("未知或已过期的 task_id")
+        self.task_id = task_id
+
+
+@dataclass(slots=True)
+class BigfilesTask:
+    """一次查询的产品入口句柄记录（ISS-164）。
+
+    ``task_id`` 由去重键派生，故同键的并发去重与按句柄寻址落在同一条任务
+    上。终态记录在 ``task_retention_s`` 内保留，使「已完成/已取消任务的
+    取消」可以幂等且如实回答；``finished_at`` 同时是终态判据与剪枝依据。
+    """
+
+    task_id: str
+    key: tuple
+    query: BigfilesQuery
+    future: BigfilesFuture
+    state: str = BigfilesTaskState.RUNNING.value
+    created_at: float = 0.0
+    finished_at: Optional[float] = None
+    error_message: Optional[str] = None
+    cancel_requested: bool = False
+
+    def view(self) -> dict:
+        """API 状态视图：真实状态 + 生命周期事实；不含结果本体。"""
+        return {
+            "task_id": self.task_id,
+            "state": self.state,
+            "terminal": self.finished_at is not None,
+            "cancel_requested": self.cancel_requested,
+            "error_message": self.error_message,
+            "created_at": self.created_at,
+            "finished_at": self.finished_at,
+            "scope": {
+                "root": str(self.query.root),
+                "mode": self.query.mode,
+                "days": self.query.days,
+                "min_mb": self.query.min_mb,
+                "topn": self.query.topn,
+            },
+        }
+
+
 class BigfilesManager:
     """进程级大文件查询管理器：去重、缓存、取消/超时、find 资源回收。
 
@@ -309,6 +392,8 @@ class BigfilesManager:
         result_cap: find 输出行的硬上限；超过即视为截断，避免极端目录树把
             内存撑爆。
         cache_ttl_s: 成功结果的有效期；超过即视为 expired。
+        task_retention_s: 终态句柄在管理器内的保留时长（秒）；超时后
+            状态/取消按未知句柄处理（404），避免句柄表无限增长。
         popen_factory: 注入 ``subprocess.Popen`` 以便测试；签名兼容。
         stat_fn: 注入 ``os.stat`` 以便测试；签名兼容。
     """
@@ -326,11 +411,13 @@ class BigfilesManager:
         cache_ttl_s: float = 30.0,
         popen_factory: Optional[Callable[..., subprocess.Popen]] = None,
         stat_fn: Callable[[str], os.stat_result] = os.stat,
+        task_retention_s: float = 300.0,
     ) -> None:
         self._find_path = os.fspath(find_path)
         self._default_timeout_s = default_timeout_s
         self._result_cap = max(1, int(result_cap))
         self._cache_ttl_s = max(0.0, float(cache_ttl_s))
+        self._task_retention_s = max(0.0, float(task_retention_s))
         if popen_factory is not None:
             self._popen_factory = popen_factory
         self._stat_fn = stat_fn
@@ -339,6 +426,73 @@ class BigfilesManager:
         self._inflight: dict[tuple, BigfilesFuture] = {}
         self._tasks: dict[tuple, _RunningTask] = {}
         self._cache: dict[tuple, tuple[float, BigfilesResult]] = {}
+        # 句柄表：task_id -> 任务记录（ISS-164）。键与去重键同源，故同一
+        # key 的最新一次运行覆盖旧记录——与「同键同任务」语义一致。
+        self._registry: dict[str, BigfilesTask] = {}
+
+    # ---------- 句柄与任务入口（ISS-164） ----------
+
+    def task_id_for(self, key: tuple) -> str:
+        """按去重键派生确定性 ``task_id``。
+
+        选确定性哈希而非 UUID 的理由：
+        - 去重键 (规范根, mode, days, min_mb, topn, scope_version) 已经唯一
+          标识一次查询的语义身份，用它派生句柄可让「同参并发去重」与「按句柄
+          寻址/取消」落在同一条任务上：两个去重请求拿到同一句柄，取消该句柄
+          回收的正是那条共享 find。UUID 方案要达到同一效果还得额外维护
+          key→id 映射，并引入生成与登记之间的竞态窗口（此刻按句柄取消会 404）。
+        - 取消因此可以精确绑定「本次运行」：句柄相同即任务相同，前端无需区分
+          「我提交的」与「别人共享的」。
+        - 只对键的拼接串做 sha256（截断 16 位十六进制）并加 ``bf-`` 前缀，不做
+          路径可逆编码，句柄不泄露完整 root 路径（ISS-049 同源口径）。
+        """
+        raw = "\x1f".join(str(part) for part in key)
+        digest = hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()
+        return _TASK_ID_PREFIX + digest[:16]
+
+    def status_view(self, task_id: str) -> dict:
+        """按句柄返回真实状态（纯读，无副作用）。
+
+        未知或已超出保留期的句柄抛 ``BigfilesTaskNotFound``（API → 404）。
+        返回只含生命周期事实与 scope，**不含结果本体**——结果仍从
+        ``GET /api/bigfiles`` 按原参数取（命中缓存或在途去重）。
+        """
+        with self._lock:
+            record = self._registry.get(task_id)
+        if record is None:
+            raise BigfilesTaskNotFound(task_id)
+        return record.view()
+
+    def cancel_task(self, task_id: str) -> dict:
+        """按句柄取消任务：只作用于该任务的 find 进程组（ISS-164）。
+
+        - 在途：置位 ``cancel_requested`` 并走既有取消路径
+          （``BigfilesFuture.cancel`` → 进程组 SIGTERM，回收窗口内升级
+          SIGKILL；spawn 窗口由 ISS-123 补投保证「取消受理即生效」），终态由
+          runner 落为 ``cancelled``；
+        - 已取消：幂等返回 ``cancelled``；
+        - 已完成/已过期：幂等返回真实终态，不谎称已取消、不报错；
+        - 未知/超出保留期：抛 ``BigfilesTaskNotFound``（API → 404）。
+
+        句柄即凭证：没有「他人任务」概念，也不做调用方归属校验——取消端点的
+        越权面由 API 层既有 ``X-Fathom-Token`` 写令牌闸门承担（ISS-022）。
+        不在锁内调用 ``future.cancel()``：其内部会取同一把锁。
+        """
+        with self._lock:
+            record = self._registry.get(task_id)
+        if record is None:
+            raise BigfilesTaskNotFound(task_id)
+        if not record.future.done():
+            record.future.cancel()
+        view = record.view()
+        view["cancelled"] = view["state"] == BigfilesTaskState.CANCELLED.value
+        if view["cancelled"]:
+            view["detail"] = "任务已取消"
+        elif view["cancel_requested"]:
+            view["detail"] = "取消已受理，find 进程组正在回收"
+        else:
+            view["detail"] = "任务已结束，取消不再生效（状态如实返回）"
+        return view
 
     # ---------- 公共入口 ----------
 
@@ -405,6 +559,11 @@ class BigfilesManager:
                         )
                         future = BigfilesFuture(self, key, query)
                         future._set_result(fresh)
+                        # 缓存命中同样登记句柄（终态）：前端可按同一 task_id
+                        # 查状态/幂等取消，不会拿到 404。
+                        self._register_task_locked(
+                            key, query, future, state=fresh.state.value,
+                            error_message=fresh.error_message)
                         _LOG.debug("命中缓存：key=%s age=%.2fs",
                                    _sanitize_key_for_log(key), age)
                         return future
@@ -425,6 +584,7 @@ class BigfilesManager:
             self._inflight[key] = future
             task = _RunningTask(proc=None, cancel_event=threading.Event(), key=key)  # type: ignore[arg-type]
             self._tasks[key] = task
+            self._register_task_locked(key, query, future)
 
         thread = threading.Thread(
             target=self._runner,
@@ -459,6 +619,45 @@ class BigfilesManager:
                 self._cache.pop(key, None)
 
     # ---------- 内部：执行 find ----------
+
+    def _register_task_locked(self, key: tuple, query: BigfilesQuery,
+                              future: BigfilesFuture, *,
+                              state: Optional[str] = None,
+                              error_message: Optional[str] = None) -> BigfilesTask:
+        """登记/覆盖句柄记录（调用方持锁）。同键的更新一次运行即覆盖旧记录。"""
+        self._prune_tasks_locked()
+        now = time.time()
+        terminal = state is not None
+        record = BigfilesTask(
+            task_id=self.task_id_for(key), key=key, query=query, future=future,
+            state=state or BigfilesTaskState.RUNNING.value,
+            created_at=now, finished_at=now if terminal else None,
+            error_message=error_message,
+        )
+        self._registry[record.task_id] = record
+        return record
+
+    def _prune_tasks_locked(self) -> None:
+        """丢弃超出保留期的终态句柄（调用方持锁）。在途任务永不剪枝。"""
+        if not self._registry:
+            return
+        now = time.time()
+        stale = [tid for tid, rec in self._registry.items()
+                 if rec.finished_at is not None
+                 and (now - rec.finished_at) > self._task_retention_s]
+        for tid in stale:
+            self._registry.pop(tid, None)
+
+    def _mark_cancel_requested(self, key: tuple, future: BigfilesFuture) -> None:
+        """在句柄表标记「取消已受理」（不代投信号，信号仍走 ``_request_cancel``）。
+
+        ``future is record.future`` 保证只标记本次运行：同键的新一次运行已
+        接管句柄时，旧运行的取消不得把新任务标成「取消中」。
+        """
+        with self._lock:
+            record = self._registry.get(self.task_id_for(key))
+            if record is not None and record.future is future:
+                record.cancel_requested = True
 
     def _request_cancel(self, key: tuple) -> bool:
         with self._lock:
@@ -509,6 +708,20 @@ class BigfilesManager:
         with self._lock:
             self._inflight.pop(task.key, None)
             self._tasks.pop(task.key, None)
+            # 终态先落句柄表再投递 future：状态查询不会看到「future 已完成
+            # 但状态仍 running」的窗口。``future is record.future`` 保证只更新
+            # 本次运行的记录——同键的新一次运行已接管句柄时，旧运行不得覆盖
+            # 新任务的状态（否则会谎报取消/完成）。
+            record = self._registry.get(self.task_id_for(task.key))
+            if record is not None and record.future is future:
+                if cancelled:
+                    record.state = BigfilesTaskState.CANCELLED.value
+                    record.error_message = None
+                else:
+                    assert result is not None
+                    record.state = result.state.value
+                    record.error_message = result.error_message
+                record.finished_at = time.time()
         if cancelled:
             # 始终向 future 投递 CancelledError；_inner 尚未 done 时 set_exception
             # 才会被 future.result() 正确捕获。
@@ -1025,10 +1238,13 @@ class BigfilesError(RuntimeError):
 
 __all__ = [
     "BigfilesState",
+    "BigfilesTaskState",
     "BigfilesQuery",
     "BigfilesStats",
     "BigfilesResult",
     "BigfilesFuture",
+    "BigfilesTask",
+    "BigfilesTaskNotFound",
     "BigfilesManager",
     "BigfilesError",
     "BigfilesScopeError",

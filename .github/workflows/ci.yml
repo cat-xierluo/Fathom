@@ -74,11 +74,17 @@ env:
 # 归属与 firmlink 去重/卸载锁定未知态/降级三态，plist 结构化输出）。
 # ISS-150 +32：tests/test_bigfiles_scoped.py——限定目录的 largest/recent
 # 模式与范围约束（两反例 + 越界/竞态/去重/预算披露）。
+# ISS-164 +20：tests/test_bigfiles_task_handle.py——大文件查询任务句柄与
+# 取消产品入口（句柄确定性与不泄露路径 2 + manager 同键去重/取消/未知句柄
+# 2 + API 提交即得句柄/同参同句柄/旧式 409 附句柄 3 + 取消至 cancelled
+# 与进程组回收 1 + 双任务互不误伤/幂等/终态如实/保留期 404 4 + 状态对齐与
+# 404/400 2 + 写令牌 403 与坏 body 400 与读端点免令牌 3 + 旧式阻塞调用逐
+# 字段兼容钉住 1；另 tests/test_api_security.py 白名单登记改动不增减用例）。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "1233"
+  EXPECTED_PYTEST_PASSED: "1253"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "77"

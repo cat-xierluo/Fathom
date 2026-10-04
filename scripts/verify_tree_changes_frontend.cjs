@@ -445,6 +445,57 @@ async function main() {
     await waitUntil(async () => (await rowPaths())[0] === "/synthetic/chain/child", 10000, "回 delta 排序");
     record("chain-sort-back-delta", true);
 
+    /* ---- ISS-148 审计返修：树序深度优先（子树紧邻父行）+ 搜索触达已加载子树 ---- */
+    // 展开 child → grand → great 形成两层以上分叉（根下还有 aaa/other 两个兄弟）
+    await page.click('#changes-body [data-expand="/synthetic/chain/child"]');
+    await waitUntil(async () => (await rowDepth("/synthetic/chain/child/grand")) === 1, 10000, "返修展开 grand");
+    await page.click('#changes-body tr[data-path="/synthetic/chain/child/grand"] [data-expand]');
+    await waitUntil(async () => (await rowDepth("/synthetic/chain/child/grand/great")) === 2, 10000, "返修展开 great");
+    // DOM 顺序必须严格等于 [父, 子, …, 下一兄弟]：包含关系由邻接表达，
+    // 同级之间保持 API 排序（delta 降序：child → aaa → other）
+    const dfPaths = await rowPaths();
+    record("tree-order-depth-first-adjacent-subtree",
+      dfPaths.join("|") ===
+        "/synthetic/chain/child|/synthetic/chain/child/grand|/synthetic/chain/child/grand/great|/synthetic/chain/aaa|/synthetic/chain/other",
+      JSON.stringify(dfPaths));
+
+    // 搜索触达已加载子树："grand" 命中 child/grand 与 child/grand/great
+    // （后者完整路径含 grand），祖先链 child 保留并弱化标注。
+    // input 事件同步触发 renderTree，短暂等待后直接断言（不等轮询）。
+    await page.fill("#changes-search", "grand");
+    await sleep(400);
+    const searchNote = await page.evaluate(() =>
+      document.getElementById("tree-note").hidden ? "" : document.getElementById("tree-note").textContent);
+    const searched = await rowPaths();
+    record("search-reaches-loaded-descendants",
+      searched.join("|") ===
+        "/synthetic/chain/child|/synthetic/chain/child/grand|/synthetic/chain/child/grand/great" &&
+        searchNote.includes("子树"),
+      `rows=${JSON.stringify(searched)} note=${searchNote.slice(0, 60)}`);
+    const searchMark = await page.evaluate(() => ({
+      childAncestor: document.querySelector('#changes-body tr[data-path="/synthetic/chain/child"]')
+        ?.classList.contains("tree-ancestor-hit") === true,
+      grandAncestor: document.querySelector('#changes-body tr[data-path="/synthetic/chain/child/grand"]')
+        ?.classList.contains("tree-ancestor-hit") === true,
+      childMark: (document.querySelector('#changes-body tr[data-path="/synthetic/chain/child"] .tree-ancestor-mark')
+        ?.textContent || ""),
+    }));
+    record("search-ancestor-chain-weakened",
+      searchMark.childAncestor === true && searchMark.grandAncestor === false &&
+        searchMark.childMark.includes("子级命中"),
+      JSON.stringify(searchMark));
+    // 清空搜索：恢复深度优先序且展开状态未丢
+    await page.fill("#changes-search", "");
+    await sleep(400);
+    const restored = await rowPaths();
+    record("search-clear-restores-depth-first-order",
+      restored.join("|") ===
+        "/synthetic/chain/child|/synthetic/chain/child/grand|/synthetic/chain/child/grand/great|/synthetic/chain/aaa|/synthetic/chain/other",
+      JSON.stringify(restored));
+    // 复位收起，恢复进入后续区块前的状态
+    await page.click('#changes-body [data-expand="/synthetic/chain/child"]');
+    await waitUntil(async () => (await rowDepth("/synthetic/chain/child/grand")) === -1, 10000, "返修复位收起");
+
     /* ---- netzero（#3 → #4）：父 0 子抵消 + changed 保留导航父行 ---- */
     await page.selectOption("#sel-a", "3");
     await page.selectOption("#sel-b", "4");
@@ -672,6 +723,17 @@ async function main() {
         geo.docOverflow === false && geo.detailVisible === true &&
           geo.detailW <= w && geo.closeVisible === true,
         JSON.stringify(geo));
+      // ISS-148 审计返修：窄断点（≤980，现有最小窗口 980×640）详情改全宽
+      // （≥95% 视口宽，真实全宽而非仅 ≤窗口）；宽窗保留侧栏形态
+      if (w <= 980) {
+        record(`viewport-${w}-detail-full-width`,
+          geo.detailW >= w * 0.95,
+          `detailW=${geo.detailW} 期望≥${Math.round(w * 0.95)}`);
+      } else {
+        record(`viewport-${w}-detail-sidebar-kept`,
+          geo.detailW > 0 && geo.detailW <= 480,
+          `detailW=${geo.detailW}（宽窗保留侧栏形态）`);
+      }
       await page.screenshot({ path: path.join(SHOTS, `viewport-${w}x${h}.png`) });
     }
     await page.keyboard.press("Escape");

@@ -23,7 +23,9 @@
  *   Esc 先关详情、再逐级返回上级聚焦；
  * - 筛选（all/changed）与排序（delta/size/name）走接口参数，不在本地
  *   重建 Top25；changed 筛选会隐藏无变化方向，说明行（#tree-note）
- *   如实标注；搜索只过滤已加载行，同样在说明行标注；
+ *   如实标注；搜索覆盖各级已加载的同级行与已加载子树（ISS-148 审计
+ *   返修：命中后代与其祖先链一并显示，祖先行弱化标注），未加载的分页
+ *   行不参与，边界在说明行标注；
  * - 分页 has_more/next_cursor 显式呈现为「加载更多」，未加载不冒充
  *   完整同级清单；
  * - 树内每个请求域绑定 treeState 实例 + treeEpoch：改选 a/b、切筛选/
@@ -297,6 +299,19 @@ function treeAuxRow(depth, html, cls = "") {
   return `<tr class="tree-aux ${cls}"><td colspan="${TREE_COLUMNS}">${indent}${html}</td></tr>`;
 }
 
+/** 行自身路径是否命中搜索词（完整路径包含，与既有过滤口径一致）。 */
+function rowMatches(r, search) {
+  return r.path.toLowerCase().includes(search);
+}
+
+/** 该目录的已加载子树内是否存在命中行：仅沿 levels 中已就绪的层级向下看，
+ * 不发起请求——未加载的分页与未展开未加载的层级不参与（搜索边界如实）。 */
+function subtreeHasMatch(path, search) {
+  const level = treeState.levels.get(path);
+  if (!level || level.status !== "ready") return false;
+  return level.rows.some((r) => rowMatches(r, search) || subtreeHasMatch(r.path, search));
+}
+
 function renderLevelRows(path, depth, search) {
   const level = treeState.levels.get(path);
   if (!level) return "";
@@ -312,8 +327,10 @@ function renderLevelRows(path, depth, search) {
   if (level.status === "loading") {
     return treeAuxRow(depth, `<span class="hint">正在加载同级变化…</span>`);
   }
+  // 搜索匹配：行自身路径命中，或其已加载子树内有命中（后者以祖先链弱化保留，
+  // 保证已加载后代不因父行不匹配而失联）；未加载的分页行不参与。
   const rows = search
-    ? level.rows.filter((r) => r.path.toLowerCase().includes(search))
+    ? level.rows.filter((r) => rowMatches(r, search) || subtreeHasMatch(r.path, search))
     : level.rows;
   let out = "";
   if (!rows.length) {
@@ -322,7 +339,16 @@ function renderLevelRows(path, depth, search) {
         ? `<span class="hint">已加载的同级行中没有匹配“${escapeHtml(search)}”的目录。</span>`
         : `<span class="hint">该目录下没有已入库的子目录记录（可能全部低于入库阈值）。</span>`);
   }
-  for (const r of rows) out += treeNodeHtml(r, depth);
+  // ISS-148 审计返修：深度优先输出——每行之后紧邻其子树（若有），再输出下一
+  // 兄弟，使 DOM 邻接关系与目录包含关系一致；同级之间保持 API 排序不变。
+  // 搜索激活时对每个保留行都递归已加载子层（子层未加载自然为空串），命中
+  // 后代因此可见；展开状态集合不被搜索读写，清空搜索后恢复折叠视图。
+  for (const r of rows) {
+    out += treeNodeHtml(r, depth, Boolean(search) && !rowMatches(r, search));
+    if (search || treeState.expanded.has(r.path)) {
+      out += renderLevelRows(r.path, depth + 1, search);
+    }
+  }
   const pg = level.pagination;
   if (pg && pg.has_more && pg.next_cursor) {
     const loaded = search
@@ -334,14 +360,10 @@ function renderLevelRows(path, depth, search) {
               aria-label="加载 ${escapeHtml(path)} 的更多同级行">
         加载更多（已显示 ${loaded} / 共 ${escapeHtml(String(pg.total))} 个同级行）</button>`);
   }
-  // 已展开的子级插在本层末尾（保持 API 给出的同级序）
-  for (const r of rows) {
-    if (treeState.expanded.has(r.path)) out += renderLevelRows(r.path, depth + 1, search);
-  }
   return out;
 }
 
-function treeNodeHtml(r, depth) {
+function treeNodeHtml(r, depth, ancestorOnly = false) {
   const expanded = treeState.expanded.has(r.path);
   const indent = `<span class="tree-indent" style="width:${depth * 18}px" aria-hidden="true"></span>`;
   const toggle = r.has_children
@@ -352,10 +374,16 @@ function treeNodeHtml(r, depth) {
     : `<span class="tree-toggle tree-toggle-leaf" aria-hidden="true"></span>`;
   const prevTxt = r.old_kb == null ? `<span class="delta-none">—</span>` : `<span class="num">${escapeHtml(fmtKB(r.old_kb))}</span>`;
   const currTxt = r.new_kb == null ? `<span class="delta-none">—</span>` : `<span class="num">${escapeHtml(fmtKB(r.new_kb))}</span>`;
-  return `<tr class="focusable" tabindex="0" role="button" data-path="${escapeHtml(r.path)}"
+  // 搜索祖先链弱化：本行不命中但已加载后代命中——名称置灰并加「子级命中」
+  // 标注（读作导航节点），数值照常，不冒充命中行本身。
+  const nameCls = ancestorOnly ? "tree-name tree-name-ancestor" : "tree-name";
+  const ancestorMark = ancestorOnly
+    ? `<span class="tree-ancestor-mark" title="本行因下级命中搜索而保留">子级命中</span>`
+    : "";
+  return `<tr class="focusable${ancestorOnly ? " tree-ancestor-hit" : ""}" tabindex="0" role="button" data-path="${escapeHtml(r.path)}"
               data-depth="${depth}" aria-label="查看目录详情：${escapeHtml(r.path)}">
-    <td class="dir-cell">${indent}${toggle}<button class="tree-name" type="button"
-            data-detail="${escapeHtml(r.path)}" title="${escapeHtml(r.path)}">${escapeHtml(r.name)}</button>
+    <td class="dir-cell">${indent}${toggle}<button class="${nameCls}" type="button"
+            data-detail="${escapeHtml(r.path)}" title="${escapeHtml(r.path)}">${escapeHtml(r.name)}</button>${ancestorMark}
       <button class="copy-path" type="button" data-copy="${escapeHtml(r.path)}"
               aria-label="复制路径 ${escapeHtml(r.path)}" title="复制路径">复制</button>
     </td>
@@ -448,7 +476,7 @@ function updateTreeChrome() {
     notes.push("「仅变化」隐藏了本级无变化且无变化后代的同级行；有变化后代的目录行会保留以供展开，切换回「全部同级行」可查看完整同级清单。");
   }
   if (search) {
-    notes.push("路径过滤只作用于已加载的同级行；有「加载更多」时请先载入后续行再过滤。");
+    notes.push("搜索覆盖各级已加载的同级行与其已加载的子树，命中的下级行与其祖先链（标「子级命中」）一并显示；有「加载更多」时，未载入的分页行不参与搜索。");
   }
   if (noteEl) {
     if (notes.length) {
@@ -1637,7 +1665,7 @@ export const changesPage = {
     document.querySelectorAll("#changes-table .th-sort").forEach((btn) => {
       btn.addEventListener("click", () => onTreeSortChange(btn.dataset.sort));
     });
-    // ISS-148：同级筛选（all/changed 走接口 filter）与搜索（只过滤已加载行）
+    // ISS-148：同级筛选（all/changed 走接口 filter）与搜索（触达已加载子树）
     const filterSel = document.getElementById("changes-filter");
     if (filterSel) filterSel.addEventListener("change", onTreeFilterChange);
     const search = document.getElementById("changes-search");

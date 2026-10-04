@@ -402,6 +402,20 @@ class TestFallbackAndDegradation:
         assert result.status is storage.DiscoveryStatus.UNAVAILABLE
         assert result.startup_container is None
 
+    def test_malformed_plist_degrades_unavailable(self):
+        # 形似 XML 但畸形（截断/未闭合标签）的 plist 输出：plistlib 抛
+        # xml.parsers.expat.ExpatError，不是 ValueError 子类，降级路径
+        # 必须捕住并落 unavailable，不得逃逸出 discover_startup()。
+        runner = FakeRunner()
+        runner.add_result(("diskutil", "info", "-plist", "/"),
+                          returncode=0, stdout=b"<plist><dict><key>Foo")
+        result = storage.discover_startup(
+            runner=runner, now=lambda: FIXED_NOW, platform="darwin",
+            stat=FakeStat({}))
+        assert result.status is storage.DiscoveryStatus.UNAVAILABLE
+        assert result.startup_container is None
+        assert any("plist-invalid" in err for err in result.errors)
+
     def test_unsupported_platform_runs_no_commands(self):
         runner = FakeRunner()
         result = storage.discover_startup(

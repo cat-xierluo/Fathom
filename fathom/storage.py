@@ -48,6 +48,7 @@ import os
 import plistlib
 import subprocess
 import sys
+import xml.parsers.expat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -516,7 +517,7 @@ def _run_plist(runner: CommandRunner, argv: Sequence[str],
         return None
     try:
         data = plistlib.loads(result.stdout)
-    except (ValueError, OSError) as exc:
+    except (ValueError, OSError, xml.parsers.expat.ExpatError) as exc:
         errors.append(f"plist-invalid: {_argv_str(argv)}: {exc}")
         return None
     if not isinstance(data, dict):

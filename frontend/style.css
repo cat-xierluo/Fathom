@@ -1230,3 +1230,59 @@ code {
 /* evidence 定位高亮：浅品牌底闪烁两次的静态等价物（无动画依赖：
  * 2.4 秒后由 JS 移除类，reduced-motion 无差异） */
 #changes-body tr.analysis-locate-flash > td { background: var(--subsel-bg); }
+
+/* ===== 树形同级变化表（ISS-148）：消费 /api/diff/children 的层级视图 ===== */
+
+/* 层级缩进与展开箭头：箭头旋转表达展开态（几何同 icons.js chevron） */
+.tree-indent { display: inline-block; flex: none; }
+.tree-toggle {
+  border: none; background: none; cursor: pointer; color: var(--muted);
+  padding: 2px; margin-right: 2px; border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: -2px;
+}
+.tree-toggle:hover { color: var(--primary); background: var(--bg); }
+.tree-toggle svg { transition: transform 160ms; }
+.tree-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+/* 无下级的行留等宽空位，名称列对齐（占位不可聚焦） */
+.tree-toggle-leaf { cursor: default; width: 17px; }
+
+/* 目录名按钮：动作与展开箭头分开（名字=证据详情，箭头=展开） */
+.tree-name {
+  border: none; background: none; padding: 0; cursor: pointer;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+  color: var(--text); max-width: 320px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: -2px;
+}
+.tree-name:hover { color: var(--primary); text-decoration: underline; }
+.tree-tbl td.dir-cell { max-width: 480px; white-space: nowrap; }
+
+/* 状态徽章：首录/结构节点为中性信息（非告警，不用警示色） */
+.st.st-first { color: var(--primary); } .st.st-first .st-dot { background: var(--mineral); }
+.st.st-structural { color: var(--muted); } .st.st-structural .st-dot { background: var(--border); }
+
+/* 层级辅助行（加载中/空态/错误/加载更多）：跟随层级缩进 */
+.tree-aux td { color: var(--muted); font-size: 12px; }
+.tree-aux .hint { display: inline; }
+.tree-error-text { color: var(--danger); }
+.tree-load-more {
+  border: 1px solid var(--border); background: var(--card); color: var(--muted);
+  border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px;
+}
+.tree-load-more:hover { border-color: var(--primary); color: var(--primary); }
+
+/* 面包屑 / 本级摘要 / 动态说明（聚焦非根时出现） */
+.tree-crumbs { margin: 2px 0 6px; }
+.tree-parent {
+  margin: 2px 0 6px; padding: 6px 10px; background: #f6f7fa; border-radius: 6px;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 12px;
+}
+.tree-parent[hidden] { display: none; }
+.tree-parent strong {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-weight: 600;
+  word-break: break-all;
+}
+.tree-parent .num { font-variant-numeric: tabular-nums; }
+#tree-note[hidden] { display: none; }
+.tree-filter { width: auto; }
+.th-plain { color: var(--muted); font-weight: 500; }

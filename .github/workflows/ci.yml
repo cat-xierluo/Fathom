@@ -69,11 +69,14 @@ env:
 # 历史区间的同级差分 /api/diff/children：任务卡三反例红测 + 分页游标
 # 绑定 + 四态行/结构节点 + root=/ 与相似前缀段边界 + HTML/换行目录名 +
 # 参数与数据集错误语义 + 同级三序)。
+# ISS-152 +29（28+返修 B-1 降级用例 1）：tests/test_storage_discovery.py
+# 启动盘容器与卷发现适配器（共享 free 唯一权威/UUID 稳定身份/可见路径
+# 归属与 firmlink 去重/卸载锁定未知态/降级三态，plist 结构化输出）。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "1147"
+  EXPECTED_PYTEST_PASSED: "1176"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "77"
@@ -113,7 +116,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 1147 项通过）
+      - name: pytest（断言 1176 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh

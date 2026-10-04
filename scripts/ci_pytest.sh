@@ -8,7 +8,7 @@
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 1233）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 1253）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -63,7 +63,14 @@ cd "$(dirname "$0")/.."
 # 模式与范围约束（两反例 + 越界/竞态/去重/预算披露）（1176 → 1208）。
 # ISS-149 +14：tests/test_trend_anchor.py——trend 锚定/缺测窗口/排除
 # 隔离（反例①②③红测先行 + 兼容钉住）（1219 → 1233）。
-expected="${EXPECTED_PYTEST_PASSED:-1233}"
+# ISS-164 +20：tests/test_bigfiles_task_handle.py——大文件查询任务句柄与
+# 取消产品入口（句柄确定性 2 + manager 同键去重/取消终态/未知句柄 2 +
+# API 提交即得句柄与同参同句柄、旧式 409 附句柄 3 + 取消至 cancelled 与
+# 进程组回收 1 + 双任务互不误伤/幂等/终态如实/保留期 404 4 + 状态对齐与
+# 404/400 2 + 写令牌 403、坏 body 400、读端点免令牌 3 + 旧式阻塞调用逐
+# 字段兼容钉住 1；tests/test_api_security.py 仅白名单登记，用例数不变）
+# （1233 → 1253）。
+expected="${EXPECTED_PYTEST_PASSED:-1253}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

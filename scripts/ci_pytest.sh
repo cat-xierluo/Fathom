@@ -62,7 +62,7 @@ cd "$(dirname "$0")/.."
 # ISS-150 +32：tests/test_bigfiles_scoped.py——限定目录的 largest/recent
 # 模式与范围约束（两反例 + 越界/竞态/去重/预算披露）（1176 → 1208）。
 # ISS-149 +14：tests/test_trend_anchor.py——trend 锚定/缺测窗口/排除
-# 隔离（反例①②③红测先行 + 兼容钉住）（1208 → 1233）。
+# 隔离（反例①②③红测先行 + 兼容钉住）（1219 → 1233）。
 expected="${EXPECTED_PYTEST_PASSED:-1233}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 

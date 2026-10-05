@@ -126,6 +126,66 @@ class ScanInterruptedError(RuntimeError):
 _DU_CONTEXT = threading.local()
 
 
+@dataclass(frozen=True)
+class PinnedScanConfig:
+    """一轮采集内钉住的口径快照（ISS-154）。
+
+    轮次在开始时捕获本对象，此后本轮每个成员都按同一份值采集：运行中
+    改配置只影响**下一轮**，不改变已开始的一轮。这与「成员各自提交自己
+    的快照」不矛盾——同轮成员同口径正是可比的前提。
+
+    字段语义与 config 同名项一一对应；``cross_volume`` 表达 ``-x`` 是否
+    生效（默认 True，沿用 du -xk 的跨卷隔离）。没有钉住上下文时（本模块
+    的 legacy 直调路径）行为与 v8 完全一致。
+    """
+
+    min_kb: int
+    exclude_names: tuple[str, ...]
+    metric_version: int
+    cross_volume: bool
+    du_timeout_s: float
+
+    @classmethod
+    def capture(cls, *, metric_version: int = 1) -> "PinnedScanConfig":
+        """从当前 config 捕获一份钉住口径（轮次开始时调用一次）。"""
+        return cls(
+            min_kb=config.MIN_DIR_KB,
+            exclude_names=tuple(config.EXCLUDE_NAMES),
+            metric_version=int(metric_version),
+            cross_volume=True,
+            du_timeout_s=config.DU_TIMEOUT_S,
+        )
+
+    @property
+    def exclude_names_canonical(self) -> str:
+        """排除掩码规范串（与 ``";" .join(config.EXCLUDE_NAMES)`` 同形）。"""
+        return ";".join(self.exclude_names)
+
+
+_PINNED_CONFIG = threading.local()
+
+
+def active_pinned_config() -> PinnedScanConfig | None:
+    """当前线程生效的钉住口径；无钉住上下文返回 None（legacy 路径）。"""
+    return getattr(_PINNED_CONFIG, "value", None)
+
+
+@contextmanager
+def pinned_scan_config(pinned: PinnedScanConfig):
+    """在 ``with`` 内让采集读用钉住口径而非实时 config（ISS-154）。
+
+    只影响本线程的采集参数（阈值/排除掩码/-x）；不改动 config 全局，
+    也不改变 153 的计划身份校验语义——计划正是用同一份钉住值登记的，
+    因此闸门仍然逐项相等。异常路径同样还原（finally）。
+    """
+    previous = getattr(_PINNED_CONFIG, "value", None)
+    _PINNED_CONFIG.value = pinned
+    try:
+        yield pinned
+    finally:
+        _PINNED_CONFIG.value = previous
+
+
 @contextmanager
 def du_process_context(
     *, inherited_fd: int, cancel_event: threading.Event,
@@ -315,15 +375,26 @@ def _validate_du_paths(
 
 
 def _du_argv(root: str) -> list[str]:
-    """构造 du argv：基线 + 当前配置层生效的 -I <每项>。
+    """构造 du argv：基线 + 当前口径层生效的 -I <每项>。
 
     ISS-066：``du -I mask`` 按名字匹配并跳过整棵子树（PM 已实测）。
     掩码语义按 fnmatch（与 BSD du 实现一致）：``*.noindex`` / ``skip.noindex``
     都能匹配；配置层已做排序去重（canonical form），此处仅按序展开。
     无配置时（EXCLUDE_NAMES 为空）argv 与现状逐项相同——零行为变化证明。
+
+    ISS-154：口径层 = 钉住上下文（轮次开始时捕获的阈值/掩码/-x）；
+    无钉住上下文时直接读 config，argv 逐项不变。``-x``（不跨挂载点）在
+    cross_volume 恒为真时照旧出现在 ``-xk`` 里。
     """
-    argv: list[str] = ["/usr/bin/du", "-xk"]
-    for mask in config.EXCLUDE_NAMES:
+    pinned = active_pinned_config()
+    if pinned is not None:
+        masks: list[str] = list(pinned.exclude_names)
+        cross_volume = pinned.cross_volume
+    else:
+        masks = list(config.EXCLUDE_NAMES)
+        cross_volume = True
+    argv: list[str] = ["/usr/bin/du", "-xk" if cross_volume else "-k"]
+    for mask in masks:
         argv.extend(["-I", mask])
     argv.append(root)
     return argv
@@ -971,9 +1042,17 @@ def create_snapshot(
     新快照显式写入两数，du 当时的 KB 数仍保留进 entries。
     """
     root = Path(root) if root else config.DEFAULT_ROOT
-    min_kb = config.MIN_DIR_KB if min_kb is None else min_kb
+    pinned = active_pinned_config()
+    if min_kb is None:
+        min_kb = pinned.min_kb if pinned is not None else config.MIN_DIR_KB
+    min_kb = int(min_kb)
     root_str = str(root)
-    exclude_names = ";".join(config.EXCLUDE_NAMES)  # 规范串：已排序去重
+    # 规范串：已排序去重。ISS-154 有钉住上下文时用轮次开始时捕获的掩码
+    # （运行中改配置不影响本轮）；无钉住上下文时与 v8 逐字节一致。
+    exclude_names = (
+        pinned.exclude_names_canonical if pinned is not None
+        else ";".join(config.EXCLUDE_NAMES)
+    )
 
     # 身份闸门先于采集与任何写入：跨口径写入在此被拒（ISS-153 审计返修）。
     # plan_id=None 的 legacy 路径直接返回，行为与 v7 逐字节一致。

@@ -93,7 +93,13 @@ function httpJson(method, urlPath, port, { headers } = {}) {
 
 /* ------------------------------------------------------------------
  * 种子：两轮同计划事实（容器 26MB 占用增长 vs 目录 20MB 增长 → 未知 6MB）
- * + 重叠测量根（/scanroot 与 /scanroot/Downloads，后者被吸收）
+ * + **兄弟测量根**（clean 相）：.../main 与 .../media 互不重叠、无父子
+ *   包含关系 ⇒ 157 R1 的 ``own_round_reasons`` 不触发（无 absorbed_roots），
+ *   两侧 comparable=true，6MB 差额真实成立。
+ *   旧夹具用父子根（main + main/Downloads）而被吸收，157 R1 对重叠根判
+ *   comparable=false 是**正确**行为，错的只是夹具。
+ * + **父子重叠测量根**（stale 相）：覆盖「不可简单相加」语义 —— 该相期望
+ *   comparable=false 并给出「父子重叠测量根」原因。
  * + 同一容器的第二条卷级样本（共享 free，不得翻倍）
  * + 本轮一个 failed 成员（无快照 → stale）
  * + 用户设置里落 storage_scope（启用整盘范围能力，否则是 legacy 首页）
@@ -107,8 +113,17 @@ from fathom import config, db
 
 runtime = config.settings_path().parent
 scanroot = str(config.DEFAULT_ROOT)
-ROOT = os.path.join(scanroot, "main")
-KID = os.path.join(scanroot, "main", "Downloads")
+STALE = os.environ.get("ISS158_STALE") == "1"
+if STALE:
+    # 父子重叠根：子根被吸收 ⇒ comparable=false（覆盖「不可简单相加」）
+    ROOT = os.path.join(scanroot, "main")
+    KID = os.path.join(scanroot, "main", "Downloads")
+    KB_ROUND2 = (20 * 1024, 20 * 1024)
+else:
+    # 兄弟根：无重叠 ⇒ 两侧可比，20MB 增长全记在第二个根上
+    ROOT = os.path.join(scanroot, "main")
+    KID = os.path.join(scanroot, "media")
+    KB_ROUND2 = (0, 20 * 1024)
 CONTAINER = "apfs-container:1111-2222"
 MB = 1024 * 1024
 
@@ -131,12 +146,13 @@ runtime.joinpath("settings.json").write_text(json.dumps({
     },
 }, ensure_ascii=False), encoding="utf-8")
 
-def seed_round(conn, day, total_kb, free_bytes, member_status="done", snapshot_status="active"):
+def seed_round(conn, day, kb_tuple, free_bytes, member_status="done", snapshot_status="active"):
     rid = conn.execute(
         "INSERT INTO scan_rounds(started_at, finished_at, status) VALUES (?,?,?)",
         (f"{day}T01:00:00", f"{day}T01:10:00", "full")).lastrowid
     sids = []
-    for seq, (root, plan_id) in enumerate(((ROOT, "p-root"), (KID, "p-kid"))):
+    for seq, (root, plan_id, total_kb) in enumerate(
+            ((ROOT, "p-root", kb_tuple[0]), (KID, "p-kid", kb_tuple[1]))):
         conn.execute(
             "INSERT OR IGNORE INTO scan_scopes(scope_id, kind, container_id, "
             "mount_path, display_name, created_at) VALUES (?,?,?,?,?,?)",
@@ -177,9 +193,10 @@ def seed_round(conn, day, total_kb, free_bytes, member_status="done", snapshot_s
     return rid, sids
 
 conn = db.connect()
-r1, s1 = seed_round(conn, "2026-10-01", 0, 100 * MB)
-# 目录侧只涨 20MB（KB 口径），容器占用涨 26MB ⇒ 未知差额 6MB
-r2, s2 = seed_round(conn, "2026-10-02", 20 * 1024, 74 * MB)
+r1, s1 = seed_round(conn, "2026-10-01", (0, 0), 100 * MB)
+# 目录侧只涨 20MB（KB 口径，clean 相全落在兄弟根 media 上），容器占用涨 26MB
+# ⇒ 未知差额 6MB（free_delta 26MB - measured_delta 20MB，真实可算）
+r2, s2 = seed_round(conn, "2026-10-02", KB_ROUND2, 74 * MB)
 # 失败成员（仅 stale 相）：本轮追加一个无快照引用的成员 ⇒ stale 且不可比。
 # 157 合同规定：存在失败成员时 comparable_to_previous=false，差额必须为 null
 # ——「未知 6」与「stale 不可比」是**互斥**两态，故分两个隔离夹具各跑一次。
@@ -264,9 +281,14 @@ async function runPhase(withStale) {
     `container=${S.scope && S.scope.container_id} mode=${S.scope && S.scope.mode}`);
   record("http-shared-free-not-doubled", cap.free_bytes === 74 * 1024 * 1024,
     `free=${cap.free_bytes}（两卷样本同容器，不得翻倍为 148MB）`);
-  record("http-overlapping-root-absorbed",
-    JSON.stringify(attr.attribution_roots) === JSON.stringify([ROOT])
-      && JSON.stringify(attr.absorbed_roots) === JSON.stringify([KID]),
+  // 测量根归因：clean 相为**兄弟根**（无重叠 ⇒ 两根都保留、无吸收，故两侧
+  // comparable=true）；stale 相为**父子根**（子根被吸收 ⇒ 不可简单相加，
+  // 157 R1 据此判 comparable=false）。
+  const rootsWant = PHASE === "clean" ? [ROOT, KID] : [ROOT];
+  const absorbedWant = PHASE === "clean" ? [] : [KID];
+  record("http-attribution-roots-by-phase",
+    JSON.stringify(attr.attribution_roots) === JSON.stringify(rootsWant)
+      && JSON.stringify(attr.absorbed_roots) === JSON.stringify(absorbedWant),
     `roots=${JSON.stringify(attr.attribution_roots)} absorbed=${JSON.stringify(attr.absorbed_roots)}`);
 
   if (PHASE === "clean") {
@@ -284,8 +306,13 @@ async function runPhase(withStale) {
       Array.isArray(attr.stale_members) && attr.stale_members.length === 1
         && attr.stale_members[0].stale === true,
       `stale=${attr.stale_members && attr.stale_members.length}`);
-    record("http-stale-blocks-comparable", attr.comparable_to_previous === false,
-      `comparable_to_previous=${attr.comparable_to_previous}`);
+    // stale 相同时覆盖「父子重叠测量根」语义：157 R1 判 comparable=false
+    // 并给出可读原因（被吸收子根不可简单相加），而非静默放行。
+    record("http-stale-blocks-comparable",
+      attr.comparable_to_previous === false
+        && String(unexp.reason || "").includes("父子重叠测量根")
+        && String(unexp.reason || "").includes("不可简单相加"),
+      `comparable_to_previous=${attr.comparable_to_previous} reason=${unexp.reason}`);
     record("http-stale-forces-null-difference",
       unexp.comparable === false && unexp.bytes === null,
       `comparable=${unexp.comparable} bytes=${unexp.bytes}（缺样本不补 0）`);
@@ -318,8 +345,11 @@ async function runPhase(withStale) {
     record("ui-free-single-readout", freeText === "74.0 MB" && usedText === "99.9 GB",
       `free=${freeText} used=${usedText}`);
     const rootsText = await page.$eval("[data-test='storage-roots']", (el) => el.textContent);
-    record("ui-overlapping-roots-deduped",
-      rootsText.includes("测量根 1 个") && rootsText.includes("已吸收子根 1 个"), rootsText.trim());
+    record("ui-attribution-roots-by-phase",
+      PHASE === "clean"
+        ? (rootsText.includes("测量根 2 个") && !rootsText.includes("已吸收子根"))
+        : (rootsText.includes("测量根 1 个") && rootsText.includes("已吸收子根 1 个")),
+      rootsText.trim());
 
     if (PHASE === "clean") {
       const unexpText = await page.$eval("[data-test='storage-unexplained']", (el) => el.textContent);

@@ -93,6 +93,8 @@ env:
   # ISS-151 目录当前大文件回归（真实 FastAPI+生产页面实点）
   EXPECTED_DIR_BIGFILES_PASSED: "36"
   EXPECTED_SCOPE_SETTINGS_PASSED: "37"
+  # ISS-158 整盘总览与变化入口回归（真实 FastAPI+生产总览页实点，57 项）
+  EXPECTED_STORAGE_OVERVIEW_PASSED: "57"
   EXPECTED_CARGO_PASSED: "69"
 
 jobs:

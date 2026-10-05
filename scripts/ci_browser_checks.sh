@@ -208,3 +208,12 @@ assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot fron
 FATHOM_PYTHON="$tree_python" node scripts/verify_scope_settings_frontend.cjs | tee "$tree_out"
 expected_scope_settings="${EXPECTED_SCOPE_SETTINGS_PASSED:-37}"
 assert_result_json "$tree_out" "$expected_scope_settings" "scope settings frontend"
+
+# ISS-158：整盘总览与变化入口回归（真实 FastAPI 隔离入口 + 生产总览页实点）。
+# 57 项——两个隔离夹具：clean（两侧可比：容器 +26MB / 目录 +20MB ⇒ 未知差额
+# 6MB，两卷共享 free 不翻倍，重叠测量根去重）与 stale（本轮失败成员 ⇒ 旧值
+# stale、差额 null 不可比、不出现数值）。失败自身非零退出，pipefail 直通判
+# 红；计数漂移由 EXPECTED_STORAGE_OVERVIEW_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_storage_overview_frontend.cjs | tee "$tree_out"
+expected_storage_overview="${EXPECTED_STORAGE_OVERVIEW_PASSED:-57}"
+assert_result_json "$tree_out" "$expected_storage_overview" "storage overview frontend"

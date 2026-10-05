@@ -903,7 +903,7 @@ def round_attribution(conn: sqlite3.Connection, round_id: int) -> dict:
         "attribution_roots": list(kept),
         "absorbed_roots": list(absorbed),
         "absorb_note": ("父子测量根不可加：被吸收的子根不参与求和，"
-                        "避免同一份空间数两遍。"),
+                        "避免同一份空间数数两遍。"),
         "members": [dict(row) for row in members],
         "measured_members": measured_members,
         "stale_members": stale_members,
@@ -917,6 +917,41 @@ def round_attribution(conn: sqlite3.Connection, round_id: int) -> dict:
         "comparable_note": ("需要同主体、同计划、两侧都有效（无失败成员、"
                             "无子根吸收）才可比；否则差额为 null。"),
     }
+
+
+def cross_round_identity_reasons(current: dict, previous: dict) -> list[str]:
+    """比对两轮的**同主体 + 同计划**身份，返回不可比原因列表。
+
+    ISS-157 返修 B1：只查质量与 stale 是不够的——两轮即便都「全部 full、
+    无失败成员」，只要**计划集合**或**归因根集合**不同，目录测量的口径
+    就不同（换 plan/换 UUID/换根），差额没有意义。独立审查活反例：两轮
+    分别用 p1 与 p9 仍判 comparable 并给出 51,404,800 bytes 差额。
+
+    归因根集合取自**计划所挂的范围身份**（container_ids）与计划集合本身，
+    两者都必须逐项相等；任一不等即不可比并给出可读原因。
+    """
+    reasons: list[str] = []
+    cur_plans = set(current.get("plan_ids") or [])
+    prev_plans = set(previous.get("plan_ids") or [])
+    if not cur_plans or not prev_plans:
+        reasons.append("缺计划身份：跨计划快照不可比。")
+    elif cur_plans != prev_plans:
+        reasons.append(
+            "跨计划快照不可比：两轮计划集合不同"
+            f"（本轮 {sorted(cur_plans)}，前轮 {sorted(prev_plans)}）。")
+    cur_scopes = set(current.get("container_ids") or [])
+    prev_scopes = set(previous.get("container_ids") or [])
+    if cur_scopes != prev_scopes:
+        reasons.append(
+            "跨主体不可比：两轮归因范围主体不同"
+            f"（本轮 {sorted(cur_scopes)}，前轮 {sorted(prev_scopes)}）。")
+    cur_roots = set(current.get("attribution_roots") or [])
+    prev_roots = set(previous.get("attribution_roots") or [])
+    if cur_roots != prev_roots:
+        reasons.append(
+            "跨测量根集合不可比：本轮归因根与前轮不同"
+            f"（本轮 {sorted(cur_roots)}，前轮 {sorted(prev_roots)}）。")
+    return reasons
 
 
 def round_free_bytes(conn: sqlite3.Connection, round_id: int) -> int | None:

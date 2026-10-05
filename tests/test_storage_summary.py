@@ -101,7 +101,7 @@ def _seed(conn, *, roots, total_kb, plan_ids, container_id=CONTAINER,
                 "INSERT INTO scan_round_members(round_id, seq, plan_id, "
                 "scope_id, snapshot_id, snapshot_status, status, started_at, "
                 "finished_at) VALUES (?,?,?,?,?,'active','done',?,?)",
-                (rid, seq, plan_id, f"scope-{idx}-{seq}", sid,
+                (rid, seq, plan_id, f"scope-{seq}", sid,
                  f"{round_prefix}{idx+1}T01:0{seq}:00",
                  f"{round_prefix}{idx+1}T01:0{seq}:30"),
             )
@@ -115,6 +115,78 @@ def _seed(conn, *, roots, total_kb, plan_ids, container_id=CONTAINER,
         out.append(rid)
     conn.commit()
     return out
+
+
+class TestCrossRoundComparability:
+    """B1 返修：可比性必须核对「同主体 + 同计划」，只查质量不够。
+
+    独立审查活反例：两轮分别用 p1 与 p9（不同计划）却判 comparable=True
+    并给出 51,404,800 bytes 差额。计划不同 → 目录测量口径不同 → 不可比。
+    """
+
+    def test_cross_plan_rounds_not_comparable(self, client, tmp_path,
+                                              monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            rids = _seed(conn, roots=("/scanroot",),
+                         total_kb=([0], [20 * 1024]),
+                         plan_ids=("p1",), free_bytes=(100, 74))
+            # 第二轮换计划（换 UUID 身份）：同根同阈值，但计划不同
+            conn.execute("UPDATE scan_round_members SET plan_id='p9' "
+                         "WHERE round_id=?", (rids[-1],))
+            conn.execute(
+                "INSERT INTO scan_scopes(scope_id, kind, container_id, "
+                "mount_path, display_name, created_at) "
+                "VALUES ('scope-p9','apfs_volume',?,'/scanroot','v0','2026')",
+                (CONTAINER,))
+            conn.execute(
+                "INSERT INTO scan_plans(plan_id, scope_id, canonical_root, "
+                "metric_version, min_kb, created_at) "
+                "VALUES ('p9','scope-p9','/scanroot',1,512,'2026')")
+            conn.execute("UPDATE snapshots SET plan_id='p9' WHERE id=("
+                         "SELECT snapshot_id FROM scan_round_members "
+                         "WHERE round_id=?)", (rids[-1],))
+            conn.commit()
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        assert data["comparability"]["comparable"] is False
+        assert data["comparability"]["identity_reasons"], "应给出跨计划/跨主体原因"
+        assert data["unexplained"]["comparable"] is False
+        assert data["unexplained"]["bytes"] is None
+        assert "计划" in data["unexplained"]["reason"]
+
+    def test_cross_root_set_not_comparable(self, client, tmp_path,
+                                           monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            rids = _seed(conn, roots=("/scanroot",),
+                         total_kb=([0], [20 * 1024]),
+                         plan_ids=("p1",), free_bytes=(100, 74))
+            # 第二轮换测量根集合：同计划 ID，但计划落在另一个根上
+            conn.execute("UPDATE scan_round_members SET scope_id='scope-b' "
+                         "WHERE round_id=?", (rids[-1],))
+            conn.execute(
+                "INSERT INTO scan_scopes(scope_id, kind, container_id, "
+                "mount_path, display_name, created_at) "
+                "VALUES ('scope-b','apfs_volume',?,'/other','v1','2026')",
+                (CONTAINER,))
+            conn.execute(
+                "INSERT INTO scan_plans(plan_id, scope_id, canonical_root, "
+                "metric_version, min_kb, created_at) "
+                "VALUES ('p1b','scope-b','/other',1,512,'2026')")
+            conn.execute("UPDATE scan_round_members SET plan_id='p1b' "
+                         "WHERE round_id=?", (rids[-1],))
+            conn.commit()
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        assert data["comparability"]["comparable"] is False
+        assert data["comparability"]["identity_reasons"], "应给出跨计划/跨主体原因"
+        assert data["unexplained"]["bytes"] is None
+        assert data["unexplained"]["reason"]
 
 
 class TestSharedFreeCountedOnce:
@@ -145,9 +217,10 @@ class TestSharedFreeCountedOnce:
         data = client.get("/api/storage/summary").json()
         cap = data["capacity"]
         assert cap["free_bytes"] == 30 * 1024 ** 3
-        # 另一条同容器样本被忽略，不相加
-        assert cap["ignored_shared_samples"] == 0 or cap[
-            "ignored_shared_samples"] >= 0
+        # 同容器两条样本，只取一条，另一条被忽略（不翻倍）——具体数值断言
+        assert cap["ignored_shared_samples"] == 1
+        # B2：schema 无 subject_kind 列，摘要不得凭空声称主体类型
+        assert "sample_kind" not in cap
         assert "共享" in "".join(cap["note"])
 
     def test_pure_helper_counts_shared_free_once(self):

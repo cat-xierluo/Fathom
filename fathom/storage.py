@@ -927,18 +927,26 @@ def shared_free_once(samples: Sequence[dict], container_id: str | None) -> dict:
     newest = [s for s in same if (s.get("sampled_at") or "") == latest_at]
     chosen = next((s for s in newest
                    if s.get("source") == "storage-discovery"), newest[0])
-    # 同容器内其余样本（典型是各卷的卷级 free）不参与剩余空间求和。
-    ignored = sum(1 for s in same if s.get("subject_kind") != "container")
+    # 同容器内其余样本不参与剩余空间求和。
+    #
+    # ISS-157 返修 B2（按现有 schema 重定义）：``container_capacity_samples``
+    # **没有** subject_kind / 主体类型列，且当前无生产写入方按主体类型标记
+    # （scan_coordinator 目前只落容器级读数）。因此不能声称「被忽略的是
+    # 卷级样本」——那是凭空的类型断言。故诚实重定义为：**同容器内除被
+    # 选中那条以外的样本条数**（纯行数推导，语义真实）。若将来 ISS-153 域
+    # 给该表扩展主体类型列，此处再改回按类型计数。
+    ignored = len(same) - 1
     return {
         "container_id": container_id,
         "free_bytes": chosen.get("free_bytes"),
         "total_bytes": chosen.get("total_bytes"),
         "source": chosen.get("source"),
         "sampled_at": chosen.get("sampled_at"),
-        "sample_kind": chosen.get("subject_kind"),
         "ignored_shared_samples": ignored,
-        "note": ("同容器剩余空间共享，free 只计一次。",
-                 "卷级 free 不参与剩余空间计算。"),
+        "ignored_definition": ("同容器内除被选中样本外的其余样本条数"
+                              "（该表无主体类型列，故不按容器/卷分类计数）。"),
+        "note": ("同容器剩余空间共享，free 只计一次；"
+                 "同容器其余样本不参与剩余空间求和。"),
     }
 
 

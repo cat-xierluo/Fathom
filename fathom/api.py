@@ -1336,6 +1336,28 @@ def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
     prev_attribution = reports.round_attribution(conn, previous["round_id"]) \
         if previous else None
 
+    # 跨轮身份核对（ISS-157 返修 B1）：先查两轮是否同主体/同计划/同归因根
+    # 集合，再叠加本轮自身的质量与 stale 条件。任一不满足即不可比 → 差额
+    # 为 null，绝不因为「两边都是 full」就放行。
+    identity_reasons: list[str] = []
+    if attribution and prev_attribution:
+        identity_reasons = reports.cross_round_identity_reasons(
+            attribution, prev_attribution)
+    own_reasons: list[str] = []
+    if attribution is not None:
+        if attribution.get("stale_members"):
+            own_reasons.append("本轮存在失败成员（无新快照），缺有效本轮值。")
+        if not attribution.get("all_roots_full_quality"):
+            own_reasons.append("存在非 full 质量的目录测量。")
+        if attribution.get("absorbed_roots"):
+            own_reasons.append("存在父子重叠测量根，归因不可简单相加。")
+    comparable = bool(attribution and prev_attribution
+                      and not identity_reasons and not own_reasons)
+    if latest and previous and not comparable:
+        block_reason = "；".join(identity_reasons + own_reasons) or None
+    else:
+        block_reason = None
+
     payload = {
         "scope": {
             "container_id": container_id,
@@ -1354,10 +1376,13 @@ def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
         "round": latest,
         "previous_round": previous,
         "attribution": attribution,
+        "comparability": {
+            "comparable": comparable,
+            "identity_reasons": identity_reasons,
+            "own_reasons": own_reasons,
+        },
         "unexplained": storage.difference_view(
-            comparable=bool(latest and previous
-                            and attribution and prev_attribution
-                            and attribution.get("comparable_to_previous")),
+            comparable=comparable,
             free_before=reports.round_free_bytes(conn, previous["round_id"])
             if previous else None,
             free_after=reports.round_free_bytes(conn, latest["round_id"])
@@ -1372,8 +1397,8 @@ def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
                             if attribution
                             and attribution.get("measured_kb") is not None
                             else None),
-            reason=None if (latest and previous) else
-            "只有一个轮次，缺同计划前一轮可比基线。",
+            reason=block_reason if (latest and previous)
+            else "只有一个轮次，缺同计划前一轮可比基线。",
         ) if (latest and previous) else storage.difference_view(
             comparable=False, free_before=None, free_after=None,
             measured_before=None, measured_after=None,

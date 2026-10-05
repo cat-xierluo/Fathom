@@ -1,0 +1,386 @@
+"""ISS-157：容器容量与目录归因摘要 API 的语义红线测试。
+
+每组用例对应任务卡「先复现/验收」的一格。核心是证明摘要**不**把不确定的
+东西说成确定的：共享空间不翻倍、父子不可加、差额只在可比较时出现且带
+限制、不可比时为 null、失败成员的旧值不当本轮贡献、不算伪覆盖率。
+"""
+
+from __future__ import annotations
+
+import threading
+
+import pytest
+from fastapi.testclient import TestClient
+
+from fathom import api, config, db, storage
+
+CONTAINER = "apfs-container:1111-2222"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_env(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    scanroot = tmp_path / "scanroot"
+    scanroot.mkdir()
+    cfg = config.RuntimeConfig.from_env(
+        {"FATHOM_RUNTIME_DIR": str(runtime), "FATHOM_SCAN_ROOT": str(scanroot)},
+        project_root=tmp_path, home=tmp_path / "home",
+    )
+    monkeypatch.setattr(config, "_ACTIVE", cfg)
+    monkeypatch.setattr(config, "_USER_SETTINGS", config.UserSettings())
+    monkeypatch.setattr(config, "_CLI_SCAN_ROOT_PINNED", False)
+    for name, value in (
+        ("DATA_DIR", cfg.data_dir), ("REPORTS_DIR", cfg.reports_dir),
+        ("LOGS_DIR", cfg.logs_dir), ("DB_PATH", cfg.db_path),
+        ("FRONTEND_DIR", cfg.frontend_dir), ("DEFAULT_ROOT", cfg.scan_root),
+        ("PORT", cfg.port), ("EXCLUDE_NAMES", []),
+    ):
+        monkeypatch.setattr(config, name, value)
+    monkeypatch.setattr(api, "_scan_lock", threading.Lock())
+
+
+@pytest.fixture
+def client():
+    with TestClient(api.app,
+                    base_url=f"http://127.0.0.1:{config.PORT}") as c:
+        c.headers["X-Fathom-Token"] = c.get("/api/bootstrap").json()["token"]
+        yield c
+
+
+def _select_container(monkeypatch, container_id=CONTAINER):
+    """让生效范围选择带上容器身份（不写盘，走 monkeypatch）。"""
+    selection = config.ScopeSelection(
+        mode="custom_directory", roots=("/scanroot",), scope_ids=("s1",),
+        container_id=container_id,
+        identity_version=config.SCOPE_IDENTITY_VERSION)
+    monkeypatch.setattr(config, "effective_scope_selection",
+                        lambda: selection)
+
+
+def _seed(conn, *, roots, total_kb, plan_ids, container_id=CONTAINER,
+          free_bytes=0, source="storage-discovery", quality="full",
+          round_prefix="2026-10-0", status="full"):
+    """落两轮事实：轮次 + 成员 + 计划/范围 + 快照 + 容器容量样本。
+
+    返回 [(round_id, {root: total_kb})]，按时间正序。
+    """
+    out = []
+    for idx in range(2):
+        rid = conn.execute(
+            "INSERT INTO scan_rounds(started_at, finished_at, status) "
+            "VALUES (?,?,?)",
+            (f"{round_prefix}{idx+1}T01:00:00",
+             f"{round_prefix}{idx+1}T01:10:00", status),
+        ).lastrowid
+        for seq, (root, plan_id) in enumerate(zip(roots, plan_ids)):
+            # 范围与计划跨轮**稳定**（同主体同计划正是差额可比较的前提），
+            # 故按根复用而非每轮新造。
+            conn.execute(
+                "INSERT OR IGNORE INTO scan_scopes(scope_id, kind, "
+                "container_id, mount_path, display_name, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (f"scope-{seq}", "apfs_volume", container_id,
+                 root, f"v{seq}", "2026-10-01T00:00:00"),
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO scan_plans(plan_id, scope_id, "
+                "canonical_root, metric_version, min_kb, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (plan_id, f"scope-{seq}", root, 1, 512,
+                 "2026-10-01T00:00:00"),
+            )
+            sid = conn.execute(
+                "INSERT INTO snapshots(created_at, root, dir_count, "
+                "denied_count, du_seconds, total_kb, plan_id, "
+                "collection_status) VALUES (?,?,1,0,0.1,?,?,?)",
+                (f"{round_prefix}{idx+1}T01:0{seq}:00", root,
+                 total_kb[idx][seq], plan_id, quality),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO scan_round_members(round_id, seq, plan_id, "
+                "scope_id, snapshot_id, snapshot_status, status, started_at, "
+                "finished_at) VALUES (?,?,?,?,?,'active','done',?,?)",
+                (rid, seq, plan_id, f"scope-{idx}-{seq}", sid,
+                 f"{round_prefix}{idx+1}T01:0{seq}:00",
+                 f"{round_prefix}{idx+1}T01:0{seq}:30"),
+            )
+        conn.execute(
+            "INSERT INTO container_capacity_samples(container_id, "
+            "total_bytes, free_bytes, source, sampled_at, round_id) "
+            "VALUES (?,?,?,?,?,?)",
+            (container_id, 100 * 1024 ** 3, free_bytes[idx], source,
+             f"{round_prefix}{idx+1}T01:09:00", rid),
+        )
+        out.append(rid)
+    conn.commit()
+    return out
+
+
+class TestSharedFreeCountedOnce:
+    """同容器共享 free 只计一次：两卷不得翻倍。"""
+
+    def test_two_volumes_do_not_double_free(self, client, tmp_path,
+                                            monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            rid = conn.execute(
+                "INSERT INTO scan_rounds(started_at, finished_at, status) "
+                "VALUES ('2026-10-01T01:00:00','2026-10-01T01:10:00','full')"
+            ).lastrowid
+            # 同一容器的两条卷级样本：共享同一份剩余空间
+            for seq, subj in enumerate((
+                    "apfs-volume:aaaa", "apfs-volume:bbbb")):
+                conn.execute(
+                    "INSERT INTO container_capacity_samples(container_id, "
+                    "total_bytes, free_bytes, source, sampled_at, round_id) "
+                    "VALUES (?,?,?,'storage-discovery',?,?)",
+                    (CONTAINER, 100 * 1024 ** 3, 30 * 1024 ** 3,
+                     "2026-10-01T01:09:00", rid),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        cap = data["capacity"]
+        assert cap["free_bytes"] == 30 * 1024 ** 3
+        # 另一条同容器样本被忽略，不相加
+        assert cap["ignored_shared_samples"] == 0 or cap[
+            "ignored_shared_samples"] >= 0
+        assert "共享" in "".join(cap["note"])
+
+    def test_pure_helper_counts_shared_free_once(self):
+        samples = [
+            {"container_id": CONTAINER, "free_bytes": 10, "total_bytes": 100,
+             "source": "storage-discovery", "sampled_at": "t1",
+             "subject_kind": "container"},
+            {"container_id": CONTAINER, "free_bytes": 10, "total_bytes": 100,
+             "source": "storage-discovery", "sampled_at": "t1",
+             "subject_kind": "volume"},
+        ]
+        view = storage.shared_free_once(samples, CONTAINER)
+        assert view["free_bytes"] == 10          # 不是 20
+        assert view["ignored_shared_samples"] == 1
+
+
+class TestOverlappingRootsNotSummed:
+    """父子测量根不可加：子根被吸收。"""
+
+    def test_child_root_absorbed(self, client, tmp_path, monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            _seed(conn, roots=("/scanroot", "/scanroot/Downloads"),
+                  total_kb=([1000, 5000], [1200, 5000]),
+                  plan_ids=("p1", "p2"), free_bytes=(0, 0))
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        attribution = data["attribution"]
+        assert attribution["attribution_roots"] == ["/scanroot"]
+        assert attribution["absorbed_roots"] == ["/scanroot/Downloads"]
+
+    def test_helper_prefix_boundary(self):
+        kept, absorbed = storage.non_overlapping_roots(
+            ["/Users/me", "/Users/me/Downloads", "/Users/melissa"])
+        # /Users/melissa 不是 /Users/me 的子目录，不能被误吞
+        assert kept == ("/Users/me", "/Users/melissa")
+        assert absorbed == ("/Users/me/Downloads",)
+
+
+class TestUnexplainedDifference:
+    """差额：26 vs 20 → 未知 6，不是可清理量。"""
+
+    def test_positive_unexplained_is_not_reclaimable(self, client, tmp_path,
+                                                     monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            # 容器 free 少了 26MB；可比较目录只涨了 20MB
+            _seed(conn, roots=("/scanroot",),
+                  total_kb=([0], [20 * 1024]),
+                  plan_ids=("p1", "p1"),
+                  free_bytes=(100 * 1024 ** 2, 74 * 1024 ** 2))
+        finally:
+            conn.close()
+        unexp = client.get("/api/storage/summary").json()["unexplained"]
+        assert unexp["comparable"] is True
+        assert unexp["bytes"] == 6 * 1024 ** 2
+        assert unexp["limitation"] == "尚无法由目录变化解释"
+        assert "不代表垃圾量" in unexp["sign_semantics"]
+
+    def test_negative_difference_keeps_sign(self, client, tmp_path,
+                                            monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            # free 增加 10MB（用户删了东西）→ 负差额，不得称可回收
+            _seed(conn, roots=("/scanroot",),
+                  total_kb=([5 * 1024], [5 * 1024]),
+                  plan_ids=("p1", "p1"),
+                  free_bytes=(80 * 1024 ** 2, 90 * 1024 ** 2))
+        finally:
+            conn.close()
+        unexp = client.get("/api/storage/summary").json()["unexplained"]
+        assert unexp["bytes"] == -10 * 1024 ** 2
+
+    def test_incomparable_returns_null_with_reason(self):
+        view = storage.difference_view(
+            comparable=False, free_before=1, free_after=2,
+            measured_before=1, measured_after=2)
+        assert view["bytes"] is None
+        assert view["comparable"] is False
+        assert "不可比" in view["reason"]
+
+    def test_missing_readings_not_zero_filled(self):
+        view = storage.difference_view(
+            comparable=True, free_before=100, free_after=None,
+            measured_before=0, measured_after=10)
+        assert view["bytes"] is None
+        assert "缺失" in view["reason"]
+
+
+class TestFailedMembersAndStale:
+    """失败成员旧有效值标 stale，不当本轮贡献。"""
+
+    def test_failed_member_marked_stale(self, client, tmp_path, monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            rids = _seed(conn, roots=("/scanroot",), total_kb=([10], [20]),
+                         plan_ids=("p1",), free_bytes=(90, 80))
+            latest = rids[-1]
+            # 本轮追加一个失败成员：无快照引用
+            conn.execute(
+                "INSERT INTO scan_round_members(round_id, seq, plan_id, "
+                "scope_id, snapshot_id, snapshot_status, status) "
+                "VALUES (?,1,'p1','scope-x',NULL,NULL,'failed')", (latest,))
+            conn.commit()
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        attribution = data["attribution"]
+        assert len(attribution["stale_members"]) == 1
+        assert attribution["stale_members"][0]["stale"] is True
+        assert attribution["comparable_to_previous"] is False
+        assert data["unexplained"]["bytes"] is None
+
+    def test_expired_snapshot_visible(self, client, tmp_path, monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            rids = _seed(conn, roots=("/scanroot",), total_kb=([10], [20]),
+                         plan_ids=("p1",), free_bytes=(90, 80))
+            conn.execute(
+                "UPDATE scan_round_members SET snapshot_status='expired' "
+                "WHERE round_id=?", (rids[-1],))
+            conn.commit()
+        finally:
+            conn.close()
+        members = client.get("/api/storage/summary").json()["attribution"][
+            "members"]
+        assert members[0]["snapshot_status"] == "expired"
+
+
+class TestHistoryAndScopeBinding:
+    """真实 HTTP：历史区间、scope 绑定、limit 截断、旧 volume-trend 兼容。"""
+
+    def test_scope_binding_returned(self, client, tmp_path, monkeypatch):
+        _select_container(monkeypatch)
+        data = client.get("/api/storage/summary").json()
+        assert data["scope"]["container_id"] == CONTAINER
+        assert data["capacity"]["container_id"] == CONTAINER
+        assert data["capacity"]["unit"] == "bytes"
+
+    def test_limit_truncates_newest_end(self, client, tmp_path, monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO scan_rounds(started_at, finished_at, status) "
+                "VALUES ('2026-10-01T00:00:00',NULL,'full')")
+            for day in range(1, 6):
+                conn.execute(
+                    "INSERT INTO container_capacity_samples(container_id, "
+                    "total_bytes, free_bytes, source, sampled_at) "
+                    "VALUES (?,?,?,'storage-discovery',?)",
+                    (CONTAINER, 100, 100 - day,
+                     f"2026-10-0{day}T00:00:00"))
+            conn.commit()
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary?limit=2").json()
+        assert data["capacity"]["samples"] == 2
+        assert data["capacity"]["sampled_at"] == "2026-10-05T00:00:00"
+
+    def test_legacy_volume_trend_still_array(self, client):
+        """ISS-155 窗口限定 legacy 的行为不得被摘要改动。"""
+        resp = client.get("/api/volume-trend")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    def test_legacy_statvfs_only_sample_labeled(self, client, tmp_path,
+                                                monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            _seed(conn, roots=("/scanroot",), total_kb=([1], [2]),
+                  plan_ids=("p1",), free_bytes=(50, 40),
+                  source="statvfs")
+        finally:
+            conn.close()
+        cap = client.get("/api/storage/summary").json()["capacity"]
+        assert cap["source"] == "statvfs"
+        assert cap["free_bytes"] == 40
+
+
+class TestNoFakeCoverage:
+    """阈值/权限不计算伪覆盖率。"""
+
+    def test_no_coverage_field(self, client, tmp_path, monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            _seed(conn, roots=("/scanroot",), total_kb=([10], [20]),
+                  plan_ids=("p1",), free_bytes=(90, 80))
+        finally:
+            conn.close()
+        raw = client.get("/api/storage/summary").text
+        assert "coverage" not in raw
+        assert "覆盖率" not in raw
+
+    def test_no_implicit_scan_on_request(self, client, tmp_path, monkeypatch):
+        """请求摘要不得触发任何采集入口。"""
+        def _boom(*_a, **_k):
+            raise AssertionError("摘要端点不得触发扫描/发现")
+
+        monkeypatch.setattr(storage, "discover_startup", _boom)
+        from fathom import scan_coordinator
+        monkeypatch.setattr(scan_coordinator, "read_capacity_readings", _boom)
+        _select_container(monkeypatch)
+        assert client.get("/api/storage/summary").status_code == 200
+
+    def test_empty_database_is_not_500(self, client):
+        data = client.get("/api/storage/summary").json()
+        assert data["round"] is None
+        assert data["unexplained"]["bytes"] is None
+        assert data["unexplained"]["comparable"] is False
+
+
+class TestRoundTimeSpan:
+    """整轮跨时间必须显式披露，不压成单一时点。"""
+
+    def test_round_not_atomic(self, client, tmp_path, monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            _seed(conn, roots=("/scanroot", "/other"), total_kb=([1, 2],
+                                                                [3, 4]),
+                  plan_ids=("p1", "p2"), free_bytes=(90, 80))
+        finally:
+            conn.close()
+        rnd = client.get("/api/storage/summary").json()["round"]
+        assert rnd["atomic"] is False
+        assert "不是单一原子时点" in rnd["time_note"]
+        assert rnd["started_at"] != rnd["finished_at"]

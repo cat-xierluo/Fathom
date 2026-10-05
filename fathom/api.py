@@ -1285,6 +1285,122 @@ def api_storage_discovery():
     return _discovery_payload()
 
 
+@app.get("/api/storage/summary")
+def api_storage_summary(limit: int = Query(120, ge=2, le=2000)):
+    """容器容量与目录归因摘要（ISS-157，只读持久化事实）。
+
+    只返回**已落库**的容量样本、轮次成员与快照测量：请求本身不触发任何
+    du/statvfs/发现调用，更不隐式全盘扫描。
+
+    契约要点（每条都对应一条不可越过的红线）：
+
+    - **共享 free 只计一次**：同容器的多卷共享剩余空间，剩余空间取容器级
+      读数一次（``storage.shared_free_once``），卷级 free 绝不相加。
+    - **目录归因父子不可加**：归因只用互不重叠的测量根
+      （``storage.non_overlapping_roots``），子根被显式列出为已吸收。
+    - **差额只在同主体/同计划且两侧有效可比较时显示**，并带
+      「尚无法由目录变化解释」限制；有符号，不是垃圾/可回收量；不可比
+      则为 ``null`` 且给出原因，缺失读数不补 0。
+    - **失败成员的旧有效值标 stale**，不当本轮已测贡献。
+    - **整轮跨时间**：给出成员各自时刻与显式跨度，不压成单一时点。
+    - **不计算伪覆盖率**：阈值/权限不参与覆盖率计算，摘要里没有该字段。
+    """
+    from . import storage
+    conn = _get_conn()
+    try:
+        return _storage_summary_payload(conn, limit=limit)
+    finally:
+        conn.close()
+
+
+def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
+    """组装摘要负载（纯读库；不调用任何采集/发现入口）。"""
+    from . import storage
+
+    selection = None
+    try:
+        selection = config.effective_scope_selection()
+    except Exception:  # noqa: BLE001 - 配置不可读不应让摘要 500
+        selection = None
+    container_id = getattr(selection, "container_id", None) if selection else None
+
+    samples = _capacity_sample_rows(conn, limit=limit)
+    free_view = storage.shared_free_once(samples, container_id)
+
+    rounds = reports.latest_rounds_with_members(conn, limit=2)
+    latest = rounds[0] if rounds else None
+    previous = rounds[1] if len(rounds) > 1 else None
+
+    attribution = reports.round_attribution(conn, latest["round_id"]) \
+        if latest else None
+    prev_attribution = reports.round_attribution(conn, previous["round_id"]) \
+        if previous else None
+
+    payload = {
+        "scope": {
+            "container_id": container_id,
+            "mode": getattr(selection, "mode", None) if selection else None,
+            "roots": list(getattr(selection, "roots", ()) or ()) if selection else [],
+            "identity_version": getattr(selection, "identity_version", None)
+            if selection else None,
+        },
+        "capacity": {
+            "subject": "container" if container_id else None,
+            "container_id": container_id,
+            "unit": "bytes",
+            **free_view,
+            "samples": len(samples),
+        },
+        "round": latest,
+        "previous_round": previous,
+        "attribution": attribution,
+        "unexplained": storage.difference_view(
+            comparable=bool(latest and previous
+                            and attribution and prev_attribution
+                            and attribution.get("comparable_to_previous")),
+            free_before=reports.round_free_bytes(conn, previous["round_id"])
+            if previous else None,
+            free_after=reports.round_free_bytes(conn, latest["round_id"])
+            if latest else None,
+            # 目录测量侧是 KB（snapshots.total_kb），容量侧是 bytes；
+            # 差额必须同单位，显式换算到 bytes，绝不混算。
+            measured_before=(_kb_to_bytes(prev_attribution["measured_kb"])
+                             if prev_attribution
+                             and prev_attribution.get("measured_kb") is not None
+                             else None),
+            measured_after=(_kb_to_bytes(attribution["measured_kb"])
+                            if attribution
+                            and attribution.get("measured_kb") is not None
+                            else None),
+            reason=None if (latest and previous) else
+            "只有一个轮次，缺同计划前一轮可比基线。",
+        ) if (latest and previous) else storage.difference_view(
+            comparable=False, free_before=None, free_after=None,
+            measured_before=None, measured_after=None,
+            reason="尚无完整轮次对（需同主体、同计划的两轮）。"),
+    }
+    return payload
+
+
+def _kb_to_bytes(kb: int | None) -> int | None:
+    """KB → bytes（显式换算；None 透传，不用 0 冒充缺失）。"""
+    return None if kb is None else int(kb) * 1024
+
+
+def _capacity_sample_rows(conn: sqlite3.Connection, *, limit: int) -> list[dict]:
+    """读最近的容器容量样本（时间正序；limit 只截最新端）。
+
+    与既有序列查询同一处 AUD-09 修正：先 DESC 取最新 N 条再正序输出，
+    避免「取最早 N 条、最新点被截掉」。
+    """
+    rows = conn.execute(
+        "SELECT id, container_id, total_bytes, free_bytes, source, "
+        "sampled_at, round_id FROM container_capacity_samples "
+        "ORDER BY sampled_at DESC, id DESC LIMIT ?", (limit,),
+    ).fetchall()
+    return [dict(row) for row in reversed(rows)]
+
+
 def _plan_preview(selection: config.ScopeSelection) -> dict:
     """把已校验的范围选择解析为「下一轮计划」预览（不落盘、不扫描）。
 

@@ -862,3 +862,118 @@ def discover_startup(
         startup_volumes=tuple(volumes), visible_entries=tuple(entries),
         other_devices=others, errors=tuple(errors),
         source_commands=tuple(executed), _default_stat=stat_fn)
+
+
+# ---------------------------------------------------------------------------
+# ISS-157 摘要辅助：只读纯函数，不落库、不触发任何扫描
+# ---------------------------------------------------------------------------
+
+#: 差额说明的固定措辞。差额是「两次容量读数之间、目录测量没能解释掉」的那
+#: 部分余量，**不是垃圾、不是可回收量**：本工具没有删除权限结论。
+UNEXPLAINED_LIMITATION = "尚无法由目录变化解释"
+
+
+def non_overlapping_roots(roots: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """把测量根压成互不重叠的集合，返回 (保留根, 被吸收根)。
+
+    目录归因的父子不可加是硬红线：``/Users/me`` 与 ``/Users/me/Downloads``
+    都测过时，二者的 measured 差分**不能相加**（子目录的字节已含在父目录
+    的累计值里，相加等于把同一份空间数两遍）。这里保留最长（最外层）的
+    那个根，较短的被判为其子根而吸收掉。
+
+    判据用「规范化后是否为另一根的真路径前缀」，并要求分段边界，避免
+    ``/Users/me`` 误吞 ``/Users/melissa`` 这类同前缀不同目录。
+    """
+    normalized = sorted(
+        {os.path.normpath(str(r)) for r in roots if str(r).strip()},
+        key=lambda p: (p.count(os.sep), len(p), p),
+    )
+    kept: list[str] = []
+    absorbed: list[str] = []
+    for candidate in normalized:
+        prefix = candidate if candidate.endswith(os.sep) else candidate + os.sep
+        if any(candidate.startswith(k if k.endswith(os.sep) else k + os.sep)
+               for k in kept):
+            absorbed.append(candidate)
+        else:
+            kept.append(candidate)
+    return tuple(kept), tuple(absorbed)
+
+
+def shared_free_once(samples: Sequence[dict], container_id: str | None) -> dict:
+    """在同一容器内取**唯一** free 读数，同容器多卷不得翻倍。
+
+    ``samples`` 为已落库的容量样本行（含 container_id/source/free_bytes/
+    total_bytes/sampled_at）。反例：APFS 启动容器里系统卷与 Data 卷共享
+    同一份剩余空间，两条卷级 free 相加会把剩余空间算成两倍——本函数只
+    返回容器级读数一次，并如实标出被忽略的同容器卷级样本数。
+    """
+    if not container_id:
+        return {"container_id": None, "free_bytes": None, "total_bytes": None,
+                "source": None, "sampled_at": None,
+                "ignored_shared_samples": 0,
+                "note": "无容器身份：容量主体不可确定。"}
+    same = [s for s in samples if s.get("container_id") == container_id]
+    if not same:
+        return {"container_id": container_id, "free_bytes": None,
+                "total_bytes": None, "source": None, "sampled_at": None,
+                "ignored_shared_samples": 0,
+                "note": "该容器在所选窗口内没有容量样本。"}
+    # 容器级样本优先；同容器内仍有多条时取时间最新的一条（同容器的 free
+    # 只有一个物理含义，多条只可能是同一次发现的不同来源表述）。
+    # 容器级来源优先（storage-discovery）；只有 legacy statvfs 时如实标
+    # statvfs 口径，不冒充容器级发现。
+    latest_at = max((s.get("sampled_at") or "") for s in same)
+    newest = [s for s in same if (s.get("sampled_at") or "") == latest_at]
+    chosen = next((s for s in newest
+                   if s.get("source") == "storage-discovery"), newest[0])
+    # 同容器内其余样本（典型是各卷的卷级 free）不参与剩余空间求和。
+    ignored = sum(1 for s in same if s.get("subject_kind") != "container")
+    return {
+        "container_id": container_id,
+        "free_bytes": chosen.get("free_bytes"),
+        "total_bytes": chosen.get("total_bytes"),
+        "source": chosen.get("source"),
+        "sampled_at": chosen.get("sampled_at"),
+        "sample_kind": chosen.get("subject_kind"),
+        "ignored_shared_samples": ignored,
+        "note": ("同容器剩余空间共享，free 只计一次。",
+                 "卷级 free 不参与剩余空间计算。"),
+    }
+
+
+def difference_view(*, comparable: bool, free_before: int | None,
+                    free_after: int | None, measured_before: int | None,
+                    measured_after: int | None,
+                    reason: str | None = None) -> dict:
+    """构造「尚无法由目录变化解释」的差额视图（带符号，可为负）。
+
+    三条红线：
+
+    1. 只有**同主体 + 同计划 + 两侧都有效**时才给数字；否则差额为
+       ``None`` 并给出原因，绝不用 0 冒充「没有变化」。
+    2. 差额是**有符号**的差值，不是垃圾量、不是可回收量：free 增加
+       （用户删了东西）会得到负差额，措辞与字段名都不得暗示可回收。
+    3. 目录测量缺失成员/错时点时不算差额——缺失不是「变化为零」。
+    """
+    if not comparable:
+        return {"bytes": None, "comparable": False,
+                "limitation": None,
+                "reason": reason or "两侧不可比：缺同主体/同计划身份或存在无效样本。"}
+    if None in (free_before, free_after, measured_before, measured_after):
+        return {"bytes": None, "comparable": False, "limitation": None,
+                "reason": reason or "两侧存在缺失读数，差额不可计算（缺失不补 0）。"}
+    # 符号约定：free 减少 = 容器占用增加（正方向）。free 增加（用户删了
+    # 东西）得到负值，措辞与字段名都不得暗示可回收。
+    free_delta = int(free_before) - int(free_after)     # 正=容器占用增加
+    measured_delta = int(measured_after) - int(measured_before)
+    return {
+        "bytes": free_delta - measured_delta,
+        "comparable": True,
+        "limitation": UNEXPLAINED_LIMITATION,
+        "free_delta_bytes": free_delta,
+        "measured_delta_bytes": measured_delta,
+        "sign_semantics": ("有符号差值：正=容器占用增加多于目录测量，"
+                           "负=容器占用减少；不代表垃圾量或可回收空间。"),
+        "reason": None,
+    }

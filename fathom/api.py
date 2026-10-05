@@ -1370,15 +1370,39 @@ def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
                     f"（round_id={rnd['round_id']}）归因容器"
                     f" {sorted(rnd_containers)} 内。")
 
+    # 成员级容器绑定（B3 返修）：上面的「所选容器 ∈ 轮次容器集合」是包含
+    # 判断，混容器成员与 container_id=NULL 的成员都能绕过它。参与求和的
+    # 成员必须逐个属于生效容器，否则 measured_kb 的口径就不是所选容器。
+    member_reasons: list[str] = []
+    if latest and previous:
+        for rnd, att in ((latest, attribution), (previous, prev_attribution)):
+            if att is None:
+                continue
+            member_reasons += reports.member_container_reasons(
+                att, container_id=container_id,
+                label="本轮" if rnd is latest else "前轮")
+
     comparable = bool(attribution and prev_attribution and not identity_reasons
                       and not own_reasons and not previous_reasons
-                      and not scope_reasons)
-    all_reasons = identity_reasons + scope_reasons + own_reasons \
-        + previous_reasons
+                      and not scope_reasons and not member_reasons)
+    all_reasons = identity_reasons + scope_reasons + member_reasons \
+        + own_reasons + previous_reasons
     if latest and previous and not comparable:
         block_reason = "；".join(all_reasons) or None
     else:
         block_reason = None
+
+    # P3：归因内的 comparable_to_previous 只看**本轮**质量门，会与顶层跨轮
+    # 结论矛盾（跨计划/跨根/成员容器不符时它仍为 true）。顶层 comparability
+    # 是跨轮结论的唯一权威，故在组装处把该字段对齐到顶层判定，避免同一个
+    # payload 里出现两个互相打架的可比性答案。
+    if attribution is not None:
+        if latest and previous:
+            attribution["comparable_to_previous"] = comparable
+        attribution["comparable_note"] = (
+            "需要同主体、同计划、两侧都有效（无失败成员、无子根吸收）"
+            "且参与归因的成员逐一属于所选容器才可比；否则差额为 null。"
+            "本字段已对齐顶层 comparability（跨轮结论的唯一权威）。")
 
     payload = {
         "scope": {
@@ -1402,6 +1426,7 @@ def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
             "comparable": comparable,
             "identity_reasons": identity_reasons,
             "scope_reasons": scope_reasons,
+            "member_reasons": member_reasons,
             "own_reasons": own_reasons,
             "previous_reasons": previous_reasons,
         },

@@ -977,6 +977,47 @@ def own_round_reasons(attribution: dict, *, label: str) -> list[str]:
     return reasons
 
 
+def member_container_reasons(attribution: dict, *, container_id: str | None,
+                             label: str) -> list[str]:
+    """成员级容器绑定：参与归因求和的成员必须**逐一**属于所选容器。
+
+    ISS-157 返修 B3：只做「所选容器 ∈ 该轮容器集合」的包含判断有两条旁路。
+    ① 成员横跨 C1+C2、生效容器为 C1 时 ``C1 in {C1, C2}`` 成立，但
+    ``measured_kb`` 里混着 C2 的目录测量，差额说的不是所选容器的变化；
+    ② 某成员 ``container_id`` 为 NULL 时被集合构造过滤掉，
+    ``{C1} in {C1}`` 同样成立——身份缺失被静默当成「不属于别人」而放行。
+
+    故这里改为**逐成员**核对：``measured_members``（真正参与求和的那批）
+    每个成员的 ``container_id`` 必须非 NULL 且等于生效容器，否则不可比。
+    身份为 NULL 是「说不清属于谁」，比「明确属于别的容器」更危险，单独点名。
+    """
+    if not attribution:
+        return [f"{label}无归因事实，无法确认成员所属容器。"]
+    if not container_id:
+        return [f"{label}缺生效容器身份，成员容器无法核对。"]
+    reasons: list[str] = []
+    members = attribution.get("measured_members") or []
+    if not members:
+        return [f"{label}无参与归因的成员测量，成员容器无法核对。"]
+    foreign, missing = [], []
+    for m in members:
+        mid = m.get("container_id")
+        if not mid:
+            missing.append(f"{m.get('display_name') or m.get('root') or m.get('seq')}")
+        elif mid != container_id:
+            foreign.append(f"{m.get('display_name') or m.get('root') or m.get('seq')}"
+                           f"→{mid}")
+    if missing:
+        reasons.append(
+            f"{label}有 {len(missing)} 个参与归因的成员缺容器身份（container_id 为"
+            f" NULL）：{missing}；无法确认其测量属于容器 {container_id}。")
+    if foreign:
+        reasons.append(
+            f"{label}有 {len(foreign)} 个参与归因的成员不属于所选容器"
+            f" {container_id}：{sorted(foreign)}；目录测量口径与容量主体不一致。")
+    return reasons
+
+
 def round_free_bytes(conn: sqlite3.Connection, round_id: int, *,
                      container_id: str | None = None) -> int | None:
     """取一轮的容器级 free（共享空间只计一次；无容器样本则 None）。

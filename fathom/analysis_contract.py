@@ -235,12 +235,20 @@ def _reject_new_plan_identity(row_a: sqlite3.Row, row_b: sqlite3.Row,
     但落在未支持范围内）。
 
     legacy 路径（两侧 plan_id 均为 NULL）直接返回，行为与 v7 逐字一致。
+
+    本闸门由**两个入口共享**：``build_facts_package()``（conn 入口）与
+    ``build_facts_from_rows()``（行构造核心）。只挂在 conn 入口等于留旁路——
+    任何持有行的调用方（夹具、单测、未来的其他消费者）直调核心就能拿到不含
+    身份的事实包，共享核心的合同形同虚设（ISS-153 审计返修 3）。核心入口从
+    行自身读 ``id`` 作为 sid（真实 ``sqlite3.Row`` 上与传入 sid 逐字相同）；
+    窄行（Mapping 且无 ``id``）下 sid 为 None，错误信息如实标注而非谎报编号。
     """
     for sid, row in ((sid_a, row_a), (sid_b, row_b)):
         if _row_get(row, "plan_id") is not None:
+            label = sid if sid is not None else "（该行未提供 id）"
             raise AnalysisContractError(
                 "plan_identity_unsupported",
-                f"快照 {sid} 带规范根计划身份（plan_id）；新身份范围暂不支持 "
+                f"快照 {label} 带规范根计划身份（plan_id）；新身份范围暂不支持 "
                 "AI 解读，已拒绝构造事实包（不落库、不静默按 legacy 口径解读）"
                 "；请改选同一 legacy 数据集（无计划身份）的快照",
             )
@@ -512,7 +520,18 @@ def build_facts_from_rows(
 
     conn 入口负责同口径校验与同事务读取；本函数只做确定性组装，
     供夹具与单测直接注入。
+
+    身份闸门在此**下沉到核心**（ISS-153 审计返修 3）：任一侧行
+    ``plan_id`` 非 NULL 即抛 ``plan_identity_unsupported``，口径与
+    ``build_facts_package()`` 完全一致（见 ``_reject_new_plan_identity``）。
+    闸门不能只挂在 conn 入口——两个入口共享同一构造核心，把闸门放在外层
+    等于可绕：直调本核心即可生成不含 plan 身份的事实包并落库，读回时无法
+    证明它属于哪个计划。校验顺序同 conn 入口：身份闸门先于同口径校验，
+    否则 plan 档只会得到失真的 ``dataset_mismatch``。
+    legacy 行（两侧 plan_id 均为 NULL，或窄行无该列）行为与 v7 逐字一致。
     """
+    _reject_new_plan_identity(
+        row_a, row_b, _row_get(row_a, "id"), _row_get(row_b, "id"))
     if not reports.same_dataset(row_a, row_b):
         raise AnalysisContractError(
             "dataset_mismatch",

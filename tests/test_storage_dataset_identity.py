@@ -833,3 +833,112 @@ class TestAiConsumerIdentityIsolation:
         items = am.AnalysisManager().list_analyses(a, b)
         assert items[0]["expired"] is False
         assert items[0]["expired_reason"] is None
+
+
+class TestFactsRowCoreIdentityGate:
+    """ISS-153 审计返修 3：身份闸门必须下沉到行构造核心本身。
+
+    上游第三轮 blocking 反例（独立对照实证）：**同一对**带 ``plan:A`` 的真实
+    SQLite 快照，``build_facts_package()`` 拒绝（plan_identity_unsupported），
+    而 ``build_facts_from_rows()`` 却接受并生成**不含 plan 身份**的事实包
+    ——共享构造入口违反「新 plan 不支持事实包构造」合同。闸门只挂在 conn 入口
+    等于可绕：夹具、单测或任何持有行的调用方都能直调核心拿到无身份事实包。
+
+    合同：闸门覆盖 ``build_facts_from_rows()``，任一侧快照 ``plan_id`` 非 NULL
+    即拒绝（错误口径与既有 ``plan_identity_unsupported`` 一致，且必须先于同口径
+    校验，不能退化成失真的 ``dataset_mismatch``）；两侧 ``plan_id`` 均为 NULL
+    的 legacy 直调行为不变。
+    """
+
+    def _pair(self, conn, plan_a, plan_b):
+        """两枚真实 SQLite 快照行 + entries 映射（复刻 conn 入口的入参形态）。
+
+        刻意从库里取真实 ``sqlite3.Row``、用 ``reports.load_snapshot`` 取映射，
+        而不是构造 dict 夹具：上游 blocking 反例正是这对真实行的**直调绕过**。
+        """
+        def _snap(created_at, plan_id, size_kb):
+            sid = _insert_snapshot(
+                conn, created_at, plan_id=plan_id,
+                round_id=1 if plan_id is not None else None,
+                metric_version=1 if plan_id is not None else None,
+                entry=("/synthetic/root", size_kb),
+            )
+            return sid, _row(conn, sid), reports.load_snapshot(conn, sid)
+
+        a, row_a, old_map = _snap("2026-09-28T08:00:00", plan_a, 2048)
+        b, row_b, new_map = _snap("2026-09-28T09:00:00", plan_b, 4096)
+        return a, row_a, old_map, b, row_b, new_map
+
+    # ------------------------------------------------------------ 四路拒绝
+
+    def test_from_rows_rejects_same_plan_on_both_sides(self, conn):
+        """① 同 plan 双侧：直调核心曾**照常出包**，核心自身必须拒绝。"""
+        _a, row_a, old_map, _b, row_b, new_map = self._pair(
+            conn, "plan:A", "plan:A")
+        with pytest.raises(ac.AnalysisContractError) as ei:
+            ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
+        assert ei.value.reason_code == "plan_identity_unsupported"
+        msg = str(ei.value)
+        # 错误如实说明「本期不支持」新身份，不谎称口径不一致或快照缺失。
+        assert "AI" in msg and "plan" in msg.lower() and "不支持" in msg
+
+    @pytest.mark.parametrize("plan_side", ["a", "b"])
+    def test_from_rows_rejects_one_sided_plan(self, conn, plan_side):
+        """② 单侧带新身份：核心也曾报 dataset_mismatch（失真理由），须改口径。"""
+        _a, row_a, old_map, _b, row_b, new_map = self._pair(
+            conn, "plan:A" if plan_side == "a" else None,
+            "plan:A" if plan_side == "b" else None)
+        with pytest.raises(ac.AnalysisContractError) as ei:
+            ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
+        assert ei.value.reason_code == "plan_identity_unsupported"
+
+    @pytest.mark.parametrize("empty_side", ["both", "a", "b"])
+    def test_from_rows_rejects_empty_string_plan_id(self, conn, empty_side):
+        """③ ``plan_id`` 空串按「声称了新身份」拒绝，不归一成 legacy 读法。
+
+        口径依据（与既有闸门一致，不另立规则）：判据只有「plan_id 是否为
+        NULL」，任何非 NULL 值（含空串）都算声称了新身份
+        （``_reject_new_plan_identity``）；``reports.same_dataset`` 同样把空串
+        归新身份档——``_row_plan_id`` 只把 NULL 兜底成 None，空串原样留存。
+        空串绝不可被读成 legacy：那等于把「声称有身份但身份为空」静默降级成
+        旧口径解读并落库。两侧空串是四路里最危险的一路：同身份档内可比，
+        核心曾直接接受出包。
+        """
+        _a, row_a, old_map, _b, row_b, new_map = self._pair(
+            conn,
+            "" if empty_side in ("both", "a") else None,
+            "" if empty_side in ("both", "b") else None)
+        with pytest.raises(ac.AnalysisContractError) as ei:
+            ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
+        assert ei.value.reason_code == "plan_identity_unsupported"
+
+    # ---------------------------------------------- ④ legacy 直调零行为变化
+
+    def test_from_rows_accepts_legacy_null_plan_id(self, conn):
+        """④ 两侧 legacy（plan_id IS NULL）：直调核心照常构造事实包。"""
+        _a, row_a, old_map, _b, row_b, new_map = self._pair(conn, None, None)
+        pkg = ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
+        assert pkg.payload["a"]["snapshot_id"] == row_a["id"]
+        assert pkg.payload["b"]["snapshot_id"] == row_b["id"]
+        assert len(pkg.payload["entries"]) == 1
+        assert pkg.payload["entries"][0]["delta_kb"] == 2048  # 2048→4096
+        # 事实包身份块仍只有 legacy 三元组：无 plan 身份列（本期不支持）。
+        assert "plan_id" not in pkg.payload["dataset"]
+        assert pkg.payload["net_delta_kb"] == 0
+
+    # ------------------------------------------------------------ 两入口一致
+
+    def test_package_entry_and_row_core_agree_on_new_plan(self, conn):
+        """独立对照：同一对 plan 快照，conn 入口与行构造核心口径必须一致。
+
+        闸门挂在任一入口单侧都会留下旁路——本用例把两个入口钉在同一
+        reason_code 上，任一侧回退即红。
+        """
+        a, row_a, old_map, b, row_b, new_map = self._pair(
+            conn, "plan:A", "plan:A")
+        with pytest.raises(ac.AnalysisContractError) as via_conn:
+            ac.build_facts_package(conn, a, b)
+        with pytest.raises(ac.AnalysisContractError) as via_rows:
+            ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
+        assert via_conn.value.reason_code == "plan_identity_unsupported"
+        assert via_rows.value.reason_code == via_conn.value.reason_code

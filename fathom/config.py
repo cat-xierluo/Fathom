@@ -376,7 +376,8 @@ DEFAULT_SCAN_TIME = "12:00"
 DEFAULT_AUTO_DOWNLOAD_UPDATES = True
 _SCAN_TIME_PATTERN = re.compile(r"\A([01]\d|2[0-3]):([0-5]\d)\Z")
 _SETTING_KEYS = ("scan_root", "scan_time", "min_kb", "free_alert_gb",
-                 "exclude_names", "auto_download_updates", "analysis")
+                 "exclude_names", "auto_download_updates", "analysis",
+                 "storage_scope")
 # ISS-066：du ``-I mask`` 按名字（fnmatch）跳过整棵子树；超过该数就退回
 # 逐项路径排除或考虑拆分运行根（防御性上限，避免配置层把 du argv 撑爆）。
 MAX_EXCLUDE_NAMES = 50
@@ -385,7 +386,9 @@ MAX_EXCLUDE_NAMES = 50
 EXCLUDE_NAMES: list[str] = []
 
 # PUT /api/config 与 configure() 可能并发触发合并写；设置写入低频，互斥足够。
-_SETTINGS_LOCK = threading.Lock()
+# 可重入：ISS-155 的 save_scope_selection 在持锁状态下调用同样要加锁的
+# update_user_settings，普通 Lock 会在同线程自死锁。
+_SETTINGS_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +451,7 @@ class UserSettings:
     exclude_names: str | None = None  # 规范串（排序去重后 ``;`` 拼接），无配置 = ""
     auto_download_updates: bool | None = None  # ISS-113；None = 未持久化 → 默认 True
     analysis: AnalysisSettings | None = None  # ISS-035B；None = 未持久化 → 全默认关闭
+    storage_scope: "ScopeSelection | None" = None  # ISS-155；None = 未选择 → 旧口径
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -468,7 +472,191 @@ class UserSettings:
                     "consent_revision": self.analysis.consent_revision,
                 }
             ),
+            # storage_scope 同样落盘为 wire 形态（ISS-155）。
+            "storage_scope": (
+                None if self.storage_scope is None
+                else self.storage_scope.as_dict()
+            ),
         }
+
+
+# ---------- 范围配置（ISS-155：范围选择 + 计划预览 + 版本冲突保护） ----------
+#
+# **新能力不自动启用**：``storage_scope`` 未落盘时 ``effective_scope_selection()``
+# 返回 None，全链路按 ISS-016A 旧口径单根运行；旧 settings.json / FATHOM_SCAN_ROOT
+# / CLI ``--scan-root`` 的生产行为逐字节不变。本组常量与校验只服务「显式选择后
+# 下一轮计划」这条新路径，读取侧据此决定是否启用范围守卫。
+
+SCOPE_SCHEMA = "fathom.scope.config"
+#: 身份/计划版本。落盘值与当前实现不一致时 fail-closed（拒绝回落为旧口径）。
+SCOPE_IDENTITY_VERSION = 1
+SCOPE_MODE_STARTUP = "startup_storage"
+SCOPE_MODE_CUSTOM = "custom_directory"
+SCOPE_MODES = (SCOPE_MODE_STARTUP, SCOPE_MODE_CUSTOM)
+_SCOPE_FIELDS = frozenset({
+    "schema", "mode", "roots", "scope_ids", "container_id", "identity_version",
+    "revision", "selected_at",
+})
+
+
+class ScopeVersionConflict(ConfigurationError):
+    """范围配置的乐观版本冲突（ISS-155：预览→保存之间已被他人改动）。"""
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeSelection:
+    """用户**显式选择**的范围集合（只改下一轮计划，不触发扫描）。
+
+    - ``mode``：``startup_storage``（推荐启动盘整体）或 ``custom_directory``
+      （自定义目录）。
+    - ``roots``：已规范化的绝对目录（按选择顺序 = 采集顺序）；身份由
+      ``scope_ids`` 按位置一一对应给出，缺省由调用方按规范根派生 path 型 ID。
+    - ``revision``：乐观并发版本。保存必须带上预览时的版本，不匹配即
+      ``ScopeVersionConflict``，旧值保持不动。
+    """
+
+    mode: str
+    roots: tuple[str, ...] = ()
+    scope_ids: tuple[str, ...] = ()
+    container_id: str | None = None
+    identity_version: int = SCOPE_IDENTITY_VERSION
+    revision: int = 0
+    selected_at: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema": SCOPE_SCHEMA,
+            "mode": self.mode,
+            "roots": list(self.roots),
+            "scope_ids": list(self.scope_ids),
+            "container_id": self.container_id,
+            "identity_version": self.identity_version,
+            "revision": self.revision,
+            "selected_at": self.selected_at,
+        }
+
+    def root_at(self, index: int) -> str | None:
+        try:
+            return self.roots[index]
+        except IndexError:
+            return None
+
+
+def _validated_scope_roots(raw: object) -> tuple[str, ...]:
+    """校验范围根列表：绝对、存在、是目录、无重复，顺序即采集顺序。
+
+    刻意**不**在此处解析符号链接/realpath 之外的语义：规范根由扫描计划
+    （ISS-153/154 ``ScopeSpec.from_path``）归一，本层只保证「用户给出的就是
+    真实存在的目录」，避免两处各自 realpath 产生不同数据集身份。
+    """
+    if not isinstance(raw, list) or not raw:
+        raise ConfigurationError("storage_scope.roots 必须是非空目录列表")
+    if len(raw) > 16:
+        raise ConfigurationError(f"storage_scope.roots 不得超过 16 项：{len(raw)}")
+    roots: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigurationError(f"storage_scope.roots 每项必须是非空字符串：{item!r}")
+        if "\x00" in item:
+            raise ConfigurationError(f"storage_scope.roots 不得含 NUL 字节：{item!r}")
+        path = Path(item).expanduser()
+        if not path.is_absolute():
+            raise ConfigurationError(f"storage_scope.roots 必须是绝对路径：{item}")
+        resolved = path.resolve()
+        if not resolved.exists():
+            raise ConfigurationError(f"storage_scope.roots 路径不存在：{resolved}")
+        if not resolved.is_dir():
+            raise ConfigurationError(f"storage_scope.roots 必须是目录：{resolved}")
+        text = str(resolved)
+        if text in roots:
+            raise ConfigurationError(f"storage_scope.roots 不得重复同一目录：{text}")
+        roots.append(text)
+    return tuple(roots)
+
+
+def _validated_storage_scope(raw: object, *, partial: bool) -> dict[str, object]:
+    """校验 ``storage_scope`` 对象，返回已校验字段（wire 形态，ISS-155）。"""
+    if not isinstance(raw, dict):
+        raise ConfigurationError(f"storage_scope 必须是 JSON 对象：{raw!r}")
+    unknown = sorted(set(raw) - _SCOPE_FIELDS)
+    if unknown:
+        raise ConfigurationError(f"storage_scope 含未知字段：{', '.join(unknown)}")
+    if not partial and "mode" not in raw:
+        raise ConfigurationError("storage_scope.mode 必须显式给出")
+    if "schema" in raw and raw["schema"] != SCOPE_SCHEMA:
+        raise ConfigurationError(
+            f"storage_scope.schema 必须是 {SCOPE_SCHEMA}：{raw['schema']!r}")
+    fields: dict[str, object] = {}
+    if "mode" in raw:
+        mode = raw["mode"]
+        if not isinstance(mode, str) or mode.strip() not in SCOPE_MODES:
+            raise ConfigurationError(
+                f"storage_scope.mode 只能是 {'/'.join(SCOPE_MODES)}：{mode!r}")
+        fields["mode"] = mode.strip()
+    if "identity_version" in raw:
+        version = raw["identity_version"]
+        if (isinstance(version, bool) or not isinstance(version, int)
+                or version != SCOPE_IDENTITY_VERSION):
+            # 旧/未来版本一律拒绝，绝不静默按当前语义解释旧身份。
+            raise ConfigurationError(
+                "storage_scope.identity_version 与本程序不一致："
+                f"{version!r} != {SCOPE_IDENTITY_VERSION}")
+        fields["identity_version"] = version
+    if "roots" in raw:
+        fields["roots"] = _validated_scope_roots(raw["roots"])
+    if "scope_ids" in raw:
+        ids = raw["scope_ids"]
+        if not isinstance(ids, list):
+            raise ConfigurationError("storage_scope.scope_ids 必须是列表")
+        for item in ids:
+            if not isinstance(item, str) or not item.strip():
+                raise ConfigurationError(
+                    f"storage_scope.scope_ids 每项必须是非空字符串：{item!r}")
+        if len(set(ids)) != len(ids):
+            raise ConfigurationError("storage_scope.scope_ids 不得重复")
+        fields["scope_ids"] = tuple(ids)
+    if "container_id" in raw:
+        container = raw["container_id"]
+        if container is not None and (not isinstance(container, str)
+                                      or not container.strip()):
+            raise ConfigurationError(
+                f"storage_scope.container_id 必须是非空字符串或 null：{container!r}")
+        fields["container_id"] = container.strip() if isinstance(container, str) else None
+    for key in ("revision",):
+        if key in raw:
+            value = raw[key]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ConfigurationError(
+                    f"storage_scope.{key} 必须是非负整数：{value!r}")
+            fields[key] = value
+    if "selected_at" in raw:
+        stamp = raw["selected_at"]
+        if stamp is not None and (not isinstance(stamp, str) or not stamp.strip()):
+            raise ConfigurationError(
+                f"storage_scope.selected_at 必须是非空字符串或 null：{stamp!r}")
+        fields["selected_at"] = stamp
+    return fields
+
+
+def _validated_storage_scope_whole(raw: object) -> ScopeSelection:
+    fields = _validated_storage_scope(raw, partial=False)
+    roots = fields.get("roots", ())
+    scope_ids = fields.get("scope_ids", ())
+    if scope_ids and len(scope_ids) != len(roots):
+        # 身份按位置配对：错位即拒绝，绝不静默按序号错配数据集。
+        raise ConfigurationError(
+            f"storage_scope.scope_ids 必须与 roots 一一对应（{len(scope_ids)} 个 ID、"
+            f"{len(roots)} 个根）")
+    return ScopeSelection(
+        mode=str(fields["mode"]),
+        roots=tuple(roots),  # type: ignore[arg-type]
+        scope_ids=tuple(scope_ids),  # type: ignore[arg-type]
+        container_id=fields.get("container_id"),  # type: ignore[arg-type]
+        identity_version=int(fields.get("identity_version", SCOPE_IDENTITY_VERSION)),
+        revision=int(fields.get("revision", 0)),
+        selected_at=fields.get("selected_at"),  # type: ignore[arg-type]
+    )
+
 
 
 def _validated_scan_time(raw: object) -> str:
@@ -699,6 +887,7 @@ def parse_user_settings(data: Mapping[str, object]) -> UserSettings:
         "auto_download_updates": lambda raw: _validated_bool(
             raw, "auto_download_updates"),
         "analysis": _validated_analysis,
+        "storage_scope": _validated_storage_scope_whole,
     }
     for key, validate in validators.items():
         raw = data.get(key)
@@ -732,6 +921,11 @@ def merge_user_settings(
             settings_revision=patch.get("settings_revision", base.settings_revision),
             consent_revision=patch.get("consent_revision", base.consent_revision),
         )
+    if "storage_scope" in changes:
+        # ISS-155：范围选择整体替换（不是字段级 patch）——roots/scope_ids/
+        # revision 互相牵连，字段级合并会造出「半个计划」。
+        merged["storage_scope"] = _validated_storage_scope_whole(
+            changes["storage_scope"])
     return UserSettings(**merged)  # type: ignore[arg-type]
 
 
@@ -852,6 +1046,9 @@ def refresh_user_settings(
             # ISS-113：排除集被环境变量覆盖只影响 exclude_names，其余已
             # 持久化项（含 auto_download_updates）原样透传，不得静默回落默认。
             auto_download_updates=settings.auto_download_updates,
+            # ISS-155：范围选择同样必须原样透传，环境变量覆盖只影响
+            # exclude_names，不得静默把已选范围清空（那等于换回旧口径）。
+            storage_scope=settings.storage_scope,
         )
     _USER_SETTINGS = settings
     env_scan_root = env.get("FATHOM_SCAN_ROOT", "").strip()
@@ -903,6 +1100,57 @@ def effective_analysis_settings() -> AnalysisSettings:
         else AnalysisSettings()
 
 
+def effective_scope_selection() -> ScopeSelection | None:
+    """当前生效的范围选择；``None`` = 用户从未选择（继续按旧单根口径运行）。"""
+    return _USER_SETTINGS.storage_scope
+
+
+def scope_enabled() -> bool:
+    """范围能力是否已由用户显式启用（**不**由发现结果自动启用）。"""
+    return _USER_SETTINGS.storage_scope is not None
+
+
+def scope_settings_view() -> dict[str, object]:
+    """范围配置读取面：生效选择 + 是否启用 + 来源/版本，供 API 组合返回。"""
+    selection = effective_scope_selection()
+    return {
+        "schema": SCOPE_SCHEMA,
+        "enabled": selection is not None,
+        "source": "settings" if selection is not None else "default",
+        "identity_version": SCOPE_IDENTITY_VERSION,
+        "selection": None if selection is None else selection.as_dict(),
+    }
+
+
+def save_scope_selection(
+    selection: ScopeSelection, *, expected_revision: int | None = None
+) -> ScopeSelection:
+    """保存范围选择（ISS-155），带乐观版本冲突保护。
+
+    语义（任务卡合同）：
+
+    - **只改下一轮计划**，不触发任何扫描、不注册/重载调度；
+    - ``expected_revision`` 与当前生效版本不匹配（含「预览后已被他人改动」）
+      即抛 ``ScopeVersionConflict``，**旧文件与进程内生效值都不动**；
+    - 落盘走既有 ``update_user_settings`` 原子写链：任一步失败无半更新状态。
+
+    revision 语义：首次保存 revision=1；此后每次成功保存 +1。
+    """
+    validated = _validated_storage_scope_whole(selection.as_dict())
+    with _SETTINGS_LOCK:
+        current = _USER_SETTINGS.storage_scope
+        current_revision = 0 if current is None else current.revision
+        if expected_revision is not None and expected_revision != current_revision:
+            raise ScopeVersionConflict(
+                f"范围配置版本冲突：提交的是 {expected_revision}，当前为 "
+                f"{current_revision}；请重新预览后再保存（旧值未改动）")
+        new = replace(validated, revision=current_revision + 1)
+        update_user_settings({"storage_scope": new.as_dict()})
+        stored = _USER_SETTINGS.storage_scope
+        return new if stored is None else stored
+
+
+
 def effective_settings_view() -> dict[str, object]:
     """GET /api/config 数据源：生效值 + 每项来源 + 默认值与只读策略。"""
     env_scan_root = os.environ.get("FATHOM_SCAN_ROOT", "").strip()
@@ -948,6 +1196,9 @@ def effective_settings_view() -> dict[str, object]:
             "source": "settings" if settings.analysis is not None else "default",
             "defaults": {"enabled": False},
         },
+        # ISS-155：范围选择读取面。旧前端不认识该键也不受影响；未显式
+        # 选择时 enabled=False，生产行为与 ISS-016A 逐字节一致。
+        "storage_scope": scope_settings_view(),
         "sources": sources,
         "defaults": {
             "scan_root": str(_ACTIVE.home_dir),

@@ -23,10 +23,20 @@
  *
  * extraActions：调用方注入的动作按钮（如「聚焦此目录」），组件不
  * 感知树表语义，保持共用性；按钮渲染于 detail-actions 区。
+ *
+ * 当前大文件区（ISS-151）：详情内「此刻 st_size 实测」与上方「历史区间
+ * a→b」两种口径同屏可辨；查询域是 pages/bigfiles.js 的共享单例（与独立
+ * 大文件页共用范围/模式/状态），查询仅由「查看当前大文件」明确点击发起，
+ * 打开详情不触发任何遍历；scope 命中本目录时呈现共享状态（含取消/404
+ * 无法定位），关闭详情即离开查询面（两面都不可见时按句柄真实取消）。
  */
 import { fetchJSON, beginRequest, revealInFinder } from "./request.js";
 import { fmtKB, fmtDelta, escapeHtml } from "./format.js";
 import { icon } from "../icons.js";
+import {
+  attachBigfiles, detachBigfiles, startBigfilesQuery, cancelActiveBigfiles,
+  renderBigfilesTbody, bigfilesRequestedAtText, subscribeBigfiles, bigfilesEngine,
+} from "./pages/bigfiles.js";
 
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
@@ -81,6 +91,23 @@ export function createDirectoryDetail({
         <h3>当前所在（最新快照）</h3>
         <div id="detail-current-info" class="hint">加载中…</div>
       </div>
+      <div class="detail-section" data-test="detail-bigfiles-section">
+        <h3>当前大文件<span class="hint">（此刻 st_size 实测，非 #${escapeHtml(range.a)} → #${escapeHtml(range.b)} 历史区间）</span></h3>
+        <div class="detail-bf-bar">
+          <select id="detail-bf-mode" class="detail-bf-mode" data-test="detail-bf-mode" aria-label="大文件查询模式">
+            <option value="largest">当前最大</option>
+            <option value="recent">近期修改</option>
+          </select>
+          <button type="button" class="btn" data-test="detail-bf-query">查看当前大文件</button>
+        </div>
+        <p class="hint" id="detail-bf-context" data-test="detail-bf-context" hidden></p>
+        <div id="detail-bigfiles-host">
+          <table class="tbl" data-test="detail-bigfiles-table">
+            <thead><tr><th class="num">大小</th><th>修改时间</th><th>文件</th><th></th></tr></thead>
+            <tbody data-test="detail-bigfiles-tbody"></tbody>
+          </table>
+        </div>
+      </div>
       <div class="detail-actions">
         ${actions}
         <button class="copy-path" type="button" data-copy="${escapeHtml(path)}" title="复制路径">复制路径</button>
@@ -131,6 +158,27 @@ export function createDirectoryDetail({
       if (action) b.addEventListener("click", () => action.onPick(activePath));
     });
     host.querySelector(".detail-close")?.focus();
+    // ISS-151「当前大文件」区：挂载共享查询域 + 本区事件委托（查询按钮 /
+    // 模式切换 / 取消 / Finder 定位）。查询仅由明确点击发起，打开详情
+    // 不触发任何遍历；关闭详情即离开查询面（页也不在时按句柄取消）。
+    attachBigfiles("detail");
+    const bfQueryBtn = host.querySelector("[data-test='detail-bf-query']");
+    if (bfQueryBtn) {
+      bfQueryBtn.addEventListener("click", () => {
+        const modeSel = host.querySelector("#detail-bf-mode");
+        startBigfilesQuery({ path: activePath, mode: modeSel ? modeSel.value : "largest" });
+      });
+    }
+    const bfTable = host.querySelector("[data-test='detail-bigfiles-table']");
+    if (bfTable) {
+      bfTable.addEventListener("click", (e) => {
+        const cancel = e.target.closest("[data-test='bigfiles-cancel']");
+        if (cancel) { cancelActiveBigfiles(); return; }
+        const reveal = e.target.closest("[data-reveal]");
+        if (reveal) revealInFinder(reveal.dataset.reveal);
+      });
+    }
+    renderDetailBigfiles();
     loadTrend(path);
     loadBrowse(path);
   }
@@ -140,10 +188,41 @@ export function createDirectoryDetail({
     if (host) host.hidden = true;
     activeKey = null;
     activePath = null;
+    detachBigfiles("detail");
     if (restoreFocus && sourceRow && document.body.contains(sourceRow)) {
       sourceRow.focus();
     }
     sourceRow = null;
+  }
+
+  /** 「当前大文件」区渲染：共享查询域 scope 命中本目录时呈现其状态/结果
+   * （含取消后的已取消态与 404 无法定位说明）；未命中时呈现待查询提示，
+   * 绝不自动发起查询。历史 a→b 读数在本组件其余区块，互不覆盖。 */
+  function renderDetailBigfiles() {
+    const host = hostEl();
+    if (!host || !activePath) return;
+    const tbody = host.querySelector("[data-test='detail-bigfiles-tbody']");
+    const modeSel = host.querySelector("#detail-bf-mode");
+    const ctxEl = host.querySelector("[data-test='detail-bf-context']");
+    if (!tbody) return;
+    const eng = bigfilesEngine();
+    const shared = eng.scope.path === activePath;
+    if (modeSel) modeSel.value = shared ? eng.scope.mode : "largest";
+    if (shared) {
+      tbody.innerHTML = renderBigfilesTbody(eng);
+      const at = bigfilesRequestedAtText(eng);
+      if (ctxEl) {
+        ctxEl.textContent = at
+          ? `查询发起于 ${at}；以下大小为此刻 st_size 实测，与上方历史快照（KiB 累计）口径不同。`
+          : "";
+        ctxEl.hidden = !at;
+      }
+    } else {
+      tbody.innerHTML =
+        `<tr><td colspan="4" class="hint">尚未查询该目录。点「查看当前大文件」开始` +
+        `（不会自动开始，也不后台遍历；离开本详情或改范围时自动取消在途查询）。</td></tr>`;
+      if (ctxEl) { ctxEl.hidden = true; ctxEl.textContent = ""; }
+    }
   }
 
   /** 区间变更/离页：关闭并作废在途 trend/browse（迟到响应不得写入）。 */
@@ -324,6 +403,10 @@ export function createDirectoryDetail({
       }
     }
   }
+
+  // ISS-151：共享大文件查询域状态变化（提交/运行/取消/终态/错误）时，
+  // 打开中的详情即时重画「当前大文件」区；详情关闭时重画为无害空操作。
+  subscribeBigfiles(() => renderDetailBigfiles());
 
   return {
     open,

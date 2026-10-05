@@ -913,6 +913,8 @@ async function main() {
     for (const size of [{ width: 980, height: 640 }, { width: 1220, height: 820 }]) {
       await page.setViewportSize(size);
       await openPage("#/bigfiles");
+      // ISS-151：查询改为仅显式点击发起，进页不再自动遍历
+      await page.click("#btn-bigfiles");
       await page.waitForFunction(() => document.querySelectorAll("#tbl-bigfiles tbody [data-reveal]").length === 48);
       await page.waitForFunction(() => {
         const el = document.querySelector(".page-container");
@@ -1143,6 +1145,8 @@ async function main() {
 
     /* ---------- 大文件 / 设置页走查（五页覆盖） ---------- */
     await openPage("#/bigfiles");
+    // ISS-151：查询改为仅显式点击发起，进页只呈现待查询提示
+    await page.click("#btn-bigfiles");
     await page.waitForSelector("#tbl-bigfiles tbody tr");
     const big = await page.evaluate(() => ({
       text: document.querySelector("#tbl-bigfiles").textContent,
@@ -1156,12 +1160,14 @@ async function main() {
 
     /* ---------- 大文件状态矩阵（ISS-032） ---------- */
     // 默认已是 OK；显式遍历其余五态（截断/过期/失败/权限/无匹配）。
-    // 通过 setScenario 切换夹具，然后重新打开页面让前端重发请求。
+    // 通过 setScenario 切换夹具，然后重新打开页面并显式点「查询」让前端
+    // 重发请求（ISS-151：查询仅由明确点击发起，进页不再自动遍历）。
     const bigfilesReadBody = async () =>
       page.evaluate(() => document.querySelector("#tbl-bigfiles tbody").textContent);
 
     await setScenario("bigfiles-truncated");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "结果被截断");
     const truncated = await bigfilesReadBody();
     record("bigfiles-truncated-state-shown",
@@ -1173,6 +1179,7 @@ async function main() {
 
     await setScenario("bigfiles-expired");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "缓存已过期");
     const expired = await bigfilesReadBody();
     record("bigfiles-expired-state-shown",
@@ -1183,6 +1190,7 @@ async function main() {
 
     await setScenario("bigfiles-failed");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "查询失败");
     const bigFailed = await bigfilesReadBody();
     record("bigfiles-failed-state-shown",
@@ -1194,6 +1202,7 @@ async function main() {
 
     await setScenario("bigfiles-permission-denied");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "权限受限");
     const permDenied = await bigfilesReadBody();
     record("bigfiles-permission-denied-state-shown",
@@ -1204,6 +1213,7 @@ async function main() {
 
     await setScenario("bigfiles-no-match");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "无匹配文件");
     const noMatch = await bigfilesReadBody();
     record("bigfiles-no-match-state-shown",

@@ -172,3 +172,12 @@ assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
 FATHOM_PYTHON="$tree_python" node scripts/verify_tree_changes_frontend.cjs | tee "$tree_out"
 expected_tree="${EXPECTED_TREE_PASSED:-74}"
 assert_result_json "$tree_out" "$expected_tree" "tree changes frontend"
+
+# ISS-151：目录当前大文件回归（真实 FastAPI 隔离入口 + 生产页面实点）。
+# 36 项——三层历史定位→largest/recent 切换、双目录并发取消不误伤、
+# 离开按句柄真实取消、移动 404 保历史、权限/空/截断、路径转义、键盘、
+# 三视口。失败自身非零退出，pipefail 直通判红；计数漂移由
+# EXPECTED_DIR_BIGFILES_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_directory_bigfiles_frontend.cjs | tee "$tree_out"
+expected_dir_bigfiles="${EXPECTED_DIR_BIGFILES_PASSED:-36}"
+assert_result_json "$tree_out" "$expected_dir_bigfiles" "directory bigfiles frontend"

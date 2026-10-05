@@ -310,18 +310,27 @@
 
       <!-- ===== 大文件（ISS-094 调研结论：天然单区块——一个查询表即整页，
            不加无意义 tab；与变化/分布的 tab 语言不冲突；ISS-105 单区块
-           即单张 L1 白卡） ===== -->
+           即单张 L1 白卡；ISS-151 目录详情与本页共用范围/模式/状态，
+           查询仅由明确点击发起） ===== -->
       <section class="page hidden" id="page-bigfiles">
         <div class="surface">
         <div class="panel">
           <div class="panel-head">
-            <h2>近期大文件</h2>
+            <h2>大文件</h2>
             <div class="controls">
+              <label>范围 <input type="text" id="bf-path" placeholder="监控根（可留空）" spellcheck="false" style="width:220px" aria-label="查询目录（监控根内的绝对路径，留空为监控根）"></label>
+              <label>模式
+                <select id="bf-mode" aria-label="大文件查询模式">
+                  <option value="recent" selected>近期修改</option>
+                  <option value="largest">当前最大</option>
+                </select>
+              </label>
               <label>近 <input type="number" id="bf-days" value="7" min="1" max="90"> 天</label>
               <label>≥ <input type="number" id="bf-mb" value="100" min="1"> MB</label>
               <button id="btn-bigfiles" class="btn">查询</button>
             </div>
           </div>
+          <p class="hint" style="margin:0 0 8px">点「查询」才开始（不后台遍历）；「近期修改」按近 N 天 mtime 过滤，「当前最大」按此刻 st_size 排序、不限修改时间——与历史快照 a→b 区间口径不同。查询进行中离开本页或改范围会自动取消。</p>
           <table class="tbl" id="tbl-bigfiles">
             <thead><tr><th class="num">大小</th><th>修改时间</th><th>文件</th><th></th></tr></thead>
             <tbody></tbody>

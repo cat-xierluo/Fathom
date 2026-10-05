@@ -776,6 +776,13 @@ tr.tree-ancestor-hit .tree-name { color: var(--muted); }
   margin: 0 0 6px; font-size: 11px; font-weight: 600;
   color: var(--muted); letter-spacing: 0.04em;
 }
+/* ISS-151：目录详情「当前大文件」区——模式切换 + 查询按钮控件条，
+ * 与独立大文件页共享同一查询域（范围/模式/状态），样式沿用 .controls 语言 */
+.detail-bf-bar { display: flex; align-items: center; gap: 8px; margin: 2px 0 8px; }
+.detail-bf-bar select {
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+  font-size: var(--fs-table); background: var(--card); color: var(--text);
+}
 .changes-detail .detail-trend { width: 100%; height: 140px; }
 .changes-detail .detail-actions {
   display: flex; gap: 8px; flex-wrap: wrap;

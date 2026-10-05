@@ -73,6 +73,12 @@ let changesTabs = null;               // ISS-094 页内二级导航（五分区 
 let treeState = null;
 let treeEpoch = 0;
 
+/* ISS-151：跨页保留的树视图（离页时快照）。页切换不清 treeState 实例
+ * （levels/expanded/focus 随实例存活）；在途层级请求靠 treeState 置空 +
+ * treeEpoch 递归作废。返回本页且 a/b 未变时整树恢复，不重发 diff 与层级
+ * 请求；改选区间/清空结果即作废。 */
+let sessionTree = null;
+
 const TREE_COLUMNS = 6;  // 目录/之前/现在/净变化/状态/操作
 
 function setDiffStatus(message) {
@@ -127,6 +133,7 @@ function clearDiffResults() {
   treeEpoch += 1;
   treeState = null;
   lastDiff = null;
+  sessionTree = null;
 }
 
 function replaceSnapshotOptions(select, snaps) {
@@ -137,7 +144,7 @@ function replaceSnapshotOptions(select, snaps) {
   select.replaceChildren(...options);
 }
 
-async function loadSnapshotsForDiff({ notice = "" } = {}) {
+async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
   const request = beginRequest("snapshots");
   invalidateRequest("diff");
   const selA = document.getElementById("sel-a"), selB = document.getElementById("sel-b");
@@ -172,6 +179,37 @@ async function loadSnapshotsForDiff({ notice = "" } = {}) {
   selB.value = nextB;
 
   const fellBack = Boolean((selectedA && !validA) || (selectedB && !validB));
+
+  /* ISS-151：同会话返回本页且 a/b 未变 → 整树恢复（展开/聚焦/滚动/详情），
+   * 不重发 diff 与层级请求；在途层（离页时请求被打断的）单独重取。
+   * 改选过区间或结果被清空时 sessionTree 已作废，走正常加载。 */
+  const st = sessionTree;
+  sessionTree = null;
+  if (restore && st && !fellBack && nextA && nextB &&
+      st.a === nextA && st.b === nextB) {
+    treeEpoch += 1;
+    treeState = st.state;
+    for (const [p, lv] of treeState.levels) {
+      if (lv.status === "loading") loadTreeLevel(p);  // 离页打断的在途层重取
+    }
+    renderTree();
+    if (st.detailPath && findTreeRow(st.detailPath)) {
+      openTreeDetail(st.detailPath, null);  // 重开详情（trend/browse 只读重取）
+    }
+    if (st.focusPath) {
+      // open() 会把焦点交给关闭按钮：恢复后按离页焦点回到触发行；
+      // preventScroll 避免聚焦把滚动位置拉走（滚动恢复以离页值为准）。
+      const row = document.querySelector(
+        `#changes-body tr[data-path="${CSS.escape(st.focusPath)}"]`);
+      if (row) row.focus({ preventScroll: true });
+    }
+    if (typeof st.scrollTop === "number") {
+      const container = document.querySelector(".page-container");
+      if (container) container.scrollTop = st.scrollTop;  // 滚动恢复最后落定
+    }
+    return;
+  }
+
   if (snaps.length < 2) {
     invalidateRequest("diff");
     clearDiffResults();
@@ -644,6 +682,7 @@ function renderNetLine(d) {
  * select 的 change 由键盘改选同样派发（原生行为），路径不变。 */
 function onSelectionChange() {
   snapshotSelectionRevision += 1;
+  sessionTree = null;  // 用户改选：跨页保留的旧树视图作废
   const a = document.getElementById("sel-a").value;
   const b = document.getElementById("sel-b").value;
   if (!a || !b) {
@@ -1651,7 +1690,8 @@ export const changesPage = {
   load() {
     // ISS-094：进入页面按 hash 恢复 tab（无段 = 默认比对明细）。
     changesTabs?.applyHash();
-    loadSnapshotsForDiff();
+    // ISS-151：同会话返回且 a/b 未变时恢复树视图（不重发 diff/层级请求）
+    loadSnapshotsForDiff({ restore: true });
     loadReportList();
   },
   init() {
@@ -1752,6 +1792,19 @@ export const changesPage = {
     analysisJobTimer = null;
     analysisPreview = null;
     analysisJob = null;
+    // ISS-151：快照树视图（实例含 levels/expanded/focus）供同会话返回恢复；
+    // 在途层级请求靠下方 treeState 置空 + epoch 作废，不重发。
+    const container = document.querySelector(".page-container");
+    const activeRow = document.activeElement && document.activeElement.closest
+      ? document.activeElement.closest("#changes-body tr.focusable") : null;
+    sessionTree = treeState ? {
+      state: treeState,
+      a: treeState.a,
+      b: treeState.b,
+      scrollTop: container ? container.scrollTop : 0,
+      focusPath: activeRow ? activeRow.dataset.path : null,
+      detailPath: directoryDetail.isOpen ? directoryDetail.activePath : null,
+    } : null;
     // ISS-148：离页关闭详情并作废全部在途树层级请求
     directoryDetail.close({ restoreFocus: false });
     treeEpoch += 1;

@@ -21,6 +21,8 @@ import sqlite3
 
 import pytest
 
+from fathom import analysis_contract as ac
+from fathom import analysis_manager as am
 from fathom import config, db, reports, scanner
 
 
@@ -624,3 +626,210 @@ class TestPlanIdentityEnforcement:
                             (again,)).fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM snapshots WHERE id=?",
                             (sid_b,)).fetchone()[0] == 1
+
+
+# ==========================================================================
+# 返修 2：AI 历史消费者的身份隔离
+# ==========================================================================
+
+
+def _enable_analysis_runtime(runtime_dir):
+    """装一个只过能力门的合成解读引擎并开启授权（不派发，只为走通
+    create_preview 的前置门：启用 → 升级停写 → Runtime 复核）。"""
+    script = runtime_dir / "fake-runtime"
+    script.write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = "--version" ]; then echo "2.1.237 (Claude Code)"; exit 0; fi\n'
+        'cat > /dev/null; cat <<\'EOS\'\n'
+        '{"type":"result","subtype":"success","is_error":false,'
+        '"result":"{\\"schema_version\\":1,\\"summary\\":\\"s\\","'
+        '\\"findings\\":[],\\"limitations\\":[],\\"inspect_next\\":[]}"}\n'
+        'EOS\n',
+        encoding="utf-8")
+    script.chmod(0o755)
+    config.update_user_settings({"analysis": {
+        "enabled": True,
+        "runtime": {"id": "claude-code", "executable": str(script),
+                    "version": "2.1.237"},
+    }})
+    return script
+
+
+def _insert_legacy_analysis(conn: sqlite3.Connection, *, a: int, b: int,
+                            a_created: str, b_created: str,
+                            root: str, min_kb: int | None = 1024,
+                            exclude_names: str = "",
+                            job_id: str = "job-legacy") -> int:
+    """直接落一条 legacy 身份的已保存 AI 证据（生命周期行 + 证据行）。
+
+    只为驱动读取层的过期评估，不经过派发。facts/result/manifest 用最小
+    可解析 JSON 占位——本组用例只关心 expired/expired_reason。
+    """
+    conn.execute(
+        "INSERT INTO analysis_runs(job_id, a_snapshot_id, b_snapshot_id,"
+        " request_digest, facts_digest, prompt_version, idempotency_key,"
+        " runtime_id, runtime_executable, runtime_version, settings_revision,"
+        " consent_revision, status, owner_id, created_at, finished_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (job_id, a, b, "d" * 64, "f" * 64, "v1", f"idem-{job_id}",
+         "claude-code", "/synthetic/runtime", "2.1.237", 1, 1,
+         "succeeded", "test", "2026-09-28T10:00:00", "2026-09-28T10:00:01"),
+    )
+    cur = conn.execute(
+        "INSERT INTO agent_analyses(job_id, a_snapshot_id, b_snapshot_id,"
+        " a_created_at, b_created_at, dataset_root, dataset_min_kb,"
+        " dataset_exclude_names, request_digest, facts_digest, prompt_version,"
+        " adapter_contract_version, runtime_id, runtime_version, model,"
+        " result_json, facts_json, manifest_json, created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (job_id, a, b, a_created, b_created, root, min_kb, exclude_names,
+         "d" * 64, "f" * 64, "v1", 1, "claude-code", "2.1.237", "synthetic",
+         "{}", "{}", "{}", "2026-09-28T10:00:02"),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+class TestAiConsumerIdentityIsolation:
+    """ISS-153 返修 2：AI 历史消费者必须与新身份隔离。
+
+    Codex 审计 blocking 反例（两路）：
+    ① 新 plan 身份的快照仍被接受构造 AI 事实包并可落库——但已保存证据的
+       身份只扩到 (root, min_kb, exclude_names)，未含 plan_id，读回时无法
+       证明它属于哪个计划；
+    ② legacy 快照被删后，只要**其他 plan** 在同一天有同数据集后继，
+       ``_evaluate_expiry()`` 就返回 ``snapshot_replaced``——把别的数据集
+       当成本数据集的替换证据。
+
+    合同：新身份范围本期**明确拒绝** AI 解读（不静默混读、不落库、错误
+    如实说明）；legacy 过期评估只承认 legacy 快照作为 legacy 的替换/后继
+    证据；legacy→legacy 行为逐字不变。
+    """
+
+    # ---------------------------------------------------------------- 反例 ①
+
+    def test_facts_package_seam_rejects_new_plan_snapshots(self, conn):
+        """接缝级：新身份快照构造事实包 → 明确拒绝，纯读且零写入。"""
+        a = _insert_snapshot(conn, "2026-09-28T08:00:00", plan_id="plan:A",
+                             round_id=1, metric_version=1,
+                             entry=("/synthetic/root", 2048))
+        b = _insert_snapshot(conn, "2026-09-28T09:00:00", plan_id="plan:A",
+                             round_id=1, metric_version=1,
+                             entry=("/synthetic/root", 4096))
+        before = conn.total_changes
+        with pytest.raises(ac.AnalysisContractError) as ei:
+            ac.build_facts_package(conn, a, b)
+        assert ei.value.reason_code == "plan_identity_unsupported"
+        msg = str(ei.value)
+        # 错误如实说明「本期不支持」，不谎称快照缺失或口径不一致。
+        assert "AI" in msg and "plan" in msg.lower()
+        assert "不支持" in msg
+        assert conn.total_changes == before  # 纯读拒绝：无任何写入
+
+    def test_create_preview_rejects_new_plan_and_persists_nothing(
+            self, isolated, conn):
+        """端到端：走通 create_preview 的前置门后，新身份被拒且零落库。"""
+        _enable_analysis_runtime(isolated["runtime"])
+        a = _insert_snapshot(conn, "2026-09-28T08:00:00", plan_id="plan:A",
+                             entry=("/synthetic/root", 2048))
+        b = _insert_snapshot(conn, "2026-09-28T09:00:00", plan_id="plan:A",
+                             entry=("/synthetic/root", 4096))
+        manager = am.AnalysisManager(run_timeout_s=20.0)
+        with pytest.raises(am.AnalysisError) as ei:
+            manager.create_preview(a, b)
+        # 400 明确拒绝（不是 404 快照缺失、不是 403 授权问题）。
+        assert ei.value.status_code == 400
+        assert ei.value.reason_code == "plan_identity_unsupported"
+        assert "不支持" in str(ei.value)
+        # 不落库：既无证据行，也无生命周期行。
+        assert conn.execute("SELECT COUNT(*) c FROM agent_analyses"
+                            ).fetchone()["c"] == 0
+        assert conn.execute("SELECT COUNT(*) c FROM analysis_runs"
+                            ).fetchone()["c"] == 0
+        # 失败不留可复用预览。
+        assert manager._previews == {}
+
+    @pytest.mark.parametrize("plan_side", ["a", "b"])
+    def test_either_side_with_new_plan_is_rejected(self, conn, plan_side):
+        """隔离是对称的：任一侧带新身份即整体拒绝（不只查 a）。"""
+        a = _insert_snapshot(conn, "2026-09-28T08:00:00",
+                             plan_id="plan:A" if plan_side == "a" else None,
+                             entry=("/synthetic/root", 2048))
+        b = _insert_snapshot(conn, "2026-09-28T09:00:00",
+                             plan_id="plan:A" if plan_side == "b" else None,
+                             entry=("/synthetic/root", 4096))
+        with pytest.raises(ac.AnalysisContractError) as ei:
+            ac.build_facts_package(conn, a, b)
+        assert ei.value.reason_code == "plan_identity_unsupported"
+
+    def test_legacy_snapshots_still_build_facts_package(self, conn):
+        """零行为变化：legacy（plan_id IS NULL）路径照常构造事实包。"""
+        a = _insert_snapshot(conn, "2026-09-28T08:00:00",
+                             entry=("/synthetic/root", 2048))
+        b = _insert_snapshot(conn, "2026-09-28T09:00:00",
+                             entry=("/synthetic/root", 4096))
+        pkg = ac.build_facts_package(conn, a, b)
+        assert pkg.payload["a"]["snapshot_id"] == a
+        assert pkg.payload["b"]["snapshot_id"] == b
+        assert pkg.payload["entries"]
+
+    # ---------------------------------------------------------------- 反例 ②
+
+    def _legacy_pair_and_analysis(self, conn, root: str):
+        """两枚 legacy 快照 + 一条以它们为 a/b 的已保存证据。"""
+        a = _insert_snapshot(conn, "2026-09-28T08:00:00", root=root,
+                             entry=(f"{root}/A", 2048))
+        b = _insert_snapshot(conn, "2026-09-28T09:00:00", root=root,
+                             entry=(f"{root}/A", 4096))
+        _insert_legacy_analysis(conn, a=a, b=b,
+                                a_created="2026-09-28T08:00:00",
+                                b_created="2026-09-28T09:00:00", root=root)
+        return a, b
+
+    def test_other_plan_same_day_successor_is_not_replacement(
+            self, isolated, conn):
+        """legacy b 被删，仅存**其他 plan** 的同日后继 → 不得说 replaced。
+
+        该后继属于另一个数据集（新身份），拿它当 legacy 的替换证据就是
+        跨身份混读。快照确已消失，按既有枚举如实落 snapshot_pruned。
+        """
+        root = str(isolated["scanroot"])
+        _a, b = self._legacy_pair_and_analysis(conn, root)
+        conn.execute("DELETE FROM entries WHERE snapshot_id=?", (b,))
+        conn.execute("DELETE FROM snapshots WHERE id=?", (b,))
+        _insert_snapshot(conn, "2026-09-28T09:40:00", root=root,
+                         plan_id="plan:other", round_id=9, metric_version=1,
+                         entry=(f"{root}/A", 6000))
+        conn.commit()
+        items = am.AnalysisManager().list_analyses(_a, b)
+        assert len(items) == 1
+        assert items[0]["expired"] is True
+        assert items[0]["expired_reason"] != "snapshot_replaced"
+        assert items[0]["expired_reason"] == "snapshot_pruned"
+
+    def test_legacy_to_legacy_same_day_successor_still_replaced(
+            self, isolated, conn):
+        """回归钉：legacy→legacy 同日后继仍如实判为 replaced（行为不变）。"""
+        root = str(isolated["scanroot"])
+        _a, b = self._legacy_pair_and_analysis(conn, root)
+        conn.execute("DELETE FROM entries WHERE snapshot_id=?", (b,))
+        conn.execute("DELETE FROM snapshots WHERE id=?", (b,))
+        _insert_snapshot(conn, "2026-09-28T09:40:00", root=root,
+                         entry=(f"{root}/A", 6000))
+        conn.commit()
+        items = am.AnalysisManager().list_analyses(_a, b)
+        assert items[0]["expired"] is True
+        assert items[0]["expired_reason"] == "snapshot_replaced"
+
+    def test_cross_plan_successor_does_not_expire_untouched_legacy(
+            self, isolated, conn):
+        """只有新身份后继、本体仍在 → 仍是未过期（新增快照不过期旧报告）。"""
+        root = str(isolated["scanroot"])
+        a, b = self._legacy_pair_and_analysis(conn, root)
+        _insert_snapshot(conn, "2026-09-28T11:00:00", root=root,
+                         plan_id="plan:other", round_id=9, metric_version=1,
+                         entry=(f"{root}/A", 6000))
+        conn.commit()
+        items = am.AnalysisManager().list_analyses(a, b)
+        assert items[0]["expired"] is False
+        assert items[0]["expired_reason"] is None

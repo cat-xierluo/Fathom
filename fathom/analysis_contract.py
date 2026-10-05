@@ -214,6 +214,38 @@ def _fetch_snapshot(conn: sqlite3.Connection, sid: int) -> sqlite3.Row:
     return row
 
 
+def _reject_new_plan_identity(row_a: sqlite3.Row, row_b: sqlite3.Row,
+                              sid_a: int, sid_b: int) -> None:
+    """带规范根计划身份的快照一律拒绝构造事实包（ISS-153 审计返修 2）。
+
+    153 卡身份合同要求「新身份尚未支持的消费者须明确拒绝，不能静默混读」。
+    已保存 AI 证据的 dataset 身份只有 (root, min_kb, exclude_names) 三元组
+    （``agent_analyses`` 表无身份列），没有承载 plan_id/round_id/
+    metric_version 的位置；因此新身份快照一旦被解读，落库证据就**无法证明
+    它属于哪个计划**——同路径换卷、换计量版本在读回时与 legacy 三元组不可
+    区分。这正是本闸门要挡住的情况，而不是可以事后补的细节。
+
+    判定只认「plan_id 是否为 NULL」这一个维度，不做容错归一：任何非 NULL 值
+    （含空串）都视为声称了新身份，失败即关闭，不回退成 legacy 读法。
+    错误信息指名拒绝的事实与理由，不回显根路径、阈值或掩码等内部细节。
+
+    校验置于同口径校验**之前**：同口径检查在 plan 档只会报出
+    ``dataset_mismatch``（"不是同一数据集"），那是失真的理由——真正的原因是
+    本期根本不支持解读新身份。两种 plan 快照也照样拒绝（它们本来同计划，
+    但落在未支持范围内）。
+
+    legacy 路径（两侧 plan_id 均为 NULL）直接返回，行为与 v7 逐字一致。
+    """
+    for sid, row in ((sid_a, row_a), (sid_b, row_b)):
+        if _row_get(row, "plan_id") is not None:
+            raise AnalysisContractError(
+                "plan_identity_unsupported",
+                f"快照 {sid} 带规范根计划身份（plan_id）；新身份范围暂不支持 "
+                "AI 解读，已拒绝构造事实包（不落库、不静默按 legacy 口径解读）"
+                "；请改选同一 legacy 数据集（无计划身份）的快照",
+            )
+
+
 def compute_net_delta(row_a: sqlite3.Row, row_b: sqlite3.Row) -> int | None:
     """根累计净变化 = b.total_kb - a.total_kb；任一不可用即 None。
 
@@ -429,6 +461,10 @@ def build_facts_package(
 ) -> FactsPackage:
     """在同一读取事务内提取 a/b 元数据与 diff，构造事实包。
 
+    - 身份闸门先于同口径校验：任一侧快照带 plan_id（新身份）即抛
+      ``AnalysisContractError("plan_identity_unsupported")`` —— 新身份范围
+      本期不支持 AI 解读，明确拒绝、不落库（见 ``_reject_new_plan_identity``）。
+      legacy 两侧（plan_id 均为 NULL）不受影响，行为与 v7 一致。
     - 口径校验复用 ``reports.same_dataset``：root/min_kb/exclude_names
       任一不等（含 NULL 与已知阈值混用）抛 ``AnalysisContractError``。
     - 事务：连接不在事务中时显式 ``BEGIN`` 并在结束后回滚（纯只读，
@@ -442,6 +478,7 @@ def build_facts_package(
     try:
         row_a = _fetch_snapshot(conn, sid_a)
         row_b = _fetch_snapshot(conn, sid_b)
+        _reject_new_plan_identity(row_a, row_b, sid_a, sid_b)
         if not reports.same_dataset(row_a, row_b):
             raise AnalysisContractError(
                 "dataset_mismatch",

@@ -92,6 +92,7 @@ env:
   EXPECTED_TREE_PASSED: "74"
   # ISS-151 目录当前大文件回归（真实 FastAPI+生产页面实点）
   EXPECTED_DIR_BIGFILES_PASSED: "36"
+  EXPECTED_SCOPE_SETTINGS_PASSED: "37"
   EXPECTED_CARGO_PASSED: "69"
 
 jobs:
@@ -173,7 +174,7 @@ jobs:
           npm install "playwright@${PLAYWRIGHT_VERSION}"
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" --version
 
-      - name: API/浏览器 39 项、前端 refresh 217 项与 AI 解读 77 项检查（断言计数）
+      - name: API/浏览器 39 项、前端 refresh 217 项、AI 解读 77 项与范围设置 37 项检查（断言计数）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
           NODE_PATH: ${{ runner.temp }}/pw/node_modules

@@ -452,6 +452,21 @@
               </div>
               <!-- ISS-069 排除列表编辑器挂载点（运行期由 settings.js 注入） -->
               <div id="settings-monitor-extra"></div>
+              <!-- ISS-156 范围与覆盖：容器/卷发现 + 范围选择 + 计划预览 + 保存
+                   （只影响下一轮计划）+ 首次启用引导（首扫为独立明确动作）。
+                   作为「监控」分区内的独立面板承载，不新增左导航项：左导航保持
+                   ISS-087 六分区（既有 IA 合同与 217 项前端回归依赖该结构）。
+                   面板内容由 settings.js 按真实 discovery/plan/scope 载荷渲染，
+                   静态区只提供壳与无脚本兜底说明。 -->
+              <div class="panel scope-panel-wrap" aria-labelledby="settings-head-scope">
+                <div class="panel-head">
+                  <h2 id="settings-head-scope">范围与覆盖</h2>
+                  <p class="hint">选择要监控的范围与覆盖方式；保存只影响下一轮计划，不会立即扫描</p>
+                </div>
+                <div id="scope-panel" data-test="scope-panel">
+                  <p class="hint">正在读取容器与卷信息…</p>
+                </div>
+              </div>
               <!-- ISS-111：原监控分区末尾的「权限与覆盖」卡（ISS-091）数据已
                    迁入「权限」分区，原位置留一行交叉说明，避免两处重复。 -->
               <div class="panel perm-crossref">

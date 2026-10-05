@@ -195,3 +195,16 @@ assert_result_json "$tree_out" "$expected_dir_bigfiles" "directory bigfiles fron
 FATHOM_PYTHON="$tree_python" node scripts/verify_browse_snapshot_frontend.cjs | tee "$tree_out"
 expected_browse_snapshot="${EXPECTED_BROWSE_SNAPSHOT_PASSED:-33}"
 assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot frontend"
+
+# ISS-156：设置「范围与覆盖」分区 + 首次启用引导回归（真实 FastAPI 隔离入口
+# + 生产设置页实点）。37 项——HTTP 合同（旧 HOME 未启用/预览无副作用/409 冲突
+# 旧值不动/400 不落盘/保存只影响下一轮）+ 页面合同（生效范围与修订可读、
+# 发现≠已监控、预览身份/读取限制/耗时不确定、保存成功才变更 UI、首扫为独立
+# 动作、单快照等第二个可比日期、旧 HOME legacy 保留、保存不触发扫描、
+# 409/500 失败旧值可辨、预览失败/发现失败不谎报、锁定与未挂载卷不可选、
+# 其它卷独立入口、排除编辑器与 AI 授权/更新恢复无退化、键盘焦点、三视口、
+# 无页错误、端口释放）。失败自身非零退出，pipefail 直通判红；计数漂移由
+# EXPECTED_SCOPE_SETTINGS_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_scope_settings_frontend.cjs | tee "$tree_out"
+expected_scope_settings="${EXPECTED_SCOPE_SETTINGS_PASSED:-37}"
+assert_result_json "$tree_out" "$expected_scope_settings" "scope settings frontend"

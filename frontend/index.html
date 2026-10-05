@@ -360,6 +360,11 @@
               <span class="settings-nav-icon" data-icon="scope"></span>
               <span class="settings-nav-label">监控</span>
             </button>
+            <button type="button" class="settings-nav-item" data-section="scope"
+                    data-test="settings-nav-scope">
+              <span class="settings-nav-icon" data-icon="scope"></span>
+              <span class="settings-nav-label">范围与覆盖</span>
+            </button>
             <button type="button" class="settings-nav-item" data-section="schedule"
                     data-test="settings-nav-schedule">
               <span class="settings-nav-icon" data-icon="clock"></span>
@@ -458,6 +463,22 @@
                 <p class="hint" data-test="perm-crossref-note">最近扫描的读取受限与消失目录情况已移至「权限」分区。</p>
                 <button type="button" class="btn perm-crossref-btn" id="btn-goto-permissions"
                         data-test="perm-crossref-goto-btn">前往权限分区</button>
+              </div>
+            </section>
+
+            <!-- ISS-156 范围与覆盖：容器/卷发现 + 范围选择 + 计划预览 + 保存（只影响下一轮）
+                 + 首次启用引导（首扫为独立明确动作）。面板内容由 settings.js 按真实
+                 discovery/plan/scope 载荷渲染，静态区只提供壳与无脚本兜底说明。 -->
+            <section class="settings-section surface" data-section="scope"
+                     id="settings-section-scope" aria-labelledby="settings-head-scope" hidden>
+              <div class="panel">
+                <div class="panel-head">
+                  <h2 id="settings-head-scope">范围与覆盖</h2>
+                  <p class="hint">选择要监控的范围与覆盖方式；保存只影响下一轮计划，不会立即扫描</p>
+                </div>
+                <div id="scope-panel" data-test="scope-panel">
+                  <p class="hint">正在读取容器与卷信息…</p>
+                </div>
               </div>
             </section>
 

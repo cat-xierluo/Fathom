@@ -7,6 +7,9 @@
  * 自起进程并复核端口释放。驱动只经真实 UI（选择器/点击/键盘），不调用
  * 前端内部函数。三视口（980×640 / 1220×820 / 1440×900）截图。
  *
+ * 退出码 0 = 全部通过；结果 JSON（ok/passed/failed/checks）打到 stdout，
+ * 人类 PASS 行与总结打 stderr。
+ *
  * 覆盖（任务卡「先复现/验收」反例 → 断言）：
  *  A1 旧 snapshot 与 latest 容量不同 → 选旧快照后分布/浏览器主读数指该
  *     快照实点，不被最新覆盖；HTTP 同断言
@@ -466,6 +469,17 @@ async function main() {
     checks, shots: fs.readdirSync(SHOTS),
     source: require("child_process").execSync("git rev-parse HEAD", { cwd: REPO }).toString().trim(),
   }, null, 2));
+
+  /* 结果 JSON 走 stdout（单行，整体可 JSON.parse；契约同
+   * verify_tree_changes_frontend.cjs 的 assert_result_json 消费方式）：
+   * 人类 PASS 行与总结留 stderr，ci_browser_checks.sh 对 tee 捕获的
+   * stdout 整体解析，只读 ok/passed/failed 判门禁。 */
+  process.stdout.write(JSON.stringify({
+    ok: failed.length === 0,
+    passed: checks.length - failed.length,
+    failed: failed.length,
+    checks,
+  }) + "\n");
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

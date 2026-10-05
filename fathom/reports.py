@@ -45,50 +45,80 @@ def _row_exclude_names(row) -> str:
     return "" if value is None else str(value)
 
 
-def same_dataset(row_a, row_b) -> bool:
-    """两快照是否属于同一数据集（同根同入库阈值同排除掩码口径）。
+def _row_plan_id(row) -> str | None:
+    """读取快照行的 plan_id；旧行/窄行（无该列）以 None 兜底（legacy 口径）。"""
+    try:
+        value = row["plan_id"]
+    except (IndexError, KeyError):
+        return None
+    return None if value is None else str(value)
 
-    数据集身份 = (root, min_kb, exclude_names)；ISS-066 升级自
-    (root, min_kb)，排除集变化如实形成新数据集（diff 报「无基线」）。
-    v3 之前的旧记录未持久化阈值，min_kb 为 NULL：同为 NULL 视为该根的
-    "口径未知"数据集，彼此可比较（保持既有行为）；NULL 与已知阈值不可比
-    ——不能证明同口径，拒绝混用。exclude_names 同理：v5 之前的旧记录
-    没有该列，_row_exclude_names 兜底返回 '' 与新写入的"无配置"快照
-    同身份——默认路径零行为变化。
+
+def same_dataset(row_a, row_b) -> bool:
+    """两快照是否属于同一数据集（同身份口径）。
+
+    数据集身份分两档（ISS-153）：
+    - v8 新身份（plan_id 非空）：规范根计划已包含范围/卷稳定 ID、规范根、
+      计量版本、阈值与排除掩码，plan_id 相等即可比——同路径换卷或换
+      计划都形成新计划，不可比；
+    - legacy（plan_id 为 NULL）：仍按三元组 (root, min_kb, exclude_names)
+      （ISS-021/ISS-066 口径不变），且只与同为 legacy 的行比较。
+
+    旧 NULL 身份不补造真实卷 UUID，legacy 行与新身份行永不混比——不能
+    证明同源。legacy 档内部：min_kb 为 NULL 视为该根的"口径未知"数据集，
+    彼此可比较（保持既有行为）；NULL 与已知阈值不可比。exclude_names：
+    v5 之前的旧记录没有该列，_row_exclude_names 兜底返回 '' 与新写入的
+    "无配置"快照同身份——默认路径零行为变化。
     """
+    plan_a, plan_b = _row_plan_id(row_a), _row_plan_id(row_b)
+    if plan_a is not None or plan_b is not None:
+        # 任一行携带新身份：仅当双方是同一计划才可比。
+        return plan_a is not None and plan_a == plan_b
     return (row_a["root"] == row_b["root"]
             and row_a["min_kb"] == row_b["min_kb"]
             and _row_exclude_names(row_a) == _row_exclude_names(row_b))
 
 
-def dataset_identity(row: sqlite3.Row) -> tuple[str, int | None, str]:
-    """快照行的数据集身份三元组 (root, min_kb, exclude_names)。
+def dataset_identity(row: sqlite3.Row) -> tuple[str, int | None, str, str | None]:
+    """快照行的数据集身份 (root, min_kb, exclude_names, plan_id)。
 
     与 same_dataset 同一口径的显式化（ISS-149）：趋势等序列查询以身份
-    取同数据集窗口，不再各自另写 root/min_kb 谓词——数据集身份扩展
-    （如 ISS-153 卷身份）时只需修改本函数与 same_dataset。
+    取同数据集窗口，不再各自另写 root/min_kb 谓词。ISS-153 在三元组后
+    追加第四位 plan_id：legacy 行为 None，新身份行为其计划 ID；前三位
+    位置不变——/api/trend 等既有消费者的 identity[0..2] 读法自动兼容，
+    身份谓词统一由 find_same_dataset_snapshot_rows /
+    find_same_dataset_predecessor 按 plan_id 分档处理。
     """
-    return (row["root"], row["min_kb"], _row_exclude_names(row))
+    return (row["root"], row["min_kb"], _row_exclude_names(row),
+            _row_plan_id(row))
 
 
 def find_same_dataset_snapshot_rows(
     conn: sqlite3.Connection,
-    identity: tuple[str, int | None, str],
+    identity: tuple[str, int | None, str, str | None],
     *,
     limit: int | None = None,
 ) -> list[sqlite3.Row]:
     """按数据集身份取快照行序列：时间正序，limit 只截最新端。
 
-    身份谓词与 find_same_dataset_predecessor 一致（min_kb/exclude_names
-    用 ``IS`` 兼容 NULL/空串口径）。供 /api/trend 等序列查询复用：
-    "最新窗口"必须在同数据集序列上截取（AUD-09 同类反例），跨数据集
-    历史不得混入（ISS-149）。
+    身份分档（ISS-153）：identity 第 4 位 plan_id 非 None 时按计划取
+    （同计划即可比，与 same_dataset 新身份口径一致）；None（或调用方
+    仍传旧三元组）时按 (root, min_kb, exclude_names) 取且只取同为
+    legacy（plan_id IS NULL）的行——新身份行不混入 legacy 窗口。
+    供 /api/trend 等序列查询复用："最新窗口"必须在同数据集序列上截取
+    （AUD-09 同类反例），跨数据集历史不得混入（ISS-149）。
     """
-    root, min_kb, exclude_names = identity
-    sql = ("SELECT * FROM snapshots "
-           "WHERE root = ? AND min_kb IS ? AND exclude_names IS ? "
-           "ORDER BY created_at DESC, id DESC")
-    params: list[object] = [root, min_kb, exclude_names]
+    plan_id = identity[3] if len(identity) > 3 else None
+    if plan_id is not None:
+        sql = ("SELECT * FROM snapshots WHERE plan_id = ? "
+               "ORDER BY created_at DESC, id DESC")
+        params: list[object] = [plan_id]
+    else:
+        sql = ("SELECT * FROM snapshots "
+               "WHERE root = ? AND min_kb IS ? AND exclude_names IS ? "
+               "AND plan_id IS NULL "
+               "ORDER BY created_at DESC, id DESC")
+        params = [identity[0], identity[1], identity[2]]
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
@@ -103,17 +133,28 @@ def find_same_dataset_predecessor(
     """用传入 sid 的数据集身份找同数据集前一快照；无则返回 None。
 
     PR #25 已把日报基线从"全局最近两条"改为按传入 sid 查同根前驱；本函数
-    在其上收紧为同数据集（ISS-021/ISS-066）：根、阈值口径或排除掩码不同
-    的历史不进入对比，升级后首个新口径快照、新监控根的首扫、首次启用
-    排除集的快照都没有可比基线。
+    在其上收紧为同数据集（ISS-021/ISS-066），v8 再按 plan_id 分档
+    （ISS-153）：新身份行只认同计划前驱；legacy 行按三元组找且只认同为
+    legacy 的行。根、阈值口径、排除掩码或计划不同的历史不进入对比，
+    升级后首个新口径快照、新监控根的首扫、首次启用排除集的快照、
+    换卷/换计划后的首扫都没有可比基线。
     """
     target = conn.execute("SELECT * FROM snapshots WHERE id=?", (sid,)).fetchone()
     if target is None:
         return None
+    target_plan = _row_plan_id(target)
+    if target_plan is not None:
+        return conn.execute(
+            "SELECT * FROM snapshots WHERE plan_id = ? "
+            "AND (created_at < ? OR (created_at = ? AND id < ?)) "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
+            (target_plan, target["created_at"], target["created_at"], sid),
+        ).fetchone()
     target_excludes = _row_exclude_names(target)
     return conn.execute(
         "SELECT * FROM snapshots "
         "WHERE root = ? AND min_kb IS ? AND exclude_names IS ? "
+        "AND plan_id IS NULL "
         "AND (created_at < ? OR (created_at = ? AND id < ?)) "
         "ORDER BY created_at DESC, id DESC LIMIT 1",
         (target["root"], target["min_kb"], target_excludes,

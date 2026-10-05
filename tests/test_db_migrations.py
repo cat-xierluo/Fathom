@@ -6,10 +6,12 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import threading
+import time
 
 import pytest
 
-from fathom import db
+from fathom import db, scanner
 
 
 def _legacy_database(path: Path, *, only_snapshots: bool = False) -> sqlite3.Connection:
@@ -70,9 +72,12 @@ def test_partial_known_v0_schema_is_completed(tmp_path):
         assert db.schema_version(conn) == db.SCHEMA_VERSION
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")}
-        # v7（ISS-035B）起最终结构含分析两表（迁移链末端追加）。
+        # v7（ISS-035B）起含分析两表；v8（ISS-153）起再含身份/轮次五表
+        # （迁移链末端追加），两条建库路径到达同一结构。
         assert tables == {"snapshots", "entries", "volume_stats", "scan_runs",
-                          "scan_run_details", "analysis_runs", "agent_analyses"}
+                          "scan_run_details", "analysis_runs", "agent_analyses",
+                          "scan_scopes", "scan_plans", "scan_rounds",
+                          "scan_round_members", "container_capacity_samples"}
         assert conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0] == 1
     finally:
         conn.close()
@@ -242,8 +247,13 @@ def test_current_schema_rejects_broken_entries_invariants(tmp_path, fault):
                 " WITHOUT ROWID" if fault != "without_rowid" else "",
             )
         conn.execute(statement)
-    # v7 起当前结构含分析两表（ISS-035B）。
+    # v7 起当前结构含分析两表（ISS-035B）；v8 起含身份/轮次五表与
+    # 快照身份列（ISS-153）。
     for statement in db._ANALYSIS_TABLE_STATEMENTS:
+        conn.execute(statement)
+    for ddl in db._SNAPSHOT_ALTER_V8:
+        conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+    for statement in db._IDENTITY_TABLE_STATEMENTS:
         conn.execute(statement)
     conn.execute(f"PRAGMA user_version={db.SCHEMA_VERSION}")
     conn.commit()
@@ -285,7 +295,7 @@ def test_v3_database_migrates_vanished_count_with_default_zero(tmp_path):
 
     conn = db.connect(path)
     try:
-        assert db.schema_version(conn) == db.SCHEMA_VERSION == 7
+        assert db.schema_version(conn) == db.SCHEMA_VERSION == 8
         rows = conn.execute(
             "SELECT id, vanished_count, exclude_names FROM snapshots ORDER BY id"
         ).fetchall()
@@ -410,7 +420,7 @@ class TestISS066ExcludeNamesMigration:
 
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == db.SCHEMA_VERSION == 7
+            assert db.schema_version(conn) == db.SCHEMA_VERSION == 8
             cols = {row[1] for row in conn.execute(
                 "PRAGMA table_info(snapshots)")}
             assert "exclude_names" in cols
@@ -482,7 +492,7 @@ class TestISS066ExcludeNamesMigration:
             cols = [row[1] for row in second.execute(
                 "PRAGMA table_info(snapshots)")]
             assert cols.count("exclude_names") == 1
-            assert db.schema_version(second) == db.SCHEMA_VERSION == 7
+            assert db.schema_version(second) == db.SCHEMA_VERSION == 8
         finally:
             second.close()
 
@@ -513,11 +523,11 @@ class TestISS116V6Migration:
         self._v5(path)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 7
+            assert db.schema_version(conn) == 8
             row = conn.execute("SELECT vanished_count, confirmed_missing_count, "
                                "path_unverified_count FROM snapshots").fetchone()
             assert tuple(row) == (4, None, None)
-            assert db._detect_schema_version(conn) == 7
+            assert db._detect_schema_version(conn) == 8
         finally:
             conn.close()
         backups = list(tmp_path.glob("v5.db.backup-v5-*.sqlite3"))
@@ -555,7 +565,7 @@ class TestISS116V6Migration:
         self._v5(path, user_version=0)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 7
+            assert db.schema_version(conn) == 8
             row = conn.execute("SELECT confirmed_missing_count, path_unverified_count "
                                "FROM snapshots").fetchone()
             assert tuple(row) == (None, None)
@@ -574,7 +584,7 @@ class TestISS116V6Migration:
             raw.close()
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 7
+            assert db.schema_version(conn) == 8
             names = [r[1] for r in conn.execute("PRAGMA table_info(snapshots)")]
             assert names.count("confirmed_missing_count") == 1
             assert names.count("path_unverified_count") == 1
@@ -611,8 +621,8 @@ class TestISS035BV7Migration:
         self._v6(path)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 7
-            assert db._detect_schema_version(conn) == 7
+            assert db.schema_version(conn) == 8
+            assert db._detect_schema_version(conn) == 8
             tables = {r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name NOT LIKE 'sqlite_%'")}
@@ -663,7 +673,7 @@ class TestISS035BV7Migration:
         monkeypatch.setitem(db._MIGRATIONS, 6, real)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 7
+            assert db.schema_version(conn) == 8
         finally:
             conn.close()
 
@@ -679,7 +689,7 @@ class TestISS035BV7Migration:
             raw.close()
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 7
+            assert db.schema_version(conn) == 8
             names = [r[1] for r in conn.execute("PRAGMA table_info(analysis_runs)")]
             assert names.count("job_id") == 1
         finally:
@@ -697,7 +707,7 @@ class TestISS035BV7Migration:
             raw.close()
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 7
+            assert db.schema_version(conn) == 8
             assert conn.execute("SELECT total_kb FROM snapshots").fetchone()[0] == 42
         finally:
             conn.close()
@@ -728,5 +738,345 @@ class TestISS035BV7Migration:
             conn.execute("PRAGMA foreign_keys=ON")
             assert conn.execute(
                 "SELECT COUNT(*) FROM agent_analyses").fetchone()[0] == 1
+        finally:
+            conn.close()
+
+
+class TestISS153V8Migration:
+    """v7→v8（ISS-153）：卷/范围身份与扫描轮次兼容数据模型。
+
+    反例（先红测后实现）：
+    - 全新库与 v7→v8 升级链必须到达相同结构（12 张表）；
+    - 升级后条目/时间/旧报告/分析证据逐项保留，旧行三个身份列保持
+      NULL（legacy 不补造身份，不与新整盘身份混比）；
+    - 注入失败随事务回滚，无半成品列/表，原库可恢复；
+    - 并发 connect 竞争迁移由跨进程锁串行、锁内重读版本。
+    """
+
+    IDENTITY_TABLES = {
+        "scan_scopes", "scan_plans", "scan_rounds", "scan_round_members",
+        "container_capacity_samples",
+    }
+
+    @staticmethod
+    def _v7(path: Path, *, user_version: int = 7) -> None:
+        conn = sqlite3.connect(path)
+        try:
+            for statement in db._SCHEMA_STATEMENTS:
+                conn.execute(statement)
+            for ddl in (*db._SNAPSHOT_ALTER_V3, *db._SNAPSHOT_ALTER_V4,
+                        *db._SNAPSHOT_ALTER_V5, *db._SNAPSHOT_ALTER_V6):
+                conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+            for statement in db._ANALYSIS_TABLE_STATEMENTS:
+                conn.execute(statement)
+            conn.execute(f"PRAGMA user_version={user_version}")
+            conn.execute(
+                "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+                "du_seconds, total_kb, min_kb, collection_status, vanished_count, "
+                "exclude_names, confirmed_missing_count, path_unverified_count) "
+                "VALUES ('2026-10-01T09:00:00', '/synthetic/root', 3, 1, 0.5, 4096, "
+                "1024, 'partial', 4, 'skip.me', 1, 3)"
+            )
+            conn.execute(
+                "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+                "du_seconds, total_kb, min_kb, collection_status, vanished_count, "
+                "exclude_names, confirmed_missing_count, path_unverified_count) "
+                "VALUES ('2026-10-02T09:00:00', '/synthetic/root', 2, 0, 0.4, 8192, "
+                "1024, 'full', 0, 'skip.me', 0, 0)"
+            )
+            conn.executemany(
+                "INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,?)",
+                [(1, "/synthetic/root/a", 2048), (1, "/synthetic/root/b", 1024),
+                 (2, "/synthetic/root/a", 4096)],
+            )
+            conn.execute(
+                "INSERT INTO volume_stats(snapshot_id, total_bytes, free_bytes) "
+                "VALUES (1, 500000000000, 123000000000)"
+            )
+            conn.execute(
+                "INSERT INTO scan_runs(started_at, finished_at, status, message) "
+                "VALUES ('2026-10-02T09:00:00', '2026-10-02T09:05:00', 'succeeded', NULL)"
+            )
+            conn.execute(
+                "INSERT INTO scan_run_details(run_id, source, phase, owner_id, "
+                "owner_pid, owner_started, heartbeat_at, snapshot_id, report_status, "
+                "report_path, notification_status, pruned_count) "
+                "VALUES (1, 'api', 'collect', 'owner-1', 4242, '2026-10-02T09:00:00', "
+                "'2026-10-02T09:01:00', 2, 'written', '/synthetic/reports/2026-10-02.md', "
+                "'sent', 0)"
+            )
+            conn.execute(
+                "INSERT INTO analysis_runs(job_id, a_snapshot_id, b_snapshot_id, "
+                "request_digest, facts_digest, prompt_version, idempotency_key, "
+                "runtime_id, runtime_executable, settings_revision, "
+                "consent_revision, status, owner_id, created_at) "
+                "VALUES ('job-1', 1, 2, 'rd-1', 'fd-1', 'pv-1', 'ik-1', "
+                "'claude-code', '/synthetic/runtime', 3, 5, 'succeeded', 'o-1', "
+                "'2026-10-02T10:00:00')"
+            )
+            conn.execute(
+                "INSERT INTO agent_analyses(job_id, a_snapshot_id, b_snapshot_id, "
+                "a_created_at, b_created_at, dataset_root, dataset_min_kb, "
+                "dataset_exclude_names, request_digest, facts_digest, "
+                "prompt_version, adapter_contract_version, runtime_id, "
+                "result_json, facts_json, manifest_json, created_at) "
+                "VALUES ('job-1', 1, 2, '2026-10-01T09:00:00', "
+                "'2026-10-02T09:00:00', '/synthetic/root', 1024, 'skip.me', "
+                "'rd-1', 'fd-1', 'pv-1', 1, 'claude-code', '{}', '{}', '{}', "
+                "'2026-10-02T10:00:00')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_fresh_database_reaches_v8_with_identity_tables(self, tmp_path):
+        """全新库：迁移链 0→8 与 v7 升级链到达同一结构。"""
+        path = tmp_path / "fresh.db"
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == db.SCHEMA_VERSION == 8
+            assert db._detect_schema_version(conn) == 8
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'")}
+            assert tables == {
+                "snapshots", "entries", "volume_stats", "scan_runs",
+                "scan_run_details", "analysis_runs", "agent_analyses",
+            } | self.IDENTITY_TABLES
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(snapshots)")]
+            assert {"plan_id", "round_id", "metric_version"} <= set(cols)
+        finally:
+            conn.close()
+
+    def test_v7_upgrade_preserves_everything_item_by_item(self, tmp_path):
+        """反例③：升级后条目/时间/旧报告/分析证据逐项保留；旧行身份列 NULL。"""
+        path = tmp_path / "v7-upgrade.db"
+        self._v7(path)
+        reports_dir = tmp_path / "reports"
+        reports_dir.mkdir()
+        old_report = reports_dir / "2026-10-02.md"
+        old_report.write_text("# Fathom 日报 · 2026-10-02\n", encoding="utf-8")
+
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 8
+            # 快照逐行逐列保留（含时间原值与 v3–v6 各口径列）。
+            snaps = conn.execute(
+                "SELECT * FROM snapshots ORDER BY id").fetchall()
+            assert [tuple(r)[:7] for r in snaps] == [
+                (1, "2026-10-01T09:00:00", "/synthetic/root", 3, 1, 0.5, 4096),
+                (2, "2026-10-02T09:00:00", "/synthetic/root", 2, 0, 0.4, 8192),
+            ]
+            assert [(r["min_kb"], r["collection_status"], r["vanished_count"],
+                     r["exclude_names"], r["confirmed_missing_count"],
+                     r["path_unverified_count"]) for r in snaps] == [
+                (1024, "partial", 4, "skip.me", 1, 3),
+                (1024, "full", 0, "skip.me", 0, 0),
+            ]
+            # 旧行三个身份关联列保持 NULL：legacy 身份不补造，不与新整盘
+            # 身份混比（也不补造真实卷 UUID）。
+            assert all(r["plan_id"] is None and r["round_id"] is None
+                       and r["metric_version"] is None for r in snaps)
+            # 条目逐行保留。
+            entries = conn.execute(
+                "SELECT snapshot_id, path, size_kb FROM entries "
+                "ORDER BY snapshot_id, path").fetchall()
+            assert [tuple(r) for r in entries] == [
+                (1, "/synthetic/root/a", 2048),
+                (1, "/synthetic/root/b", 1024),
+                (2, "/synthetic/root/a", 4096),
+            ]
+            assert conn.execute(
+                "SELECT status FROM scan_runs").fetchone()[0] == "succeeded"
+            assert conn.execute(
+                "SELECT report_status FROM scan_run_details"
+            ).fetchone()[0] == "written"
+            # 分析生命周期与已保存证据逐行保留。
+            assert tuple(conn.execute(
+                "SELECT total_bytes, free_bytes FROM volume_stats"
+            ).fetchone()) == (500000000000, 123000000000)
+            assert tuple(conn.execute(
+                "SELECT job_id, status FROM analysis_runs"
+            ).fetchone()) == ("job-1", "succeeded")
+            evidence = conn.execute(
+                "SELECT job_id, dataset_root, result_json FROM agent_analyses"
+            ).fetchone()
+            assert tuple(evidence) == ("job-1", "/synthetic/root", "{}")
+        finally:
+            conn.close()
+        # 旧报告文件原样保留：迁移只动库，不触碰 reports/。
+        assert old_report.read_text(encoding="utf-8") == \
+            "# Fathom 日报 · 2026-10-02\n"
+        # v7 备份保留且为迁移前形态。
+        backups = list(tmp_path.glob("v7-upgrade.db.backup-v7-*.sqlite3"))
+        assert len(backups) == 1
+        raw = sqlite3.connect(backups[0])
+        try:
+            assert raw.execute("PRAGMA user_version").fetchone()[0] == 7
+            names = {r[0] for r in raw.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            assert not (self.IDENTITY_TABLES & names)
+            assert raw.execute(
+                "SELECT total_kb FROM snapshots WHERE id=2").fetchone()[0] == 8192
+        finally:
+            raw.close()
+
+    def test_v7_migration_failure_rolls_back_all_ddl(self, tmp_path, monkeypatch):
+        """注入失败：三个 ALTER 与五张建表随事务回滚，无半成品；可重试接续。"""
+        path = tmp_path / "v8-fail.db"
+        self._v7(path)
+
+        def fail_after_partial(conn):
+            conn.execute("ALTER TABLE snapshots ADD COLUMN plan_id TEXT")
+            conn.execute(db._IDENTITY_TABLE_STATEMENTS[0])
+            raise sqlite3.OperationalError("injected v8 failure")
+
+        monkeypatch.setitem(db._MIGRATIONS, 7, fail_after_partial)
+        with pytest.raises(db.MigrationError, match="原库已回滚"):
+            db.connect(path)
+
+        raw = sqlite3.connect(path)
+        try:
+            assert raw.execute("PRAGMA user_version").fetchone()[0] == 7
+            cols = {r[1] for r in raw.execute("PRAGMA table_info(snapshots)")}
+            assert "plan_id" not in cols and "round_id" not in cols
+            names = {r[0] for r in raw.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+            assert not (self.IDENTITY_TABLES & names)
+            assert raw.execute(
+                "SELECT COUNT(*) FROM agent_analyses").fetchone()[0] == 1
+        finally:
+            raw.close()
+        # 修复后（真实迁移函数）可重试接续到 v8。
+        monkeypatch.setitem(db._MIGRATIONS, 7, db._migrate_v7)
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 8
+        finally:
+            conn.close()
+
+    def test_concurrent_migration_is_serialized_by_lock(self, tmp_path,
+                                                        monkeypatch):
+        """并发 connect 竞争 v7→v8：跨进程锁串行，后到者锁内重读不再迁移。"""
+        path = tmp_path / "race.db"
+        self._v7(path)
+        started = threading.Event()
+        entered = threading.Event()
+        real_v7 = db._migrate_v7
+
+        def slow_v7(conn):
+            started.set()
+            entered.wait(timeout=5)
+            time.sleep(0.2)  # 让第二连接有时间到达迁移锁前
+            real_v7(conn)
+
+        monkeypatch.setitem(db._MIGRATIONS, 7, slow_v7)
+        results: dict[int, object] = {}
+
+        def worker(tag: int) -> None:
+            try:
+                conn = db.connect(path)
+                results[tag] = db.schema_version(conn)
+                results[f"rows-{tag}"] = conn.execute(
+                    "SELECT COUNT(*) FROM snapshots").fetchone()[0]
+                conn.close()
+            except Exception as exc:  # pragma: no cover - 失败时显式可见
+                results[tag] = f"error: {exc!r}"
+
+        first = threading.Thread(target=worker, args=(1,))
+        first.start()
+        assert started.wait(timeout=5)
+        second = threading.Thread(target=worker, args=(2,))
+        second.start()
+        time.sleep(0.2)
+        entered.set()
+        first.join(timeout=30)
+        second.join(timeout=30)
+        assert results[1] == db.SCHEMA_VERSION, results
+        assert results[2] == db.SCHEMA_VERSION, results
+        assert results["rows-1"] == 2 and results["rows-2"] == 2
+        # 迁移真实发生过且只发生一次：至少一份迁移前备份，且库内数据完整。
+        backups = list(tmp_path.glob("race.db.backup-v7-*.sqlite3"))
+        assert len(backups) >= 1
+
+    def test_v8_shape_with_v7_user_version_is_idempotent(self, tmp_path):
+        """v8 结构 + user_version=7（手动回退）：只校验不重复建列/表。"""
+        path = tmp_path / "idempotent-v8.db"
+        self._v7(path)
+        raw = sqlite3.connect(path)
+        try:
+            raw.execute("ALTER TABLE snapshots ADD COLUMN plan_id TEXT")
+            raw.execute("ALTER TABLE snapshots ADD COLUMN round_id INTEGER")
+            raw.execute("ALTER TABLE snapshots ADD COLUMN metric_version INTEGER")
+            for statement in db._IDENTITY_TABLE_STATEMENTS:
+                raw.execute(statement)
+            raw.commit()
+        finally:
+            raw.close()
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 8
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(snapshots)")]
+            assert cols.count("plan_id") == 1
+            names = [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")]
+            assert names.count("scan_scopes") == 1
+        finally:
+            conn.close()
+
+    def test_v8_shape_with_zero_user_version_is_detected_not_rebuilt(
+        self, tmp_path
+    ):
+        path = tmp_path / "mismatch-v8.db"
+        self._v7(path, user_version=0)
+        raw = sqlite3.connect(path)
+        try:
+            raw.execute("ALTER TABLE snapshots ADD COLUMN plan_id TEXT")
+            raw.execute("ALTER TABLE snapshots ADD COLUMN round_id INTEGER")
+            raw.execute("ALTER TABLE snapshots ADD COLUMN metric_version INTEGER")
+            for statement in db._IDENTITY_TABLE_STATEMENTS:
+                raw.execute(statement)
+            raw.commit()
+        finally:
+            raw.close()
+        conn = db.connect(path)
+        try:
+            assert db.schema_version(conn) == 8
+            assert conn.execute(
+                "SELECT total_kb FROM snapshots WHERE id=2").fetchone()[0] == 8192
+        finally:
+            conn.close()
+
+    def test_legacy_rows_keep_null_identity_after_upgrade(self, tmp_path):
+        """升级后旧行不参与新身份分组：plan_id NULL 与任何 plan 都不可比。"""
+        path = tmp_path / "legacy-null.db"
+        self._v7(path)
+        conn = db.connect(path)
+        try:
+            scope = scanner.ensure_scan_scope(
+                conn, "apfs-volume:uuid-X", "startup_volume",
+                container_id="apfs-container:C")
+            plan = scanner.ensure_scan_plan(
+                conn, scope, "/synthetic/root", 1, 1024, "skip.me")
+            conn.execute(
+                "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+                "du_seconds, total_kb, min_kb, collection_status, vanished_count, "
+                "exclude_names, confirmed_missing_count, path_unverified_count, "
+                "plan_id, metric_version) "
+                "VALUES ('2026-10-03T09:00:00', '/synthetic/root', 1, 0, 0.1, "
+                "100, 1024, 'full', 0, 'skip.me', 0, 0, ?, 1)", (plan,))
+            conn.commit()
+            legacy = conn.execute(
+                "SELECT * FROM snapshots WHERE id=1").fetchone()
+            branded = conn.execute(
+                "SELECT * FROM snapshots WHERE id=3").fetchone()
+            from fathom import reports
+            # 同 root/min_kb/exclude_names 但身份维度不同：legacy 与新身份
+            # 行不可比（NULL 不补造、不混比）。
+            assert not reports.same_dataset(legacy, branded)
+            rows = reports.find_same_dataset_snapshot_rows(
+                conn, reports.dataset_identity(legacy))
+            assert [r["id"] for r in rows] == [1, 2]
+            assert reports.find_same_dataset_predecessor(conn, 3) is None
         finally:
             conn.close()

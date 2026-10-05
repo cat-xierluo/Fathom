@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import datetime as dt
 import errno
+import hashlib
 import os
 import sqlite3
 import stat
@@ -62,6 +63,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 from . import config
 
@@ -102,6 +104,18 @@ class InvalidScanError(RuntimeError):
     本次扫描已被整体拒绝。
 
     抛出时数据库没有任何写入，当日旧快照不受影响。
+    """
+
+
+class PlanIdentityMismatchError(InvalidScanError):
+    """计划身份与本次实际测量口径不一致，本次快照写入被整体拒绝。
+
+    ISS-153 审计返修：快照写入前必须核验 plan 身份（规范根/阈值/排除/
+    计量版本）与实际测量口径逐项一致，否则即为跨口径写入的身份污染。
+
+    继承 InvalidScanError 以复用既有「本次扫描已被整体拒绝、数据库没有
+    任何写入、当日旧快照不受影响」的捕获面与处理路径，同时让调用方可
+    把它与「du 采集无效」区分开（前者是身份/编排问题，后者是采集问题）。
     """
 
 
@@ -638,39 +652,313 @@ def _volume_stat(root: Path) -> tuple[int, int]:
     return st.f_blocks * st.f_frsize, st.f_bavail * st.f_frsize
 
 
+# ---- v8（ISS-153）身份/轮次持久化辅助 ----
+#
+# 本组函数只做持久化与身份登记，不做发现（发现归 storage.py，本版只读
+# 消费）、不改 API/协调器；默认参数下 create_snapshot/_drop_same_day/
+# prune_snapshots 的行为与 v7 完全一致。调用方负责事务边界（与
+# create_snapshot 相同，用 ``with conn:`` 包裹或自行 commit）。
+
+
+def _now_iso() -> str:
+    return dt.datetime.now().isoformat(timespec="seconds")
+
+
+def plan_identity_id(
+    scope_id: str, canonical_root: str, metric_version: int,
+    min_kb: int, exclude_names: str,
+) -> str:
+    """内容派生的规范根计划稳定 ID（"plan:" + sha256 截断）。
+
+    计划身份 = (scope_id, canonical_root, metric_version, min_kb,
+    exclude_names)；任一维度变化都形成新计划（同路径换卷 → 换范围 →
+    新计划；换阈值/计量版本/排除同理）。派生是纯函数：同身份重复登记
+    得到同一 ID。
+    """
+    material = "\x1f".join((
+        scope_id, canonical_root, str(int(metric_version)),
+        str(int(min_kb)), exclude_names,
+    ))
+    return "plan:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def ensure_scan_scope(
+    conn: sqlite3.Connection,
+    scope_id: str,
+    kind: str,
+    *,
+    container_id: str | None = None,
+    volume_group_id: str | None = None,
+    device_id: str | None = None,
+    mount_path: str | None = None,
+    display_name: str | None = None,
+    seen_at: str | None = None,
+) -> str:
+    """登记（或刷新）一个扫描范围身份，返回 scope_id。
+
+    scope_id 采用 storage 发现适配器的稳定 ID（"apfs-volume:<uuid>" /
+    "partition:<uuid>"）。已存在时仅刷新 last_seen_at 与诊断字段
+    （mount_path/display_name），身份列（scope_id/kind/container_id/
+    volume_group_id/device_id）与 created_at 首见时间一律不改写。
+    legacy 路径不登记本表：旧行身份保持 NULL，不补造真实卷 UUID。
+    """
+    now = seen_at or _now_iso()
+    conn.execute(
+        "INSERT INTO scan_scopes(scope_id, kind, container_id, "
+        "volume_group_id, device_id, mount_path, display_name, "
+        "created_at, last_seen_at) VALUES (?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(scope_id) DO UPDATE SET "
+        "last_seen_at=excluded.last_seen_at, mount_path=excluded.mount_path, "
+        "display_name=excluded.display_name",
+        (scope_id, kind, container_id, volume_group_id, device_id,
+         mount_path, display_name, now, now),
+    )
+    return scope_id
+
+
+def ensure_scan_plan(
+    conn: sqlite3.Connection,
+    scope_id: str,
+    canonical_root: str,
+    metric_version: int,
+    min_kb: int,
+    exclude_names: str = "",
+    *,
+    created_at: str | None = None,
+) -> str:
+    """登记（或复用）一个规范根计划，返回内容派生的稳定 plan_id。
+
+    计划身份 = (scope_id, canonical_root, metric_version, min_kb,
+    exclude_names)；重复登记幂等返回同一 plan_id，不产生重复行
+    （UNIQUE 约束 + INSERT OR IGNORE 双保险）。
+    """
+    plan_id = plan_identity_id(scope_id, canonical_root, metric_version,
+                               min_kb, exclude_names)
+    now = created_at or _now_iso()
+    conn.execute(
+        "INSERT OR IGNORE INTO scan_plans(plan_id, scope_id, canonical_root, "
+        "metric_version, min_kb, exclude_names, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (plan_id, scope_id, canonical_root, int(metric_version), int(min_kb),
+         exclude_names, now),
+    )
+    return plan_id
+
+
+def begin_scan_round(
+    conn: sqlite3.Connection, started_at: str | None = None
+) -> int:
+    """开启一个扫描轮次（一轮可含多个数据集成员），返回轮次 id。"""
+    cur = conn.execute(
+        "INSERT INTO scan_rounds(started_at, status) VALUES (?, 'running')",
+        (started_at or _now_iso(),),
+    )
+    return int(cur.lastrowid)
+
+
+def finish_scan_round(
+    conn: sqlite3.Connection,
+    round_id: int,
+    status: str,
+    *,
+    finished_at: str | None = None,
+    message: str | None = None,
+) -> None:
+    """结束扫描轮次并记录终态（status/finished_at/message）。"""
+    conn.execute(
+        "UPDATE scan_rounds SET status=?, finished_at=?, message=? WHERE id=?",
+        (status, finished_at or _now_iso(), message, round_id),
+    )
+
+
+def add_round_member(
+    conn: sqlite3.Connection,
+    round_id: int,
+    *,
+    seq: int,
+    status: str,
+    snapshot_id: int | None = None,
+    plan_id: str | None = None,
+    scope_id: str | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+) -> None:
+    """登记轮次成员关联（一个数据集在本轮的一次采集）。
+
+    snapshot_id 非 None 时 snapshot_status 记 'active'；快照此后被保留
+    策略/同日替换淘汰时，引用由外键 ON DELETE SET NULL 解除、
+    snapshot_status 由删除路径显式置 'expired'（见
+    _delete_snapshot_rows）——「曾关联、已淘汰」可被查询区分，不靠
+    join 失败隐式发现。
+    """
+    conn.execute(
+        "INSERT INTO scan_round_members(round_id, seq, plan_id, scope_id, "
+        "snapshot_id, snapshot_status, status, started_at, finished_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (round_id, seq, plan_id, scope_id, snapshot_id,
+         "active" if snapshot_id is not None else None,
+         status, started_at, finished_at),
+    )
+
+
+def record_container_capacity_sample(
+    conn: sqlite3.Connection,
+    container_id: str,
+    *,
+    source: str,
+    total_bytes: int | None = None,
+    free_bytes: int | None = None,
+    sampled_at: str | None = None,
+    round_id: int | None = None,
+) -> int:
+    """另存一条容器容量样本，返回样本行 id。
+
+    整盘容量样本只能来自容器级发现（source 如 "storage-discovery"），
+    来源与时间显式落库；不得借某目录根 statvfs 的结果冒充整盘样本
+    （statvfs 来源如实标 "statvfs"，快照级 volume_stats 口径不变）。
+    """
+    cur = conn.execute(
+        "INSERT INTO container_capacity_samples(container_id, total_bytes, "
+        "free_bytes, source, sampled_at, round_id) VALUES (?,?,?,?,?,?)",
+        (container_id, total_bytes, free_bytes, source,
+         sampled_at or _now_iso(), round_id),
+    )
+    return int(cur.lastrowid)
+
+
+def _delete_snapshot_rows(conn: sqlite3.Connection, sid: int) -> None:
+    """删除一个快照及其条目/卷容量行；轮次成员引用显式标 expired。
+
+    scan_round_members.snapshot_id 的外键 ON DELETE SET NULL（在
+    foreign_keys=ON 的连接上）解除引用；snapshot_status 由本函数先置
+    'expired'，让「曾关联、已淘汰」可被查询区分。绝不触碰
+    agent_analyses——已保存 AI 证据不随快照淘汰级联删除（v7 起的
+    保留不变量，v8 新表同样不设指向分析两表的外键）。
+    """
+    conn.execute(
+        "UPDATE scan_round_members SET snapshot_status='expired' "
+        "WHERE snapshot_id = ?", (sid,))
+    conn.execute("DELETE FROM entries WHERE snapshot_id = ?", (sid,))
+    conn.execute("DELETE FROM volume_stats WHERE snapshot_id = ?", (sid,))
+    conn.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
+
+
 def _drop_same_day(
     conn: sqlite3.Connection, day: str, root: str, min_kb: int,
-    exclude_names: str = "",
+    exclude_names: str = "", plan_id: str | None = None,
 ) -> None:
-    """删除同数据集（同根同阈值同排除掩码口径）同一天的旧快照，实现"一天一行"。
+    """删除同数据集同一天的旧快照，实现"一天一行"。
 
     阈值口径不同的快照属于另一数据集，同日不替换（ISS-021）；更换根同理。
     排除掩码口径不同的快照同样属于另一数据集（ISS-066）。
+
+    v8（ISS-153）按身份隔离：
+    - legacy 路径（plan_id=None，现行产品入口）：身份仍按
+      (root, min_kb, exclude_names)，且只替换同为 legacy（plan_id IS
+      NULL）的行——不与新整盘身份互替；
+    - 新身份路径（plan_id 非 None）：仅按 plan_id 隔离——计划已含范围/
+      规范根/计量版本/阈值/排除，换卷或换计划同日不互相替换。
     """
-    ids = [
-        r["id"]
-        for r in conn.execute(
-            "SELECT id FROM snapshots WHERE root = ? AND min_kb = ? "
-            "AND exclude_names IS ? AND created_at LIKE ?",
-            (root, min_kb, exclude_names, f"{day}%"),
-        )
-    ]
+    if plan_id is None:
+        ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM snapshots WHERE root = ? AND min_kb = ? "
+                "AND exclude_names IS ? AND plan_id IS NULL "
+                "AND created_at LIKE ?",
+                (root, min_kb, exclude_names, f"{day}%"),
+            )
+        ]
+    else:
+        ids = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM snapshots WHERE plan_id = ? "
+                "AND created_at LIKE ?",
+                (plan_id, f"{day}%"),
+            )
+        ]
     for sid in ids:
-        conn.execute("DELETE FROM entries WHERE snapshot_id = ?", (sid,))
-        conn.execute("DELETE FROM volume_stats WHERE snapshot_id = ?", (sid,))
-        conn.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
+        _delete_snapshot_rows(conn, sid)
+
+
+def _reject_plan_identity_mismatch(dimension: str) -> NoReturn:
+    """身份口径不符的统一出口：指名维度，不回显路径或任何取值。"""
+    raise PlanIdentityMismatchError(
+        f"计划身份与本次实际测量口径不一致（{dimension}）；"
+        f"已拒绝本次快照写入，未做任何数据库改动"
+    )
+
+
+def _verify_plan_matches_measurement(
+    conn: sqlite3.Connection,
+    plan_id: str | None,
+    *,
+    root_str: str,
+    min_kb: int,
+    exclude_names: str,
+    metric_version: int | None,
+) -> None:
+    """写入前核验 plan 身份与实际测量口径一致（ISS-153 审计返修）。
+
+    计划身份五元组 = (scope_id, canonical_root, metric_version, min_kb,
+    exclude_names)。本次快照可观测的四个维度（规范根/阈值/排除/计量
+    版本）必须与登记行逐项相等；scope_id 不在写入侧入参内，其正确性由
+    登记侧（ensure_scan_scope/ensure_scan_plan）保证。
+
+    任一维度不符、或 plan_id 从未登记，一律抛 PlanIdentityMismatchError：
+    不静默重映射、不静默换 plan、**不进入同日替换事务**——因此当天该
+    计划的既有快照一个都不会被删。校验刻意取严格相等：身份合同的语义
+    就是「口径不同即不同计划」，容错归一会把跨口径写入重新放进来。
+
+    plan_id 为 None（legacy 路径）直接返回，行为与 v7 完全一致。
+
+    错误信息只指名不匹配的维度，不回显根路径/阈值/掩码等内部细节。
+    """
+    if plan_id is None:
+        return
+    row = conn.execute(
+        "SELECT canonical_root, metric_version, min_kb, exclude_names "
+        "FROM scan_plans WHERE plan_id = ?", (plan_id,)
+    ).fetchone()
+    if row is None:
+        _reject_plan_identity_mismatch("计划未登记")
+    if row["canonical_root"] != root_str:
+        _reject_plan_identity_mismatch("规范根不同")
+    if int(row["min_kb"]) != int(min_kb):
+        _reject_plan_identity_mismatch("阈值不同")
+    if (row["exclude_names"] or "") != exclude_names:
+        _reject_plan_identity_mismatch("排除掩码不同")
+    actual_metric = None if metric_version is None else int(metric_version)
+    if row["metric_version"] != actual_metric:
+        _reject_plan_identity_mismatch("计量版本不同")
 
 
 def create_snapshot(
     conn: sqlite3.Connection,
     root: Path | None = None,
     min_kb: int | None = None,
+    *,
+    plan_id: str | None = None,
+    round_id: int | None = None,
+    metric_version: int | None = None,
 ) -> int:
     """执行一次完整扫描并写入快照，返回快照 id。
 
     min_kb 可在测试中注入小值；生产使用 config.MIN_DIR_KB。快照与
     min_kb、采集质量（full/partial）一并持久化——数据集身份是
     (root, min_kb)，差分/保留/同日替换都以它分组（ISS-021）。
+
+    v8（ISS-153）身份参数（全部默认 None，缺省时行为与 v7 完全一致）：
+    plan_id 归属规范根计划（同日替换按计划隔离）；round_id 归属扫描
+    轮次；metric_version 为计量版本。身份须来自 storage 发现的真实
+    登记结果，不得就地伪造——legacy 路径保持不传，身份列为 NULL。
+
+    传 plan_id 时，写入前先经 _verify_plan_matches_measurement 核验计划
+    身份与本次实际测量口径一致；不一致（或 plan_id 未登记）抛
+    PlanIdentityMismatchError，在采集与事务之前拒绝：既不建新快照，也
+    不触发按计划分组的同日替换，当日既有快照一个都不删（ISS-153 审计
+    返修）。
 
     采集无效（歧义/不可解码路径、缺根记录/空输出、信号终止、非权限且
     非瞬时的真实错误或其与权限/瞬时的混合、负数大小、退出码非零但无
@@ -685,6 +973,14 @@ def create_snapshot(
     root = Path(root) if root else config.DEFAULT_ROOT
     min_kb = config.MIN_DIR_KB if min_kb is None else min_kb
     root_str = str(root)
+    exclude_names = ";".join(config.EXCLUDE_NAMES)  # 规范串：已排序去重
+
+    # 身份闸门先于采集与任何写入：跨口径写入在此被拒（ISS-153 审计返修）。
+    # plan_id=None 的 legacy 路径直接返回，行为与 v7 逐字节一致。
+    _verify_plan_matches_measurement(
+        conn, plan_id, root_str=root_str, min_kb=min_kb,
+        exclude_names=exclude_names, metric_version=metric_version,
+    )
 
     result = run_du(root)
     collection_status = classify_collection(result, root_str)  # 无效采集在此被拒绝
@@ -697,19 +993,20 @@ def create_snapshot(
     kept = [(p, s) for p, s in sizes.items() if s >= min_kb]
 
     now = dt.datetime.now()
-    exclude_names = ";".join(config.EXCLUDE_NAMES)  # 规范串：已排序去重
     with conn:
         _drop_same_day(conn, now.strftime("%Y-%m-%d"), root_str, min_kb,
-                       exclude_names)
+                       exclude_names, plan_id=plan_id)
         cur = conn.execute(
             "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, total_kb, "
             "min_kb, collection_status, vanished_count, exclude_names, "
-            "confirmed_missing_count, path_unverified_count) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "confirmed_missing_count, path_unverified_count, "
+            "plan_id, round_id, metric_version) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (now.isoformat(timespec="seconds"), root_str, len(sizes),
              result.denied_count, result.elapsed_seconds, total_kb,
              min_kb, collection_status, result.vanished_count, exclude_names,
-             result.confirmed_missing_count, result.path_unverified_count),
+             result.confirmed_missing_count, result.path_unverified_count,
+             plan_id, round_id, metric_version),
         )
         sid = cur.lastrowid
         conn.executemany(
@@ -733,9 +1030,11 @@ def prune_snapshots(
     """清理旧快照：每个数据集（同根同口径）近 N 天全保留，更早的每周
     保留最早一份，最多 M 周（weekly_cutoff 从今天向前 M 周，非 N 天加 M 周）。
 
-    周分组按数据集独立进行：两个根（或同根不同阈值口径）在同一 ISO 周的
-    历史各自保留一份，不会互相挤掉（ISS-021，AUD-05）。旧记录 min_kb 为
+    周分组按数据集独立进行：两个根（或同根不同阈值口径）在同一 ISO 周
+    的历史各自保留一份，不会互相挤掉（ISS-021，AUD-05）。旧记录 min_kb 为
     NULL，与已知阈值一样按 (root, min_kb) 分组，NULL 只与 NULL 同组。
+    v8（ISS-153）：plan_id 并入分组键首位——legacy 行（NULL）分组键与
+    历史完全一致；新身份行按计划独立成组，不与 legacy 或其他计划互挤。
 
     返回删除的快照数。
     """
@@ -747,20 +1046,22 @@ def prune_snapshots(
     weekly_cutoff = today - dt.timedelta(weeks=keep_weekly_weeks)
 
     rows = conn.execute(
-        "SELECT id, created_at, root, min_kb, exclude_names FROM snapshots "
-        "ORDER BY created_at, id"
+        "SELECT id, created_at, root, min_kb, exclude_names, plan_id "
+        "FROM snapshots ORDER BY created_at, id"
     ).fetchall()
 
     # 每个数据集的每个 ISO 周保留最早一个快照（仅对超过每日保留期的部分）；
     # 用 id 锚定而非集合标记，同时间戳的两条也能正确只留一条。
-    # 数据集身份从 (root, min_kb) 升级为 (root, min_kb, exclude_names)（ISS-066）。
+    # 数据集身份从 (root, min_kb) 升级为 (root, min_kb, exclude_names)
+    # （ISS-066），v8 再并入 plan_id（ISS-153）。
     daily_cutoff_date = dt.date.fromisoformat(daily_cutoff)
     weekly_keep_id: dict[tuple, int] = {}
     for r in rows:
         created = dt.date.fromisoformat(r["created_at"][:10])
         excludes = r["exclude_names"] if "exclude_names" in r.keys() else ""
+        key = (r["plan_id"], r["root"], r["min_kb"], excludes,
+               created.isocalendar()[:2])
         if daily_cutoff_date > created >= weekly_cutoff:
-            key = (r["root"], r["min_kb"], excludes, created.isocalendar()[:2])
             if key not in weekly_keep_id:
                 weekly_keep_id[key] = r["id"]
 
@@ -770,14 +1071,13 @@ def prune_snapshots(
         if created >= daily_cutoff_date:
             continue  # 近 N 天全保留
         excludes = r["exclude_names"] if "exclude_names" in r.keys() else ""
-        key = (r["root"], r["min_kb"], excludes, created.isocalendar()[:2])
+        key = (r["plan_id"], r["root"], r["min_kb"], excludes,
+               created.isocalendar()[:2])
         if created < weekly_cutoff:
             to_delete.append(r["id"])  # 超过每周保留期
         elif r["id"] != weekly_keep_id.get(key):
             to_delete.append(r["id"])  # 该数据集每周非首个快照
     for sid in to_delete:
-        conn.execute("DELETE FROM entries WHERE snapshot_id = ?", (sid,))
-        conn.execute("DELETE FROM volume_stats WHERE snapshot_id = ?", (sid,))
-        conn.execute("DELETE FROM snapshots WHERE id = ?", (sid,))
+        _delete_snapshot_rows(conn, sid)
     conn.commit()
     return len(to_delete)

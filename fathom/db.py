@@ -13,7 +13,7 @@ from typing import Callable, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE snapshots (
@@ -115,8 +115,9 @@ _ANALYSIS_TABLE_STATEMENTS = (
 
 # Kept as a readable schema reference for tests and diagnostics.
 # 语句保持 v2 形态：全新库由迁移链 0→…→SCHEMA_VERSION 逐级建表并补列，
-# 保证"全新建库"与"旧库升级"到达完全相同的最终结构；v7 起分析两表由
-# 迁移链末端（_migrate_v6）追加，同样两条路径同构。
+# 保证"全新建库"与"旧库升级"到达完全相同的最终结构；v7 分析两表由
+# _migrate_v6、v8 身份/轮次表由 _migrate_v7 在迁移链末端追加，
+# 同样两条路径同构。
 SCHEMA = ";\n\n".join(_SCHEMA_STATEMENTS) + ";\n"
 
 # v3（ISS-021）为 snapshots 增加口径/质量元数据；两列均可空——
@@ -158,13 +159,101 @@ _SNAPSHOT_ALTER_V6 = (
     "confirmed_missing_count INTEGER",
     "path_unverified_count INTEGER",
 )
+# v8（ISS-153）为 snapshots 增加三个身份关联列，全部可空——
+# 旧行不补造身份：plan_id NULL 表示 legacy 口径（按 (root, min_kb,
+# exclude_names) 分组，不与新整盘身份混比）；round_id NULL 表示不属于
+# 任何扫描轮次；metric_version NULL 表示计量版本未知。新身份由后续
+# 接线（ISS-154）在采集时点显式提供，本版不改 API/协调器，零行为变化。
+_SNAPSHOT_ALTER_V8 = (
+    "plan_id TEXT",          # 所属规范根计划（scan_plans.plan_id）
+    "round_id INTEGER",      # 所属扫描轮次（scan_rounds.id；无外键）
+    "metric_version INTEGER",  # 计量版本（参与计划身份的显式列）
+)
+
+# v8（ISS-153）：卷/范围身份与扫描轮次兼容数据模型，五张新表。
+# 快照仍是单测量来源（不改 entries/snapshots 的测量列）；本组表只承载
+# 身份、轮次与整盘容量样本：
+# - scan_scopes：范围/卷/容器稳定 ID（scope_id 直接采用 storage 发现的
+#   稳定 ID，如 "apfs-volume:<uuid>" / "partition:<uuid>"）；legacy 路径
+#   不登记本表——旧行身份保持 NULL，不补造真实卷 UUID。
+# - scan_plans：规范根计划。数据集身份在新口径下 = 计划（范围 + 规范根 +
+#   计量版本 + 阈值 + 排除掩码），内容派生稳定 ID，同计划幂等。
+# - scan_rounds / scan_round_members：扫描轮次与成员关联，各自时间/状态。
+#   成员对快照的引用 ON DELETE SET NULL：快照被保留策略/同日替换淘汰时
+#   引用自动解除，历史行保留，由写入层把 snapshot_status 显式置
+#   'expired'（不靠 join 失败隐式发现）。
+# - container_capacity_samples：容器容量样本另存来源/时间——整盘容量
+#   只能来自容器级发现，不借某目录根 statvfs 冒充（round_id 无外键：
+#   诊断样本不阻塞任何轮次清理）。
+# 本组新表没有任何外键指向 analysis_runs/agent_analyses；v7 起的保留
+# 不变量不变：已保存 AI 证据不随快照淘汰级联删除。
+_IDENTITY_TABLE_STATEMENTS = (
+    """CREATE TABLE scan_scopes (
+        scope_id        TEXT PRIMARY KEY,
+        kind            TEXT NOT NULL,
+        container_id    TEXT,
+        volume_group_id TEXT,
+        device_id       TEXT,
+        mount_path      TEXT,
+        display_name    TEXT,
+        created_at      TEXT NOT NULL,
+        last_seen_at    TEXT
+    )""",
+    """CREATE TABLE scan_plans (
+        plan_id         TEXT PRIMARY KEY,
+        scope_id        TEXT NOT NULL REFERENCES scan_scopes(scope_id),
+        canonical_root  TEXT NOT NULL,
+        metric_version  INTEGER NOT NULL,
+        min_kb          INTEGER NOT NULL,
+        exclude_names   TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL,
+        UNIQUE (scope_id, canonical_root, metric_version, min_kb, exclude_names)
+    )""",
+    """CREATE TABLE scan_rounds (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at  TEXT NOT NULL,
+        finished_at TEXT,
+        status      TEXT NOT NULL,
+        message     TEXT
+    )""",
+    """CREATE TABLE scan_round_members (
+        round_id        INTEGER NOT NULL REFERENCES scan_rounds(id) ON DELETE CASCADE,
+        seq             INTEGER NOT NULL,
+        plan_id         TEXT,
+        scope_id        TEXT,
+        snapshot_id     INTEGER REFERENCES snapshots(id) ON DELETE SET NULL,
+        snapshot_status TEXT,
+        status          TEXT NOT NULL,
+        started_at      TEXT,
+        finished_at     TEXT,
+        PRIMARY KEY (round_id, seq)
+    )""",
+    """CREATE TABLE container_capacity_samples (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        container_id TEXT NOT NULL,
+        total_bytes  INTEGER,
+        free_bytes   INTEGER,
+        source       TEXT NOT NULL,
+        sampled_at   TEXT NOT NULL,
+        round_id     INTEGER
+    )""",
+)
+
+# v6/v7 共享的快照列结构；v8 在其上追加三个可空身份关联列。
+_SNAPSHOT_COLUMNS_V6 = _SNAPSHOT_COLUMNS_V5 + (
+    ("confirmed_missing_count", "INTEGER", 0, 0),
+    ("path_unverified_count", "INTEGER", 0, 0),
+)
+_SNAPSHOT_COLUMNS_V8 = _SNAPSHOT_COLUMNS_V6 + (
+    ("plan_id", "TEXT", 0, 0), ("round_id", "INTEGER", 0, 0),
+    ("metric_version", "INTEGER", 0, 0),
+)
 
 _EXPECTED_TABLE_INFO = {
     # (name, declared type, notnull, primary-key order)
-    "snapshots": _SNAPSHOT_COLUMNS_V5 + (
-        ("confirmed_missing_count", "INTEGER", 0, 0),
-        ("path_unverified_count", "INTEGER", 0, 0),
-    ),
+    # v8 终态：snapshots 携带三个身份关联列；中间态由
+    # _EXPECTED_TABLE_INFO_V6/_V7 覆盖 snapshots 列集。
+    "snapshots": _SNAPSHOT_COLUMNS_V8,
     "entries": (
         ("snapshot_id", "INTEGER", 1, 1), ("path", "TEXT", 1, 2),
         ("size_kb", "INTEGER", 1, 0),
@@ -218,22 +307,69 @@ _ANALYSIS_TABLE_INFO = {
         ("created_at", "TEXT", 1, 0),
     ),
 }
-_EXPECTED_TABLE_INFO_V7 = dict(_EXPECTED_TABLE_INFO, **_ANALYSIS_TABLE_INFO)
+# v7/v8 形态：v7 = v6 基础 + 分析两表（快照列仍为 v6 集合，v8 身份列由
+# 7→8 步骤追加）；v8 = v7 + 五张身份/轮次表 + 快照三个身份列。
+_EXPECTED_TABLE_INFO_V7 = dict(
+    _EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V6, **_ANALYSIS_TABLE_INFO
+)
+
+# v8 身份/轮次表的期望列结构（由 _migrate_v7 创建）。
+_IDENTITY_TABLE_INFO = {
+    "scan_scopes": (
+        # TEXT PRIMARY KEY 列的 notnull 与 snapshots.id 同口径报 0。
+        ("scope_id", "TEXT", 0, 1), ("kind", "TEXT", 1, 0),
+        ("container_id", "TEXT", 0, 0), ("volume_group_id", "TEXT", 0, 0),
+        ("device_id", "TEXT", 0, 0), ("mount_path", "TEXT", 0, 0),
+        ("display_name", "TEXT", 0, 0), ("created_at", "TEXT", 1, 0),
+        ("last_seen_at", "TEXT", 0, 0),
+    ),
+    "scan_plans": (
+        ("plan_id", "TEXT", 0, 1), ("scope_id", "TEXT", 1, 0),
+        ("canonical_root", "TEXT", 1, 0), ("metric_version", "INTEGER", 1, 0),
+        ("min_kb", "INTEGER", 1, 0), ("exclude_names", "TEXT", 1, 0),
+        ("created_at", "TEXT", 1, 0),
+    ),
+    "scan_rounds": (
+        ("id", "INTEGER", 0, 1), ("started_at", "TEXT", 1, 0),
+        ("finished_at", "TEXT", 0, 0), ("status", "TEXT", 1, 0),
+        ("message", "TEXT", 0, 0),
+    ),
+    "scan_round_members": (
+        ("round_id", "INTEGER", 1, 1), ("seq", "INTEGER", 1, 2),
+        ("plan_id", "TEXT", 0, 0), ("scope_id", "TEXT", 0, 0),
+        ("snapshot_id", "INTEGER", 0, 0), ("snapshot_status", "TEXT", 0, 0),
+        ("status", "TEXT", 1, 0), ("started_at", "TEXT", 0, 0),
+        ("finished_at", "TEXT", 0, 0),
+    ),
+    "container_capacity_samples": (
+        ("id", "INTEGER", 0, 1), ("container_id", "TEXT", 1, 0),
+        ("total_bytes", "INTEGER", 0, 0), ("free_bytes", "INTEGER", 0, 0),
+        ("source", "TEXT", 1, 0), ("sampled_at", "TEXT", 1, 0),
+        ("round_id", "INTEGER", 0, 0),
+    ),
+}
+_IDENTITY_TABLES = frozenset(_IDENTITY_TABLE_INFO)
+_EXPECTED_TABLE_INFO_V8 = dict(
+    _EXPECTED_TABLE_INFO, **_ANALYSIS_TABLE_INFO, **_IDENTITY_TABLE_INFO
+)
 
 
 def _expected_table_info(
     version: int,
 ) -> dict[str, tuple[tuple[str, str, int, int], ...]]:
-    """指定版本下每张表的期望列结构（v7 增加分析两表，v6 增加路径分类计数）。
+    """指定版本下每张表的期望列结构。
 
-    v4/v5 保留各自结构，用于迁移链中间状态校验；v3 及更早同理。
-    v6 形态不含分析两表——它们由 6→7 迁移步骤创建。
+    v7 增加分析两表（由 6→7 步骤创建）；v8 增加身份/轮次五表与快照三个
+    身份列（由 7→8 步骤创建）。v4/v5 保留各自结构，用于迁移链中间状态
+    校验；v3 及更早同理。v6/v7 共享同一快照列集。
     """
     if version >= SCHEMA_VERSION:
+        return _EXPECTED_TABLE_INFO_V8
+    if version >= 7:
         return _EXPECTED_TABLE_INFO_V7
     if version >= 6:
-        # v6 形态：v6 快照结构 + 无分析两表（它们由 6→7 步骤创建）。
-        return _EXPECTED_TABLE_INFO
+        # v6 形态：v6/v7 快照结构 + 无分析两表（它们由 6→7 步骤创建）。
+        return dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V6)
     if version >= 5:
         return dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V5)
     if version >= 4:
@@ -259,11 +395,27 @@ _EXPECTED_FOREIGN_KEYS = {
         # agent_analyses 行，避免「清生命周期顺手删证据」的隐式通道。
         ("analysis_runs", "job_id", "job_id", "NO ACTION", "NO ACTION", "NONE"),
     ),
+    # v8（ISS-153）：身份/轮次表外键。scan_round_members.snapshot_id 用
+    # SET NULL——快照淘汰时引用自动解除，成员历史行保留；不设任何指向
+    # 分析两表的外键（已保存 AI 证据无级联删除通道）。
+    "scan_scopes": (),
+    "scan_plans": (
+        ("scan_scopes", "scope_id", "scope_id", "NO ACTION", "NO ACTION", "NONE"),
+    ),
+    "scan_rounds": (),
+    "scan_round_members": (
+        ("scan_rounds", "round_id", "id", "NO ACTION", "CASCADE", "NONE"),
+        ("snapshots", "snapshot_id", "id", "NO ACTION", "SET NULL", "NONE"),
+    ),
+    "container_capacity_samples": (),
 }
 
 _EXPECTED_WITHOUT_ROWID = {"snapshots": 0, "entries": 1, "volume_stats": 0, "scan_runs": 0,
-                           "scan_run_details": 0, "analysis_runs": 0, "agent_analyses": 0}
-_EXPECTED_AUTOINCREMENT = {"snapshots", "scan_runs", "agent_analyses"}
+                           "scan_run_details": 0, "analysis_runs": 0, "agent_analyses": 0,
+                           "scan_scopes": 0, "scan_plans": 0, "scan_rounds": 0,
+                           "scan_round_members": 0, "container_capacity_samples": 0}
+_EXPECTED_AUTOINCREMENT = {"snapshots", "scan_runs", "agent_analyses",
+                           "scan_rounds", "container_capacity_samples"}
 
 _V1_TABLES = frozenset({"snapshots", "entries", "volume_stats", "scan_runs"})
 
@@ -414,15 +566,17 @@ def _detect_schema_version(conn: sqlite3.Connection) -> int:
     """根据实际结构推断 schema 版本。
 
     旧启发式「scan_run_details 存在即 v2」在后续版本引入新列后失效——
-    snapshots 才是版本演化的承载列；v7 的承载结构是分析两表（snapshots
-    列在 v6/v7 间无差异），故先查表存在性：
-    analysis_runs+agent_analyses → 7；两分类列 → 6；exclude_names → 5；
-    vanished_count → 4；min_kb+collection_status → 3；
+    snapshots 才是版本演化的承载列；v8 的承载结构是身份/轮次五表，
+    v7 的承载结构是分析两表。判定顺序：
+    身份五表齐全 → 8；analysis_runs+agent_analyses → 7；两分类列 → 6；
+    exclude_names → 5；vanished_count → 4；min_kb+collection_status → 3；
     scan_run_details 表存在 → 2；只有 v1 表 → 1；空库 → 0。
     """
     tables = _user_tables(conn)
     if not tables:
         return 0
+    if _IDENTITY_TABLES <= tables:
+        return 8
     if {"analysis_runs", "agent_analyses"} <= tables:
         return 7
     if "snapshots" in tables:
@@ -529,6 +683,31 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """v7→v8（ISS-153）：卷/范围身份与扫描轮次兼容数据模型。
+
+    snapshots 追加三个可空关联列（plan_id/round_id/metric_version）+
+    五张身份/轮次新表。与既有迁移同口径：幂等——列与表已齐全（如
+    user_version 被手动回退）时只做结构校验，不重复追加；全部 DDL 在
+    迁移事务内执行，任何失败随事务回滚（含建到一半的表），既有数据
+    不受影响。旧行三个新列保持 NULL——legacy 身份不补造（不造真实卷
+    UUID，不与新整盘身份混比），新身份由后续接线在采集时点显式提供，
+    本步不迁移、不改写任何历史行。"""
+    tables = _user_tables(conn)
+    columns = _snapshot_column_names(conn)
+    if (_IDENTITY_TABLES <= tables
+            and {"plan_id", "round_id", "metric_version"} <= columns):
+        _validate_schema(conn, allow_missing=False,
+                         version=_detect_schema_version(conn))
+        return
+    _validate_schema(conn, allow_missing=False, version=7)
+    for ddl in _SNAPSHOT_ALTER_V8:
+        if ddl.split()[0] not in columns:
+            conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+    for statement in _IDENTITY_TABLE_STATEMENTS:
+        conn.execute(statement)
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     0: _migrate_v0,
     1: _migrate_v1,
@@ -537,6 +716,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     4: _migrate_v4,
     5: _migrate_v5,
     6: _migrate_v6,
+    7: _migrate_v7,
 }
 
 

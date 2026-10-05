@@ -1250,19 +1250,33 @@ class AnalysisManager:
                          row: dict) -> tuple[bool, str | None]:
         """历史语义（方案 §6）：新增快照不使不变的历史 a→b 报告过期；
         a/b 被同日替换/被淘汰、或原口径不能再验证时，读取层标 expired
-        并返回原因；已保存证据仍展示原日期与依据。"""
+        并返回原因；已保存证据仍展示原日期与依据。
+
+        身份隔离（ISS-153 审计返修 2）：本报告的 dataset 身份只有
+        (root, min_kb, exclude_names) 三元组，且构造事实包时已明确拒绝新
+        身份快照（见 analysis_contract._reject_new_plan_identity）——所以
+        本行的 a/b 必然是 legacy 快照。同日后继查询因此**只认 legacy
+        (plan_id IS NULL) 行**：别的 plan 即便同根同阈值同排除同一天，也不
+        是本数据集的替换证据。缺这一条就会把另一个数据集的快照说成是本报告
+        区间被替换，跨身份混读。
+
+        无同身份后继时按 ``snapshot_pruned`` 如实落：快照确已消失，只是
+        无法归因为同日替换——既有枚举里这是唯一不撒谎的形态（新增枚举值会
+        让前端 changes.js 的原因映射落到兜底文案）。"""
         for sid_column, created_column in (("a_snapshot_id", "a_created_at"),
                                            ("b_snapshot_id", "b_created_at")):
             sid = row[sid_column]
             snap = conn.execute("SELECT * FROM snapshots WHERE id=?",
                                 (sid,)).fetchone()
             if snap is None:
-                # 同日**后继**（created_at 晚于被删快照、同数据集）存在
-                # → 该位置被同日替换（create_snapshot 同日落盘行为）；
-                # 无后继 → 按保留策略淘汰。基线早于被删快照，不算替换。
+                # 同日**后继**（created_at 晚于被删快照、同数据集、同为
+                # legacy 身份）存在 → 该位置被同日替换（create_snapshot 同日
+                # 落盘行为）；无后继 → 按保留策略淘汰。基线早于被删快照，
+                # 不算替换；**其他 plan 的快照不是本数据集的后继**。
                 same_day = conn.execute(
                     "SELECT COUNT(*) c FROM snapshots WHERE root IS ? "
                     "AND min_kb IS ? AND exclude_names IS ? "
+                    "AND plan_id IS NULL "
                     "AND substr(created_at,1,10) = substr(?,1,10) "
                     "AND (created_at > ? OR (created_at = ? AND id > ?))",
                     (row["dataset_root"], row["dataset_min_kb"],

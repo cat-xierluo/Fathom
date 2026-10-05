@@ -787,3 +787,210 @@ def prune_logs(
     return _prune_files_by_date(
         config.LOGS_DIR, retention_days=days, today=reference,
     )
+
+
+# ---------------------------------------------------------------------------
+# ISS-157：容量/轮次/归因摘要查询（只读；不触发任何扫描）
+# ---------------------------------------------------------------------------
+
+def latest_rounds_with_members(conn: sqlite3.Connection, *, limit: int = 2
+                               ) -> list[dict]:
+    """读最近若干轮的基本事实 + 成员阶段计数（最新在前）。
+
+    只回显已落库的轮次/成员事实，**不**补算、不**触发**任何采集。整轮
+    跨时间如实给出：started_at/finished_at 与成员各自时刻分开呈现，绝不
+    压成一个「本轮时点」。
+    """
+    rows = conn.execute(
+        "SELECT id AS round_id, started_at, finished_at, status, message "
+        "FROM scan_rounds ORDER BY id DESC LIMIT ?", (limit,),
+    ).fetchall()
+    out = []
+    for row in rows:
+        counts = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM scan_round_members "
+            "WHERE round_id=? GROUP BY status", (row["round_id"],),
+        ).fetchall()
+        out.append({
+            "round_id": int(row["round_id"]),
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "status": row["status"],
+            "message": row["message"],
+            "member_status_counts": {c["status"]: int(c["n"]) for c in counts},
+            "atomic": False,
+            "time_note": ("成员顺序采集，各成员时刻不同；本轮不是单一原子时点。"),
+        })
+    return out
+
+
+def round_attribution(conn: sqlite3.Connection, round_id: int) -> dict:
+    """一轮的目录归因：互不重叠测量根、成员质量、stale 标记与可比较性。
+
+    红线逐条落地：
+
+    - 父子测量根不可加：``non_overlapping_roots`` 保留最外层根，子根进
+      ``absorbed_roots`` 且不参与求和；
+    - 失败成员本轮没有快照 → 其**旧有效值**只作为 ``stale`` 参考列出，
+      既不计入 ``measured_kb``，也不被当成已测；
+    - ``collection_status``（full/partial）如实透出，partial 目录不能
+      与 full 目录一样当成完整可比；
+    - 阈值/权限不产生覆盖率字段——摘要里不存在「已测占比」。
+    """
+    from . import storage
+
+    members = conn.execute(
+        "SELECT m.seq, m.plan_id, m.scope_id, m.snapshot_id, m.snapshot_status, "
+        "m.status AS member_status, m.started_at, m.finished_at, "
+        "p.canonical_root, s.display_name, s.container_id, s.kind AS scope_kind, "
+        "sn.created_at AS snapshot_created_at, sn.total_kb, "
+        "sn.collection_status, sn.dir_count, sn.denied_count "
+        "FROM scan_round_members m "
+        "LEFT JOIN scan_plans p ON p.plan_id = m.plan_id "
+        "LEFT JOIN scan_scopes s ON s.scope_id = m.scope_id "
+        "LEFT JOIN snapshots sn ON sn.id = m.snapshot_id "
+        "WHERE m.round_id=? ORDER BY m.seq", (round_id,),
+    ).fetchall()
+
+    measured_members, stale_members = [], []
+    for row in members:
+        root = row["canonical_root"]
+        entry = {
+            "seq": int(row["seq"]),
+            "plan_id": row["plan_id"],
+            "scope_id": row["scope_id"],
+            "root": root,
+            "display_name": row["display_name"],
+            "container_id": row["container_id"],
+            "member_status": row["member_status"],
+            "snapshot_id": row["snapshot_id"],
+            "snapshot_status": row["snapshot_status"],
+            "snapshot_created_at": row["snapshot_created_at"],
+            "started_at": row["started_at"],
+            "finished_at": row["finished_at"],
+            "quality": row["collection_status"],
+            "total_kb": row["total_kb"],
+        }
+        if row["snapshot_id"] is None:
+            entry["stale"] = True
+            entry["stale_note"] = ("本轮无新快照：该成员未计入本轮已测；"
+                                   "若有旧有效值只作历史参考，不当本轮贡献。")
+            stale_members.append(entry)
+        else:
+            entry["stale"] = False
+            measured_members.append(entry)
+
+    roots = [m["root"] for m in measured_members if m["root"]]
+    kept, absorbed = storage.non_overlapping_roots(roots)
+    absorbed_set = set(absorbed)
+    counted = [m for m in measured_members
+               if m["root"] in set(kept) and not m["stale"]]
+    measured_kb = None
+    if counted and len(counted) == len(measured_members) - len(
+            [m for m in measured_members if m["root"] in absorbed_set]):
+        measured_kb = sum(int(m["total_kb"] or 0) for m in counted)
+    else:
+        measured_kb = None
+
+    plan_ids = {m["plan_id"] for m in measured_members if m["plan_id"]}
+    container_ids = {m["container_id"] for m in measured_members
+                     if m["container_id"]}
+    all_full = bool(measured_members) and all(
+        m["quality"] == "full" for m in measured_members)
+
+    return {
+        "round_id": int(round_id),
+        "attribution_roots": list(kept),
+        "absorbed_roots": list(absorbed),
+        "absorb_note": ("父子测量根不可加：被吸收的子根不参与求和，"
+                        "避免同一份空间数数两遍。"),
+        "members": [dict(row) for row in members],
+        "measured_members": measured_members,
+        "stale_members": stale_members,
+        "measured_kb": measured_kb,
+        "measured_kb_note": ("只含互不重叠测量根的本轮新快照；"
+                             "存在子根被吸收时不可简单相加。"),
+        "plan_ids": sorted(plan_ids),
+        "container_ids": sorted(container_ids),
+        "all_roots_full_quality": all_full,
+        "comparable_to_previous": all_full and not stale_members,
+        "comparable_note": ("需要同主体、同计划、两侧都有效（无失败成员、"
+                            "无子根吸收）才可比；否则差额为 null。"),
+    }
+
+
+def cross_round_identity_reasons(current: dict, previous: dict) -> list[str]:
+    """比对两轮的**同主体 + 同计划**身份，返回不可比原因列表。
+
+    ISS-157 返修 B1：只查质量与 stale 是不够的——两轮即便都「全部 full、
+    无失败成员」，只要**计划集合**或**归因根集合**不同，目录测量的口径
+    就不同（换 plan/换 UUID/换根），差额没有意义。独立审查活反例：两轮
+    分别用 p1 与 p9 仍判 comparable 并给出 51,404,800 bytes 差额。
+
+    归因根集合取自**计划所挂的范围身份**（container_ids）与计划集合本身，
+    两者都必须逐项相等；任一不等即不可比并给出可读原因。
+    """
+    reasons: list[str] = []
+    cur_plans = set(current.get("plan_ids") or [])
+    prev_plans = set(previous.get("plan_ids") or [])
+    if not cur_plans or not prev_plans:
+        reasons.append("缺计划身份：跨计划快照不可比。")
+    elif cur_plans != prev_plans:
+        reasons.append(
+            "跨计划快照不可比：两轮计划集合不同"
+            f"（本轮 {sorted(cur_plans)}，前轮 {sorted(prev_plans)}）。")
+    cur_scopes = set(current.get("container_ids") or [])
+    prev_scopes = set(previous.get("container_ids") or [])
+    if cur_scopes != prev_scopes:
+        reasons.append(
+            "跨主体不可比：两轮归因范围主体不同"
+            f"（本轮 {sorted(cur_scopes)}，前轮 {sorted(prev_scopes)}）。")
+    cur_roots = set(current.get("attribution_roots") or [])
+    prev_roots = set(previous.get("attribution_roots") or [])
+    if cur_roots != prev_roots:
+        reasons.append(
+            "跨测量根集合不可比：本轮归因根与前轮不同"
+            f"（本轮 {sorted(cur_roots)}，前轮 {sorted(prev_roots)}）。")
+    return reasons
+
+
+def own_round_reasons(attribution: dict, *, label: str) -> list[str]:
+    """一轮自身的质量门原因（失败成员 / 非 full 质量 / 父子重叠根）。
+
+    ISS-157 返修 R1：质量门必须**两侧都跑**。只查本轮会让「前轮 partial、
+    本轮 full」这种最危险的组合放行——本轮质量好并不能让前一轮的基线读数
+    变有效。故提取为按轮次复用的对称检查，由调用方分别以 ``本轮`` /
+    ``前轮`` 标注，原因文本明确指出是哪一轮不合格。
+
+    ``attribution`` 为 None（该轮无归因事实）时返回一条缺事实的原因：
+    拿不到一轮的质量事实 = 该轮不可比，而不是「默认可比」。
+    """
+    if not attribution:
+        return [f"{label}无归因事实，无法确认该轮测量质量。"]
+    reasons: list[str] = []
+    if attribution.get("stale_members"):
+        reasons.append(f"{label}存在失败成员（无新快照），缺有效值。")
+    if not attribution.get("all_roots_full_quality"):
+        reasons.append(f"{label}存在非 full 质量的目录测量。")
+    if attribution.get("absorbed_roots"):
+        reasons.append(f"{label}存在父子重叠测量根，归因不可简单相加。")
+    return reasons
+
+
+def round_free_bytes(conn: sqlite3.Connection, round_id: int, *,
+                     container_id: str | None = None) -> int | None:
+    """取一轮的容器级 free（共享空间只计一次；无容器样本则 None）。
+
+    ISS-157 返修 R2：``container_capacity_samples.round_id`` 无外键，
+    同一 round_id 可能挂着**其他容器**的样本（旧实现只按 round_id 盲取，
+    会把别的容器的读数当成当前容器的）。故按传入的 ``container_id`` 过滤，
+    绑定所选容器；未给容器身份时不猜主体，返回 None（缺失不补值）。
+    """
+    if not container_id:
+        return None
+    row = conn.execute(
+        "SELECT free_bytes FROM container_capacity_samples "
+        "WHERE round_id=? AND free_bytes IS NOT NULL AND container_id=? "
+        "ORDER BY sampled_at DESC, id DESC LIMIT 1", (round_id, container_id),
+    ).fetchone()
+    return None if row is None else int(row["free_bytes"])

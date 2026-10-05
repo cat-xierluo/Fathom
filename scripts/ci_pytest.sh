@@ -88,7 +88,7 @@ expected="${EXPECTED_PYTEST_PASSED:-1407}"
 # ISS-157 +18：tests/test_storage_summary.py——容器容量与目录归因摘要（共享
 # free 只计一次/父子根不可加/差额带限制且有符号/不可比为 null/失败成员标
 # stale/整轮跨时间/不算伪覆盖率/不隐式扫描）（1426 → 1444）。
-expected="${EXPECTED_PYTEST_PASSED:-1446}"
+expected="${EXPECTED_PYTEST_PASSED:-1451}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

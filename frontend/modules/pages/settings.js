@@ -14,6 +14,8 @@
  * 计划一致性（ISS-016B）：消费 service_reload_state 四态（见下方 reloadStateInfo）；
  * 服务自身零系统写入口——drift 态的重装只经 010B autostart 确认层执行。
  *
+ * ISS-156：「范围与覆盖」作为「监控」分区内的独立面板承载（左导航保持 ISS-087
+ * 六分区不变，既有 IA 合同与 217 项前端回归依赖该结构）。
  * 信息架构（ISS-087）：左导航 + 右 section 的二分区布局——
  *   监控 / 计划与通知 / 权限 / 高级与诊断 / 关于 五个 section 互斥可见；
  *   ISS-083 折叠区原封迁入「高级与诊断」，ISS-040B 检查更新区迁入「关于」，
@@ -44,10 +46,9 @@ let lastStatusAppVersion = null;  // 最近一次 /api/status 的 app_version（
  * 高级与诊断（排障）与关于（元信息）靠后。
  * ISS-035C：「AI 分析」分区随用户级组（权限之后、高级与诊断之前）——
  * 变化页 AI 解读的引擎检测/选择/授权都在这里完成。 */
-const SETTINGS_SECTIONS = ["monitoring", "scope", "schedule", "permissions", "analysis", "advanced", "about"];
+const SETTINGS_SECTIONS = ["monitoring", "schedule", "permissions", "analysis", "advanced", "about"];
 const SETTINGS_SECTION_LABELS = {
   monitoring: "监控",
-  scope: "范围与覆盖",
   schedule: "计划与通知",
   permissions: "权限",
   analysis: "AI 分析",

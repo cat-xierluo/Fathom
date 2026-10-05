@@ -220,9 +220,11 @@ async function main() {
     });
 
     const base = `http://127.0.0.1:${port}`;
+    // 「范围与覆盖」是「监控」分区内的独立面板（ISS-156 不新增左导航项：
+    // 左导航保持 ISS-087 六分区，既有 217 项 IA 回归依赖该结构）。
     const openScope = async () => {
-      await page.goto(`${base}/#/settings/scope`, { waitUntil: "networkidle" });
-      await page.click("[data-test='settings-nav-scope']");
+      await page.goto(`${base}/#/settings/monitoring`, { waitUntil: "networkidle" });
+      await page.click("[data-test='settings-nav-monitoring']");
       await waitUntil(async () =>
         await page.isVisible("[data-test='scope-panel'] [data-test='scope-preview-btn']"),
         15000, "范围分区可见");
@@ -478,12 +480,13 @@ async function main() {
       JSON.stringify(aboutOk));
 
     /* ---- L. 键盘焦点：左导航 Tab 可达 + 方向键切换 ---- */
-    await page.click("[data-test='settings-nav-scope']");
-    await waitUntil(async () => await page.isVisible("[data-test='scope-save-btn']"), 8000, "回到范围分区");
+    await page.click("[data-test='settings-nav-scope']").catch(() => {});
+    await page.click("[data-test='settings-nav-monitoring']");
+    await waitUntil(async () => await page.isVisible("[data-test='scope-save-btn']"), 8000, "回到范围面板");
     const focusWalk = await page.evaluate(async () => {
       const nav = document.querySelector("[data-test='settings-nav']");
       const items = [...nav.querySelectorAll(".settings-nav-item")];
-      const target = items.findIndex((b) => b.dataset.section === "scope");
+      const target = items.findIndex((b) => b.dataset.section === "monitoring");
       items[target].focus();
       const focused = document.activeElement === items[target];
       items[target].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
@@ -506,7 +509,7 @@ async function main() {
     const viewports = [[980, 640], [1220, 820], [1440, 900]];
     for (const [w, h] of viewports) {
       await page.setViewportSize({ width: w, height: h });
-      await page.click("[data-test='settings-nav-scope']");
+      await page.click("[data-test='settings-nav-monitoring']");
       await sleep(350);
       const overflow = await page.evaluate(() => {
         const el = document.documentElement;

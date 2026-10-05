@@ -704,6 +704,16 @@ class TestISS064WallClockDeadline:
     time.monotonic()（睡眠期间不前进），把"14400 秒安全时限"变成
     "14400 清醒秒"，扫描挂起 7h41m 仍 running 并持锁，次日定时扫描被
     ScanBusyError 拒绝。
+
+    ISS-165：全家族时限统一放大到 5s 以消除 x86_64 CI 启动时延竞态。
+    run_du 的时限起点在 Popen 之前（scanner.py 的 started），deadline 由该值
+    计算，假 du 的 fork/exec + python -c 冷启动 + 首写落管时延全部计入预算；
+    x86 runner 高负载下该时延可达数百毫秒，逼近 0.3s 时限会使 deadline 先到、
+    partial_output 为空、报文退回 lsof 分支（#248 x86 两轮翻转实证）。本家族
+    每个用例都靠真实子进程起停，0.3/0.5s 预算留给进程启动与回收链的余量过窄，
+    5s 把余量放大到 x86 观测尾部的同一量级（ISS-165 复现 harness 观测
+    ~0.37s）。断言语义零改动：时限只是超时触发器，假 du 行为、报文分支判据
+    （末条输出路径 / lsof 目录 / 整体省略）与回收链断言均未触碰。
     """
 
     @staticmethod
@@ -737,9 +747,15 @@ class TestISS064WallClockDeadline:
 
         这里给子进程额外一条 ack 管道（与 du stdout 分离，确认过程不消耗
         du 输出）：子进程写完一条记录、flush 后立刻写 ack；DU_READY_HOOK 阻塞
-        读到 ack（或 ack 读端 EOF）才返回，run_du 之后才计算 deadline。时限
-        起点因此钉在"子进程已可产出记录"的确定性时点，partial_output 必非空，
-        lsof 分支不可达。超时判定逻辑零改动。
+        读到 ack（或 ack 读端 EOF）才返回，子进程"已可产出记录"因此早于
+        超时判定，partial_output 必非空，lsof 分支不可达。超时判定逻辑零
+        改动。
+
+        注意：run_du 的 deadline 起点 ``started`` 取自 Popen **之前**
+        （scanner.py），故这里的等待时长同样消耗时限预算，并不后移起点。
+        ISS-165 据此把本家族时限放大到 5s；ack 等待上界同步收到 3.0s，
+        严小于时限，使"子进程始终不就绪"以 TimeoutError 快速失败，
+        而非退化成 deadline 先到的空 partial_output 假红。
 
         ``hold_open=True`` 时子进程以固定间隔持续追加记录，直至超时被杀——
         模拟"仍在输出、只是慢"的真实 du；否则只写一条即 ``pause()``，对
@@ -800,7 +816,7 @@ class TestISS064WallClockDeadline:
             # 高负载下子进程可能迟迟未调度到；用墙钟限界等待，避免死等。
             # 读端 EOF（子进程已退出）也算"已就绪"——此时 partial_output 的
             # 有无由子进程是否已写出决定，不再由超时与写出的先后决定。
-            deadline = time.monotonic() + 15.0
+            deadline = time.monotonic() + 3.0
             while time.monotonic() < deadline:
                 if select.select([ack_r], [], [], 0.2)[0]:
                     try:
@@ -808,7 +824,7 @@ class TestISS064WallClockDeadline:
                     except OSError:
                         pass
                     return
-            raise TimeoutError("假 du 未在 15s 内确认就绪")
+            raise TimeoutError("假 du 未在 3s 内确认就绪")
 
         monkeypatch.setattr(scanner, "_DU_READY_HOOK", ready_hook, raising=False)
         return ack_r
@@ -819,14 +835,20 @@ class TestISS064WallClockDeadline:
         """睡眠模拟（墙钟前进、monotonic 冻结）下超时必须触发（红→绿 pin）。
 
         旧实现 deadline 只算 monotonic：冻结后 remaining 永大于 0，永不
-        超时。用 3 秒兜底取消让旧实现以"扫描已取消"失败而不是无限挂起；
-        修复后墙钟 0.5 秒即触发"du 超过 0.5 秒安全时限"。
+        超时。用 30 秒兜底取消让旧实现以"扫描已取消"失败而不是无限挂起；
+        修复后墙钟 5 秒即触发"du 超过 5 秒安全时限"。
+
+        ISS-165：时限由 0.5s 放大到 5s。started 取自 Popen 之前，子进程
+        fork/exec + python -c 冷启动时延计入预算，x86_64 高负载下该时延可
+        达数百毫秒——逼近 0.5s 时 deadline 先到，elapsed 直接冲破下方 2.5s
+        上界假红。兜底取消同步放到 30s、上界同步放到 7s，保持"墙钟先于兜底
+        取消触发"的钉住语义并把负载余量从 2s 放大到 25s。
         """
         root = tmp_path / "root"
         root.mkdir()
         fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
         cancel = threading.Event()
-        cancel_net = threading.Timer(3.0, cancel.set)  # 旧实现的兜底退出
+        cancel_net = threading.Timer(30.0, cancel.set)  # 旧实现的兜底退出
         cancel_net.daemon = True
         cancel_net.start()
         monkeypatch.setattr(scanner, "time", _SleepSimClock)
@@ -837,22 +859,25 @@ class TestISS064WallClockDeadline:
         started = _REAL_TIME.monotonic()
         try:
             with scanner.du_process_context(
-                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.5
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=5.0
             ):
                 with pytest.raises(
-                    scanner.ScanInterruptedError, match="du 超过 0.5 秒安全时限"
+                    scanner.ScanInterruptedError, match="du 超过 5 秒安全时限"
                 ):
                     scanner.run_du(root)
         finally:
             cancel_net.cancel()
             os.close(fd)
-        # 墙钟 0.5s 触发 + 回收，全程有界；远早于 3s 兜底取消。
-        assert _REAL_TIME.monotonic() - started < 2.5
+        # 墙钟 5s 触发 + 回收，全程有界；远早于 30s 兜底取消。
+        assert _REAL_TIME.monotonic() - started < 7.0
         with pytest.raises(ProcessLookupError):
             os.kill(child_pids[0], 0)
 
     def test_timeout_message_carries_last_output_path(self, tmp_path, monkeypatch):
-        """du 已有输出后阻塞：超时报文须带最后一条输出记录的路径线索。"""
+        """du 已有输出后阻塞：超时报文须带最后一条输出记录的路径线索。
+
+        ISS-165：时限由 0.3s 放大到 5s，末条输出路径判据不变。
+        """
         root = tmp_path / "root"
         root.mkdir()
         fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
@@ -872,7 +897,7 @@ class TestISS064WallClockDeadline:
         )
         try:
             with scanner.du_process_context(
-                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.3
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=5.0
             ):
                 with pytest.raises(scanner.ScanInterruptedError) as excinfo:
                     scanner.run_du(root)
@@ -880,7 +905,7 @@ class TestISS064WallClockDeadline:
             os.close(fd)
             os.close(ack_fd)
         message = str(excinfo.value)
-        assert "du 超过 0.3 秒安全时限" in message
+        assert "du 超过 5 秒安全时限" in message
         assert "du 最后输出路径：/synthetic/du-last-output-dir" in message
         # 已有输出线索时不得再花 lsof 的 2 秒预算。
         assert lsof_calls == []
@@ -888,7 +913,10 @@ class TestISS064WallClockDeadline:
             os.kill(child_pids[0], 0)
 
     def test_timeout_message_falls_back_to_lsof_cwd(self, tmp_path, monkeypatch):
-        """du 无输出阻塞：报文退回 lsof 只读查询的当前目录线索。"""
+        """du 无输出阻塞：报文退回 lsof 只读查询的当前目录线索。
+
+        ISS-165：时限由 0.3s 放大到 5s，lsof 回退分支判据不变。
+        """
         root = tmp_path / "root"
         root.mkdir()
         fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
@@ -906,20 +934,23 @@ class TestISS064WallClockDeadline:
         monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: fake_lsof)
         try:
             with scanner.du_process_context(
-                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.3
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=5.0
             ):
                 with pytest.raises(scanner.ScanInterruptedError) as excinfo:
                     scanner.run_du(root)
         finally:
             os.close(fd)
         message = str(excinfo.value)
-        assert "du 超过 0.3 秒安全时限" in message
+        assert "du 超过 5 秒安全时限" in message
         assert "du 当前目录（lsof）：/synthetic/wps/container" in message
         with pytest.raises(ProcessLookupError):
             os.kill(child_pids[0], 0)
 
     def test_timeout_message_omits_clue_when_lsof_fails(self, tmp_path, monkeypatch):
-        """线索不可得（lsof 超时/失败）时整体省略，报文保持基线文案。"""
+        """线索不可得（lsof 超时/失败）时整体省略，报文保持基线文案。
+
+        ISS-165：时限由 0.3s 放大到 5s，整体省略判据与基线文案结构不变。
+        """
         root = tmp_path / "root"
         root.mkdir()
         fd = os.open(tmp_path / "scan.lock", os.O_CREAT | os.O_RDWR, 0o600)
@@ -933,7 +964,7 @@ class TestISS064WallClockDeadline:
         monkeypatch.setattr(scanner.subprocess, "run", lsof_times_out)
         try:
             with scanner.du_process_context(
-                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.3
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=5.0
             ):
                 with pytest.raises(scanner.ScanInterruptedError) as excinfo:
                     scanner.run_du(root)
@@ -941,7 +972,7 @@ class TestISS064WallClockDeadline:
             os.close(fd)
         # ISS-070：线索全不可得时报文只保留基线 + 进度条数（此处 du 未产出
         # 任何记录，故为 0——正是"卡住不推进"的形态）。
-        assert str(excinfo.value) == "du 超过 0.3 秒安全时限；已产出 0 条记录"
+        assert str(excinfo.value) == "du 超过 5 秒安全时限；已产出 0 条记录"
         with pytest.raises(ProcessLookupError):
             os.kill(child_pids[0], 0)
 
@@ -953,6 +984,10 @@ class TestISS064WallClockDeadline:
 
         生产反例形态：du 卡在 open$NOCANCEL 上不退出也不响应 TERM——
         回收链必须是 TERM → wait(3s) → KILL → wait，不得挂起等待。
+
+        ISS-165：时限由 0.3s 放大到 5s，TERM 3 秒宽限与回收链判据未动；
+        上下界按 5s 时限 + 3s 宽限同步平移（8.0 ≤ elapsed < 11.0），
+        仍证明确实走了宽限路径且回收有界完成。
         """
         root = tmp_path / "root"
         root.mkdir()
@@ -969,10 +1004,10 @@ class TestISS064WallClockDeadline:
         started = _REAL_TIME.monotonic()
         try:
             with scanner.du_process_context(
-                inherited_fd=fd, cancel_event=cancel, timeout_seconds=0.3
+                inherited_fd=fd, cancel_event=cancel, timeout_seconds=5.0
             ):
                 with pytest.raises(
-                    scanner.ScanInterruptedError, match="du 超过 0.3 秒安全时限"
+                    scanner.ScanInterruptedError, match="du 超过 5 秒安全时限"
                 ):
                     scanner.run_du(root)
         finally:
@@ -980,6 +1015,6 @@ class TestISS064WallClockDeadline:
         elapsed = _REAL_TIME.monotonic() - started
         # TERM 被忽略 → 3 秒宽限 → KILL；下界证明确实走了宽限路径，
         # 上界证明回收有界完成（没有无限等待 du 退出）。
-        assert 3.0 <= elapsed < 6.0
+        assert 8.0 <= elapsed < 11.0
         with pytest.raises(ProcessLookupError):
             os.kill(child_pids[0], 0)  # 无孤儿：进程组已彻底回收

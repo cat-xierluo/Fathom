@@ -152,7 +152,14 @@ def _scan_scopes(args: argparse.Namespace) -> list[scan_coordinator.ScopeSpec]:
 
 def cmd_scan(args: argparse.Namespace) -> int:
     config.ensure_runtime_dirs()
-    scopes = _scan_scopes(args)
+    try:
+        scopes = _scan_scopes(args)
+    except scan_coordinator.ScanScopeError as exc:
+        # ISS-155：范围参数自身的错配（如 --scope-id 与 --scope 不一一对应）
+        # 是**用法错误**，与 --root 互斥同属 exit 1。此前这里直接抛到解释器
+        # 顶层，用户看到的是 traceback 而不是可读原因。
+        print(str(exc), file=sys.stderr)
+        return 1
     root = Path(args.root).expanduser() if args.root else config.DEFAULT_ROOT
     source = args.source
     if source is None:

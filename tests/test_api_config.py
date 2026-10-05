@@ -565,3 +565,87 @@ def test_api_snapshots_exclude_names_is_snapshot_not_live_config(client):
     rows = client.get("/api/snapshots").json()
     # 快照行如实返回自己的采集掩码，不受当前配置影响。
     assert rows[0]["exclude_names"] == "*.oldmask"
+
+
+# ---------- ISS-155 续作：storage_scope 配置往返（既有风格对齐） ----------
+#
+# 沿用上方 test_put_config_survives_process_restart 的**子进程重启往返**风格：
+# 写入后用干净 env 起新进程读回，证明 storage_scope 真的落盘并被重新解析，
+# 而不只是活在当前进程的内存里。范围选择**不自动启用**、旧库零迁移，因此
+# 往返后 legacy 字段（scan_root/min_kb…）必须逐字不变。
+
+def _fresh_env(runtime):
+    env = dict(os.environ)
+    for name in ("FATHOM_SCAN_ROOT", "FATHOM_RUNTIME_DIR", "FATHOM_DB",
+                 "FATHOM_PORT", "FATHOM_RUNTIME_MODE", "FATHOM_RESOURCE_DIR",
+                 "FATHOM_EXCLUDE_NAMES"):
+        env.pop(name, None)
+    env["FATHOM_RUNTIME_DIR"] = str(runtime)
+    return env
+
+
+def _readback(code, runtime):
+    proc = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT,
+                          env=_fresh_env(runtime), capture_output=True,
+                          text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_get_config_reports_storage_scope_disabled_by_default(client):
+    """未落盘时 GET /api/config 明示 storage_scope=null（不静默启用）。"""
+    body = client.get("/api/config").json()
+    scope = body["storage_scope"]
+    # 既有读面形态：未落盘时是 enabled=False 的视图对象（不是 null），
+    # 旧前端读不到 selection 字段即回落旧单根口径。
+    assert scope["enabled"] is False
+    assert scope["source"] == "default"
+    assert scope.get("roots") in (None, [])
+
+
+def test_storage_scope_survives_process_restart(client, tmp_path):
+    """保存范围 → 子进程重启 → 读回同一范围与 revision。"""
+    vol = tmp_path / "vol-a"
+    vol.mkdir()
+    assert client.put("/api/storage/scope", json={
+        "mode": "custom_directory", "roots": [str(vol)],
+        "scope_ids": ["apfs-volume:fake-1"],
+    }).status_code == 200
+    runtime = config.get_runtime_config().runtime_dir
+    got = _readback(
+        "import json\n"
+        "from fathom import config\n"
+        "config.refresh_user_settings(config.load_user_settings("
+        "config.settings_path()))\n"
+        "s = config.effective_scope_selection()\n"
+        "print(json.dumps({'enabled': config.scope_enabled(),"
+        " 'scope': None if s is None else s.as_dict()},"
+        " ensure_ascii=False))\n",
+        runtime)
+    assert got["enabled"] is True
+    assert got["scope"]["mode"] == "custom_directory"
+    assert got["scope"]["roots"] == [str(vol)]
+    assert got["scope"]["scope_ids"] == ["apfs-volume:fake-1"]
+
+
+def test_storage_scope_absent_keeps_legacy_fields_byte_identical(client, tmp_path):
+    """旧库（无 storage_scope 键）往返后 legacy 字段逐字不变，零迁移零报错。"""
+    assert client.put("/api/config", json={
+        "scan_time": "06:45", "min_kb": 128, "free_alert_gb": 4.5,
+    }).status_code == 200
+    runtime = config.get_runtime_config().runtime_dir
+    got = _readback(
+        "import json\n"
+        "from fathom import config\n"
+        "config.refresh_user_settings(config.load_user_settings("
+        "config.settings_path()))\n"
+        "print(json.dumps({'scope_enabled': config.scope_enabled(),"
+        " 'scan_time': f'{config.SCAN_HOUR:02d}:{config.SCAN_MINUTE:02d}',"
+        " 'min_kb': config.MIN_DIR_KB, 'free_alert_gb': config.FREE_ALERT_GB},"
+        " ensure_ascii=False))\n",
+        runtime)
+    assert got == {"scope_enabled": False, "scan_time": "06:45",
+                   "min_kb": 128, "free_alert_gb": 4.5}
+    # 旧 settings.json 不应被补写 storage_scope 键（零迁移：不改旧库形状）。
+    raw = json.loads((runtime / "settings.json").read_text())
+    assert "storage_scope" not in raw

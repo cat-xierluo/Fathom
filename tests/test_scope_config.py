@@ -32,7 +32,7 @@ from typing import Sequence
 import pytest
 from fastapi.testclient import TestClient
 
-from fathom import api, config, storage
+from fathom import analysis_contract, api, config, db, storage
 
 
 @dataclass(frozen=True)
@@ -409,3 +409,225 @@ class TestLegacyOverridesCoexist:
         view = config.effective_settings_view()
         assert view["scan_root"] == str(tmp_path / "scanroot")
         assert view["sources"]["scan_root"] == "env"
+
+
+# ---------- 8. 新身份消费者的显式拒绝（ISS-155 续作） ----------
+#
+# 任务卡消费者兼容：「snapshots 分组展示旧 HOME 与新身份，跨口径
+# diff/trend/tree 明确拒绝」「大文件/reveal 仅允许已选择的规范范围内当前
+# 路径」「AI 事实/预览对不支持的多范围聚合明确禁用」。
+#
+# ISS-153 起的范围快照带 plan_id（新身份）。旧三元组身份
+# (root, min_kb, exclude_names) **无法区分同一目录在不同计划下的两次采集**，
+# 拿它读新身份行会静默产出「看起来可比、实际口径不同」的折线/排名。
+# 本组把该缺口从隐性失真变成显式拒绝；legacy 行行为逐字节不变。
+
+def _insert_snapshot(conn, *, path_root, plan_id, created_at, sid_hint=None):
+    """插入一个快照（可选带 entries）。plan_id=None 即 legacy 行。"""
+    root = str(path_root)
+    cur = conn.execute(
+        """INSERT INTO snapshots
+             (created_at, root, dir_count, denied_count, du_seconds, total_kb,
+              plan_id)
+           VALUES (?, ?, 1, 0, 0.1, 1024, ?)""",
+        (created_at, root, plan_id),
+    )
+    sid = cur.lastrowid
+    conn.execute("INSERT INTO entries (snapshot_id, path, size_kb) VALUES (?, ?, ?)",
+                 (sid, f"{root}/dir", 1024))
+    # 必须提交：API 端点每次 _get_conn() 开**新连接**，未提交的写对它不可见
+    # （WAL 下同样不可见）——不 commit 会让读端点返回 404 而非本文断言的 409。
+    conn.commit()
+    return sid
+
+
+class TestNewIdentityRejection:
+    """diff / trend / children 遇新身份快照必须 409，不静默 legacy 解读。"""
+
+    def test_diff_rejects_new_identity(self, client, tmp_path):
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-05T10:00:00+00:00")
+        finally:
+            conn.close()
+        resp = client.get("/api/diff", params={"a": a, "b": b})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+
+    def test_diff_children_rejects_new_identity(self, client, tmp_path):
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-05T10:00:00+00:00")
+        finally:
+            conn.close()
+        resp = client.get("/api/diff/children", params={"a": a, "b": b})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+
+    def test_trend_anchor_rejects_new_identity(self, client, tmp_path):
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-04T10:00:00+00:00")
+        finally:
+            conn.close()
+        resp = client.get("/api/trend", params={
+            "path": f"{root}/dir", "anchor_snapshot_id": a})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+
+    def test_trend_legacy_call_rejects_new_identity(self, client, tmp_path):
+        """旧形态（无显式锚）命中新身份快照同样拒绝，不得混读成折线。"""
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                             created_at="2026-10-05T10:00:00+00:00")
+        finally:
+            conn.close()
+        resp = client.get("/api/trend", params={"path": f"{root}/dir"})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+
+    def test_legacy_snapshots_still_readable(self, client, tmp_path):
+        """反例对照：plan_id 为 NULL 的 legacy 快照三个读端点全部 200。"""
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id=None,
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id=None,
+                                 created_at="2026-10-05T10:00:00+00:00")
+        finally:
+            conn.close()
+        assert client.get("/api/diff", params={"a": a, "b": b}).status_code == 200
+        assert client.get("/api/diff/children",
+                          params={"a": a, "b": b}).status_code == 200
+        trend = client.get("/api/trend", params={
+            "path": f"{root}/dir", "anchor_snapshot_id": a})
+        assert trend.status_code == 200
+        assert trend.json()["dataset"]["root"] == str(root)
+
+
+class TestBigfilesNewIdentitySeam:
+    """ISS-150 预留接缝：范围启用后 bigfiles 显式拒绝（缓存键缺 scope_id）。"""
+
+    def test_bigfiles_rejected_under_selected_scope(self, client, tmp_path):
+        a = tmp_path / "vol-a"
+        a.mkdir()
+        assert _select(client, [a]).status_code == 200
+        resp = client.get("/api/bigfiles", params={"wait": "false"})
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert detail["code"] == "plan_identity_unsupported"
+        assert detail["selected_roots"] == [str(a)]
+
+    def test_bigfiles_unchanged_without_scope(self, client, tmp_path):
+        """反例对照：未启用范围（旧口径）时 bigfiles 不被新闸门拦截。"""
+        resp = client.get("/api/bigfiles", params={"wait": "false"})
+        assert resp.status_code != 409
+        assert resp.status_code in (200, 202)
+
+    def test_reveal_still_allows_selected_root(self, client, tmp_path):
+        """对照：reveal 逐路径判定，多范围天然支持，不受 bigfiles 闸门影响。"""
+        a = tmp_path / "vol-a"
+        a.mkdir()
+        assert _select(client, [a]).status_code == 200
+        assert config.effective_scope_selection().roots == (str(a),)
+        rejected = client.post("/api/reveal",
+                               json={"path": str(tmp_path / "vol-evil")})
+        assert rejected.status_code == 400
+
+
+class TestAnalysisPlanIdentityDisabled:
+    """AI 事实包对多范围（新身份）聚合明确禁用（analysis_contract 闸门）。"""
+
+    def test_facts_package_rejects_new_identity(self, tmp_path):
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-05T10:00:00+00:00")
+            with pytest.raises(analysis_contract.AnalysisContractError) as exc:
+                analysis_contract.build_facts_package(conn, a, b)
+            assert exc.value.reason_code == "plan_identity_unsupported"
+        finally:
+            conn.close()
+
+    def test_legacy_facts_package_still_builds(self, tmp_path):
+        """反例对照：legacy 两侧照常构造事实包（受支持的单范围分析保留）。"""
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id=None,
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id=None,
+                                 created_at="2026-10-05T10:00:00+00:00")
+            facts = analysis_contract.build_facts_package(conn, a, b)
+            assert facts is not None
+        finally:
+            conn.close()
+
+
+# ---------- 9. CLI 多范围消费者（ISS-155 续作） ----------
+#
+# ``scan --scope``（可重复）/ ``--scope-id`` 与 ``--root`` 互斥是既有
+# ISS-154 行为；本组把「显式多范围消费者」钉成回归，并补上此前
+# ``_scan_scopes`` 抛错未被 cmd_scan 捕获时的 exit 1 缺口（此前是
+# traceback，不是可读原因 + exit 1）。
+
+def _run_cli(args, runtime, scanroot, home):
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(home),
+        "FATHOM_RUNTIME_DIR": str(runtime),
+        "FATHOM_SCAN_ROOT": str(scanroot),
+    }
+    return subprocess.run(
+        [sys.executable, "-m", "fathom", *args],
+        capture_output=True, text=True, env=env, cwd=str(Path(__file__).parent.parent),
+    )
+
+
+class TestCliScopeConsumer:
+    def test_scope_and_root_together_exit_1(self, tmp_path):
+        runtime, scanroot = tmp_path / "runtime", tmp_path / "scanroot"
+        vol = tmp_path / "vol-a"
+        for d in (runtime, scanroot, vol):
+            d.mkdir(exist_ok=True)
+        proc = _run_cli(["scan", "--scope", str(vol), "--root", str(scanroot)],
+                        runtime, scanroot, tmp_path / "home")
+        assert proc.returncode == 1, proc.stderr
+        assert "不能同时给出" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_scope_id_mismatch_exit_1(self, tmp_path):
+        """--scope-id 与 --scope 错位：用法错误 → exit 1 且可读（非 traceback）。"""
+        runtime, scanroot = tmp_path / "runtime", tmp_path / "scanroot"
+        vol_a, vol_b = tmp_path / "vol-a", tmp_path / "vol-b"
+        for d in (runtime, scanroot, vol_a, vol_b):
+            d.mkdir(exist_ok=True)
+        proc = _run_cli(
+            ["scan", "--scope", str(vol_a), "--scope", str(vol_b),
+             "--scope-id", "only-one"],
+            runtime, scanroot, tmp_path / "home")
+        assert proc.returncode == 1, proc.stderr
+        assert "一一对应" in proc.stderr
+        assert "Traceback" not in proc.stderr
+
+    def test_help_documents_scope_flags(self):
+        proc = _run_cli(["scan", "--help"], *(Path("/tmp") for _ in range(3)))
+        assert proc.returncode == 0
+        assert "--scope" in proc.stdout
+        assert "--scope-id" in proc.stdout

@@ -112,13 +112,32 @@ const SEED_PY = `"""ISS-151 浏览器回归种子：受控文件树 + 合成快�
 - vault/many/f*.img               210 个 150MB 稀疏文件（topn=200 截断）
 - vault/中文 目录/带 空格.bin      120MB（路径转义）
 - vault/moved/keep.bin            130MB（查询后移走 → 404 无法定位）
-- vault/slow/d###/f*.bin          90000 个 0 字节（拖长 find 在途窗口，
-  供句柄取消/离开取消/中止边界三类场景；取消类场景共用，排序在前的
-  场景吃冷遍历，后继场景即便目录项缓存变热仍显著长于取消延迟）
+- vault/slow/c{0..7}/d###/f*.bin  72 万+ 0 字节目录项（拖长 find 在途窗口，
+  供离开取消/改范围取消/手动取消/中止边界四类场景共用）
+- .slow-tpl/                      slow 的构建模板（450×100 真实文件 +
+  APFS clonefile 克隆 8 份；构建后保留，find 查询域只针对 vault 子目录）
+
+slow 加肥依据（ISS-151 CI 确定性修复，实测 arm64 本机）：
+- 90k 项（旧夹具）热遍历仅 0.57-0.74s，而取消链路（提交 → 202+渲染 →
+  POLL_MS=800 首轮轮询不必等、按钮即现 → click → POST cancel）实测约
+  0.3-1.5s——CI runner 上第三次热遍历（手动取消段）会被链路反超，
+  取消落在终态后 state=no_match，实证复现。
+- 72 万项（8×90k APFS 克隆，clonefile 8 份约 15s，远快于逐文件创建）
+  遍历首跑实测 7.53s（fixture-seed-ok 回显），≥2s 合同底线由脚本断言
+  把关，对取消链路 0.3-1.5s 有 5 倍以上余量；套件总耗时与旧 90k 夹具
+  基本持平（clonefile 抵消，本机实测 74.0s vs 基线 73.4s）。
+  36 万方案连跑实测 1.63-3.76s，跨 run 会跌破 2s 底线、对取消链路
+  0.3-1.5s 只余 1.1 倍余量（自证断言当场拦截），故弃用；54 万带载
+  实测 2.5-15s，同样贴线。72 万在断言底线之上留出跨 run 波动余量，
+  代价是种子 +~20s 与 J/K 段遍历变长（K 段预算已放宽到 90s）。
+- 种子内自证一遍 find（find_sec 回传，脚本断言 find_sec ≥ 2.0；本机实测
+  该夹具冷 15.3s / 热 14.9s 几乎无差，单遍既是预热也是测量）。自证顺带
+  预热目录项缓存：四类场景全部吃热缓存，确定性由「72 万项遍历
+  ≥2s（断言）>> 取消链路 ≈1s」的规模差保证，不依赖冷/热时序运气。
 
 DB 快照：decoy(#1,#2) 旧数据集；vault(#3,#4) 最新数据集（详情历史口径）。
 """
-import json, os, sqlite3, sys, time
+import ctypes, ctypes.util, json, os, shutil, sqlite3, subprocess, sys, time
 
 assert os.environ.get("FATHOM_RUNTIME_DIR", "").startswith(sys.argv[1]), "拒绝在非隔离运行根运行"
 
@@ -151,12 +170,37 @@ sparse("vault/中文 目录/带 空格.bin", 120 * 1024 * 1024, now)
 sparse("vault/moved/keep.bin", 130 * 1024 * 1024, now)
 for i in range(210):
     sparse(f"vault/many/f{i:03d}.img", 150 * 1024 * 1024, now)
-os.makedirs(os.path.join(vault, "slow"), exist_ok=True)
+# slow 目录：模板 450×200 真实 0 字节文件，再 APFS clonefile 克隆 8 份到
+# slow/c0..c7（72 万+ 目录项）。clonefile 不可用（非 APFS 卷）时 fail-fast，
+# 不静默退回小夹具——那会让取消类用例重新落入 CI 时序竞争。
+TPL = os.path.join(scanroot, ".slow-tpl")
+os.makedirs(TPL, exist_ok=True)
 for d in range(450):
-    p = os.path.join(vault, "slow", f"d{d:03d}")
+    p = os.path.join(TPL, f"d{d:03d}")
     os.makedirs(p, exist_ok=True)
     for i in range(200):
         open(os.path.join(p, f"f{i:05d}.bin"), "wb").close()
+
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+slow = os.path.join(vault, "slow")
+os.makedirs(slow, exist_ok=True)
+SLOW_CLONES = 8
+for k in range(SLOW_CLONES):
+    dst = os.path.join(slow, "c%d" % k)
+    if _libc.clonefile(TPL.encode(), dst.encode(), 0) != 0:
+        err = ctypes.get_errno()
+        raise SystemExit(
+            "clonefile(%s) 失败 errno=%d：非 APFS 卷无法构建加肥夹具，"
+            "取消类用例失去确定性前提" % (dst, err))
+
+# 加肥自证：按服务同一 find 口径（recent/-mtime -7 + min 100MB -size）跑一遍，
+# 既是预热也是测量（本机实测该夹具冷热差异 <5%）；find_sec 由脚本断言 ≥ 2.0s。
+FIND = shutil.which("find") or "/usr/bin/find"
+FIND_ARGS = [FIND, slow, "-mtime", "-7", "-size", "+104857600c", "-print0"]
+t_find = time.monotonic()
+subprocess.run(FIND_ARGS, stdout=subprocess.DEVNULL, check=True)
+find_sec = time.monotonic() - t_find
+slow_entries = SLOW_CLONES * (450 * 200 + 450) + SLOW_CLONES
 
 def insert(conn, day, root, entries, min_kb=1024):
     cur = conn.execute(
@@ -195,6 +239,8 @@ def main(tmp):
     print(json.dumps({
         "ids": ids, "scanroot": scanroot,
         "scope_version": config.BIGFILE_SCOPE_VERSION,
+        "slow_entries": slow_entries,
+        "slow_find_sec": round(find_sec, 2),
     }), flush=True)
 
 main(sys.argv[1])
@@ -229,7 +275,7 @@ async function main() {
   record("fixture-runtime-isolated", runtimeDir.startsWith(os.tmpdir()) && scanRoot.startsWith(os.tmpdir()),
     `${runtimeDir}`);
 
-  process.stderr.write("种子创建中（50000 文件，约 1-2 分钟）…\n");
+  process.stderr.write("种子创建中（90000 真实文件 + clonefile 加肥 slow 至 72 万目录项，约 1-2 分钟）…\n");
   const seed = spawn(PY, [seedPath, tmp], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
   const seedOut = await new Promise((resolve, reject) => {
     let buf = "";
@@ -240,9 +286,14 @@ async function main() {
   const seedInfo = JSON.parse(seedOut.trim().split("\n").filter((l) => l.startsWith("{")).pop());
   const SR = seedInfo.scanroot;
   const SV = seedInfo.scope_version;
+  // 加肥自证并入 fixture-seed-ok（不新增用例数，CI 门禁按 36 计数）：
+  // 夹具规模与遍历时长是取消类用例「取消点击时 find 仍在飞」的
+  // 确定性前提，退化即 fail-fast，不许静默竞争。
   record("fixture-seed-ok",
-    seedInfo.ids.v_a === 3 && seedInfo.ids.v_b === 4 && seedInfo.scope_version === 1,
-    `ids=${JSON.stringify(seedInfo.ids)} sv=${SV}`);
+    seedInfo.ids.v_a === 3 && seedInfo.ids.v_b === 4 && seedInfo.scope_version === 1 &&
+      seedInfo.slow_entries >= 720000 && seedInfo.slow_find_sec >= 2.0,
+    `ids=${JSON.stringify(seedInfo.ids)} sv=${SV} ` +
+      `slow=${seedInfo.slow_entries}项 find=${seedInfo.slow_find_sec}s`);
   const real = (p) => fs.realpathSync(p);
   const taskOf = (dir, mode, days, minMb, topn) =>
     taskIdFor(real(dir), mode, days, minMb, topn, SV);
@@ -557,13 +608,17 @@ async function main() {
     }
 
     /* ---- 慢目录公共前置：recent 键与句柄计算（J/I/K 三段共用） ---- */
+    // 加肥后 slow 为 72 万目录项，种子自证遍历 ≥2s（断言把关），
+    // 远长于取消链路（提交 → 按钮渲染 → click/POST ≈ 0.3-1.5s）。
+    // 种子自证已预热目录项缓存，三段取消场景全部吃热缓存——
+    // 「取消点击时 find 仍在飞」由规模差保证，不依赖冷/热时序运气
+    // （旧 90k 夹具热遍历仅 ~0.6s，CI 上手动取消段被链路反超，实证）。
     const slowDir = `${SR}/vault/slow`;
     const slowTask = () => taskOf(slowDir, "recent", 7, 100, 200);
     await page.selectOption("#bf-mode", "recent");  // 与 slowTask 键一致
 
     /* ---- J. 离开查询面真实取消（服务端收敛；POST 可数） ---- */
-    // 提交后立即离开（不等待任何状态）：取消走引擎的离开钩子，延迟最小化；
-    // 本段是慢目录的第一次遍历（冷缓存，find 明显长于取消延迟）
+    // 提交后立即离开（不等待任何状态）：取消走引擎的离开钩子，延迟最小化
     await page.fill("#bf-path", slowDir);
     await page.click("#btn-bigfiles");
     const cancelPostsBefore = apiCounts.cancel;
@@ -576,7 +631,8 @@ async function main() {
     /* ---- I. 双目录并发取消不误伤（慢目录在途，句柄级取消） ---- */
     await page.click('a[data-page="bigfiles"]');  // J 已离开，回到大文件页
     // A 提交后立即改查 many（不等待中间状态）：改范围按 A 句柄静默取消，
-    // B 不受影响——句柄级取消的「不误伤」由此断言
+    // B 不受影响——句柄级取消的「不误伤」由此断言（A 的提交→改范围窗口
+    // 仅 ~0.3s，加肥后 A 遍历 ≥2s（断言把关），取消必然落在在飞窗口）
     await page.fill("#bf-path", slowDir);
     await page.click("#btn-bigfiles");
     await page.fill("#bf-path", `${SR}/vault/many`);
@@ -589,7 +645,9 @@ async function main() {
       `A=${aCancelled.state} cancelPosts=${apiCounts.cancel}`);
 
     // 手动取消按钮：慢目录再次查询 → 点取消 → UI「已取消」+ 服务端收敛
-    // （用选择器点击而非句柄：运行态每次 emit 会重画 tbody，句柄会失连）
+    // （用选择器点击而非句柄：运行态每次 emit 会重画 tbody，句柄会失连；
+    // 本段是 CI 上实证被 90k 夹具热遍历反超的场景，加肥后遍历 ≥2s（断言把关），
+    // waitForSelector+click 链路 ~1s 内必然落在在飞窗口）
     await page.fill("#bf-path", slowDir);
     await page.click("#btn-bigfiles");
     await page.waitForSelector("[data-test='bigfiles-cancel']", { timeout: 8000 });
@@ -619,7 +677,10 @@ async function main() {
       await sleep(120);
       ac.abort();
       await aborted;
-      const fin = await pollStatus(taskId, (s) => s.terminal, 25000, "K 终态");
+      // K 是套件内唯一等待 find 自然完成（不取消）的场景：加肥后 72 万项
+      // 遍历显著变长（CI 更慢、忙时更长），预算从 25s 放宽到 90s；断言不变
+      // （中止不得产生 cancelled 终态）。
+      const fin = await pollStatus(taskId, (s) => s.terminal, 90000, "K 终态");
       record("boundary-browser-abort-does-not-cancel-server-find",
         fin.state !== "cancelled", `终态=${fin.state}（取消不应由中止触发）`);
     }

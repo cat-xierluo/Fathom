@@ -87,7 +87,7 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 | POST | /api/bigfiles/cancel | 需 `X-Fathom-Token`；body 只收 `{"task_id": ...}`（严格拒绝未知字段），只取消该句柄的 find 进程组（SIGTERM→SIGKILL，只回收自有进程）；已取消/已完成幂等 200 且状态如实，未知 404；句柄即凭证，越权面由写令牌闸门承担 |
 | POST | /api/scan | 需 `X-Fathom-Token`；先取得跨进程 `flock` 再落 running；冲突 409；成功返回 run_id；线程启动失败 503 并释放租约 |
 | GET | /api/scan/status?history= | 返回最新统一状态、source/phase/snapshot/report/notification/pruned/warnings；history=1..100 附 API/CLI/定时运行 |
-| GET | /api/browse?path= | 最新快照子目录、同数据集前驱差值、趋势、面包屑；无基线时 delta_kb=null、is_new=false |
+| GET | /api/browse?path=&snapshot_id=&cursor=&limit= | 目录子目录、同数据集前驱差值、趋势、面包屑；无基线时 delta_kb=null、is_new=false。缺省 snapshot_id 恒绑最新快照（旧行为）；显式 snapshot_id（ISS-159）以所选快照身份约束路径，主读数只指该快照（measured/structural，不填 0），与前一可比快照的差分仅为次级且 comparison 显式携带基线（单快照或跨口径为 null），直属子目录稳定分页（游标绑定快照/路径），质量字段随快照返回；快照不存在或路径无记录 404 |
 | GET | /api/reports | reports/*.md 文件列表 |
 | GET | /api/reports/{date} | 仅接受完整 `YYYY-MM-DD` 片段，返回对应 Markdown 原文；不存在时 404 |
 | POST | /api/reveal | 需 `X-Fathom-Token`；只接受对象 JSON；规范化并解析路径后校验位于受监控根内、实际存在，再调用 `/usr/bin/open -R`；拒绝利用 `..` 越界、符号链接逃逸和相似前缀根 |

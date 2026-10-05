@@ -54,6 +54,10 @@
 # ISS-143 目录详情历史首/中/末点真实鼠标悬停再增 3 项=217。
 # ISS-149 树形套件 +14：trend 锚定窗口/缺测 null/排除隔离/等价表格
 # 键盘读数/真实悬停缺测标注/a-b 迟到响应不恢复旧曲线（60 → 74）。
+# ISS-159 新增分布页显式快照绑定回归（verify_browse_snapshot_frontend，
+# EXPECTED_BROWSE_SNAPSHOT_PASSED 默认 33）：真实 serve + 真实 Chromium，
+# HTTP 层旧行为形态/历史实点/次级差分/404 语义 + 页面层快照选择/结构
+# 节点/HTML 转义/单时点详情/恢复/分页/三视口。
 # verify 脚本自身任一检查失败都会以非零退出（pipefail 直通，不走门禁
 # 兜底），计数门禁只拦空跑与静默漂移。
 set -euo pipefail
@@ -181,3 +185,13 @@ assert_result_json "$tree_out" "$expected_tree" "tree changes frontend"
 FATHOM_PYTHON="$tree_python" node scripts/verify_directory_bigfiles_frontend.cjs | tee "$tree_out"
 expected_dir_bigfiles="${EXPECTED_DIR_BIGFILES_PASSED:-36}"
 assert_result_json "$tree_out" "$expected_dir_bigfiles" "directory bigfiles frontend"
+
+# ISS-159：分布页显式快照绑定回归（真实 FastAPI 隔离入口 + 生产页面实点）。
+# 33 项——HTTP 层（旧行为形态钉住/历史实点/次级差分显式/404 语义/跨根
+# 400/分页稳定）+ 页面层（快照选择器驱动两分区/结构节点不填 0/HTML 路径
+# 转义/distribution 单时点详情与下钻/404 一键恢复/分页追加/三视口无横向
+# 溢出）。失败自身非零退出，pipefail 直通判红；计数漂移由
+# EXPECTED_BROWSE_SNAPSHOT_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_browse_snapshot_frontend.cjs | tee "$tree_out"
+expected_browse_snapshot="${EXPECTED_BROWSE_SNAPSHOT_PASSED:-33}"
+assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot frontend"

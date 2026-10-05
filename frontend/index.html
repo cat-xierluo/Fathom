@@ -274,10 +274,18 @@
           <button type="button" class="page-tab" data-tab="browser" data-test="browse-tab-browser">目录浏览器</button>
         </nav>
 
+        <!-- ISS-159：分布页快照选择——占用分布与目录浏览器共源（两分区都指
+             所选快照），默认最新；选择淘汰后可一键恢复 -->
+        <div class="browse-snap-bar" data-test="browse-snapshot-bar">
+          <label class="hint" for="browse-snap">快照</label>
+          <select id="browse-snap" data-test="browse-snapshot-select" aria-label="选择要查看的快照"></select>
+          <span class="hint" id="browse-snap-quality" data-test="browse-snapshot-quality"></span>
+        </div>
+
         <div class="surface">
         <section class="page-tab-section" data-tab="sunburst" data-test="browse-section-sunburst">
           <div class="panel">
-            <div class="panel-head"><h2>当前占用分布</h2><p class="hint">点击扇区切换到目录浏览器并定位</p></div>
+            <div class="panel-head"><h2 id="sunburst-title">占用分布</h2><p class="hint">点击扇区切换到目录浏览器并定位</p></div>
             <!-- ISS-107：默认图形的快照时点与根；数据不可知时如实显示"未知" -->
             <p class="hint" id="sunburst-context" data-test="sunburst-context">快照上下文加载中…</p>
             <div id="chart-sunburst" class="chart chart-lg"></div>
@@ -294,7 +302,7 @@
           <div class="browser-layout">
             <div class="browser-table-wrap">
               <table class="tbl" id="tbl-browse">
-                <thead><tr><th>目录</th><th class="num">大小</th><th class="num">较上快照</th><th class="num">占比</th><th></th></tr></thead>
+                <thead><tr><th>目录</th><th class="num">大小</th><th class="num" id="th-delta">较上快照</th><th class="num">占比</th><th></th></tr></thead>
                 <tbody></tbody>
               </table>
             </div>
@@ -306,6 +314,9 @@
           </div>
         </section>
         </div>
+        <!-- ISS-159：分布页目录详情（共用组件 distribution 单时点模式；
+             position:fixed 浮层与 changes-detail 同理置于 surface 之外） -->
+        <aside id="browse-detail" class="changes-detail" hidden aria-label="目录详情（所选快照时点）"></aside>
       </section>
 
       <!-- ===== 大文件（ISS-094 调研结论：天然单区块——一个查询表即整页，

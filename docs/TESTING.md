@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前代码期望值为 pytest **1219**、API/浏览器 **39**、前端 refresh **217**、AI 解读前端 **77**、Rust 单测 **69**。ISS-143 新增三个实际鼠标悬停断言（首点、后日期、同日不同时间），不调用 tooltip formatter 冒充真实曲线交互；ISS-147 新增 38 项同级差分 API 测试；ISS-152 新增 29 项启动盘容器与卷发现适配器测试（plist 结构化只读发现，不做 du/挂载/写盘）；ISS-150 新增 32 项限定目录 largest/recent 大文件查询测试。固定候选的实际通过数以对应 PR 的 Actions 日志为准；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；当前代码期望值为 pytest **1318**、API/浏览器 **39**、前端 refresh **217**、AI 解读前端 **77**、Rust 单测 **69**。ISS-143 新增三个实际鼠标悬停断言（首点、后日期、同日不同时间），不调用 tooltip formatter 冒充真实曲线交互；ISS-147 新增 38 项同级差分 API 测试；ISS-152 新增 29 项启动盘容器与卷发现适配器测试（plist 结构化只读发现，不做 du/挂载/写盘）；ISS-150 新增 32 项限定目录 largest/recent 大文件查询测试；ISS-159 新增 21 项 browse 显式快照绑定测试与 33 项分布页真实入口回归（`scripts/verify_browse_snapshot_frontend.cjs`，真实 serve + Chromium，历史实点/结构节点/单时点详情/404 恢复/分页，已入 `ci_browser_checks.sh` 门禁 `EXPECTED_BROWSE_SNAPSHOT_PASSED`）。固定候选的实际通过数以对应 PR 的 Actions 日志为准；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
 /bin/bash scripts/ci_pytest.sh

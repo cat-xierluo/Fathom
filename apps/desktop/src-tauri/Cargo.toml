@@ -37,3 +37,13 @@ glob = "0.3"
 [lib]
 name = "fathom_desktop"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# target 瘦身（2026-10-05）：依赖的调试信息是 target 目录的大头（~1.6G debug），
+# 且日常调试不会 step into 依赖源码；本 crate 保留行号表，backtrace 仍可定位到行。
+# 注意：修改 profile 会改变指纹，首次构建为全量（有 sccache 缓存兜底）。
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+opt-level = 0

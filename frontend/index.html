@@ -90,6 +90,12 @@
         <!-- ISS-105 表面层级：总览内容收进单张 L1 白卡；内部 L2 分组
              （最近变化 / 卷容量与走势 并排或上下，最近扫描在页脚组） -->
         <div class="surface">
+        <!-- ISS-158 整盘总览：首屏一个主要结果 + 「排查这次变化」主按钮。
+             容器/剩余/未知差额各自分别命名；未启用范围时不渲染整盘结论。 -->
+        <div class="panel" id="ov-panel-storage" data-test="storage-panel">
+          <div class="panel-head"><h2>整盘总览</h2></div>
+          <div id="overview-storage"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>加载中…</div>
+        </div>
         <div class="ov-grid">
           <div class="panel" id="ov-panel-changes">
             <div class="panel-head">

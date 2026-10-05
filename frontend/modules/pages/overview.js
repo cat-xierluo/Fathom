@@ -22,6 +22,7 @@
 import { fetchJSON, beginRequest, revealInFinder } from "../request.js";
 import { fmtBytes, fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, showChartMessage } from "../charts.js";
+import { state } from "../state.js";
 import { icon } from "../../icons.js";
 
 /* ISS-084：图表色与 style.css :root 语义 token 同源（单一色源，不硬编码）。
@@ -524,5 +525,253 @@ export const overviewPage = {
     loadOverviewChanges();
     loadVolumeTrend();
     loadScanNote();
+    loadStorageOverview();
   },
 };
+
+/* ===== ISS-158 · 整盘总览与变化入口 =====
+ *
+ * 一条主要结果 + 一个主按钮「排查这次变化」。三条红线：
+ *  1. **共享剩余只算一次**：多卷共享容器剩余空间，页面读 capacity.free_bytes
+ *     单值，绝不把卷级 free 相加（同 157 shared_free_once）。
+ *  2. **差额是「未知差额」不是「可清理」**：unexplained 是有符号差值，
+ *     措辞用「未知差额 / 尚无法由目录变化解释」，不出现回收/垃圾/可释放。
+ *  3. **不可比就写不可比**：comparable=false 时给 reason，绝不补 0。
+ * legacy 首页（scope.mode 为空、未启用范围能力）不伪装整盘：显示
+ * 「尚未启用整盘范围」并给设置入口，而不是渲染一个假整盘结论。
+ */
+function _ovSlot() { return document.getElementById("overview-storage"); }
+
+/* 整盘能力是否真的启用：容器身份或范围模式齐备才算整盘口径。 */
+function _isWholeDisk(summary) {
+  const scope = summary?.scope || {};
+  return Boolean(scope.mode) && Array.isArray(scope.roots) && scope.roots.length > 0;
+}
+
+/* ISS-158：summary.unexplained.bytes 是**字节**（157 侧 capacity 口径为
+ * unit=bytes，目录侧已显式换算）；既有 fmtDelta 吃的是 KB，混用会差 1024
+ * 倍。这里显式做带符号字节格式化，绝不复用 fmtDelta。 */
+function _fmtSignedBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : n < 0 ? "−" : "";
+  return sign + fmtBytes(Math.abs(n));
+}
+
+function _ovMeta(summary) {
+  const scope = summary?.scope || {};
+  const roots = Array.isArray(scope.roots) ? scope.roots : [];
+  const r = summary?.round || null;
+  const p = summary?.previous_round || null;
+  const bits = [];
+  // 长范围名：完整路径在 title 里，正文截断但不隐藏
+  bits.push(roots.length
+    ? `范围 ${roots.map((x) => shortPath(x, 3)).join("、")}`
+    : "范围未选择");
+  const span = `${_shortTs(p?.started_at)} → ${_shortTs(r?.finished_at || r?.started_at)}`;
+  bits.push(`起止 ${span}`);
+  bits.push(r?.status ? `采集 ${r.status}` : "无采集轮次");
+  return bits.join(" · ");
+}
+
+function _ovUnexplainedBlock(u) {
+  if (!u) return "";
+  if (u.comparable === false || u.bytes === null || u.bytes === undefined) {
+    // 不可比/缺读数：写明原因，绝不补 0
+    return `<div class="ov-unexplained" data-test="storage-unexplained" data-state="unknown">
+      <span class="rl">未知差额</span>
+      <span class="rv rv-s">不可计算</span>
+      <p class="hint">${escapeHtml(u.reason || "两侧不可比：缺同主体/同计划身份或存在无效样本。")}</p>
+    </div>`;
+  }
+  const b = Number(u.bytes);
+  const cls = b > 0 ? "delta-grow" : b < 0 ? "delta-shrink" : "";
+  const word = b > 0 ? "占用增加多于目录测量" : b < 0 ? "容器占用减少" : "两侧一致";
+  return `<div class="ov-unexplained" data-test="storage-unexplained" data-state="known" data-bytes="${b}">
+    <span class="rl">未知差额</span>
+    <span class="rv ${cls}" data-test="storage-unexplained-value">${escapeHtml(_fmtSignedBytes(b))}</span>
+    <p class="hint">${escapeHtml(u.limitation || "尚无法由目录变化解释")}（${escapeHtml(word)}）；
+      不代表垃圾量或可回收空间，也不提供任何删除或清理操作。</p>
+  </div>`;
+}
+
+function _ovMembersBlock(attr) {
+  const stale = Array.isArray(attr?.stale_members) ? attr.stale_members : [];
+  const absorbed = Array.isArray(attr?.absorbed_roots) ? attr.absorbed_roots : [];
+  const roots = Array.isArray(attr?.attribution_roots) ? attr.attribution_roots : [];
+  const out = [];
+  out.push(`<div class="ov-members" data-test="storage-roots">测量根 ${roots.length} 个${
+    absorbed.length ? ` · 已吸收子根 ${absorbed.length} 个（父子不可加）` : ""}</div>`);
+  if (stale.length) {
+    out.push(`<ul class="cov-classes" data-test="storage-stale">${stale.map((m) => `
+      <li class="cov-class"><span class="quality-chip warn">${icon("alert", 12)} ${
+        escapeHtml(m.display_name || m.root || m.scope_id || "成员")}</span>
+      <p class="cov-class-note">${escapeHtml(m.stale_note ||
+        "本轮无新快照：若有旧有效值只作历史参考，不当本轮贡献。")}</p></li>`).join("")}</ul>`);
+  }
+  if (attr && attr.comparable_to_previous === false) {
+    out.push(`<p class="hint" data-test="storage-incomparable">${
+      escapeHtml(attr.comparable_note ||
+        "需要同主体、同计划、两侧都有效才可比；否则差额不可计算。")}</p>`);
+  }
+  return out.join("");
+}
+
+function _ovCta(summary) {
+  const attr = summary?.attribution || null;
+  // b = 摘要**本轮成员**已落库的快照 ID（真实数据，非自造）。
+  // a 不从本轮成员取（那会和 b 相同）：摘要只暴露本轮归因，前一轮成员
+  // 未随负载给出，故不编造 a，交接时留空让变化页按自己的快照列表选一个
+  // 真实且不同于 b 的前驱；找不到就放弃交接，绝不塞假基线。
+  const bId = attr?.measured_members?.find((m) => m.snapshot_id)?.snapshot_id ?? null;
+  if (!bId) return "";
+  return `<a class="btn primary" href="#/changes" data-test="storage-cta"
+    data-a="" data-b="${bId}">排查这次变化</a>`;
+}
+
+/* ISS-158 a/b 交接：主按钮把**摘要里真实的快照 ID**带到变化页。
+ * 变化页是只读依赖（不在本卡可写范围），因此这里只做一次性交接：
+ * 点击时记下 a/b，进入 #/changes 后等它自己的快照选项就绪，再写进
+ * 它自有的 sel-a/sel-b 并派发 change——由变化页按自己的列表校验有效性。
+ * 绝不伪造基线 ID；找不到对应选项就放弃交接（变化页保持自己的默认选择）。 */
+/* 从变化页自己的快照列表里取 b 之前最近的一个真实快照 ID（列表已按时间
+ * 倒序：新 → 旧）。找不到（b 之外没有别的快照）返回 null，交接放弃。 */
+function _pickPredecessorId(selA, b) {
+  const values = [...selA.options].map((o) => o.value);
+  const i = values.indexOf(String(b));
+  if (i < 0) return values[0] ?? null;
+  return i + 1 < values.length ? values[i + 1] : null;
+}
+
+function _handOffChangeEntry(a, b) {
+  state.pendingChangeEntry = { a: a || null, b: String(b) };
+  window.addEventListener("hashchange", function once() {
+    if (!state.pendingChangeEntry) {
+      window.removeEventListener("hashchange", once);
+      return;
+    }
+    if (!(location.hash || "").startsWith("#/changes")) return;
+    window.removeEventListener("hashchange", once);
+    const deadline = Date.now() + 8000;
+    const tick = () => {
+      const entry = state.pendingChangeEntry;
+      if (!entry) return;
+      const selA = document.getElementById("sel-a");
+      const selB = document.getElementById("sel-b");
+      const ready = selA && selB && selB.options.length > 0;
+      const hasB = ready && [...selB.options].some((o) => o.value === entry.b);
+      if (hasB) {
+        selB.value = entry.b;
+        // a 优先用入口带来的真实 ID；入口没带 a 时，从变化页**自己的**快照
+        // 列表里挑一个真实存在且不同于 b 的前驱（取 b 之前最近的一个）。
+        // 绝不让 a === b（那是无效区间），也绝不塞自造的假基线 ID。
+        const aWanted = entry.a && [...selA.options].some((o) => o.value === entry.a)
+          && entry.a !== entry.b
+          ? entry.a
+          : _pickPredecessorId(selA, entry.b);
+        if (aWanted) selA.value = aWanted;
+        state.pendingChangeEntry = null;
+        selA.dispatchEvent(new Event("change", { bubbles: true }));
+        selB.dispatchEvent(new Event("change", { bubbles: true }));
+        return;
+      }
+      if (Date.now() > deadline) { state.pendingChangeEntry = null; return; }
+      setTimeout(tick, 100);
+    };
+    tick();
+  });
+}
+
+function _renderStorageReady(summary) {
+  const el = _ovSlot();
+  if (!el) return;
+  const cap = summary.capacity || {};
+  const attr = summary.attribution || null;
+  const free = cap.free_bytes ?? null;
+  const total = cap.total_bytes ?? null;
+  const used = (Number.isFinite(free) && Number.isFinite(total))
+    ? total - free : null;
+  const r = summary.round || null;
+  const kicker = r ? `最近一轮 · 容器占用读数` : "最近一轮 · 无轮次";
+  el.innerHTML =
+    `<p class="conclusion-kicker" data-test="storage-kicker">${escapeHtml(kicker)}</p>
+     <div class="vol-readout">
+       <div class="readout"><span class="rl">整体已用</span><span class="rv rv-used" data-test="storage-used">${
+         used === null ? "不可知" : escapeHtml(fmtBytes(used))}</span></div>
+       <div class="readout"><span class="rl">整体剩余</span><span class="rv rv-ok" data-test="storage-free">${
+         free === null ? "不可知" : escapeHtml(fmtBytes(free))}</span></div>
+     </div>
+     <p class="hint" data-test="storage-meta" title="${escapeHtml(_ovMeta(summary))}">${
+       escapeHtml(_ovMeta(summary))}</p>
+     ${_ovUnexplainedBlock(summary.unexplained)}
+     ${_ovMembersBlock(attr)}
+     <div class="conclusion-actions">${_ovCta(summary)}</div>`;
+  // 主按钮交接真实 a/b 给变化页（变化页自身校验）
+  el.querySelector('[data-test="storage-cta"]')?.addEventListener("click", (ev) => {
+    const btn = ev.currentTarget;
+    _handOffChangeEntry(btn.dataset.a, btn.dataset.b);
+  });
+}
+
+function _renderStorageLegacy(summary) {
+  const el = _ovSlot();
+  if (!el) return;
+  el.innerHTML =
+    `<p class="conclusion-kicker" data-test="storage-kicker">整盘总览</p>
+     <h2 class="conclusion-headline" data-test="storage-headline">尚未启用整盘范围</h2>
+     <p class="conclusion-sub" data-test="storage-sub">当前只在单个目录范围内扫描，
+       还没有整盘口径的容量与变化数据；这里不显示整盘结论，也不把目录结果冒充整盘。
+       启用范围并完成首扫后，这里会出现「排查这次变化」。</p>
+     <div class="conclusion-actions"><a class="btn primary" href="#/settings"
+       data-test="storage-settings-entry">去设置范围</a></div>`;
+}
+
+function _renderStorageWaiting(kind) {
+  const el = _ovSlot();
+  if (!el) return;
+  const text = kind === "empty"
+    ? "还没有整盘采集数据。完成首扫后这里会出现整盘占用与变化；现在不显示任何容量数字。"
+    : "只有一轮采集，缺同计划前一轮可比基线，变化与未知差额都不可知；不会用单轮冒充差分。";
+  el.innerHTML =
+    `<p class="conclusion-kicker" data-test="storage-kicker">整盘总览</p>
+     <div class="state-wait" data-test="storage-state"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>${escapeHtml(text)}</div>
+     <div class="conclusion-actions"><a class="btn" href="#/settings"
+       data-test="storage-settings-entry">去设置范围</a></div>`;
+}
+
+function _renderStorageError(e) {
+  const el = _ovSlot();
+  if (!el) return;
+  const why = e?.status === 0
+    ? "无法连接本地服务，整盘摘要暂不可用。"
+    : `整盘摘要加载失败${e?.status ? `（HTTP ${e.status}）` : ""}：${e?.message || "未知错误"}`;
+  el.innerHTML =
+    `<p class="conclusion-kicker" data-test="storage-kicker">整盘总览</p>
+     <h2 class="conclusion-headline state-error" data-test="storage-state">整盘摘要不可用</h2>
+     <p class="conclusion-sub" data-test="storage-sub">${escapeHtml(why)}
+       下方仍是上次成功读取的目录结果，旧数据不被错误状态的大数字掩盖。</p>
+     <div class="conclusion-actions"><button class="btn" data-test="storage-retry">重试</button></div>`;
+}
+
+async function loadStorageOverview() {
+  const request = beginRequest("overviewStorage");
+  const el = _ovSlot();
+  if (!el) return;
+  let summary;
+  try {
+    summary = await fetchJSON("/api/storage/summary");
+  } catch (e) {
+    if (!request.current()) return;
+    _renderStorageError(e);
+    el.querySelector('[data-test="storage-retry"]')
+      ?.addEventListener("click", () => loadStorageOverview());
+    return;
+  }
+  if (!request.current()) return;
+  // legacy：未启用范围能力 → 不伪装整盘
+  if (!_isWholeDisk(summary)) { _renderStorageLegacy(summary); return; }
+  const rounds = summary.round && summary.previous_round ? 2
+    : (summary.round ? 1 : 0);
+  if (rounds < 2) { _renderStorageWaiting(rounds === 0 ? "empty" : "single"); return; }
+  _renderStorageReady(summary);
+}

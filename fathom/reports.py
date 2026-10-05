@@ -954,11 +954,43 @@ def cross_round_identity_reasons(current: dict, previous: dict) -> list[str]:
     return reasons
 
 
-def round_free_bytes(conn: sqlite3.Connection, round_id: int) -> int | None:
-    """取一轮的容器级 free（共享空间只计一次；无容器样本则 None）。"""
+def own_round_reasons(attribution: dict, *, label: str) -> list[str]:
+    """一轮自身的质量门原因（失败成员 / 非 full 质量 / 父子重叠根）。
+
+    ISS-157 返修 R1：质量门必须**两侧都跑**。只查本轮会让「前轮 partial、
+    本轮 full」这种最危险的组合放行——本轮质量好并不能让前一轮的基线读数
+    变有效。故提取为按轮次复用的对称检查，由调用方分别以 ``本轮`` /
+    ``前轮`` 标注，原因文本明确指出是哪一轮不合格。
+
+    ``attribution`` 为 None（该轮无归因事实）时返回一条缺事实的原因：
+    拿不到一轮的质量事实 = 该轮不可比，而不是「默认可比」。
+    """
+    if not attribution:
+        return [f"{label}无归因事实，无法确认该轮测量质量。"]
+    reasons: list[str] = []
+    if attribution.get("stale_members"):
+        reasons.append(f"{label}存在失败成员（无新快照），缺有效值。")
+    if not attribution.get("all_roots_full_quality"):
+        reasons.append(f"{label}存在非 full 质量的目录测量。")
+    if attribution.get("absorbed_roots"):
+        reasons.append(f"{label}存在父子重叠测量根，归因不可简单相加。")
+    return reasons
+
+
+def round_free_bytes(conn: sqlite3.Connection, round_id: int, *,
+                     container_id: str | None = None) -> int | None:
+    """取一轮的容器级 free（共享空间只计一次；无容器样本则 None）。
+
+    ISS-157 返修 R2：``container_capacity_samples.round_id`` 无外键，
+    同一 round_id 可能挂着**其他容器**的样本（旧实现只按 round_id 盲取，
+    会把别的容器的读数当成当前容器的）。故按传入的 ``container_id`` 过滤，
+    绑定所选容器；未给容器身份时不猜主体，返回 None（缺失不补值）。
+    """
+    if not container_id:
+        return None
     row = conn.execute(
         "SELECT free_bytes FROM container_capacity_samples "
-        "WHERE round_id=? AND free_bytes IS NOT NULL "
-        "ORDER BY sampled_at DESC, id DESC LIMIT 1", (round_id,),
+        "WHERE round_id=? AND free_bytes IS NOT NULL AND container_id=? "
+        "ORDER BY sampled_at DESC, id DESC LIMIT 1", (round_id, container_id),
     ).fetchone()
     return None if row is None else int(row["free_bytes"])

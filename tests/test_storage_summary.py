@@ -457,3 +457,146 @@ class TestRoundTimeSpan:
         assert rnd["atomic"] is False
         assert "不是单一原子时点" in rnd["time_note"]
         assert rnd["started_at"] != rnd["finished_at"]
+
+
+class TestPreviousRoundQualityGate:
+    """R1 返修：可比性必须**两侧**都过质量门。
+
+    独立 HTTP 反例：同主体同计划、**前轮 partial、本轮 full**，旧实现只查
+    本轮质量 → 仍判 comparable=true 并给出 −101400 bytes 差额。前轮测量
+    不完整，前一轮基线就不是有效读数，差额没有意义。
+    """
+
+    def test_previous_partial_blocks_difference(self, client, tmp_path,
+                                                monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            # 前轮 partial（100KB），本轮 full（+100KB）；身份完全一致
+            rids = _seed(conn, roots=("/scanroot",),
+                         total_kb=([100], [200]),
+                         plan_ids=("p1", "p1"),
+                         free_bytes=(100 * 1024 ** 2, 100 * 1024 ** 2))
+            conn.execute("UPDATE snapshots SET collection_status='partial' "
+                         "WHERE id=(SELECT snapshot_id FROM "
+                         "scan_round_members WHERE round_id=?)", (rids[0],))
+            conn.commit()
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        assert data["comparability"]["comparable"] is False, \
+            "前轮 partial 时不得判可比"
+        assert data["comparability"]["previous_reasons"], \
+            "必须给出前轮不可比原因"
+        assert "前轮" in data["comparability"]["previous_reasons"][0]
+        assert data["unexplained"]["comparable"] is False
+        assert data["unexplained"]["bytes"] is None
+        assert "前轮" in data["unexplained"]["reason"]
+
+    def test_previous_failed_member_blocks_difference(self, client,
+                                                      tmp_path, monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            rids = _seed(conn, roots=("/scanroot",), total_kb=([10], [20]),
+                         plan_ids=("p1",), free_bytes=(90, 80))
+            # 前轮追加一个失败成员：无快照引用 → 该轮有 stale 成员
+            conn.execute(
+                "INSERT INTO scan_round_members(round_id, seq, plan_id, "
+                "scope_id, snapshot_id, snapshot_status, status) "
+                "VALUES (?,1,'p1','scope-x',NULL,NULL,'failed')", (rids[0],))
+            conn.commit()
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        assert data["comparability"]["comparable"] is False
+        assert any("前轮" in r for r in
+                   data["comparability"]["previous_reasons"])
+        assert data["unexplained"]["bytes"] is None
+
+
+class TestCapacityBoundToSelectedContainer:
+    """R2 返修：容量读数必须绑定所选容器，且与生效 scope 一起贯穿。
+
+    反例①：前轮混入**其他容器**的较新样本 → 旧实现按 round_id 盲取，
+    当前容器的差额被算成 888599 bytes 仍称可比。
+    反例②：切换生效容器后所选容器容量为 null，旧实现却仍用**旧容器**
+    的轮次容量输出数值差额。
+    """
+
+    def test_foreign_container_sample_not_used_as_difference(self, client,
+                                                            tmp_path,
+                                                            monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            _seed(conn, roots=("/scanroot",), total_kb=([0], [20 * 1024]),
+                  plan_ids=("p1", "p1"),
+                  free_bytes=(100 * 1024 ** 2, 74 * 1024 ** 2))
+            # 前轮混入其他容器的较新样本：旧实现会按 round_id 盲取到它
+            conn.execute(
+                "INSERT INTO container_capacity_samples(container_id, "
+                "total_bytes, free_bytes, source, sampled_at, round_id) "
+                "VALUES ('apfs-container:other', 100, ?, "
+                "'storage-discovery', '2026-10-02T01:09:30', "
+                "(SELECT MIN(id) FROM scan_rounds))",
+                (94 * 1024 ** 2 + 888599,))
+            conn.commit()
+        finally:
+            conn.close()
+        unexp = client.get("/api/storage/summary").json()["unexplained"]
+        # 当前容器自身样本齐全：free 100MB→74MB，目录 +20MB → 未知 6MB
+        assert unexp["bytes"] == 6 * 1024 ** 2, \
+            "其他容器的样本不得进入当前容器的差额"
+        assert unexp["bytes"] != 888599
+
+    def test_capacity_window_bound_to_selected_container(self, client,
+                                                         tmp_path,
+                                                         monkeypatch):
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            # 其他容器的样本时间更新；若不按容器过滤再截断，当前容器的
+            # 最新样本会被挤出窗口
+            for day in range(6, 10):
+                conn.execute(
+                    "INSERT INTO container_capacity_samples(container_id, "
+                    "total_bytes, free_bytes, source, sampled_at) "
+                    "VALUES ('apfs-container:other', 100, 1, "
+                    "'storage-discovery', ?)",
+                    (f"2026-10-0{day}T00:00:00",))
+            conn.execute(
+                "INSERT INTO container_capacity_samples(container_id, "
+                "total_bytes, free_bytes, source, sampled_at) "
+                "VALUES (?,100,42,'storage-discovery','2026-10-05T00:00:00')",
+                (CONTAINER,))
+            conn.commit()
+        finally:
+            conn.close()
+        cap = client.get("/api/storage/summary?limit=2").json()["capacity"]
+        assert cap["container_id"] == CONTAINER
+        assert cap["free_bytes"] == 42, "容量窗口必须绑定所选容器"
+        assert cap["sampled_at"] == "2026-10-05T00:00:00"
+
+    def test_switched_container_blocks_numeric_difference(self, client,
+                                                          tmp_path,
+                                                          monkeypatch):
+        # 生效容器已切到 other，但库里两轮都属于 CONTAINER
+        _select_container(monkeypatch, container_id="apfs-container:other")
+        conn = db.connect()
+        try:
+            _seed(conn, roots=("/scanroot",), total_kb=([0], [20 * 1024]),
+                  plan_ids=("p1", "p1"),
+                  free_bytes=(100 * 1024 ** 2, 74 * 1024 ** 2),
+                  container_id=CONTAINER)
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        assert data["capacity"]["free_bytes"] is None, \
+            "所选容器没有容量样本时不得补值"
+        assert data["comparability"]["comparable"] is False, \
+            "生效容器与轮次成员容器不一致时明确不可比"
+        assert data["comparability"]["scope_reasons"], "应给出 scope 不匹配原因"
+        assert data["unexplained"]["comparable"] is False
+        assert data["unexplained"]["bytes"] is None
+        assert data["unexplained"]["reason"]

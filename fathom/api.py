@@ -1324,7 +1324,8 @@ def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
         selection = None
     container_id = getattr(selection, "container_id", None) if selection else None
 
-    samples = _capacity_sample_rows(conn, limit=limit)
+    samples = _capacity_sample_rows(conn, limit=limit,
+                                    container_id=container_id)
     free_view = storage.shared_free_once(samples, container_id)
 
     rounds = reports.latest_rounds_with_members(conn, limit=2)
@@ -1337,24 +1338,45 @@ def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
         if previous else None
 
     # 跨轮身份核对（ISS-157 返修 B1）：先查两轮是否同主体/同计划/同归因根
-    # 集合，再叠加本轮自身的质量与 stale 条件。任一不满足即不可比 → 差额
-    # 为 null，绝不因为「两边都是 full」就放行。
+    # 集合，再叠加**两侧各自**的质量与 stale 条件。任一不满足即不可比 →
+    # 差额为 null，绝不因为「本轮是 full」就放行。
     identity_reasons: list[str] = []
     if attribution and prev_attribution:
         identity_reasons = reports.cross_round_identity_reasons(
             attribution, prev_attribution)
-    own_reasons: list[str] = []
-    if attribution is not None:
-        if attribution.get("stale_members"):
-            own_reasons.append("本轮存在失败成员（无新快照），缺有效本轮值。")
-        if not attribution.get("all_roots_full_quality"):
-            own_reasons.append("存在非 full 质量的目录测量。")
-        if attribution.get("absorbed_roots"):
-            own_reasons.append("存在父子重叠测量根，归因不可简单相加。")
-    comparable = bool(attribution and prev_attribution
-                      and not identity_reasons and not own_reasons)
+    # 质量门两侧对称（R1 返修）：前轮不合格同样让基线失效，且原因文本
+    # 指明是哪一轮——「本轮 full」不能为「前轮 partial」背书。
+    own_reasons: list[str] = (
+        reports.own_round_reasons(attribution, label="本轮")
+        if attribution is not None else [])
+    previous_reasons: list[str] = (
+        reports.own_round_reasons(prev_attribution, label="前轮")
+        if prev_attribution is not None else [])
+
+    # 容量主体与生效 scope 绑定（R2 返修）：生效容器与轮次成员容器不一致时，
+    # 容量读数说的不是同一件事 → 明确不可比，不输出数值差额。
+    scope_reasons: list[str] = []
+    if latest and previous:
+        if not container_id:
+            scope_reasons.append(
+                "缺容量主体身份：无生效容器，容量读数无法与轮次绑定。")
+        for rnd, att in ((latest, attribution), (previous, prev_attribution)):
+            if att is None:
+                continue
+            rnd_containers = set(att.get("container_ids") or [])
+            if container_id and container_id not in rnd_containers:
+                scope_reasons.append(
+                    f"容量主体不匹配：生效容器 {container_id} 不在该轮"
+                    f"（round_id={rnd['round_id']}）归因容器"
+                    f" {sorted(rnd_containers)} 内。")
+
+    comparable = bool(attribution and prev_attribution and not identity_reasons
+                      and not own_reasons and not previous_reasons
+                      and not scope_reasons)
+    all_reasons = identity_reasons + scope_reasons + own_reasons \
+        + previous_reasons
     if latest and previous and not comparable:
-        block_reason = "；".join(identity_reasons + own_reasons) or None
+        block_reason = "；".join(all_reasons) or None
     else:
         block_reason = None
 
@@ -1379,13 +1401,17 @@ def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
         "comparability": {
             "comparable": comparable,
             "identity_reasons": identity_reasons,
+            "scope_reasons": scope_reasons,
             "own_reasons": own_reasons,
+            "previous_reasons": previous_reasons,
         },
         "unexplained": storage.difference_view(
             comparable=comparable,
-            free_before=reports.round_free_bytes(conn, previous["round_id"])
+            free_before=reports.round_free_bytes(
+                conn, previous["round_id"], container_id=container_id)
             if previous else None,
-            free_after=reports.round_free_bytes(conn, latest["round_id"])
+            free_after=reports.round_free_bytes(
+                conn, latest["round_id"], container_id=container_id)
             if latest else None,
             # 目录测量侧是 KB（snapshots.total_kb），容量侧是 bytes；
             # 差额必须同单位，显式换算到 bytes，绝不混算。
@@ -1412,16 +1438,25 @@ def _kb_to_bytes(kb: int | None) -> int | None:
     return None if kb is None else int(kb) * 1024
 
 
-def _capacity_sample_rows(conn: sqlite3.Connection, *, limit: int) -> list[dict]:
-    """读最近的容器容量样本（时间正序；limit 只截最新端）。
+def _capacity_sample_rows(conn: sqlite3.Connection, *, limit: int,
+                          container_id: str | None = None) -> list[dict]:
+    """读最近的**所选容器**容量样本（时间正序；limit 只截最新端）。
+
+    ISS-157 返修 R2：``container_capacity_samples`` 无外键，可混有其他容器
+    的样本。若全局取最近 N 条，别容器的较新样本会把当前容器的样本挤出窗口
+    （甚至让读数整体落到别的容器上）。故先按 ``container_id`` 绑定主体再
+    截断；无容器身份时不猜主体，返回空窗口（下游如实报「没有容量样本」）。
 
     与既有序列查询同一处 AUD-09 修正：先 DESC 取最新 N 条再正序输出，
     避免「取最早 N 条、最新点被截掉」。
     """
+    if not container_id:
+        return []
     rows = conn.execute(
         "SELECT id, container_id, total_bytes, free_bytes, source, "
         "sampled_at, round_id FROM container_capacity_samples "
-        "ORDER BY sampled_at DESC, id DESC LIMIT ?", (limit,),
+        "WHERE container_id=? "
+        "ORDER BY sampled_at DESC, id DESC LIMIT ?", (container_id, limit),
     ).fetchall()
     return [dict(row) for row in reversed(rows)]
 

@@ -3,7 +3,7 @@
 用法（python -m fathom <子命令>）：
   scan       执行一次扫描 + 生成日报 + 清理旧快照（launchd 每日调用）
   report     对比最近两个快照，输出 Markdown 到 stdout
-  bigfiles   近期大文件清单（stdout）
+  bigfiles   近期大文件 / 当前最大文件清单（stdout）
   status     状态总览
   serve      启动 Web 服务（launchd 常驻）
   install    安装 launchd 定时任务与常驻 Web 服务

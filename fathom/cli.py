@@ -98,8 +98,61 @@ def _scan_duration_hint(root: Path) -> str:
     return f"上次实测 du 约 {int(minutes + 0.5)} 分钟；{limit_note}"
 
 
+def _round_duration_hint(scopes: list[scan_coordinator.ScopeSpec]) -> str:
+    """多范围开场提示：逐范围时限如实说明，**不**给「本轮共需 X 分钟」。
+
+    成员是在不同时刻、逐个采的，把各范围实测拼成一个整轮预估就是伪造
+    一个原子时点（同 ISS-154 轮次报告的诚实性约束）。因此这里只报「每个
+    范围」的安全时限，以及**已有实测记录里最慢的那个**范围的上次实测——
+    那是对单个范围的真实陈述，不是整轮总量。
+    """
+    limit_note = (
+        f"每范围安全时限 {config.DU_TIMEOUT_S:g} 秒，"
+        f"可用 FATHOM_DU_TIMEOUT_S 调整"
+    )
+    measured = [
+        s for s in (_last_measured_du_seconds(spec.root) for spec in scopes)
+        if s is not None
+    ]
+    if not measured:
+        return f"逐个范围顺序采集；{limit_note}"
+    slowest = max(measured) / 60
+    if slowest < 1:
+        return f"逐个范围顺序采集；已有实测中最慢的范围不到 1 分钟；{limit_note}"
+    return (
+        f"逐个范围顺序采集；已有实测中最慢的范围上次约 "
+        f"{int(slowest + 0.5)} 分钟；{limit_note}"
+    )
+
+
+def _scan_scopes(args: argparse.Namespace) -> list[scan_coordinator.ScopeSpec]:
+    """由 CLI 参数构造范围规格列表（ISS-154 多范围消费者）。
+
+    ``--scope`` 可重复：给出即走一轮多范围协调，采集顺序就是参数顺序。
+    ``--scope-id`` 与 ``--scope`` 一一对应（按位置配对），用于把**真实
+    发现结果**的范围稳定 ID 带进来；缺省时按规范根派生 path 型 ID——CLI
+    绝不就地伪造 ``apfs-volume:<uuid>``（ISS-153 身份合同）。
+    """
+    paths = list(getattr(args, "scope", None) or [])
+    ids = list(getattr(args, "scope_id", None) or [])
+    if not paths:
+        return []
+    if ids and len(ids) != len(paths):
+        raise scan_coordinator.ScanScopeError(
+            f"--scope-id 必须与 --scope 一一对应（给了 {len(ids)} 个 ID、"
+            f"{len(paths)} 个范围）；不给 ID 时按路径派生"
+        )
+    specs = []
+    for index, path in enumerate(paths):
+        specs.append(scan_coordinator.ScopeSpec.from_path(
+            path, scope_id=ids[index] if ids else None,
+        ))
+    return specs
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     config.ensure_runtime_dirs()
+    scopes = _scan_scopes(args)
     root = Path(args.root).expanduser() if args.root else config.DEFAULT_ROOT
     source = args.source
     if source is None:
@@ -108,18 +161,30 @@ def cmd_scan(args: argparse.Namespace) -> int:
             if os.environ.get("XPC_SERVICE_NAME") == config.SCAN_LABEL
             else "cli"
         )
-    # 固定「5-15 分钟」与生产实测相悖（09-12 首扫约 47 分钟，09-14/15 超
-    # 60 分钟被时限中断）：改为基于上次成功快照的实测 du_seconds 与配置上限。
-    print(f"开始扫描 {root} ……（{_scan_duration_hint(root)}）")
+    if scopes and args.root:
+        print("显式范围与 --root 不能同时给出：二者都是采集入口", file=sys.stderr)
+        return 1
+    if scopes:
+        print(f"开始扫描 {len(scopes)} 个范围（{_round_duration_hint(scopes)}）……")
+    else:
+        # 固定「5-15 分钟」与生产实测相悖（09-12 首扫约 47 分钟，09-14/15 超
+        # 60 分钟被时限中断）：改为基于上次成功快照的实测 du_seconds 与配置上限。
+        print(f"开始扫描 {root} ……（{_scan_duration_hint(root)}）")
     previous_sigterm = signal.getsignal(signal.SIGTERM)
     def _cancel_on_sigterm(_signum, _frame):
         raise scan_coordinator.ScanCancelledError("收到 SIGTERM，扫描已取消")
     signal.signal(signal.SIGTERM, _cancel_on_sigterm)
     try:
-        _run_id, result = scan_coordinator.run_scan(source=source, root=root)
+        _run_id, result = scan_coordinator.run_scan(
+            source=source, root=None if scopes else root, scopes=scopes,
+            round_timeout_seconds=getattr(args, "round_timeout_s", None),
+        )
     except scan_coordinator.ScanBusyError:
         print("已有扫描在进行中，本次未进入 du", file=sys.stderr)
         return 2
+    except scan_coordinator.ScanScopeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except scan_coordinator.UpgradeWriteStopError as exc:
         # ISS-097 停写条件：升级事务进行中（journal 在位）——定时/CLI 扫描
         # 同样被拒（exit 3，与 scan_busy 的 2 区分）。
@@ -136,6 +201,11 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     conn = db.connect()
     try:
+        if scopes:
+            _print_round_result(conn, result)
+            for warning in result["warnings"]:
+                print(f"提示：{warning}", file=sys.stderr)
+            return 0
         sid = result["snapshot_id"]
         snap = conn.execute("SELECT * FROM snapshots WHERE id = ?", (sid,)).fetchone()
         print(
@@ -153,6 +223,49 @@ def cmd_scan(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     return 0
+
+
+_ROUND_STATUS_TEXT = {
+    "full": "全部范围完成",
+    "partial": "部分范围完成",
+    "failed": "全部范围失败",
+    "cancelled": "已取消",
+}
+
+
+def _print_round_result(conn, result: dict) -> None:
+    """打印一轮多范围结果：轮次状态 + 逐范围事实 + 时间跨度 + 容量。
+
+    刻意逐范围打印各自快照 id/时刻，不给「本轮总量」或整体百分比——
+    成员是不同时刻采的，那种聚合会伪造一个原子时点。
+    """
+    status = result.get("round_status")
+    print(
+        f"轮次 #{result['round_id']} "
+        f"{_ROUND_STATUS_TEXT.get(status, status)}：{result['scopes']} 个范围"
+    )
+    for member in result.get("members", []):
+        sid = member.get("snapshot_id")
+        where = f"快照 #{sid}" if sid else "无新快照（沿用上次样本）"
+        reason = f"，原因：{member['reason']}" if member.get("reason") else ""
+        print(f"  [{member['status']}] {member['root']} → {where}{reason}")
+    span = result.get("time_span") or {}
+    if span.get("started_at") and span.get("finished_at"):
+        print(f"时间跨度：{span['started_at']} → {span['finished_at']}（各范围时刻不同）")
+    capacity = result.get("capacity") or {}
+    if capacity.get("status") == "sampled":
+        free = capacity.get("free_bytes")
+        free_text = f"{free / 1024**3:.1f} GB" if free else "未知"
+        print(f"整盘容量：{capacity.get('sampled_at')} 采样，共享剩余 {free_text}")
+    else:
+        print("整盘容量：本轮未更新（保持上次已知值）")
+    if result.get("report"):
+        print(f"轮次汇总：{result['report']}")
+    for path in result.get("reports", []):
+        if path != result.get("report"):
+            print(f"范围日报：{path}")
+    if result.get("pruned"):
+        print(f"已清理 {result['pruned']} 个过期快照")
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -605,7 +718,15 @@ class _SupervisorArgs:
         self.supervisor_args = supervisor_args
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """构造共享 argparse（**不**做任何运行配置与分发）。
+
+    ISS-154：把参数图从 ``main`` 拆出来，使「显式多范围消费者」
+    （``scan --scope`` 可重复 / ``--scope-id`` 按位置配对 /
+    ``--round-timeout-s``）与旧 ``scan --root`` 的兼容性可以被直接断言，
+    而不必真的 configure 运行根再起进程。分发顺序与 configure 时机仍在
+    ``main`` 里，未变。
+    """
     parser = argparse.ArgumentParser(prog="fathom", description="Fathom ：目录大小历史追踪")
     parser.add_argument("--version", action="store_true",
                         help="输出身份/版本 JSON 并退出（ISS-029 G3）")
@@ -623,6 +744,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--root", help="扫描根路径（默认 $HOME）")
     p.add_argument("--source", choices=("cli", "scheduled"),
                    help=argparse.SUPPRESS)
+    p.add_argument("--scope", action="append", metavar="PATH",
+                   help=("显式扫描范围根，可重复；给出即走一轮多范围协调"
+                         "（采集顺序=参数顺序）。不给则按 --root/默认根单范围"))
+    p.add_argument("--scope-id", action="append", metavar="ID",
+                   help=("与 --scope 一一对应的范围稳定 ID（按位置配对，"
+                         "通常来自真实发现结果）；不给时按路径派生 path 型 ID"))
+    p.add_argument("--round-timeout-s", type=float, default=None,
+                   metavar="SECONDS",
+                   help=("整轮有界时限（秒）。缺省为「每范围 du 时限 × 范围数」；"
+                         "每范围时限另受 FATHOM_DU_TIMEOUT_S 约束"))
     p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser("report", help="对比快照输出日报（默认最新；同数据集前驱）")
@@ -698,6 +829,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--app", dest="app_path", default=None,
                    help="可选的安装目录路径；缺失时视为半升级态")
     p.set_defaults(func=cmd_upgrade_detect)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
 
     # ISS-035B 冻结包接缝：看门 shim 子命令**不注册**进共享 argparse——
     # 注册即使 help 抑制也会把名字暴露进用法 choices；生产形态

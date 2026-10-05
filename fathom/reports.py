@@ -464,17 +464,59 @@ def _report_inputs(conn: sqlite3.Connection, sid: int):
     return diff, old_meta, new_meta, vol(old_meta["id"]), new_vol
 
 
+_UNSAFE_NAME_CHARS = re.compile(r"[^0-9A-Za-z._-]+")
+
+
+def scope_report_suffix(conn: sqlite3.Connection, plan_id: str) -> str:
+    """从计划/范围取出日报文件名的范围后缀（无范围时为空串）。
+
+    只用于**文件命名**，不参与任何身份或可比性判断。范围 ID（卷 UUID /
+    派生 path ID）里的冒号等字符会被规整成 ``-``，保证跨平台文件名安全。
+    """
+    row = conn.execute(
+        "SELECT p.scope_id, s.display_name FROM scan_plans p "
+        "LEFT JOIN scan_scopes s ON s.scope_id = p.scope_id "
+        "WHERE p.plan_id = ?", (plan_id,),
+    ).fetchone()
+    if row is None or not row["scope_id"]:
+        return ""
+    slug = _UNSAFE_NAME_CHARS.sub("-", str(row["scope_id"])).strip("-")
+    return slug or "scope"
+
+
+def report_file_name(conn: sqlite3.Connection, sid: int) -> str:
+    """日报文件名：legacy 仍是 ``YYYY-MM-DD.md``，新身份带范围后缀。
+
+    ISS-154 反例：一轮里多个范围各有快照，若都写成 ``YYYY-MM-DD.md``，
+    后写的会覆盖先写的，同日别的范围日报就没了。因此带 plan_id 的快照
+    命名加 ``-scope-<范围>`` 段（保留 ``YYYY-MM-DD`` 前缀，保留期解析与
+    ``/api/report`` 的日期约定都照旧工作），legacy 命名逐字节不变。
+    """
+    meta = conn.execute(
+        "SELECT created_at, plan_id FROM snapshots WHERE id=?", (sid,)
+    ).fetchone()
+    if meta is None:
+        raise ValueError(f"快照 {sid} 不存在，无法命名日报")
+    day = str(meta["created_at"])[:10]
+    plan_id = _row_plan_id(meta)
+    if plan_id is None:
+        return f"{day}.md"
+    return f"{day}-scope-{scope_report_suffix(conn, plan_id)}.md"
+
+
 def write_daily_report(
     conn: sqlite3.Connection, sid: int, *, notify_after_write: bool = True
 ) -> Path:
     """对比指定快照与同数据集（同根同口径）前一快照生成日报文件，返回路径。
 
     ``notify_after_write=False`` 供统一协调器把报告和通知分阶段记录；默认值
-    保持既有直接调用合同。
+    保持既有直接调用合同。文件名按快照身份决定（见 ``report_file_name``）：
+    legacy 单根仍是 ``YYYY-MM-DD.md``，新身份带范围后缀，一轮多范围之间
+    互不覆盖。
     """
     diff, old_meta, new_meta, old_vol, new_vol = _report_inputs(conn, sid)
     md = render_markdown(diff, old_meta, new_meta, old_vol, new_vol)
-    out = config.REPORTS_DIR / f"{new_meta['created_at'][:10]}.md"
+    out = config.REPORTS_DIR / report_file_name(conn, sid)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(md, encoding="utf-8")
     # 通知放在日报落盘之后，且 notify 自吞全部异常：通知失败不影响日报（ISS-003）。
@@ -492,6 +534,126 @@ def write_daily_report(
             path_unverified_count=(new_meta["path_unverified_count"]
                                    if "path_unverified_count" in new_meta.keys() else None),
         )
+    return out
+
+
+def round_report_file_name(conn: sqlite3.Connection, round_id: int) -> str:
+    """轮次汇总文件名 ``YYYY-MM-DD-round-<id>.md``。
+
+    与按范围的 ``-scope-<范围>`` 段互不撞名：两段前缀不同，范围名再怪
+    也只会多出 ``scope-scope-…`` 之类的叠加，不会覆盖别人的日报。
+    """
+    row = conn.execute(
+        "SELECT started_at FROM scan_rounds WHERE id=?", (round_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"轮次 {round_id} 不存在，无法命名汇总")
+    return f"{str(row['started_at'])[:10]}-round-{int(round_id)}.md"
+
+
+def _round_status_label(status: str) -> str:
+    return {
+        "full": "全部完成",
+        "partial": "部分完成",
+        "failed": "全部失败",
+        "cancelled": "已取消",
+    }.get(status, status)
+
+
+def _member_status_label(status: str | None) -> str:
+    return {
+        "done": "成功",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "skipped": "未开始",
+        "running": "进行中",
+        "pending": "待开始",
+    }.get(status or "", status or "—")
+
+
+def render_round_markdown(
+    round_id: int, round_status: str, members: list[dict],
+    capacity: dict, time_span: dict,
+) -> str:
+    """轮次汇总正文：逐范围事实 + 时间跨度 + 容量来源。
+
+    三条诚实性约束直接体现在正文里：
+
+    1. 逐范围列出各自快照时刻，**不做跨范围求和**（成员是不同时刻采的，
+       求和就是把不同时间的数据说成一个原子时点）；
+    2. 明确写出时间跨度与非原子提示，不冒充「本轮时点」；
+    3. 容量来源与时间如实标注；未知就写未知，不拿目录 statvfs 顶替整盘。
+    """
+    lines = [
+        f"# 扫描轮次 #{round_id} 汇总",
+        "",
+        f"- 轮次状态：**{_round_status_label(round_status)}**",
+        f"- 范围数：{len(members)}",
+    ]
+    started, finished = time_span.get("started_at"), time_span.get("finished_at")
+    if started or finished:
+        lines.append(f"- 时间跨度：{started or '—'} → {finished or '—'}")
+    lines.append(
+        f"- 说明：{time_span.get('note') or '成员按顺序采集，采集时刻各不相同'}"
+    )
+    lines.append("")
+
+    lines.append("## 各范围")
+    lines.append("")
+    lines.append("| 范围 | 规范根 | 阶段 | 快照 | 采集时刻 | 目录数 | 用量 | 采集质量 | 说明 |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    for m in members:
+        sid = m.get("snapshot_id")
+        total_kb = m.get("total_kb")
+        lines.append(
+            "| {scope} | `{root}` | {status} | {snap} | {when} | {dirs} | {size} | {quality} | {note} |".format(
+                scope=m.get("scope_id") or "—",
+                root=m.get("canonical_root") or "—",
+                status=_member_status_label(m.get("status")),
+                snap=f"#{sid}" if sid else "—（沿用上次样本）",
+                when=m.get("snapshot_created_at") or "—",
+                dirs=m.get("dir_count") if m.get("dir_count") is not None else "—",
+                size=human_kb(total_kb) if total_kb is not None else "—",
+                quality=m.get("collection_status") or "—",
+                note=("引用已过期" if m.get("snapshot_status") == "expired"
+                      else ""),
+            )
+        )
+    lines.append("")
+    lines.append(
+        "> 各范围的采集时刻不同，行与行之间**不可**横向相加，也不可折算成"
+        "一个统一的本轮口径。"
+    )
+    lines.append("")
+
+    lines.append("## 整盘容量")
+    lines.append("")
+    if capacity.get("status") == "sampled":
+        free = capacity.get("free_bytes")
+        total = capacity.get("total_bytes")
+        lines.append(f"- 采样时间：{capacity.get('sampled_at')}")
+        lines.append(f"- 容量来源：容器级发现（{capacity.get('container_id') or '—'}）")
+        lines.append(f"- 总量：{human_kb(total // 1024) if total else '未知'}")
+        lines.append(f"- 共享剩余：{human_kb(free // 1024) if free else '未知'}")
+        lines.append(f"- 样本条数：{capacity.get('samples')}")
+    else:
+        lines.append("- 本轮未取得新的整盘容量样本；整盘容量保持上次已知值。")
+        lines.append("- 未用任何目录 statvfs 结果代替整盘容量。")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_round_report(
+    conn: sqlite3.Connection, round_id: int, *,
+    round_status: str, members: list[dict], capacity: dict,
+    time_span: dict,
+) -> Path:
+    """写一轮的汇总报告，返回路径（每范围对比日报之外的整体依据）。"""
+    md = render_round_markdown(round_id, round_status, members, capacity,
+                               time_span)
+    out = config.REPORTS_DIR / round_report_file_name(conn, round_id)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(md, encoding="utf-8")
     return out
 
 

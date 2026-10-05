@@ -301,17 +301,36 @@ def api_volume_trend(limit: int = Query(120, ge=2, le=2000)):
     """卷容量趋势：最新快照所属数据集（同根同 min_kb，ISS-021 口径）内
     先取最新 N 条，再正序输出（AUD-09：旧实现 ASC LIMIT 取的是最早 N 条，
     序列超过 limit 时最新点反而被截掉；跨数据集历史也不得混点）。
+
+    ISS-155 审计返修 B1 —— **窗口限定 legacy**（``plan_id IS NULL``）：
+    ISS-154 范围扫描写入的新身份快照会与 legacy 历史混成一条「可比」折线
+    且不报错，与 /api/trend、/api/diff 的显式拒绝直接矛盾。
+
+    选「限定 legacy」而非 409 拒绝的理由：本端点不接受任何快照/范围参数
+    （无 a/b、无 anchor、无 path），调用方**没有可被拒绝的显式身份**，
+    能拒绝的对象不存在。语义对齐 reports.find_same_dataset_snapshot_rows
+    与 analysis_manager._evaluate_expiry 的既有先例：别的 plan 即便同根同
+    阈值同排除同一天，也不混入 legacy 窗口。
+
+    锚点同样必须取 legacy 最新行：若锚点取了新身份行，再用它的 root/min_kb
+    去选窗口，会把一条 legacy 曲线挂到新身份计划的阈值上——那正是本次要
+    消除的混读。响应仍是数组（旧 volume-trend 消费者兼容，ISS-157 要求），
+    排除事实通过「新身份行不在结果里」直接可观测。
     """
     conn = _get_conn()
     try:
-        latest = _latest_snapshots(conn, 1)
+        latest = conn.execute(
+            """SELECT * FROM snapshots
+               WHERE plan_id IS NULL
+               ORDER BY created_at DESC, id DESC LIMIT 1"""
+        ).fetchone()
         if not latest:
             return []
-        anchor = latest[0]
+        anchor = latest
         rows = conn.execute(
             """SELECT s.created_at, v.total_bytes, v.free_bytes
                FROM snapshots s JOIN volume_stats v ON v.snapshot_id = s.id
-               WHERE s.root = ? AND s.min_kb IS ?
+               WHERE s.root = ? AND s.min_kb IS ? AND s.plan_id IS NULL
                ORDER BY s.created_at DESC, s.id DESC
                LIMIT ?""",
             (anchor["root"], anchor["min_kb"], limit),

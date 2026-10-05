@@ -631,3 +631,88 @@ class TestCliScopeConsumer:
         assert proc.returncode == 0
         assert "--scope" in proc.stdout
         assert "--scope-id" in proc.stdout
+
+
+# ---------- 10. volume-trend 新身份隔离（ISS-155 审计返修 B1） ----------
+#
+# 返修起因：/api/volume-trend 按 legacy 三元组 (root, min_kb) 聚合，无
+# plan_id 过滤也未调 _reject_new_plan_identity。ISS-154 范围扫描写入的新身份
+# 快照会与 legacy 历史混成一条「可比」折线且不报错——与本文件第 8 组在
+# /api/trend、/api/diff 实现的显式拒绝直接矛盾。
+#
+# 修法选择：**窗口限定 legacy**（`plan_id IS NULL`），而不是 409 拒绝。理由：
+# 本端点不接受任何快照/范围参数（无 a/b、无 anchor、无 path），调用方
+# 没有可被拒绝的显式身份——能拒绝的对象根本不存在。语义对齐
+# reports.find_same_dataset_snapshot_rows 与 analysis_manager._evaluate_expiry
+# 的既有先例：**别的 plan 即便同根同阈值同排除同一天，也不混入 legacy 窗口**。
+# 响应仍是数组（旧 volume-trend 消费者兼容，ISS-157 要求），排除事实通过
+# 「新身份行不在结果里」直接可观测。
+
+def _insert_volume_snapshot(conn, *, path_root, plan_id, created_at, total_bytes):
+    """插入带 volume_stats 的快照（volume-trend 的数据源）。"""
+    root = str(path_root)
+    cur = conn.execute(
+        """INSERT INTO snapshots
+             (created_at, root, dir_count, denied_count, du_seconds, total_kb,
+              plan_id)
+           VALUES (?, ?, 1, 0, 0.1, 1024, ?)""",
+        (created_at, root, plan_id),
+    )
+    sid = cur.lastrowid
+    conn.execute(
+        "INSERT INTO volume_stats (snapshot_id, total_bytes, free_bytes) "
+        "VALUES (?, ?, ?)", (sid, total_bytes, total_bytes // 2))
+    conn.commit()
+    return sid
+
+
+class TestVolumeTrendNewIdentityIsolation:
+    def test_new_identity_snapshot_not_mixed_into_window(self, client, tmp_path):
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            _insert_volume_snapshot(conn, path_root=root, plan_id=None,
+                                    created_at="2026-10-03T10:00:00+00:00",
+                                    total_bytes=1000)
+            _insert_volume_snapshot(conn, path_root=root, plan_id="plan-1",
+                                    created_at="2026-10-04T10:00:00+00:00",
+                                    total_bytes=2000)
+            _insert_volume_snapshot(conn, path_root=root, plan_id="plan-1",
+                                    created_at="2026-10-05T10:00:00+00:00",
+                                    total_bytes=3000)
+        finally:
+            conn.close()
+        resp = client.get("/api/volume-trend")
+        assert resp.status_code == 200
+        body = resp.json()
+        # 同 root/min_kb，只有 legacy 那个点可出现；两条 plan-1 行必须被排除。
+        assert [row["total_bytes"] for row in body] == [1000]
+
+    def test_legacy_only_history_unchanged(self, client, tmp_path):
+        """反例对照：纯 legacy 历史逐点不变（未被新闸门改变口径/截断）。"""
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            for day, total in ((3, 1000), (4, 1100), (5, 1200)):
+                _insert_volume_snapshot(conn, path_root=root, plan_id=None,
+                                        created_at=f"2026-10-0{day}T10:00:00+00:00",
+                                        total_bytes=total)
+        finally:
+            conn.close()
+        body = client.get("/api/volume-trend").json()
+        assert [row["total_bytes"] for row in body] == [1000, 1100, 1200]
+        assert [row["created_at"][:10] for row in body] == [
+            "2026-10-03", "2026-10-04", "2026-10-05"]
+
+    def test_new_identity_only_history_yields_empty_not_mixed(self, client, tmp_path):
+        """只有新身份数据时返回空数组，不拿 plan 行冒充 legacy 容量曲线。"""
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            for day, total in ((4, 2000), (5, 3000)):
+                _insert_volume_snapshot(conn, path_root=root, plan_id="plan-1",
+                                        created_at=f"2026-10-0{day}T10:00:00+00:00",
+                                        total_bytes=total)
+        finally:
+            conn.close()
+        assert client.get("/api/volume-trend").json() == []

@@ -1306,3 +1306,13 @@ code {
 #tree-note[hidden] { display: none; }
 .tree-filter { width: auto; }
 .th-plain { color: var(--muted); font-weight: 500; }
+
+/* 分布页快照选择（ISS-159）：两分区共源——占用分布与目录浏览器都指所选
+ * 快照；窄屏换行，选择器与质量提示保持可读。 */
+.browse-snap-bar {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 6px 10px; margin: 0 0 10px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+}
+.browse-snap-bar select { max-width: 320px; }
+.browse-snap-bar .hint { min-width: 0; word-break: break-word; }

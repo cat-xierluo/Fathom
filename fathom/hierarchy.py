@@ -295,3 +295,83 @@ def cursor_matches(payload: dict, *, a: int, b: int, path: str,
     return payload.get("v") == 1 and payload.get("a") == a \
         and payload.get("b") == b and payload.get("path") == path \
         and payload.get("filter") == filter and payload.get("sort") == sort
+
+
+# ---------- 单时点分布（ISS-159）：/api/browse 显式快照口径 ----------
+
+@dataclass
+class SnapshotNode:
+    """一个目录在单快照下的直属子行。
+
+    size_kb 为 None 表示该快照无直接入库记录（结构节点：仅有已记录后代，
+    可作导航下钻），不填 0；大小是所选快照的实点，与任何差分无关。
+    """
+
+    path: str
+    name: str
+    size_kb: int | None = None
+    has_children: bool = False
+
+    @property
+    def status(self) -> str:
+        return "measured" if self.size_kb is not None else "structural"
+
+    def to_dict(self) -> dict:
+        return {"path": self.path, "name": self.name, "size_kb": self.size_kb,
+                "status": self.status, "has_children": self.has_children}
+
+
+def collect_children_snapshot(
+    conn: sqlite3.Connection, sid: int, target: str
+) -> dict:
+    """单时点直属子行收集（ISS-159）：一次有序子树扫描。
+
+    与 collect_children 的双游标归并同构，但只有所选快照一侧：
+    - 恰好一层的相对路径写 size_kb（主键保证至多一次）；
+    - 更深路径只置 has_children——由此自然得到「子有父无」的结构节点；
+    - 返回 ``{"children": {name: SnapshotNode}, "parent_size": int|None,
+      "entries": int}``；parent_size 为 None 表示 target 自身无直接记录。
+    """
+    prefix = target.rstrip("/") + "/" if target != "/" else "/"
+    children: dict[str, SnapshotNode] = {}
+
+    def _node(name: str) -> SnapshotNode:
+        row = children.get(name)
+        if row is None:
+            row = SnapshotNode(path=prefix + name, name=name)
+            children[name] = row
+        return row
+
+    entries = 0
+    for r in _subtree_cursor(conn, sid, prefix):
+        rel = r["path"][len(prefix):]
+        if not rel:  # 防御：du 不产尾斜杠路径，畸形行不参与聚合
+            continue
+        entries += 1
+        name, direct = _first_segment(rel)
+        node = _node(name)
+        if direct:
+            node.size_kb = r["size_kb"]
+        else:
+            node.has_children = True
+    return {"children": children, "parent_size": _lookup(conn, sid, target),
+            "entries": entries}
+
+
+def sort_snapshot_rows(rows: list) -> list:
+    """单时点同级序：大小降序，末位并列以 name 稳定。
+
+    结构节点（无直接记录）排在有测量行之后——不在大小排序里冒充 0，
+    组内按名（兄弟名在数据集内唯一，序稳定可复现）。
+    """
+    return sorted(
+        rows,
+        key=lambda r: (r.size_kb is None, -(r.size_kb or 0), r.name),
+    )
+
+
+def cursor_matches_snapshot(payload: dict, *, s: int, path: str,
+                            sort: str) -> bool:
+    """单快照游标绑定校验（v2 载荷）：上下文任一变化即失效。"""
+    return payload.get("v") == 2 and payload.get("s") == s \
+        and payload.get("path") == path and payload.get("sort") == sort

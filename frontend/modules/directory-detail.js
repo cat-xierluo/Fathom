@@ -29,6 +29,13 @@
  * 大文件页共用范围/模式/状态），查询仅由「查看当前大文件」明确点击发起，
  * 打开详情不触发任何遍历；scope 命中本目录时呈现共享状态（含取消/404
  * 无法定位），关闭详情即离开查询面（两面都不可见时按句柄真实取消）。
+ *
+ * distribution 单时点模式（ISS-159）：mode="distribution" 时详情绑定
+ * getSnapshot() 提供的所选快照——大小/状态是该快照实点（measured /
+ * structural），与前一可比快照的差分仅为次级且基线区间明示（单快照或
+ * 跨口径时「差分未知」）；趋势锚定该快照；「直属子目录」区列出该快照
+ * 下的历史直属子行（可下钻）；大文件区标注「非快照时点」。所有读数不
+ * 暗中转最新——与 changes 双时点模式共用组件但口径同屏可辨。
  */
 import { fetchJSON, beginRequest, revealInFinder } from "./request.js";
 import { fmtKB, fmtDelta, escapeHtml } from "./format.js";
@@ -42,16 +49,23 @@ const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyV
 
 export function createDirectoryDetail({
   mountId = "changes-detail",
+  mode = "changes",       // "changes"（a→b 双时点）| "distribution"（单快照时点，ISS-159）
   getRange,
+  getSnapshot,            // distribution：() => ({id, createdAt, root, comparison, ...}) | null
   renderStatus,
   extraActions = [],
 } = {}) {
   const hostEl = () => document.getElementById(mountId);
-  let activeKey = null;   // `${a}|${b}|${path}`：当前详情绑定的区间与路径
+  const isDist = mode === "distribution";
+  let activeKey = null;   // changes: `${a}|${b}|${path}`；distribution: `${sid}|${path}`
   let activePath = null;
   let sourceRow = null;   // 触发行（Esc 关闭后焦点返回）
+  let snapMeta = null;    // distribution：open 时快照元数据（键守卫与骨架共用）
 
-  const keyOf = (range, path) => `${range ? range.a : ""}|${range ? range.b : ""}|${path}`;
+  function keyOf(range, path) {
+    if (isDist) return `${snapMeta?.id ?? ""}|${path}`;
+    return `${range ? range.a : ""}|${range ? range.b : ""}|${path}`;
+  }
 
   function rangeOf() {
     const range = getRange ? getRange() : { a: "", b: "" };
@@ -60,39 +74,16 @@ export function createDirectoryDetail({
 
   /* ---------- 骨架（DOM 合同选择器保持不变） ---------- */
 
-  function skeleton(range, path, row) {
-    const prev = row && row.old_kb != null ? fmtKB(row.old_kb) : "—";
-    const curr = row && row.new_kb != null ? fmtKB(row.new_kb) : "—";
-    const delta = row && row.delta_kb != null ? fmtDelta(row.delta_kb) : "—";
-    const status = row ? (renderStatus ? renderStatus(row.status) : "—") : "—";
-    const actions = extraActions.map((a) => `
+  function actionsHtml(path) {
+    return extraActions.map((a) => `
       <button type="button" class="btn" data-detail-action="${escapeHtml(a.id)}"
               data-test="tree-detail-${escapeHtml(a.id)}">${a.icon ? icon(a.icon, 14) : ""} ${escapeHtml(a.label)}</button>`).join("");
+  }
+
+  function bigfilesSectionHtml(rangeLabel) {
     return `
-      <div class="detail-head">
-        <h2>${icon("brandRing", 15, "detail-dr")}目录详情</h2>
-        <button class="detail-close" type="button" aria-label="关闭详情" title="关闭（Esc）">${icon("x", 14)}</button>
-      </div>
-      <div class="detail-path">${escapeHtml(path)}</div>
-      <div class="detail-stats" data-test="tree-detail-range-stats">
-        <div><div class="stat-label">区间</div><div class="stat-value">#${escapeHtml(range.a)} → #${escapeHtml(range.b)}</div></div>
-        <div><div class="stat-label">之前</div><div class="stat-value">${escapeHtml(prev)}</div></div>
-        <div><div class="stat-label">现在</div><div class="stat-value">${escapeHtml(curr)}</div></div>
-        <div><div class="stat-label">净变化</div><div class="stat-value">${escapeHtml(delta)}</div></div>
-        <div><div class="stat-label">状态</div><div class="stat-value">${status}</div></div>
-      </div>
-      <div class="detail-section">
-        <h3>${escapeHtml(range.b ? `历史趋势（#${escapeHtml(range.b)} 锚定同数据集）` : "历史趋势（最新快照口径）")}</h3>
-        <div id="detail-trend-chart" class="detail-trend">${icon("fileText", 14)} <span class="hint">加载中…</span></div>
-        <p class="hint" id="detail-trend-latest" data-test="tree-detail-trend-latest" hidden></p>
-        <div id="detail-trend-table-host" hidden></div>
-      </div>
-      <div class="detail-section">
-        <h3>当前所在（最新快照）</h3>
-        <div id="detail-current-info" class="hint">加载中…</div>
-      </div>
       <div class="detail-section" data-test="detail-bigfiles-section">
-        <h3>当前大文件<span class="hint">（此刻 st_size 实测，非 #${escapeHtml(range.a)} → #${escapeHtml(range.b)} 历史区间）</span></h3>
+        <h3>当前大文件<span class="hint">（此刻 st_size 实测，${rangeLabel}）</span></h3>
         <div class="detail-bf-bar">
           <select id="detail-bf-mode" class="detail-bf-mode" data-test="detail-bf-mode" aria-label="大文件查询模式">
             <option value="largest">当前最大</option>
@@ -107,9 +98,89 @@ export function createDirectoryDetail({
             <tbody data-test="detail-bigfiles-tbody"></tbody>
           </table>
         </div>
+      </div>`;
+  }
+
+  function skeleton(range, path, row) {
+    const prev = row && row.old_kb != null ? fmtKB(row.old_kb) : "—";
+    const curr = row && row.new_kb != null ? fmtKB(row.new_kb) : "—";
+    const delta = row && row.delta_kb != null ? fmtDelta(row.delta_kb) : "—";
+    const status = row ? (renderStatus ? renderStatus(row.status) : "—") : "—";
+    return `
+      <div class="detail-head">
+        <h2>${icon("brandRing", 15, "detail-dr")}目录详情</h2>
+        <button class="detail-close" type="button" aria-label="关闭详情" title="关闭（Esc）">${icon("x", 14)}</button>
       </div>
+      <div class="detail-path">${escapeHtml(path)}</div>
+      <div class="detail-stats" data-test="tree-detail-range-stats">
+        <div><div class="stat-label">区间</div><div class="stat-value">#${escapeHtml(range.a)} → #${escapeHtml(range.b)}</div></div>
+        <div><div class="stat-label">之前</div><div class="stat-value">${escapeHtml(prev)}</div></div>
+        <div><div class="stat-label">现在</div><div class="stat-value">${escapeHtml(curr)}</div></div>
+        <div><div class="stat-label">净变化</div><div class="stat-value">${escapeHtml(delta)}</div></div>
+        <div><div class="stat-label">状态</div><div class="stat-value">${escapeHtml(status)}</div></div>
+      </div>
+      <div class="detail-section">
+        <h3>${escapeHtml(range.b ? `历史趋势（#${escapeHtml(range.b)} 锚定同数据集）` : "历史趋势（最新快照口径）")}</h3>
+        <div id="detail-trend-chart" class="detail-trend">${icon("fileText", 14)} <span class="hint">加载中…</span></div>
+        <p class="hint" id="detail-trend-latest" data-test="tree-detail-trend-latest" hidden></p>
+        <div id="detail-trend-table-host" hidden></div>
+      </div>
+      <div class="detail-section">
+        <h3>当前所在（最新快照）</h3>
+        <div id="detail-current-info" class="hint">加载中…</div>
+      </div>
+      ${bigfilesSectionHtml(`非 #${escapeHtml(range.a)} → #${escapeHtml(range.b)} 历史区间`)}
       <div class="detail-actions">
-        ${actions}
+        ${actionsHtml(path)}
+        <button class="copy-path" type="button" data-copy="${escapeHtml(path)}" title="复制路径">复制路径</button>
+        <button class="btn-mini" data-reveal="${escapeHtml(path)}" aria-label="在 Finder 中显示" title="在 Finder 中显示">${icon("folderOpen", 14)}</button>
+      </div>
+    `;
+  }
+
+  /* distribution 单时点骨架（ISS-159）：主读数 = 所选快照实点；差分仅为
+   * 次级且基线区间明示；直属子目录列表可下钻；趋势锚定该快照。 */
+  function skeletonDist(snap, path, row) {
+    const sid = snap?.id != null ? String(snap.id) : "?";
+    const when = snap?.createdAt
+      ? String(snap.createdAt).slice(0, 16).replace("T", " ") : "未知";
+    const measured = row && row.size_kb != null;
+    const sizeText = measured ? fmtKB(row.size_kb) : "未直接记录";
+    const status = row ? (renderStatus ? renderStatus(row.status) : "—") : "—";
+    const cmp = snap?.comparison || null;
+    const deltaText = cmp
+      ? (row && row.delta_kb != null ? `较 #${cmp.snapshot_id}：${fmtDelta(row.delta_kb)}` : `较 #${cmp.snapshot_id}：基线缺测`)
+      : "无可比前驱快照，差分未知";
+    const cmpNote = cmp
+      ? `差分区间：#${escapeHtml(String(cmp.snapshot_id))}（${escapeHtml(String(cmp.created_at || "").slice(0, 16).replace("T", " "))}）→ #${escapeHtml(sid)}；主读数为快照 #${escapeHtml(sid)} 实点，差分仅作参考。`
+      : "该快照没有可比的前驱（单快照或前驱跨口径）：差分未知，不冒充基线。";
+    return `
+      <div class="detail-head">
+        <h2>${icon("brandRing", 15, "detail-dr")}目录详情</h2>
+        <button class="detail-close" type="button" aria-label="关闭详情" title="关闭（Esc）">${icon("x", 14)}</button>
+      </div>
+      <div class="detail-path">${escapeHtml(path)}</div>
+      <div class="detail-stats" data-test="browse-detail-stats">
+        <div><div class="stat-label">快照</div><div class="stat-value" data-test="browse-detail-snapshot">#${escapeHtml(sid)}</div></div>
+        <div><div class="stat-label">时点</div><div class="stat-value">${escapeHtml(when)}</div></div>
+        <div><div class="stat-label">大小</div><div class="stat-value" data-test="browse-detail-size">${escapeHtml(sizeText)}</div></div>
+        <div><div class="stat-label">状态</div><div class="stat-value" data-test="browse-detail-status">${escapeHtml(status)}</div></div>
+        <div><div class="stat-label">次级差分</div><div class="stat-value" data-test="browse-detail-delta">${escapeHtml(deltaText)}</div></div>
+      </div>
+      <p class="hint" data-test="browse-detail-delta-range">${cmpNote}</p>
+      <div class="detail-section">
+        <h3>历史趋势（#${escapeHtml(sid)} 锚定同数据集）</h3>
+        <div id="detail-trend-chart" class="detail-trend">${icon("fileText", 14)} <span class="hint">加载中…</span></div>
+        <p class="hint" id="detail-trend-latest" data-test="tree-detail-trend-latest" hidden></p>
+        <div id="detail-trend-table-host" hidden></div>
+      </div>
+      <div class="detail-section">
+        <h3>直属子目录（快照 #${escapeHtml(sid)}）</h3>
+        <div id="detail-children-host" data-test="browse-detail-children"><span class="hint">加载中…</span></div>
+      </div>
+      ${bigfilesSectionHtml(`非快照 #${escapeHtml(sid)} 时点`)}
+      <div class="detail-actions">
+        ${actionsHtml(path)}
         <button class="copy-path" type="button" data-copy="${escapeHtml(path)}" title="复制路径">复制路径</button>
         <button class="btn-mini" data-reveal="${escapeHtml(path)}" aria-label="在 Finder 中显示" title="在 Finder 中显示">${icon("folderOpen", 14)}</button>
       </div>
@@ -121,6 +192,8 @@ export function createDirectoryDetail({
   function open({ path, row = null, sourceRow: src = null }) {
     const host = hostEl();
     if (!host) return;
+    // distribution：先取快照元数据再算键（键守卫绑定快照身份）。
+    snapMeta = isDist && getSnapshot ? getSnapshot() : null;
     const range = rangeOf();
     activePath = path;
     activeKey = keyOf(range, path);
@@ -131,7 +204,8 @@ export function createDirectoryDetail({
     const prevChart = prevChartHost && window.echarts
       ? window.echarts.getInstanceByDom(prevChartHost) : null;
     if (prevChart) prevChart.dispose();
-    host.innerHTML = skeleton(range, path, row);
+    host.innerHTML = isDist ? skeletonDist(snapMeta, path, row)
+                            : skeleton(range, path, row);
     host.hidden = false;
     host.querySelector(".detail-close").addEventListener("click", () => close());
     host.querySelectorAll("[data-copy]").forEach((b) =>
@@ -180,7 +254,8 @@ export function createDirectoryDetail({
     }
     renderDetailBigfiles();
     loadTrend(path);
-    loadBrowse(path);
+    if (isDist) loadChildren(path);
+    else loadBrowse(path);
   }
 
   function close({ restoreFocus = true } = {}) {
@@ -241,6 +316,11 @@ export function createDirectoryDetail({
    * 双重守卫丢弃：a/b 变更后旧曲线不得恢复。 */
 
   function trendAnchorOf() {
+    if (isDist) {
+      // distribution：锚定所选快照本身——曲线窗口是该快照所属数据集。
+      const sid = snapMeta?.id;
+      return sid != null && /^\d+$/.test(String(sid)) ? String(sid) : null;
+    }
     const b = rangeOf().b;
     return /^\d+$/.test(b) ? b : null;
   }
@@ -401,6 +481,69 @@ export function createDirectoryDetail({
       } else {
         el.innerHTML = `<span class="hint">当前所在加载失败（HTTP ${e.status || "?"}）</span>`;
       }
+    }
+  }
+
+  /** distribution（ISS-159）：所选快照下该目录的历史直属子行。
+   * 点击子行在详情内下钻（子路径重开详情，键守卫绑定同一快照）；
+   * 分页只提示总数，完整列表由「在浏览器中定位」承接。 */
+  async function loadChildren(path) {
+    const target = hostEl()?.querySelector("#detail-children-host");
+    if (!target) return;
+    const sid = snapMeta?.id;
+    if (sid == null || !/^\d+$/.test(String(sid))) {
+      target.innerHTML = `<span class="hint">快照上下文不可用，无法读取该快照下的直属子目录。</span>`;
+      return;
+    }
+    const request = beginRequest("detailChildren");
+    try {
+      const r = await fetchJSON(
+        `/api/browse?path=${encodeURIComponent(path)}&snapshot_id=${encodeURIComponent(String(sid))}`);
+      if (!request.current() || keyOf(rangeOf(), path) !== activeKey) return;
+      const kids = r.children || [];
+      const pag = r.pagination;
+      const head = pag && pag.total > pag.returned
+        ? `<p class="hint">显示前 ${pag.returned} 个（共 ${pag.total} 个，未展示不当作无子目录）——完整列表用「在浏览器中定位」。</p>`
+        : "";
+      if (!kids.length) {
+        target.innerHTML = `${head}<span class="hint" data-test="browse-detail-children-empty">该目录在此快照下没有已记录的直属子目录。</span>`;
+        return;
+      }
+      const cmpHead = r.comparison ? `较 #${escapeHtml(String(r.comparison.snapshot_id))}` : "较前快照";
+      const rows = kids.map((k) => {
+        const known = k.size_kb != null;
+        const deltaCls = k.delta_kb == null || k.delta_kb === 0
+          ? "" : (k.delta_kb > 0 ? "delta-grow" : "delta-shrink");
+        return `<tr tabindex="0" data-child-path="${escapeHtml(k.path)}"` +
+          ` data-child-size="${k.size_kb ?? ""}" data-child-status="${escapeHtml(k.status || "measured")}"` +
+          ` aria-label="在详情中打开 ${escapeHtml(k.path)}">` +
+          `<td>${escapeHtml(k.name)}</td>` +
+          `<td class="num">${known ? escapeHtml(fmtKB(k.size_kb)) : '<span class="hint">未直接记录</span>'}</td>` +
+          `<td class="num ${deltaCls}">${escapeHtml(fmtDelta(k.delta_kb))}</td></tr>`;
+      }).join("");
+      target.innerHTML =
+        `${head}<table class="tbl" data-test="browse-detail-children-table">` +
+        `<thead><tr><th>子目录</th><th class="num">大小</th><th class="num">${cmpHead}</th></tr></thead>` +
+        `<tbody>${rows}</tbody></table>`;
+      target.querySelectorAll("[data-child-path]").forEach((el) => {
+        const go = () => open({
+          path: el.dataset.childPath,
+          row: {
+            size_kb: el.dataset.childSize === "" ? null : Number(el.dataset.childSize),
+            status: el.dataset.childStatus || "measured",
+          },
+          sourceRow: null,
+        });
+        el.addEventListener("click", go);
+        el.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); }
+        });
+      });
+    } catch (e) {
+      if (!request.current() || keyOf(rangeOf(), path) !== activeKey) return;
+      const el = hostEl()?.querySelector("#detail-children-host");
+      if (el) el.innerHTML =
+        `<span class="hint">直属子目录加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${escapeHtml(e.message)}</span>`;
     }
   }
 

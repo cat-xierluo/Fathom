@@ -1335,86 +1335,253 @@ app.router.add_event_handler("shutdown", _shutdown_analysis)
 # ---------- v0.2：目录浏览器 / 日报档案 / Finder 打开 ----------
 
 @app.get("/api/browse")
-def api_browse(path: str | None = None):
-    """目录浏览器：指定目录的直接子目录（最新快照）+ 与同数据集前一快照的差值 + 自身趋势。
+def api_browse(
+    path: str | None = None,
+    snapshot_id: int | None = None,
+    cursor: str | None = None,
+    limit: int = Query(hierarchy.CHILDREN_DEFAULT_LIMIT, ge=1,
+                       le=hierarchy.CHILDREN_MAX_LIMIT),
+):
+    """目录浏览器：指定目录的直接子目录 + 与前一可比快照的差值 + 自身趋势。
 
-    对应 DESIGN.md 分布页合同：面包屑下钻 + 行级 Finder 打开。差值基线取
-    最新快照的同数据集前驱（与日报/ diff 同一选择逻辑）；没有可比基线时
-    delta_kb 为 null——无基线不伪造"增长"（AUD-04）。
+    对应 DESIGN.md 分布页合同：面包屑下钻 + 行级 Finder 打开。两种形态由
+    snapshot_id 区分（ISS-159）：
+
+    - 旧调用（无 snapshot_id，兼容）：恒绑定最新快照与其同数据集前驱，
+      响应形态与差值口径不变；差值基线取同数据集前驱（与日报/diff 同一
+      选择逻辑），没有可比基线时 delta_kb 为 null——无基线不伪造"增长"
+      （AUD-04）。
+    - 显式快照（ISS-159）：分布主读数只指所选快照——路径按该快照 root
+      约束；行状态 measured（直接入库记录）/ structural（仅已记录后代、
+      可导航，size 为 null 不填 0）；与前一可比快照的差分仅为次级且基线
+      区间显式可见（comparison 携带基线快照 id/时点；单快照或前驱跨口径
+      时为 null——差分未知，不冒充基线）；直属子目录稳定分页（游标绑定
+      快照/路径，未展示分页不得当作无子目录）；质量字段（采集状态、
+      消失/拒绝计数）随所选快照返回，不与最新混用；趋势点带 snapshot_id
+      （历史序列明确非本快照专属）。快照不存在 → 404（可能已被保留策略
+      淘汰）；路径无直接记录也无任何已记录后代 → 404，不冒充空目录。
     """
     conn = _get_conn()
     try:
-        snaps = _latest_snapshots(conn, 1)
-        if not snaps:
-            raise HTTPException(409, "尚无快照，请先扫描")
-        new_sid = snaps[0]["id"]
-        predecessor = reports.find_same_dataset_predecessor(conn, new_sid)
-        old_sid = predecessor["id"] if predecessor else None
-        # root=/ 时 rstrip("/") 得空串：归一成 "/"，否则 target/prefix/面包屑
-        # 全部错位（ISS-024 root=/ 边界）。
-        root_path = snaps[0]["root"].rstrip("/") or "/"
-        target = (path.rstrip("/") or root_path) if path else root_path
-        # root=/ 时任何绝对路径都在根内（root_path + "/" 会拼出 "//" 误拒）。
-        inside = target.startswith("/") if root_path == "/" else (
-            target == root_path or target.startswith(root_path + "/"))
-        if not inside:
-            raise HTTPException(400, f"路径必须在监控根 {root_path} 之内")
+        if snapshot_id is None:
+            return _browse_legacy(conn, path)
 
-        new_entries = reports.load_snapshot(conn, new_sid)
-        old_entries = reports.load_snapshot(conn, old_sid) if old_sid else {}
+        snap = conn.execute(
+            "SELECT * FROM snapshots WHERE id=?", (snapshot_id,)
+        ).fetchone()
+        if snap is None:
+            raise HTTPException(
+                404,
+                f"快照 {snapshot_id} 不存在（可能已被保留策略淘汰），请改选其他快照")
+        # 路径按所选快照的身份约束：多卷/同路径不同身份各读各的事实。
+        root_path = snap["root"].rstrip("/") or "/"
+        try:
+            target = hierarchy.normalize_target(path, root_path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
-        prefix = target.rstrip("/") + "/"  # root=/ 时 target+"/" 会拼出 "//"
-        children = []
-        for p, size in new_entries.items():
-            if not p.startswith(prefix):
-                continue
-            rest = p[len(prefix):]
-            # rest 必须是非空单段：root=/ 时根条目 "/" 自身会以空前缀命中
-            if rest and "/" not in rest:  # 直接子目录
-                old_size = old_entries.get(p)
-                children.append({
-                    "name": rest,
-                    "path": p,
-                    "size_kb": size,
-                    # 无同数据集基线或该目录基线中未记录：差值不可知（None），
-                    # 不把当前大小冒充为增量；是否首次记录由 is_new 表达。
-                    "delta_kb": (size - old_size) if old_size is not None else None,
-                    "is_new": old_sid is not None and p not in old_entries,
-                })
-        children.sort(key=lambda c: c["size_kb"], reverse=True)
+        offset = 0
+        if cursor is not None:
+            payload = hierarchy.decode_cursor(cursor)
+            if payload is None:
+                raise HTTPException(400, "游标无效：无法解码")
+            if (not hierarchy.cursor_matches_snapshot(
+                    payload, s=snapshot_id, path=target, sort="size")
+                    or hierarchy.cursor_offset(payload) is None):
+                raise HTTPException(
+                    400, "游标与当前查询参数（快照/路径）不匹配，"
+                         "请从首页重新请求")
+            offset = payload["offset"]
 
-        # 侧栏趋势与子目录差值同一数据集口径（ISS-024）：只取当前快照同
-        # 数据集（同根同 min_kb）内该路径的记录点，跨数据集不混点。
-        points = [
-            dict(r)
-            for r in conn.execute(
-                """SELECT s.created_at, e.size_kb FROM entries e
-                   JOIN snapshots s ON s.id = e.snapshot_id
-                   WHERE e.path = ? AND s.root = ? AND s.min_kb IS ?
-                   ORDER BY s.created_at ASC""",
-                (target, snaps[0]["root"], snaps[0]["min_kb"]),
+        collected = hierarchy.collect_children_snapshot(conn, snapshot_id, target)
+        if not collected["children"] and collected["parent_size"] is None:
+            raise HTTPException(
+                404,
+                f"路径 {target} 在快照 {snapshot_id} 中无记录"
+                "（可能低于入库阈值、权限受限或路径不存在）",
             )
-        ]
-        # 面包屑
-        parts = target[len(root_path):].strip("/").split("/") if target != root_path else []
-        crumbs = [{"name": root_path.rsplit("/", 1)[-1] or "/", "path": root_path}]
-        acc = root_path
-        for seg in filter(None, parts):
-            acc = acc + "/" + seg
-            crumbs.append({"name": seg, "path": acc})
+
+        # 次级差分：仅与同数据集前驱可比，基线区间显式可见；无前驱或前驱
+        # 跨口径（不同数据集）时 comparison 为 null——差分未知。
+        predecessor = reports.find_same_dataset_predecessor(conn, snapshot_id)
+        comparison = None
+        prev_sizes: dict[str, int] = {}
+        prev_parent: int | None = None
+        if predecessor is not None:
+            comparison = {"snapshot_id": predecessor["id"],
+                          "created_at": predecessor["created_at"]}
+            prev = hierarchy.collect_children_snapshot(
+                conn, predecessor["id"], target)
+            prev_sizes = {name: n.size_kb
+                          for name, n in prev["children"].items()
+                          if n.size_kb is not None}
+            prev_parent = prev["parent_size"]
+
+        rows = hierarchy.sort_snapshot_rows(list(collected["children"].values()))
+        total = len(rows)
+        page = rows[offset:offset + limit]
+        has_more = offset + limit < total
+        next_cursor = None
+        if has_more:
+            next_cursor = hierarchy.encode_cursor({
+                "v": 2, "s": snapshot_id, "path": target,
+                "sort": "size", "offset": offset + limit,
+            })
+
+        def _secondary(size_kb: int | None, name: str | None = None):
+            """次级差分读数：两侧都有直接测量才可比；基线缺测不冒充 0。"""
+            if comparison is None or size_kb is None:
+                return None, None
+            old = prev_sizes.get(name) if name is not None else prev_parent
+            if old is None:
+                return None, True   # 前驱无直接记录：以 is_new 表达首次入库
+            return size_kb - old, False
+
+        parent_delta, _ = _secondary(collected["parent_size"])
+        children_out = []
+        for node in page:
+            delta, is_new = _secondary(node.size_kb, node.name)
+            row = node.to_dict()
+            row["delta_kb"] = delta
+            row["is_new"] = bool(is_new)
+            children_out.append(row)
 
         return {
             "path": target,
-            "size_kb": new_entries.get(target, 0),
-            "delta_kb": (new_entries.get(target, 0) - old_entries.get(target, 0))
-                        if old_sid and target in old_entries else None,
-            "children": children,
-            "trend": points,
-            "crumbs": crumbs,
-            "snapshot_at": snaps[0]["created_at"],
+            "size_kb": collected["parent_size"],
+            "status": "measured" if collected["parent_size"] is not None
+                      else "structural",
+            "delta_kb": parent_delta,
+            "children": children_out,
+            "trend": _trend_points(conn, target, snap),
+            "crumbs": _browse_crumbs(root_path, target),
+            "snapshot_at": snap["created_at"],
+            "snapshot": {
+                "id": snap["id"],
+                "created_at": snap["created_at"],
+                "root": snap["root"],
+                "min_kb": snap["min_kb"],
+                "exclude_names": snap["exclude_names"] or "",
+                "collection_status": snap["collection_status"],
+                "vanished_count": snap["vanished_count"],
+                "denied_count": snap["denied_count"],
+            },
+            "comparison": comparison,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(page),
+                "total": total,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            },
         }
     finally:
         conn.close()
+
+
+def _browse_legacy(conn, path: str | None):
+    """旧形态（无 snapshot_id）：恒绑定最新快照与其同数据集前驱。
+
+    行为自 ISS-024 起不变，本卡不改动其任何读数与响应键；历史实点由
+    显式 snapshot_id 形态承接（ISS-159）。
+    """
+    snaps = _latest_snapshots(conn, 1)
+    if not snaps:
+        raise HTTPException(409, "尚无快照，请先扫描")
+    new_sid = snaps[0]["id"]
+    predecessor = reports.find_same_dataset_predecessor(conn, new_sid)
+    old_sid = predecessor["id"] if predecessor else None
+    # root=/ 时 rstrip("/") 得空串：归一成 "/"，否则 target/prefix/面包屑
+    # 全部错位（ISS-024 root=/ 边界）。
+    root_path = snaps[0]["root"].rstrip("/") or "/"
+    target = (path.rstrip("/") or root_path) if path else root_path
+    # root=/ 时任何绝对路径都在根内（root_path + "/" 会拼出 "//" 误拒）。
+    inside = target.startswith("/") if root_path == "/" else (
+        target == root_path or target.startswith(root_path + "/"))
+    if not inside:
+        raise HTTPException(400, f"路径必须在监控根 {root_path} 之内")
+
+    new_entries = reports.load_snapshot(conn, new_sid)
+    old_entries = reports.load_snapshot(conn, old_sid) if old_sid else {}
+
+    prefix = target.rstrip("/") + "/"  # root=/ 时 target+"/" 会拼出 "//"
+    children = []
+    for p, size in new_entries.items():
+        if not p.startswith(prefix):
+            continue
+        rest = p[len(prefix):]
+        # rest 必须是非空单段：root=/ 时根条目 "/" 自身会以空前缀命中
+        if rest and "/" not in rest:  # 直接子目录
+            old_size = old_entries.get(p)
+            children.append({
+                "name": rest,
+                "path": p,
+                "size_kb": size,
+                # 无同数据集基线或该目录基线中未记录：差值不可知（None），
+                # 不把当前大小冒充为增量；是否首次记录由 is_new 表达。
+                "delta_kb": (size - old_size) if old_size is not None else None,
+                "is_new": old_sid is not None and p not in old_entries,
+            })
+    children.sort(key=lambda c: c["size_kb"], reverse=True)
+
+    # 侧栏趋势与子目录差值同一数据集口径（ISS-024）：只取当前快照同
+    # 数据集（同根同 min_kb）内该路径的记录点，跨数据集不混点。
+    points = [
+        dict(r)
+        for r in conn.execute(
+            """SELECT s.created_at, e.size_kb FROM entries e
+               JOIN snapshots s ON s.id = e.snapshot_id
+               WHERE e.path = ? AND s.root = ? AND s.min_kb IS ?
+               ORDER BY s.created_at ASC""",
+            (target, snaps[0]["root"], snaps[0]["min_kb"]),
+        )
+    ]
+
+    return {
+        "path": target,
+        "size_kb": new_entries.get(target, 0),
+        "delta_kb": (new_entries.get(target, 0) - old_entries.get(target, 0))
+                    if old_sid and target in old_entries else None,
+        "children": children,
+        "trend": points,
+        "crumbs": _browse_crumbs(root_path, target),
+        "snapshot_at": snaps[0]["created_at"],
+    }
+
+
+def _trend_points(conn, target: str, snap) -> list[dict]:
+    """所选快照同数据集内该路径的已记录点（时间正序，点带快照身份）。
+
+    与旧行为同一「记录点」口径（缺测窗口由 /api/trend 锚定形态承接），
+    数据集身份统一走 reports 辅助（legacy/plan 分档），每点追加
+    snapshot_id：趋势是历史序列，明确不是所选快照的专属读数。
+    """
+    size_by_sid = {
+        r["snapshot_id"]: r["size_kb"]
+        for r in conn.execute(
+            "SELECT snapshot_id, size_kb FROM entries WHERE path = ?", (target,))
+    }
+    # find_same_dataset_snapshot_rows 恒为时间正序（reports 合同），直接输出。
+    rows = reports.find_same_dataset_snapshot_rows(
+        conn, reports.dataset_identity(snap))
+    return [
+        {"snapshot_id": row["id"], "created_at": row["created_at"],
+         "size_kb": size_by_sid[row["id"]]}
+        for row in rows if row["id"] in size_by_sid
+    ]
+
+
+def _browse_crumbs(root_path: str, target: str) -> list[dict]:
+    """面包屑：数据集根 → … → 当前路径（root=/ 时根名为 "/"）。"""
+    parts = (target[len(root_path):].strip("/").split("/")
+             if target != root_path else [])
+    crumbs = [{"name": root_path.rsplit("/", 1)[-1] or "/", "path": root_path}]
+    acc = root_path
+    for seg in filter(None, parts):
+        acc = acc + "/" + seg
+        crumbs.append({"name": seg, "path": acc})
+    return crumbs
 
 
 @app.get("/api/reports")

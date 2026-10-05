@@ -799,9 +799,10 @@ function createFixture() {
 }
 
 async function waitForText(page, selector, expected) {
+  // 窗口给足 CI 慢环境：仅放大等待上限，失败仍按失败抛出，不改变断言语义
   await page.waitForFunction(
     ({ selector, expected }) => document.querySelector(selector)?.textContent.includes(expected),
-    { selector, expected }, { timeout: 10000 });
+    { selector, expected }, { timeout: 30000 });
 }
 
 /* ISS-105 品牌位图像素采样：img 绘入 canvas 后取中心（深潭墨核心）、
@@ -1145,9 +1146,14 @@ async function main() {
 
     /* ---------- 大文件 / 设置页走查（五页覆盖） ---------- */
     await openPage("#/bigfiles");
-    // ISS-151：查询改为仅显式点击发起，进页只呈现待查询提示
+    // ISS-151：查询改为仅显式点击发起，进页只呈现待查询提示。
+    // idle/查询中提示行同样是 <tr>，waitForSelector("tbody tr") 会立即命中
+    // 而不等数据行（CI 慢环境下 fetch 未返回即触发下方即时断言而翻车）；
+    // 改为条件等待首条数据行的 data-reveal 按钮，窗口给足 CI 慢环境。
     await page.click("#btn-bigfiles");
-    await page.waitForSelector("#tbl-bigfiles tbody tr");
+    await page.waitForFunction(
+      () => document.querySelectorAll("#tbl-bigfiles tbody [data-reveal]").length > 0,
+      undefined, { timeout: 30000 });
     const big = await page.evaluate(() => ({
       text: document.querySelector("#tbl-bigfiles").textContent,
       svg: Boolean(document.querySelector("#tbl-bigfiles [data-reveal] svg")),
@@ -1228,8 +1234,12 @@ async function main() {
     await setScenario(null);
     // 回到默认 OK 状态，以便任何后续断言（若依赖 bigfiles）不踩雷
     await openPage("#/bigfiles");
-    await page.waitForSelector("#tbl-bigfiles tbody tr");
     await page.click("#btn-bigfiles");
+    // 同上：等数据行真正渲染（提示行也是 <tr>，waitForSelector 不构成等待），
+    // 收尾时查询域回到 done 数据态再离开页面
+    await page.waitForFunction(
+      () => document.querySelectorAll("#tbl-bigfiles tbody [data-reveal]").length > 0,
+      undefined, { timeout: 30000 });
 
     await openPage("#/settings");
 

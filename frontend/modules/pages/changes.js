@@ -207,6 +207,10 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
       const container = document.querySelector(".page-container");
       if (container) container.scrollTop = st.scrollTop;  // 滚动恢复最后落定
     }
+    // ISS-151 回归修复：树恢复不重发 diff，但 AI 解读区状态独立于树域——
+    // 它跟随当前授权配置与在途任务，离页期间可能已变化（如设置页刚启用）。
+    // 不重取则解读区滞留离页前的 DOM（如 disabled 态），idle 永不出现。
+    loadAnalysisPanel();
     return;
   }
 

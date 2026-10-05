@@ -1131,6 +1131,170 @@ async def api_config_put(request: Request):
     }
 
 
+# ---------- ISS-155：范围发现 / 计划预览 / 范围选择保存 ----------
+#
+# 合同要点（任务卡 ISS-155）：
+# - **新能力不自动启用**：``config.scope_settings_view()["enabled"]`` 为 False
+#   时（用户从未显式选择），本组端点只读回显发现结果，生产扫描范围与旧口径
+#   逐字节不变。发现 ≠ 已监控。
+# - 读端点（discovery/preview）无副作用、无需写令牌；写端点（PUT scope）经
+#   local_boundary_guard 的 Host/Origin/写令牌三重闸门，与既有写方法同一合同。
+# - 保存**只改下一轮计划**，不触发扫描、不注册/重载任何调度。
+# - 身份/计划未接线的消费者（trend/AI 等跨口径聚合）由调用方显式拒绝，本卡
+#   不把新身份静默塞进旧口径读取路径。
+
+def _discovery_payload() -> dict:
+    """启动盘容器/卷发现（ISS-152 只读适配器的 HTTP 转交，零持久化）。
+
+    发现失败/非 APFS/非 macOS 一律返回 storage.py 的降级态 + errors，
+    本层不猜、不补造身份，也不回退成「全盘可读」的乐观结论。
+    """
+    from . import storage  # 延迟导入：发现适配器只在被请求时才载入
+    try:
+        discovery = storage.discover_startup(config.DEFAULT_ROOT)
+    except Exception as exc:  # noqa: BLE001 - 发现失败必须可观测，不 5xx 崩服务
+        logger.exception("存储发现失败（范围预览不可用）")
+        return {"ok": False, "error": "discovery-failed",
+                "detail": type(exc).__name__}
+    return {"ok": True, "discovery": discovery.as_dict()}
+
+
+@app.get("/api/storage/discovery")
+def api_storage_discovery():
+    """启动盘容器/卷发现结果（只读，无副作用、无需写令牌）。"""
+    return _discovery_payload()
+
+
+def _plan_preview(selection: config.ScopeSelection) -> dict:
+    """把已校验的范围选择解析为「下一轮计划」预览（不落盘、不扫描）。
+
+    预览给出范围根与其稳定身份、读限（每范围 du 时限）、资源预算
+    （min_kb / 排除掩码）和 identity 版本——即任务卡要求的「计划根 + 读取
+    限制 + 排除/资源预算 + identity 版本」。此处**不**打开数据库、不登记
+    scan_scopes/scan_plans：登记只发生在真实扫描轮次（ISS-154）。
+    """
+    from . import scan_coordinator, scanner
+    pinned = scanner.PinnedScanConfig.capture(
+        metric_version=scan_coordinator.METRIC_VERSION)
+    plans = []
+    for index, root in enumerate(selection.roots):
+        scope_id = selection.scope_ids[index] if index < len(selection.scope_ids) \
+            else scan_coordinator.derived_scope_id(root)
+        plans.append({
+            "scope_id": scope_id,
+            "root": root,
+            "display_name": Path(root).name or root,
+            "plan_id": scanner.plan_identity_id(
+                scope_id, root, int(pinned.metric_version),
+                int(pinned.min_kb), pinned.exclude_names_canonical),
+        })
+    return {
+        "mode": selection.mode,
+        "container_id": selection.container_id,
+        "identity_version": selection.identity_version,
+        "revision": selection.revision,
+        "plans": plans,
+        "read_limits": {"du_timeout_s": pinned.du_timeout_s,
+                        "per_root": True},
+        "budget": {"min_kb": int(pinned.min_kb),
+                   "exclude_names": pinned.exclude_names_canonical},
+    }
+
+
+@app.get("/api/storage/plan/preview")
+def api_storage_plan_preview(mode: Optional[str] = Query(None),
+                              roots: Optional[str] = Query(None)):
+    """范围计划预览（只读）：校验给定选择并回显下一轮计划，不保存任何东西。
+
+    - 未显式启用范围能力（``enabled=False``）时只回显当前生效选择与「旧口径
+      单根」提示，不猜测、不替用户选择启动盘。
+    - 给定 ``mode``/``roots``（分号分隔）时按候选预览，供 UI「预览→保存」；
+      校验失败 400 且不落盘。
+    """
+    view = config.scope_settings_view()
+    if not mode and not roots:
+        current = config.effective_scope_selection()
+        return {"enabled": view["enabled"], "identity_version":
+                view["identity_version"],
+                "selection": view["selection"],
+                "plan": None if current is None else _plan_preview(current),
+                "hint": ("未启用范围能力：扫描仍按旧单根口径运行；"
+                         "选择范围只改下一轮计划。")}
+    candidate = _scope_candidate_from_query(mode, roots)
+    return {"enabled": view["enabled"],
+            "identity_version": view["identity_version"],
+            "selection": view["selection"],
+            "plan": _plan_preview(candidate),
+            "hint": "预览不改任何配置；保存只影响下一轮计划，不触发扫描。"}
+
+
+def _scope_candidate_from_query(mode: Optional[str],
+                                roots: Optional[str]) -> config.ScopeSelection:
+    """把查询参数装配成候选范围选择（fail-closed 校验）。"""
+    if not mode:
+        raise HTTPException(400, "预览候选必须显式给出 mode")
+    raw_roots = [item for item in (roots or "").split(";") if item]
+    try:
+        fields = config._validated_storage_scope(  # noqa: SLF001 - 同包内共用校验层
+            {"mode": mode, "roots": raw_roots}, partial=False)
+        return config.ScopeSelection(
+            mode=str(fields["mode"]),
+            roots=tuple(fields.get("roots", ())),  # type: ignore[arg-type]
+            identity_version=config.SCOPE_IDENTITY_VERSION)
+    except config.ConfigurationError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.put("/api/storage/scope")
+async def api_storage_scope_put(request: Request):
+    """保存范围选择（需写令牌；原子写 + 版本冲突保护；不触发扫描）。
+
+    请求体 ``{"mode": ..., "roots": [...], "scope_ids": [...],
+    "container_id": ..., "expected_revision": int}``。
+
+    - ``expected_revision`` 与当前生效版本不一致 → **409** 且旧值不动
+      （预览→保存之间的并发改动必须显式重预览）；
+    - 校验失败 400、写失败 500，两者都不产生半更新状态；
+    - 服务自身不注册/不重载 launchd、不触发扫描。
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "请求体必须是合法 JSON 对象")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "请求体必须是 JSON 对象")
+    unknown = sorted(set(body) - {
+        "mode", "roots", "scope_ids", "container_id", "expected_revision",
+        "selected_at"})
+    if unknown:
+        raise HTTPException(400, f"请求体含未知字段：{', '.join(unknown)}")
+    expected = body.get("expected_revision")
+    if expected is not None and (isinstance(expected, bool)
+                                 or not isinstance(expected, int)
+                                 or expected < 0):
+        raise HTTPException(400, f"expected_revision 必须是非负整数：{expected!r}")
+    payload = {key: value for key, value in body.items()
+               if key != "expected_revision"}
+    try:
+        saved = config.save_scope_selection(
+            config._validated_storage_scope_whole(payload),  # noqa: SLF001
+            expected_revision=expected)
+    except config.ScopeVersionConflict as exc:
+        raise HTTPException(409, str(exc))
+    except config.ConfigurationError as exc:
+        raise HTTPException(400, str(exc))
+    except OSError as exc:
+        raise HTTPException(500, f"settings.json 写入失败（旧文件未改动）：{exc}")
+    return {
+        "applied": True,
+        "triggers_scan": False,
+        "scope": config.scope_settings_view(),
+        "plan": _plan_preview(saved),
+        "hint": ("范围选择已保存，仅影响下一轮计划；扫描需另行显式触发"
+                 "（旧 HOME 历史快照保留为 legacy 口径，不与新基线混比）。"),
+    }
+
+
 @app.post("/api/scan")
 def api_scan():
     global _active_scan, _active_scan_thread
@@ -1621,19 +1785,31 @@ async def api_reveal(request: Request):
     if not isinstance(raw, str) or not raw:
         raise HTTPException(400, "path 必须是非空字符串")
 
-    root_str = str(config.DEFAULT_ROOT).rstrip("/") or "/"
-    if not (raw == root_str or raw.startswith(root_str + "/")):
+    # ISS-155：范围启用后，reveal 只放行**已选择的规范根**内路径；未选中的
+    # 卷/发现结果一律不放行（发现 ≠ 已授权）。未启用时回落旧单根口径，
+    # 行为逐字节不变。
+    selection = config.effective_scope_selection()
+    allowed_roots = ([str(root) for root in selection.roots]
+                     if selection is not None
+                     else [str(config.DEFAULT_ROOT).rstrip("/") or "/"])
+    if not any(raw == root or raw.startswith(root + "/")
+               for root in allowed_roots):
         # 字符串层先拒绝相对路径与前缀同名根（/scanroot-evil 不是 /scanroot）
-        raise HTTPException(400, f"路径必须是监控根 {root_str} 之内的绝对路径")
+        if selection is None:
+            # 未启用范围能力：文案与边界逐字节保持旧单根口径（ISS-022 合同）
+            raise HTTPException(400, f"路径必须是监控根 {allowed_roots[0]} 之内的绝对路径")
+        listed = "、".join(allowed_roots)
+        raise HTTPException(400, f"路径必须是已选择范围 {listed} 之内的绝对路径")
 
     try:
-        root_real = Path(root_str).resolve()
         resolved = Path(raw).resolve()
+        root_reals = {Path(root).resolve() for root in allowed_roots}
     except (OSError, ValueError, RuntimeError):
         raise HTTPException(400, "路径无法规范化")
-    if resolved != root_real and root_real not in resolved.parents:
-        # 规范化层拒绝 .. 折叠与符号链接越界
-        raise HTTPException(400, "路径规范化后位于监控根之外，已拒绝")
+    if not any(resolved == root_real or root_real in resolved.parents
+               for root_real in root_reals):
+        # 规范化层拒绝 .. 折叠与符号链接越界（逐个已选根判定，ISS-155）
+        raise HTTPException(400, "路径规范化后位于已选范围之外，已拒绝")
     if not resolved.exists():
         raise HTTPException(404, "路径不存在（可能已被移动或删除）")
 

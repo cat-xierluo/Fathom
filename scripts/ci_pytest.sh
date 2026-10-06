@@ -92,7 +92,11 @@ expected="${EXPECTED_PYTEST_PASSED:-1407}"
 # container_id=NULL 成员均不得判可比（差额 null + 点名原因）、全成员同属
 # 所选容器保持可比防过紧、归因内 comparable_to_previous 与顶层权威结论
 # 一致（1451 → 1455）。
-expected="${EXPECTED_PYTEST_PASSED:-1455}"
+# ISS-168 +8：tests/test_trend_path_index.py——entries(path) 二级索引
+# （EXPLAIN QUERY PLAN 必走 idx_entries_path、缺索引必为全表扫描的反例
+# 自证、新建库/既有 v8 库打开/v0 迁移三条路径均补建、纯索引不改版本号
+# 语义与既有行、查询语义不变、重复打开幂等）（1455 → 1463）。
+expected="${EXPECTED_PYTEST_PASSED:-1463}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

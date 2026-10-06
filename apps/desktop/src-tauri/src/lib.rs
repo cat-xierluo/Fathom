@@ -544,6 +544,35 @@ fn auto_download_updates_enabled(runtime_dir: &Path) -> bool {
     )
 }
 
+/// ISS-155 接缝：``storage_scope`` 设置键。与 ``UPDATER_AUTO_DOWNLOAD_KEY``
+/// 同源同存储——运行根 ``settings.json``（Python ``fathom/config.py`` 持久化，
+/// 壳侧**只读不写**）。
+const STORAGE_SCOPE_KEY: &str = "storage_scope";
+
+/// ISS-155 接缝：读运行根 settings.json 的 ``storage_scope``（``std::fs`` +
+/// ``serde_json::Value`` 宽读，与 ``auto_download_updates_enabled`` 同风格、
+/// 不引 HTTP）。返回 ``Some(范围)`` 或 ``None``。
+///
+/// 降级口径（全部落 ``None`` = 旧口径「未配置」，调用方按既有行为继续，
+/// 不因形态异常改变既有判定）：
+/// - 文件缺失 / 不可读 / JSON 损坏 → ``None``；
+/// - 键缺失 → ``None``（不猜默认范围，避免壳侧替 Python 选口径）；
+/// - 键存在但**形态错误**（非字符串、空串/全空白、非标量如 object/array/
+///   数字/布尔）→ 整体降级 ``None``，不部分取值。
+///
+/// 未知键一律容忍：只 ``get`` 目标键，不校验同级其他字段。
+fn storage_scope_setting(runtime_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(runtime_dir.join("settings.json")).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    // 仅接受非空字符串；其余形态（含 null/数字/布尔/object/array）一律 None。
+    let raw = value.get(STORAGE_SCOPE_KEY)?.as_str()?;
+    let scope = raw.trim();
+    if scope.is_empty() {
+        return None;
+    }
+    Some(scope.to_string())
+}
+
 /// ISS-113：发现可用更新后的预下载决策（纯函数，单测直接覆盖分支）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrefetchPlan {
@@ -2301,6 +2330,88 @@ mod tests {
                 auto_download_updates_enabled(&dir),
                 *expected,
                 "settings.json={text:?} 应读作 enabled={expected}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ISS-155 接缝：settings.json 的 ``storage_scope`` **形态正确**读取——
+    /// 字符串值原样（去空白）透传；未知键容忍；缺文件/缺键按旧口径 ``None``。
+    #[test]
+    fn storage_scope_reads_string_value_tolerating_unknown_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "fathom-iss155-scope-ok-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录失败");
+        let path = dir.join("settings.json");
+
+        // 缺文件 → None（旧口径「未配置」，非 panic）
+        assert_eq!(
+            storage_scope_setting(&dir),
+            None,
+            "settings.json 缺失必须降级 None"
+        );
+
+        // 缺键 + 未知键容忍：只 get 目标键，同级其他字段形态不影响
+        for (text, expected) in [
+            (
+                r#"{"scan_time": "12:00", "auto_download_updates": false}"#,
+                None::<String>,
+            ),
+            // 正确形态：带首尾空白，取 trim 后值
+            (r#"{"storage_scope": "  documents  "}"#, Some("documents".to_string())),
+            // 无空白原样透传
+            (r#"{"storage_scope": "downloads"}"#, Some("downloads".to_string())),
+            // 未知键共存时仍读得到
+            (
+                r#"{"future_key": {"nested": true}, "storage_scope": "photos"}"#,
+                Some("photos".to_string()),
+            ),
+        ] {
+            std::fs::write(&path, text).expect("写临时 settings 失败");
+            assert_eq!(
+                storage_scope_setting(&dir),
+                expected,
+                "settings.json={text:?} 应读作 {expected:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ISS-155 接缝：``storage_scope`` **形态错误**整体降级 ``None``（旧口径）
+    /// ——不部分取值、不 panic；非字符串、空串/全空白、损坏 JSON 均同归 None。
+    #[test]
+    fn storage_scope_degrades_to_none_on_malformed_shape() {
+        let dir = std::env::temp_dir().join(format!(
+            "fathom-iss155-scope-bad-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录失败");
+        let path = dir.join("settings.json");
+
+        for text in [
+            // 非字符串标量
+            r#"{"storage_scope": null}"#,
+            r#"{"storage_scope": 42}"#,
+            r#"{"storage_scope": true}"#,
+            // 复合形态
+            r#"{"storage_scope": {"value": "documents"}}"#,
+            r#"{"storage_scope": ["documents"]}"#,
+            // 空串/全空白：形态错误，升级为 None 而非 Some("")
+            r#"{"storage_scope": ""}"#,
+            r#"{"storage_scope": "   "}"#,
+            // JSON 损坏
+            "not json at all",
+            r#"{"storage_scope": "documents"#,
+        ] {
+            std::fs::write(&path, text).expect("写临时 settings 失败");
+            assert_eq!(
+                storage_scope_setting(&dir),
+                None,
+                "settings.json={text:?} 形态错误必须整体降级 None（旧口径）"
             );
         }
         let _ = std::fs::remove_dir_all(&dir);

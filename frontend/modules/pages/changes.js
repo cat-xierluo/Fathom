@@ -31,13 +31,15 @@
  * - 树内每个请求域绑定 treeState 实例 + treeEpoch：改选 a/b、切筛选/
  *   排序即整体作废在途层级请求，迟到的旧层级响应不混入新视图。
  *
- * 数据集收敛（ISS-170）：快照 a/b 选项按**当前生效数据集**收敛，只列同身份
- * 快照，跨数据集组合在选项层就不可构造：
+ * 数据集收敛（ISS-170）：**不对称收敛**——收敛锚点恒为 b（对比基准侧）：
+ * - #sel-b（对比基准侧）**不收敛**：始终列出全部快照（按既有顺序），用户改 b
+ *   即切换数据集。这是跨数据集可达性的唯一入口，两侧同收敛会把它堵死；
+ * - #sel-a（历史点侧）收敛到**当前 b 所属数据集**，只列同身份快照，跨数据集
+ *   组合在选项层不可构造；改 b 后 a 侧选项重填为 b 数据集并按「a 取其前驱」
+ *   落定，改 a 只在 b 数据集内收敛、不动 b；
  * - 身份口径复用后端 reports.same_dataset 的 legacy 档三元组
  *   (root, min_kb, exclude_names)，逐字段同源、不新造判定（/api/snapshots
  *   不下发 plan_id，故前端只能取该档；带新身份的行由后端闸门继续把关）；
- * - 锚点 = 当前 b → a → 列表首个（最新），改选任一侧即把两侧选项收敛到该
- *   侧所属数据集，伙伴侧落在数据集外时按「b 最新、a 其前驱」重新锚定；
  * - 残余缝隙（异步竞态、跨页交接）由 loadDiff 发请求前的守卫兜底：跨身份
  *   组合就地给一句说明并保留上一有效读数，不静默、不把 400 伪装成成功。
  *
@@ -164,11 +166,12 @@ function findSnapshot(id) {
   return snapshotCatalog.find((s) => String(s.id) === String(id)) || null;
 }
 
-/** 收敛锚点：当前 b → 当前 a → 列表首个（/api/snapshots 已按时间倒序，即最新）。
- * b 优先是因为它是「当前对比到」的一侧，按它收敛与后端闸门口径一致。 */
-function anchorSnapshot(snaps, selectedA, selectedB) {
+/** 收敛锚点：当前 b（/api/snapshots 已按时间倒序，列表首个即最新）。
+ * 不对称收敛下锚点恒为 b——它是「切换数据集」的唯一入口，也是口径基准。
+ * b 不可用时兜底取列表首个，保证总有一个合法 b。 */
+function anchorSnapshot(snaps, selectedB) {
   const byId = new Map(snaps.map((s) => [String(s.id), s]));
-  return byId.get(String(selectedB)) || byId.get(String(selectedA)) || snaps[0] || null;
+  return byId.get(String(selectedB)) || snaps[0] || null;
 }
 
 /** 与锚点同数据集身份的快照（保持原顺序，不重排）。 */
@@ -186,25 +189,35 @@ function replaceSnapshotOptions(select, snaps) {
   select.replaceChildren(...options);
 }
 
-/** 把两侧选项重填为同一数据集的快照，并给两侧落定合法值。
- * reanchor=true（快照列表刷新路径）沿用既有默认形状：b 取数据集内最新、
- * a 取其前驱，a === b 时改写 a，保证自动对比总有合法区间。
- * reanchor=false（用户改选路径）：两侧既有选择只要仍属于该数据集就原样保留，
- * **不静默改写用户刚做的选择**——包括 a === b（那是用户显式造成的无效区间，
- * 交由请求失败态/404 协调如实暴露）；只有落在数据集外的一侧才重新锚定。 */
-function applyConvergedOptions(selA, selB, group, { keepA, keepB, reanchor = true } = {}) {
+/** 不对称收敛：b 侧**不收敛**（全列，用户改 b 即切换数据集），a 侧收敛到
+ * b 所属数据集（只列同身份快照），跨数据集组合在选项层不可构造。
+ * - b = keepB 仍在目录内则保留，否则取目录首个（最新）；
+ * - a = keepA 仍在 b 数据集内则保留，否则按「a 取其前驱」落定（组内 b 之外
+ *   的最新一个），保证自动对比总有合法区间；
+ * - userChanged 非空（用户改选任一侧）时**不排除** keepA === b：那是用户显式
+ *   造成的无效区间，交由后端 409/失败态如实暴露，不静默改写用户刚做的选择。
+ *   只在初始加载/快照列表刷新（userChanged 为空）时强制取前驱。
+ * 返回落定值与 a 侧所属的数据集分组（供「数据集内不足两个」判定复用）。 */
+function applyConvergedOptions(selA, selB, snaps, { keepA, keepB, userChanged = "" } = {}) {
+  // 用户显式清空某一侧是「请选择基线与对比快照」的合法意图，不静默补回合法值
+  const userEmptyA = Boolean(userChanged) && String(keepA) === "";
+  const userEmptyB = Boolean(userChanged) && String(keepB) === "";
+  const nextB = userEmptyB
+    ? ""
+    : (findSnapshot(keepB) ? String(keepB) : String((snaps[0] || {}).id ?? ""));
+  // a 侧收敛的锚：正常恒为 b；b 被用户清空时退回 a 自身，避免两侧一起变空
+  const group = sameDatasetGroup(snaps, findSnapshot(nextB) || findSnapshot(keepA) || snaps[0] || null);
   const ids = group.map((s) => String(s.id));
   const keepAOk = ids.includes(String(keepA)) && String(keepA) !== "";
-  const keepBOk = ids.includes(String(keepB)) && String(keepB) !== "";
-  let nextB = keepBOk ? String(keepB) : (ids[0] || "");
-  let nextA = reanchor
-    ? (keepAOk && String(keepA) !== nextB ? String(keepA) : (ids.find((id) => id !== nextB) || ""))
-    : (keepAOk ? String(keepA) : (ids.find((id) => id !== nextB) || ""));
-  replaceSnapshotOptions(selA, group);
-  replaceSnapshotOptions(selB, group);
+  const predecessor = ids.find((id) => id !== nextB) || "";
+  const nextA = userEmptyA
+    ? ""
+    : (keepAOk && (userChanged || String(keepA) !== nextB) ? String(keepA) : predecessor);
+  replaceSnapshotOptions(selB, snaps);  // b 侧不收敛：跨数据集可达性入口
+  replaceSnapshotOptions(selA, group);  // a 侧收敛到 b 所属数据集
   selA.value = nextA;
   selB.value = nextB;
-  return { nextA, nextB };
+  return { nextA, nextB, group };
 }
 
 async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
@@ -232,12 +245,14 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
   snapshotCatalog = snaps;
   const selectedA = snapshotSelectionRevision === selectionRevision ? previousA : selA.value;
   const selectedB = snapshotSelectionRevision === selectionRevision ? previousB : selB.value;
-  const anchor = anchorSnapshot(snaps, selectedA, selectedB);
+  const anchor = anchorSnapshot(snaps, selectedB);
   const group = sameDatasetGroup(snaps, anchor);
   const ids = group.map((s) => String(s.id));
-  const validA = ids.includes(selectedA), validB = ids.includes(selectedB);
+  const allIds = snaps.map((s) => String(s.id));
+  // b 侧全列故只需在目录内有效；a 侧收敛后须落在 b 所属数据集内
+  const validA = ids.includes(selectedA), validB = allIds.includes(selectedB);
   // 收敛后原选择若被排除在数据集外（异数据集/该数据集内已不可用），按既有形状落定
-  const { nextA, nextB } = applyConvergedOptions(selA, selB, group,
+  const { nextA, nextB } = applyConvergedOptions(selA, selB, snaps,
     { keepA: selectedA, keepB: selectedB });
 
   const fellBack = Boolean((selectedA && !validA) || (selectedB && !validB));
@@ -758,14 +773,13 @@ function onSelectionChange(changedId) {
   sessionTree = null;  // 用户改选：跨页保留的旧树视图作废
   const selA = document.getElementById("sel-a");
   const selB = document.getElementById("sel-b");
-  // ISS-170：改选任一侧即把两侧选项收敛到该侧所属数据集——用户刚选的那一侧
-  // 是明确意图，跨数据集组合因此在选项层不可构造。目录未就绪时不动选项
-  // （保留既有选项，交给 loadDiff 的守卫与后端闸门处理）。
-  const anchorSide = changedId === "sel-b" ? "sel-b" : "sel-a";
-  const anchorSnap = findSnapshot(anchorSide === "sel-b" ? selB.value : selA.value);
-  if (anchorSnap) {
-    applyConvergedOptions(selA, selB, sameDatasetGroup(snapshotCatalog, anchorSnap),
-      { keepA: selA.value, keepB: selB.value, reanchor: false });
+  // ISS-170：不对称收敛——锚点恒为 b。改 b 即切换数据集（b 侧全列），a 侧
+  // 随之重填为 b 数据集并按「a 取其前驱」落定；改 a 只在 b 数据集内收敛，
+  // b 侧选项与取值不动。目录未就绪时不动选项（保留既有选项，交给 loadDiff
+  // 的守卫与后端闸门处理）。
+  if (snapshotCatalog.length) {
+    applyConvergedOptions(selA, selB, snapshotCatalog,
+      { keepA: selA.value, keepB: selB.value, userChanged: changedId });
   }
   const a = selA.value;
   const b = selB.value;

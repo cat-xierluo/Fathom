@@ -133,3 +133,92 @@ PASS  journey-snapshot-options-cross-dataset-exposed |
 - 「当前生效数据集内不足两个快照」的新增空态文案分支未由 ISS-160 套件覆盖
   （种子中每个数据集都有 ≥2 个快照）；该分支只改文案，不改请求与渲染路径。
 - 未跑 `git push`（按卡片红线由 PM 代推）；未改动后端 `fathom/` 与 `tests/`（只读）。
+
+---
+
+# ISS-170 R1（窄返修）：收敛改为不对称，保住跨数据集可达性
+
+## 4. 返修起因
+
+CI 实测反例（main 合成种子）：`scripts/verify_tree_changes_frontend.cjs:275` 的
+`page.selectOption("#sel-a", "14")` 直接抛 `did not find some options`——R0 的**对称收敛**
+让初始选项只含默认数据集（#19/#20 系），跨数据集快照（#14/#15 weird 系）在选项里根本不存在。
+用户没有任何 UI 路径切换数据集：这是产品级可达性缺陷，不是套件问题。
+根因：把「跨数据集组合不可构造」实现成了「跨数据集快照不可见」，收敛锚点同时钉在两侧。
+
+## 5. 修法（不对称收敛）
+
+| 侧 | 行为 |
+| --- | --- |
+| `#sel-b`（对比基准侧） | **不收敛**：始终列出全部快照（按既有顺序）。用户改 b 即切换数据集 |
+| `#sel-a`（历史点侧） | 收敛到**当前 b 所属数据集**：改 b 后 a 侧选项重填为 b 数据集并按「a 取其前驱」落定；改 a 只在 b 数据集内收敛，不动 b |
+| 初始加载 | b=最新，a=其前驱（现状不变）；a 选项=b 数据集子集 |
+| `loadDiff` 守卫 | 保留（竞态兜底语义不变） |
+| `datasetKey` / `snapshotCatalog` / 归一化语义 | 零改动 |
+
+代码改动（`frontend/modules/pages/changes.js`）：
+
+| 改动 | 内容 |
+| --- | --- |
+| `anchorSnapshot(snaps, selectedB)` | 锚点恒为 b（原 `b → a → 首个` 三级兜底去掉 a 那一级）；b 不可用时兜底取列表首个 |
+| `applyConvergedOptions(selA, selB, snaps, {...})` | 第三参由「数据集分组」改为**全量目录**；`replaceSnapshotOptions(selB, snaps)` 全列、`replaceSnapshotOptions(selA, group)` 收敛。返回值新增 `group` |
+| 落定规则 | `b = keepB 仍在目录内则保留，否则目录首个`；`a = keepA 仍在 b 数据集内则保留，否则取组内 b 之外最新者`。**用户改选任一侧**时 `a === b` 一律保留（用户显式造成的无效区间交由后端如实暴露，不静默改写）；只在初始加载/快照列表刷新（无用户改选）时强制取前驱 |
+| 用户清空某一侧 | 保留空值不补回——空选是 ISS-093「请选择基线与对比快照，选齐后自动对比」的合法意图。b 被清空时 a 侧收敛锚退回 a 自身，避免两侧一起变空 |
+| `onSelectionChange(changedId)` | 不再按 changedId 选锚点，统一以 b 为锚；目录未就绪（`snapshotCatalog` 为空）时不动选项 |
+| `loadSnapshotsForDiff` | `validB` 判据由「分组内」改为「目录内」（b 侧全列），`validA` 仍判分组内 |
+
+不变量：两侧恒满足 `datasetKey(a) === datasetKey(b)`，跨数据集组合在选项层仍不可构造；
+新增的是**切换数据集的入口**，不是放宽可比性闸门。
+
+## 6. 套件同步
+
+- `scripts/verify_storage_investigation_frontend.cjs`：D1 断言改为不对称口径——a 侧无异数据集
+  快照**且** b 侧仍是全量（`histPair.b.length >= OLDHOME_IDS.size`，显式钉住切换入口）。
+  用例名与总数（49）不变。
+- `scripts/verify_tree_changes_frontend.cjs`（本次新增写域，**仅改选择顺序**）：全部 16 组
+  `selectOption("#sel-a", X)` / `selectOption("#sel-b", Y)` 改为先 b 后 a。该种子下每个快照
+  都带各自的 root，故每组都是跨数据集区间，必须先由 b 打开该数据集再选 a。
+  **断言语义零改动**（同一组 a/b 取值、同一 waitUntil、同一 record 名）。
+
+## 7. 验证（全部实际执行）
+
+```bash
+export FATHOM_PYTHON=/Users/maoking/orca/workspaces/fathom/iss-157-storage-summary/.venv/bin/python
+node scripts/verify_storage_investigation_frontend.cjs   # 49/49 ×2
+node scripts/verify_tree_changes_frontend.cjs            # 74/74 ×2
+node scripts/verify_frontend_refresh.cjs                 # 217 零破坏 ×1
+```
+
+| 命令 | 期望 | 第 1 轮实测 | 第 1 轮退出码 | 第 2 轮实测 | 第 2 轮退出码 |
+| --- | --- | --- | --- | --- | --- |
+| `verify_storage_investigation_frontend.cjs` | 49 | `{"ok":true,"passed":49,"failed":0}` | 0 | `{"ok":true,"passed":49,"failed":0}` | 0 |
+| `verify_tree_changes_frontend.cjs` | 74 | `{"passed":74,"failed":0}` | 0 | `{"passed":74,"failed":0}` | 0 |
+| `verify_frontend_refresh.cjs` | 217 | `217 PASS，0 FAIL` | 0 | — | — |
+
+（表中为**最终代码**上的连跑结果。）
+
+返修过程中 refresh 套件先后暴露了 R1 收敛的两处**过强**语义，均已修正并补跑：
+
+| 暴露点 | 症状 | 修正 |
+| --- | --- | --- |
+| `verify_frontend_refresh.cjs:2283` | 用户把 b 改到与 a 相同的值（显式 `a===b` 区间），收敛却把 a 改写成 b 的前驱，`已对比快照 #2 → #2` 永不出现 → 30s 超时 | 落定规则的「不改写用户选择」豁免扩展到**用户改选的任一侧**（不只 a），只在初始加载/列表刷新时强制取前驱 |
+| `verify_frontend_refresh.cjs:2293` | 用户把 a 清空（ISS-093 空选引导态），收敛却把 a 静默补回合法值，`选齐后自动对比` 永不出现 → 30s 超时 | 用户显式清空某一侧时保留空值不补回；b 被清空时 a 侧锚退回 a 自身，避免两侧一起变空 |
+
+D1 在 R1 口径下的实测输出（不对称口径直接可读）：
+
+```
+PASS  journey-snapshot-options-cross-dataset-exposed |
+      ISS-170 R1 不对称口径：a 侧同数据集 4 项（#4,#3,#2,#1），无异数据集快照；
+      b 侧全列 7 项（跨数据集切换入口保留）
+```
+
+即原先从两侧一起消失的新整盘 #5/#6 与 decoy #7，现在只在 a 侧消失（a 侧 4 项，零异数据集），
+b 侧 7 项全列保留了切换入口；`journey-default-range-latest-two` 仍为 `a=#3 b=#4`，
+`journey-history-non-latest` 仍按 `#1→#2` 断言 9.5 GB → 10.5 GB。
+
+## 8. R1 NOT_VERIFIED
+
+- `plan_id` 新身份档的前端收敛仍**未验证**（`/api/snapshots` 不下发该字段，与 R0 相同）。
+- 「当前生效数据集内不足两个快照」的文案分支仍**未覆盖**（各套件种子中每个数据集都有 ≥2 快照）。
+- 「判据缺失放行给后端闸门」分支（`snapshotCatalog` 为空）仍**未覆盖**。
+- 未跑 `git push`；未改动后端 `fathom/` 与 `tests/`（只读）。

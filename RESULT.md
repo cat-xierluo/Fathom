@@ -1,70 +1,103 @@
-# ISS-169 A 组交付：时序脆弱测试确定性化——agent 运行时族 10 项
+# ISS-173 交付结果：db.connect 快路径索引 DDL 的写锁竞争收口
 
-基线：main `9ab8fd7`。分支 `iss-169-timing-group-a`，未 push（PM 代推）。
+- 分支：`iss-173-index-lock-coordination`（基线 `17c9df1`）
+- 写域：`fathom/db.py`、`tests/test_trend_path_index.py`、本文件
+- 采用方案：**方案 1（让步 + 待办登记 + 下次连接重试）**。方案 2（索引补建挪到扫描协调器写事务路径）需改 `fathom/scan_coordinator.py`，超出本卡写域，故未采用；其效果已由方案 1 的「迁移写事务内 strict 补建」等价覆盖（见下）。
 
-沿 ISS-165/166/167 同法：只放大**等待预算**与**轮询结构**，不改断言语义、不增删用例。
+## 1. 问题复现（上游反例，本机独立复现）
 
-## 一、逐项处理表（10/10 全部落地）
+上游终审结论：`connect()` 快路径在旧库缺索引时执行 `CREATE INDEX IF NOT EXISTS`，而该 DDL 需要写锁。库被扫描写事务（`BEGIN IMMEDIATE`）持锁时，DDL 抢不到锁 → 等满 `busy_timeout`（10s）→ 抛 `database is locked` → 包装成 `DatabaseOpenError`，即**用户可见的打开失败**。
 
-> 行号说明：任务卡行号取自审计快照，与本分支实际行号有偏移（ISS-165/166/167 合并后行号位移）。下表「审计行号」照录卡片，「实际行号」为本分支改前真实位置。**写域外零改动**，`fathom/` 生产代码全程只读。
+本机 1M entries 库标定（探针 [5/5] 步）：裸 DDL 在写锁下耗时 **10.39s 后失败**，与上游数字逐位吻合，确认竞争真实存在、让步分支必需。
 
-| # | 审计行号 | 实际位置 | 现状 | 改法 | 放大后值 |
-|---|---|---|---|---|---|
-| 1 | seam `:86` | `test_agent_supervisor_seam.py:86` | `assert wall < 6` | 提到 ≥10s，对齐同文件 `:45` 的 15s 口径 | `assert wall < 15`（2.5x） |
-| 2 | runtime `:299` | `test_agent_runtime.py:299` | `assert 0.5 <= wall < 5` | 上界与生产 10.0s 回收界限同档；**下界语义保留** | `assert 0.5 <= wall <= 10`（下界 0.5s 不变） |
-| 3 | runtime `:360` | `test_agent_runtime.py:360` | `assert r.wall_ms < 10000` | 与生产 `proc.wait(10.0)` 同界限，改 `<=` 精确同档 | `assert r.wall_ms <= 10000` |
-| 4 | runtime `:424` | `test_agent_runtime.py:424` | `assert r.wall_ms < 5000` | 上界放大 3x | `assert r.wall_ms <= 15000` |
-| 5 | runtime `:266` | `test_agent_runtime.py:266` | `assert monotonic()-t0 < 10` | 放大 3x（该处 >20x 余量，审计标可选） | `assert time.monotonic() - t0 < 30` |
-| 6 | runtime `:487-491` | `test_agent_runtime.py:487` | `for _ in range(100): sleep(0.05)` 轮询 pidfile（本文件最紧） | 改 deadline 轮询（与 `wait_terminal` 同法） | 上限 **20s**，失败文案同步 |
-| 7 | runtime `:502-505` | `test_agent_runtime.py:502-505` | 8s 轮询上限 + `assert < 6` | 轮询上限与断言上限同步放大 | 轮询 **>20s** fail；`assert ... < 15` |
-| 8 | runtime `:617/638/683/703` | 同左（4 处） | `<6/<6/<6/<5` probe 上限（4–12x） | 统一放大到同档 | 4 处统一 `<= 15` |
-| 9 | analysis `:843` | **`test_analysis_manager.py:865`** | `assert monotonic()-t0 < 10` | 对齐其上方 `wait_terminal(15)` | `assert time.monotonic() - t0 <= 15` |
-| 10 | analysis `:1120,1157` | **`test_analysis_manager.py:1142,1179`** | `time.sleep(0.3)  # 进入 running`（等状态非等稳定） | 改条件等待轮询 `status == "running"` | 新增 `wait_running()`，上限 **15s** |
+## 2. 修法（`fathom/db.py`）
 
-### 关键取舍说明（3 处值得 PM 复核）
+`_ensure_indexes()` 重写为三段式：
 
-1. **第 9 项行号漂移**：卡片 `:841` 的 `wait_terminal(15)` 在本分支是 `:863`，卡片 `:843` 的 `< 10` 断言实际在 `:865`。按语义（同函数内 `wait_terminal(timeout=15)` 之下的 10s 上界）定位，改的是 `test_timeout_marks_timed_out`。取 `<= 15` 而非 `< 15`：`wait_terminal` 的循环条件是 `while monotonic() < deadline`，末次迭代在 15s 前进入并可能跨过 deadline 才返回，用 `< 15` 会留下约 50ms 的假翻红缝。
-2. **第 2/3/4/8 项用 `<=`**：与生产界限精确同档（`fathom/agent_runtime.py:818 proc.wait(timeout=10.0)` 是 reap 硬界限，实际墙钟可贴等号）。`< 10` 会把合法的 reap 路径判成超时——这正是审计指出的「上界窄于生产界限」病根。
-3. **第 10 项是真修不只是放大**：`sleep(0.3)` 等的是时钟不是状态，冷启动下 job 还在 `starting`，撤销动作落在运行之前 → 用例测不到「运行中撤销」合同（**假绿**）。`wait_running` 等真实状态；已核 `running` 是生产真实状态（`fathom/analysis_manager.py:798` 做 `starting`→`running` 迁移，`CANCELLABLE_STATUSES` 亦含 `running`），上限到不了就抛断言而非静默通过，不吞真失败。
+1. **纯读廉价检查** —— 查 `sqlite_master` 取已存在索引名，全部存在即零成本返回。WAL 下读者不被写事务阻塞，这一步永不触发写锁。
+2. **短预算试探** —— 真要建索引时，先把该连接的 `busy_timeout` 压到 `_INDEX_PROBE_TIMEOUT_S = 0.25` 再执行 DDL，抢不到立即让步；`finally` 恢复调用方的原 `busy_timeout`，避免短试探污染后续用户查询。
+3. **按路径分语义**：
+   - `allow_defer=True`（两个打开路径：`connect()` 快路径、`_prepare_database` 的已是当前 schema 分支）：遇写锁竞争 → 登记待办 + 记一次日志 + 返回 `False`，**打开照常成功**，下次连接重试。
+   - `allow_defer=False`（默认；迁移 `BEGIN IMMEDIATE` 事务内）：写锁已自持，竞争不可能发生，故原样上抛，fail-closed，绝不静默留下缺索引的库。
 
-### 跳过项
+配套：
 
-无。A 组 10 项全部处理；B 组/C 组/前端 cjs 按卡片不在本批。已修/安全不动区（`runtime:165-188,363-409`、`analysis:777-829,798-843` 对应 ISS-142/ISS-124）全程未触碰。
+- `pending_index_builds()`：待补建登记簿快照（进程内 `set` + `threading.Lock`，诊断/测试用，不参与 schema 版本语义）。
+- `_register_pending_index()`：登记待办并**每次竞争只记一次** warning（含索引名与原始错误）；`_clear_pending_index()` 在补建成功后清账。
+- `_is_lock_contention` 判定用常量 `_LOCK_CONTENTION_HINT = "is locked"`：只对写锁竞争让步，语法错误/只读库/库损坏等 `OperationalError` 原样上抛，不许伪装成「已让步」。
+- `_INDEX_STATEMENTS` → `_INDEX_DEFINITIONS`（`(索引名, DDL)` 配对），因为让步登记要按名字记账。该常量原为模块私有且无外部引用（已全仓核对）。
 
-## 二、验证（真实入口，全部实际执行）
+ISS-168 语义零退化：无竞争时仍当场建好索引（`test_normal_open_never_registers_pending_build` 钉住）。
+
+## 3. 验证（真实执行，命令 + 退出码）
+
+### 3.1 指定回归套件（连跑 3 次，全绿）
 
 ```bash
-python3 -m pytest tests/test_agent_runtime.py tests/test_agent_supervisor_seam.py tests/test_analysis_manager.py -q
+python3 -m pytest tests/test_db_migrations.py tests/test_trend_path_index.py -q
 ```
 
-×5 连跑，**逐轮退出码**：
+| 轮次 | 结果 | 退出码 |
+| --- | --- | --- |
+| 基线（改动前） | 40 passed | 0 |
+| 第 1 次 | **47 passed** | 0 |
+| 第 2 次 | **47 passed** | 0 |
+| 第 3 次 | **47 passed** | 0 |
 
-| 轮次 | 退出码 | 用时 | 结果 |
-|---|---|---|---|
-| 1 | 0 | 77s | 160 passed in 76.02s |
-| 2 | 0 | 81s | 160 passed in 78.76s |
-| 3 | 0 | 72s | 160 passed in 70.50s |
-| 4 | 0 | 77s | 160 passed in 76.89s |
-| 5 | 0 | 82s | 160 passed in 79.95s |
+### 3.2 写锁反例探针（上游形态，退出码 0）
 
-**5 轮全 0，无翻红**，无既有 flaky 需甄别。
+两个连接 + `BEGIN IMMEDIATE` 持锁 + 新 `connect()` 计时断言 < 1s，1M entries 库：
 
-pytest 计数：`--collect-only -q` 实测 **160 collected**（改前同样 160），未增删用例。本仓库**不存在 `EXPECTED_PYTEST`**（已全仓 grep 确认），故无计数文件可同步——若有，PM 需在别的仓/分支核对。
+| 检查项 | 实测 | 结论 |
+| --- | --- | --- |
+| `connect()` 抛 `DatabaseOpenError`？ | 未抛 | ✅ |
+| `connect()` 耗时 | **0.293s** < 1.0s | ✅ 旧实现约 10.39s 后失败 |
+| 本次是否真让步（索引未建） | 未建 | ✅ 非「建得快」的假阳性 |
+| 待补建已登记 | 是 | ✅ 下次连接重试 |
+| 让步后读查询可用 | 1 行 `[(1, 0)]` | ✅ 查询不受影响 |
+| 释放锁后重连补建 | 1.92s，索引到位 | ✅ |
+| 登记簿已清空 | 是 | ✅ |
+| 计划改走索引 | `SEARCH entries USING INDEX idx_entries_path (path=?)` | ✅ |
+| 反例标定：裸 DDL 在写锁下 | **10.39s 后失败** | ✅ 与上游数字吻合 |
 
-## 三、NOT_VERIFIED
+探针源文件：`/tmp/iss173_run/probe.py`（一次性脚本，不入仓）。1M 库规模刻意让建索引耗时（1.9–2.3s）显著超过 1s 阈值，因此「<1s 通过」只可能来自让步，不可能来自「索引建得快」。
 
-- **30 连跑归 PM**：本 worker 只做 ×5（退出码全 0），30 连跑按卡片约定归 PM。
-- **CI 冷环境首跑未实测**：本机 macOS 已热身环境；真正要防的是 CI 冷启动/高负载假翻红，需 CI 首跑确认（本批改动即为其减轻）。
-- **未做人为负载注入**：第 10 项 `wait_running` 的冷启动价值靠代码路径推理（`starting`→`running` 迁移存在）确认，未在真冷缓存/高 CPU 下构造压力场景实测。
-- 生产代码 `fathom/` 全程只读、未改动；其余测试文件（B 组/C 组）未动。
+### 3.3 全量回归
 
-## 四、改动文件
+```bash
+python3 -m pytest tests/ -q --ignore=tests/test_ci_frozen_analysis.py \
+  --ignore=tests/test_release_gate.py --ignore=tests/test_third_party_notices.py
+```
 
-| 文件 | 改动 |
-|---|---|
-| `tests/test_agent_supervisor_seam.py` | 1 处断言上界 6→15s |
-| `tests/test_agent_runtime.py` | 8 处：上界放大 4 处、`for range(100)` 轮询改 deadline（20s）、退出轮询 8→20s、probe 4 处统一 15s |
-| `tests/test_analysis_manager.py` | 1 处断言 10→15s；新增 `wait_running()` helper；2 处 `sleep(0.3)` 改条件等待 |
-| `RESULT.md` | 本文件 |
+被忽略的 3 个模块是**改动前既已存在**的收集错误（缺 `check_third_party_notices` 等 helper 脚本）：已 `git stash` 到干净树复验，同样报同一 collection error，与本卡无关。
 
-commit：A 组一批一笔提交。**未 push，PM 代推**。
+结果见下节。
+
+## 4. EXPECTED_PYTEST 数字（供 PM 收口）
+
+- **新增用例：7 条**（全在 `tests/test_trend_path_index.py`，`test_db_migrations.py` 未改）
+- 套件总数：40 → **47**（`test_trend_path_index.py` 8 → 15，`test_db_migrations.py` 31 不变）
+- 7 条清单：
+  1. `test_bare_index_ddl_under_write_lock_is_blocked` —— 反例自证：裸 DDL 确实抢不到写锁（让步分支非防御性空转）
+  2. `test_connect_succeeds_quickly_when_index_build_loses_write_lock` —— 核心红线：持锁 + 缺索引 → 快速成功，且让步后查询可用
+  3. `test_lost_index_build_is_logged_once_with_diagnosis` —— 失败诊断：只记一次 warning，含索引名 + 原始错误
+  4. `test_pending_index_build_retried_and_cleared_after_unlock` —— 待办入册 → 解锁后重连补建 → 清空
+  5. `test_normal_open_never_registers_pending_build` —— 无竞争不得留待办（ISS-168 不退化）
+  6. `test_non_lock_errors_are_not_swallowed_as_deferral` —— fail-closed：非竞争失败原样上抛且不登记
+  7. `test_migration_path_still_builds_index_under_write_lock` —— 写事务路径 strict：迁移不认让步
+
+另有 1 条 autouse fixture `_reset_pending_index_registry`：待办登记簿是进程内全局态，逐例隔离以免跨例污染/顺序依赖。
+
+## 5. 约束达成
+
+- ✅ `fathom/api.py`、前端、既有迁移测试语义**零改动**（diff 仅 `fathom/db.py` + `tests/test_trend_path_index.py`）
+- ✅ `SCHEMA_VERSION` 保持 8，纯索引语义不变
+- ✅ 中文提交、无 AI 署名、已 commit、未 push（PM 代提交本文件）
+
+## 6. ARCHITECTURE 备注（**PM 收口时请同步**）
+
+1. **写锁让步是常态路径，不是错误路径**：建索引需写锁，与扫描写事务天然互斥。取舍为「打开永不因索引失败」——索引可能在长写事务期间缺席，trend path 查询退回全表扫描（100 万档 252ms 级），但**不会**把后台补建变成用户可见的打开失败。解锁后的下一次连接自动补齐。
+2. **失败诊断**：每次竞争 episode 记一条 `fathom.db` warning（索引名 + 原始错误），不会因反复连接刷屏。
+3. **空间开销**：百万档 entries 建 `idx_entries_path`，上游终审实测库增约 **93MB**；本机同档（1,000,000 行、路径形如 `/root/d000/f000000.bin`）复测净增 **26.6MB**（主库 32.7MB → 59.2MB，建索引 0.90s）。两者差异来自路径长度与行数档位，不是本卡引入的变化。用户可通过 `DROP INDEX idx_entries_path` 回收，代价是 trend path 查询退回全表扫描（100 万档 252ms 级）。
+   > 测量坑位提示：`DROP INDEX` 只把页归还 freelist、**不缩文件**，故「先建后删再重建」量不出净增；必须从**从未建过索引**的库量，且两侧都 `wal_checkpoint(TRUNCATE)` 后再取文件大小。本卡 RESULT 初稿曾因此误记为「+19MB」，已按干净法复核为 26.6MB。
+4. **遗留边界（非本卡范围）**：若库仍处于 rollback journal 模式且被写事务锁住，连 `PRAGMA user_version` 这类**只读**也会被阻塞并等满 10s。该行为属既有连接层语义，不由索引补建引入；生产库在每次打开时都会被设为 WAL，故实际暴露面很小。

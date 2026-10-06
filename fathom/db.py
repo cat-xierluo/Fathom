@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
+import logging
 import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
 import time
 from typing import Callable, Iterator
 
 from . import config
+
+_LOG = logging.getLogger("fathom.db")
 
 SCHEMA_VERSION = 8
 
@@ -25,9 +29,31 @@ SCHEMA_VERSION = 8
 # 语义。CREATE INDEX IF NOT EXISTS 命中即空操作，旧库打开时自动补建，
 # 对既有数据与行内容零风险（不动任何一行业务行）。
 _ENTRIES_PATH_INDEX = "idx_entries_path"
-_INDEX_STATEMENTS = (
-    f"CREATE INDEX IF NOT EXISTS {_ENTRIES_PATH_INDEX} ON entries(path)",
+# (索引名, DDL) 配对：让步逻辑要按名字登记待办，因此不能只留 SQL 串。
+_INDEX_DEFINITIONS: tuple[tuple[str, str], ...] = (
+    (
+        _ENTRIES_PATH_INDEX,
+        f"CREATE INDEX IF NOT EXISTS {_ENTRIES_PATH_INDEX} ON entries(path)",
+    ),
 )
+
+# 写锁让步（ISS-173）：建索引是需要写锁的 DDL，而 connect() 快路径是普通
+# 读连接。库正被扫描写事务（BEGIN IMMEDIATE）持有写锁时，DDL 会一直等到
+# busy_timeout（10s）后以 "database is locked" 失败——把后台补建索引变成
+# 用户可见的打开失败（上游百万档实测：普通 connect() 10.39s 后失败）。
+# 快路径因此只给一个很短的抢锁预算；抢不到就跳过本次补建并登记待办，
+# 让打开照常成功，下次连接再重试。
+_INDEX_PROBE_TIMEOUT_S = 0.25
+
+# SQLite 写锁竞争的报错措辞。只对竞争让步；语法错误、只读库、库损坏等
+# 同样可能抛 OperationalError，必须原样上抛，不能伪装成「已让步」。
+_LOCK_CONTENTION_HINT = "is locked"
+
+# 进程内待补建索引登记簿（ISS-173）。索引缺失 + 写锁被占时登记在此，
+# 下一次连接重试时清空；纯诊断/测试用途，不参与 schema 版本语义。
+_PENDING_INDEX_LOCK = threading.Lock()
+_PENDING_INDEXES: set[str] = set()
+_PENDING_INDEX_LOGGED: set[str] = set()
 
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE snapshots (
@@ -545,16 +571,88 @@ def _create_missing_tables(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
-def _ensure_indexes(conn: sqlite3.Connection) -> None:
-    """幂等补建查询用二级索引（ISS-168），不参与版本号语义。
+def _busy_timeout_ms(conn: sqlite3.Connection) -> int:
+    row = conn.execute("PRAGMA busy_timeout").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _existing_index_names(conn: sqlite3.Connection) -> set[str]:
+    """已存在的索引名。纯读：WAL 下读者不被写事务阻塞，因此这一步安全。"""
+    return {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+
+
+def _register_pending_index(name: str, exc: Exception) -> None:
+    """登记待补建索引并记一次诊断日志（ISS-173）。"""
+    with _PENDING_INDEX_LOCK:
+        _PENDING_INDEXES.add(name)
+        first_time = name not in _PENDING_INDEX_LOGGED
+        _PENDING_INDEX_LOGGED.add(name)
+    if first_time:
+        _LOG.warning(
+            "索引 %s 缺失但当前库写锁被占用，本次跳过补建（打开不受影响）；"
+            "解锁后的下一次连接会自动重试。原始错误：%s",
+            name, exc,
+        )
+
+
+def _clear_pending_index(name: str) -> None:
+    with _PENDING_INDEX_LOCK:
+        _PENDING_INDEXES.discard(name)
+
+
+def pending_index_builds() -> frozenset[str]:
+    """当前登记的待补建索引快照（诊断/测试用）。"""
+    with _PENDING_INDEX_LOCK:
+        return frozenset(_PENDING_INDEXES)
+
+
+def _ensure_indexes(conn: sqlite3.Connection, *, allow_defer: bool = False) -> bool:
+    """幂等补建查询用二级索引（ISS-168），返回是否全部到位。
 
     纯增量 DDL：只加索引，不加列、不重建表、不迁移数据。已存在时
     CREATE INDEX IF NOT EXISTS 是空操作，因此对「已是当前 schema」的
     库可在每次打开时无副作用地调用——connect() 快路径正是这样补建
     索引的，否则不跑迁移链的老库永远拿不到索引。
+
+    ISS-173：建索引要写锁，而调用点多为普通读连接。库被扫描写事务
+    （BEGIN IMMEDIATE）持锁时，旧实现会等满 busy_timeout（10s）再抛
+    "database is locked"，把后台补建变成用户可见的打开失败。这里改成：
+
+    1. 先做纯读的廉价检查，已存在即零成本返回（WAL 下不被写锁阻塞）；
+    2. 真要建时才把 busy_timeout 压到 ``_INDEX_PROBE_TIMEOUT_S`` 做短
+       预算试探，抢不到就立刻让步；
+    3. ``allow_defer=True``（打开路径）遇竞争则登记待办、记一次日志、
+       返回 False——打开照常成功，下次连接重试；
+       ``allow_defer=False``（写事务路径，已持写锁，竞争不可能发生）
+       则原样上抛，fail-closed。
     """
-    for statement in _INDEX_STATEMENTS:
-        conn.execute(statement)
+    missing = [
+        (name, statement)
+        for name, statement in _INDEX_DEFINITIONS
+        if name not in _existing_index_names(conn)
+    ]
+    if not missing:
+        return True
+
+    original_timeout = _busy_timeout_ms(conn)
+    try:
+        conn.execute(f"PRAGMA busy_timeout={int(_INDEX_PROBE_TIMEOUT_S * 1000)}")
+        for name, statement in missing:
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as exc:
+                if not allow_defer or _LOCK_CONTENTION_HINT not in str(exc).lower():
+                    raise
+                _register_pending_index(name, exc)
+                return False
+            _clear_pending_index(name)
+    finally:
+        # 恢复调用方的等待预算，避免短试探污染后续用户查询。
+        conn.execute(f"PRAGMA busy_timeout={original_timeout}")
+    return True
 
 
 def _migrate_v0(conn: sqlite3.Connection) -> None:
@@ -816,7 +914,8 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
             )
         if version == SCHEMA_VERSION:
             _validate_schema(conn, allow_missing=False)
-            _ensure_indexes(conn)
+            # 打开路径同快路径：抢不到写锁就让步登记待办，不让索引把打开搞失败。
+            _ensure_indexes(conn, allow_defer=True)
         elif version < SCHEMA_VERSION:
             _check_integrity(conn, label="数据库")
             tables = _user_tables(conn)
@@ -842,7 +941,8 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
                     # 否则失败会留下“标成 v1 但缺表”且不可重试的半成品。
                     _validate_schema(conn, allow_missing=False)
                     # 纯索引在同一事务内幂等补建：新建库与旧库升级两条
-                    # 路径到达完全相同的最终结构（ISS-168）。
+                    # 路径到达完全相同的最终结构（ISS-168）。此处已持写锁，
+                    # 不存在写锁竞争，故 strict（allow_defer=False）fail-closed。
                     _ensure_indexes(conn)
                 elif locked_version != SCHEMA_VERSION:
                     raise UnsupportedSchemaVersion(
@@ -886,9 +986,11 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
             if version == SCHEMA_VERSION:
                 _validate_schema(current, allow_missing=False)
                 # 已是当前 schema 也不跑迁移链，老库仍可能缺 ISS-168 的
-                # 纯索引；CREATE INDEX IF NOT EXISTS 命中即空操作，
-                # 因此快路径上无副作用，且不必串行化所有读连接。
-                _ensure_indexes(current)
+                # 纯索引。已存在时先做纯读廉价检查即零成本返回；真要
+                # 建时只给 250ms 抢锁预算，抢不到就跳过并登记待办
+                # （ISS-173）——绝不让后台补建索引把打开变成 10s 等待
+                # 后的失败；解锁后的下一次连接会自动重试。
+                _ensure_indexes(current, allow_defer=True)
                 current.execute("PRAGMA journal_mode=WAL")
                 current.execute("PRAGMA foreign_keys=ON")
                 return current

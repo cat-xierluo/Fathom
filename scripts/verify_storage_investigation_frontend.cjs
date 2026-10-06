@@ -372,8 +372,8 @@ async function main() {
       .sort((x, y) => (dateOf(x) + x.v).localeCompare(dateOf(y) + y.v));
     const crossDatasetOffered = [...histPair.a].filter((o) => !OLDHOME_IDS.has(String(o.v)));
     record("journey-snapshot-options-cross-dataset-exposed",
-      crossDatasetOffered.length > 0,
-      `已登记缺陷：选项含 ${crossDatasetOffered.length} 个异数据集快照（${crossDatasetOffered.map((o) => "#" + o.v).join(",")}）——回原责任卡`);
+      crossDatasetOffered.length === 0,
+      `ISS-170 返修后选项已收敛：` + `${crossDatasetOffered.length === 0 ? `同数据集 ${histPair.a.length} 项（${histPair.a.map((o) => "#" + o.v).join(",")}），无异数据集快照` : `仍含 ${crossDatasetOffered.length} 个异数据集快照（${crossDatasetOffered.map((o) => "#" + o.v).join(",")}）`}`);
     const histA = byDate[0];
     const histB = byDate[1];
     await page.selectOption("#sel-a", histA.v);

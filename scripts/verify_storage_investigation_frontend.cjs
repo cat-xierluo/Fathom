@@ -378,6 +378,7 @@ async function main() {
       crossDatasetOffered.length === 0 && bIsFullCatalog,
       `ISS-170 R1 不对称口径：a 侧同数据集 ${histPair.a.length} 项（${histPair.a.map((o) => "#" + o.v).join(",")}），无异数据集快照；` +
       `b 侧全列 ${histPair.b.length} 项（跨数据集切换入口保留）`);
+
     const histA = byDate[0];
     const histB = byDate[1];
     await page.selectOption("#sel-a", histA.v);
@@ -793,6 +794,67 @@ async function main() {
       !/你已释放|由你处理释放|已清理/.test(afterMeta),
       afterMeta.replace(/\s+/g, " ").slice(0, 80));
     await page.screenshot({ path: path.join(SHOTS, "j1-rescan-after.png") });
+
+    // ---------- J4-d：单快照数据集不得锁死（ISS-171）----------
+    /* ISS-171：单快照数据集不得把用户锁死。目录里的某个单快照数据集，选到它时
+     * 该数据集凑不出区间（group<2）：a 侧已收敛到仅 1 项、无合法取值，
+     * 禁 a 是对的；但 b 侧仍是全列的跨数据集切换入口，必须保持可用——旧行为
+     * 两侧同禁且禁用态跨页存续（只有 group>=2 的正常分支会解开），离页返回后
+     * 用户无路可走：别的数据集仍在 b 侧选项里却无法选择切换。 */
+    const exitPath = await (async () => {
+      // 本断言自带进出页：J1 重扫后可能停在别的页，先确保落在变化页且 b 侧已填充
+      await page.click(".nav-item[data-page='changes']");
+      await page.waitForFunction(() => location.hash === "#/changes", null, { timeout: 10000 });
+      await page.waitForFunction(() =>
+        Array.from(document.getElementById("sel-b").options).length > 1,
+        null, { timeout: 20000 });
+      const restoreB = await page.$eval("#sel-b", (el) => el.value);
+      const snap = () => page.evaluate(() => ({
+        aDisabled: document.getElementById("sel-a").disabled,
+        bDisabled: document.getElementById("sel-b").disabled,
+        bOptions: Array.from(document.getElementById("sel-b").options).length,
+        bValue: document.getElementById("sel-b").value,
+        aOptions: Array.from(document.getElementById("sel-a").options).length,
+        status: ((document.getElementById("diff-status") || {}).textContent || "").trim(),
+      }));
+      const candidates = await page.$$eval("#sel-b option",
+        (els) => els.map((o) => o.value).filter(Boolean));
+      // 自适应定位「单快照数据集」：选到它时 a 侧收敛后仅剩 1 项（group<2）。
+      // 不写死种子 ID——b 侧是全列，页面实际提供的才算可选项。
+      let singleId = "";
+      for (const id of candidates) {
+        await page.selectOption("#sel-b", id);
+        const hit = await page.waitForFunction(() =>
+          Array.from(document.getElementById("sel-a").options).length <= 1,
+          null, { timeout: 8000 }).then(() => true).catch(() => false);
+        if (hit) { singleId = id; break; }
+      }
+      if (!singleId) return { found: false, candidates: candidates.length };
+      const inSingleSnapshot = await snap();
+      // 离页 → 返回：禁用态不得跨页存续成死路
+      await page.click(".nav-item[data-page='overview']");
+      await page.waitForFunction(() => location.hash === "#/overview", null, { timeout: 10000 });
+      await page.click(".nav-item[data-page='changes']");
+      await page.waitForFunction(() => location.hash === "#/changes", null, { timeout: 10000 });
+      await page.waitForSelector("#sel-b", { state: "attached", timeout: 20000 });
+      await page.waitForFunction((id) => document.getElementById("sel-b").value === id,
+        singleId, { timeout: 15000 }).catch(() => {});
+      const afterReturn = await snap();
+      await page.selectOption("#sel-b", restoreB);   // 复原，后续旅程断言不受扰
+      await page.waitForFunction((id) => document.getElementById("sel-b").value === id,
+        restoreB, { timeout: 10000 }).catch(() => {});
+      return { found: true, singleId, inSingleSnapshot, afterReturn };
+    })();
+    const es = exitPath.inSingleSnapshot || {}, er = exitPath.afterReturn || {};
+    record("journey-single-snapshot-dataset-keeps-exit",
+      exitPath.found === true
+      && es.aDisabled === true && es.bDisabled === false && es.bOptions > 1
+      && er.aDisabled === true && er.bDisabled === false && er.bOptions > 1,
+      exitPath.found !== true
+        ? `未在 b 侧全列（${exitPath.candidates} 项）中定位到单快照数据集`
+        : `ISS-171 选到单快照数据集 #${exitPath.singleId}：选内 a禁用=${es.aDisabled} b禁用=${es.bDisabled} ` +
+          `a选项=${es.aOptions} b选项=${es.bOptions}；离页返回后 a禁用=${er.aDisabled} ` +
+          `b禁用=${er.bDisabled} a选项=${er.aOptions} b选项=${er.bOptions}（a 无合法区间应禁，b 须留出路）`);
 
     // ---------- J5：mock 仅注入受控故障/系统动作（对照：真实 API 全程可用） ----------
     const realStillWorks = await get(`/api/diff?a=${a1}&b=${a3}`);

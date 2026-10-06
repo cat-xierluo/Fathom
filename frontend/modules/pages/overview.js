@@ -586,7 +586,13 @@ function _ovUnexplainedBlock(u) {
   }
   const b = Number(u.bytes);
   const cls = b > 0 ? "delta-grow" : b < 0 ? "delta-shrink" : "";
-  const word = b > 0 ? "占用增加多于目录测量" : b < 0 ? "容器占用减少" : "两侧一致";
+  // ISS-171 容量文案：差额 = free_delta − measured_delta（storage.difference_view），
+  // 负值只说明「目录测量增长大于容器占用增长」，**不能**推出容器占用减少——两侧
+  // 可以同时增长而目录涨得更多（压缩/克隆/共享），此时容器占用实际是增加的。
+  // 旧文案写「容器占用减少」把符号语义误读成绝对增减，属归因失真。
+  const word = b > 0 ? "占用增加多于目录测量"
+    : b < 0 ? "目录测量增长大于容器占用增长（可能因压缩/克隆/共享）"
+    : "两侧一致";
   return `<div class="ov-unexplained" data-test="storage-unexplained" data-state="known" data-bytes="${b}">
     <span class="rl">未知差额</span>
     <span class="rv ${cls}" data-test="storage-unexplained-value">${escapeHtml(_fmtSignedBytes(b))}</span>

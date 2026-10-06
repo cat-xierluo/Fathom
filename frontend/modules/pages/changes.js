@@ -115,9 +115,15 @@ function showDiffFailure(message) {
   el.appendChild(retry);
 }
 
-function setDiffControlsEnabled(enabled) {
+/* ISS-171：禁用态不得成为死路。#sel-b 全列列出所有快照（ISS-170 不对称收敛），
+ * 它是跨数据集切换的**唯一入口**：只要目录里还有别的快照可选，就必须让 b 可用，
+ * 用户改 b 即离开当前数据集。「数据集内不足两个快照」只禁 a——a 侧已收敛到 b
+ * 所属数据集且该组仅一个快照，a 的任何取值都构不成区间，禁它是对的。
+ * exitViaDatasetSwitch 仅在确有其他可选快照时为真（目录为空/加载失败时两侧同禁）。
+ * 验收标准：用户永远有出路，任何禁用态下 b 都留有离开当前数据集的改选路径。 */
+function setDiffControlsEnabled(enabled, { exitViaDatasetSwitch = false } = {}) {
   document.getElementById("sel-a").disabled = !enabled;
-  document.getElementById("sel-b").disabled = !enabled;
+  document.getElementById("sel-b").disabled = !enabled && !exitViaDatasetSwitch;
 }
 
 function clearDiffResults() {
@@ -300,18 +306,25 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
     // 它跟随当前授权配置与在途任务，离页期间可能已变化（如设置页刚启用）。
     // 不重取则解读区滞留离页前的 DOM（如 disabled 态），idle 永不出现。
     loadAnalysisPanel();
+    // ISS-171：树恢复必须重估禁用态。恢复条件里 nextA 非空即蕴含该数据集已有
+    // 两个快照（本组凑不出前驱时 nextA 为空串），故两侧都应可用；离页前若残留
+    // disabled（另一数据集快照被清理、退回单快照），在此解开，不让它跨页存续。
+    setDiffControlsEnabled(true);
     return;
   }
 
   if (group.length < 2) {
     invalidateRequest("diff");
     clearDiffResults();
-    setDiffControlsEnabled(false);
+    // ISS-171：本数据集凑不出区间，但 b 侧全列仍是切换数据集的入口——同禁两侧
+    // 会把用户锁死在无区间状态（且禁用态跨页存续，返回变化页时只有 group>=2
+    // 的正常分支会解开，等于无路可走）。故只禁 a，b 保持可用。
+    setDiffControlsEnabled(false, { exitViaDatasetSwitch: snaps.length > 1 });
     // 整个库只有一个快照：沿用既有单快照文案（其他套件按此断言）。
     // 库里有多个快照、但当前生效数据集内不足两个：另给数据集口径的说明，
     // 不得让用户以为「再扫一次就能比较」（同库内已有别的数据集快照）。
     if (group.length === 1 && snaps.length > 1) {
-      setDiffStatus("当前生效数据集只有一个快照；需要同一数据集内另一个不同日期的有效快照才能比较，其他数据集的快照不与它构成区间。");
+      setDiffStatus("当前生效数据集只有一个快照；需要同一数据集内另一个不同日期的有效快照才能比较，其他数据集的快照不与它构成区间。可改「对比基准」下拉切换到其他数据集。");
     } else {
       setDiffStatus(group.length === 1
         ? "基线已建立；需要另一个不同日期的有效快照才能比较，分布现在可用。"
@@ -797,8 +810,12 @@ function onSelectionChange(changedId) {
   // b 侧选项与取值不动。目录未就绪时不动选项（保留既有选项，交给 loadDiff
   // 的守卫与后端闸门处理）。
   if (snapshotCatalog.length) {
-    applyConvergedOptions(selA, selB, snapshotCatalog,
+    const { group } = applyConvergedOptions(selA, selB, snapshotCatalog,
       { keepA: selA.value, keepB: selB.value, userChanged: changedId });
+    // ISS-171：改 b 换到够两个快照的数据集后必须把 a 一并放开——否则
+    // 「单快照数据集只禁 a」会把 a 永久留在禁用态，即便新数据集已可构成区间。
+    setDiffControlsEnabled(group.length >= 2,
+      { exitViaDatasetSwitch: snapshotCatalog.length > 1 });
   }
   const a = selA.value;
   const b = selB.value;

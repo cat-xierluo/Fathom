@@ -385,6 +385,19 @@ async function main() {
     await page.waitForFunction((id) => document.getElementById("sel-b").value === id,
       histB.v, { timeout: 10000 });
     // 净变化行呈现的是根同口径 a→b 总量（不是日期），故按 a1→a2 的根读数断言
+    /* ISS-170 R2：等待必须**绑定到用户最后选择的区间**，不能只等「读数变了」。
+     * 两次改选之间页面会经过中间态 a=#histA、b=旧 b——那是当时用户意图的忠实
+     * 渲染（gen 守卫正确地渲染它），若只判 t !== net0Text 就会把中间态当终态
+     * 锁进 netAfter（ISS-170 CI 反例：根目录 9.5 GB → 12.4 GB）。改为等待净变化
+     * 行里的 a/b 日期同时等于所选两个快照的日期（日期取自选项标签，与页面渲染
+     * 同源，不硬编码容量读数；期望读数仍由下方断言把关）。*/
+    /* ISS-170 R2 定案：以「状态行完成态绑定所选区间」为切档信号（renderNetLine
+     * 正常态不含日期——之前的日期匹配永不满足是套件缺陷，非页面缺陷），净变化
+     * 行只判「已变化且含根同口径差分」，期望读数由下方 record 断言把关。 */
+    await waitUntil(async () => {
+      const s = await page.$eval("#diff-status", (el) => el.textContent).catch(() => "");
+      return s.includes(`#${histA.v} → #${histB.v}`) ? s : null;
+    }, 20000, `状态行完成态 #${histA.v} → #${histB.v}`).catch((e) => `TIMEOUT:${e.message}`);
     const netAfter = await waitUntil(async () => {
       const t = await page.$eval("#changes-net", (el) => el.textContent).catch(() => "");
       return t !== net0Text && /根目录/.test(t) ? t : null;

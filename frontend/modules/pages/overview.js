@@ -656,6 +656,14 @@ function _handOffChangeEntry(a, b) {
     const tick = () => {
       const entry = state.pendingChangeEntry;
       if (!entry) return;
+      /* ISS-170 R2：用户已在变化页真实改选过（isTrusted change 置标志）时，
+       * 入口交接立即放弃——迟到 tick 不得把用户刚选的区间覆盖回入口旧值
+       * （实测三连发 (1,4)/(1,2)/(1,4) 的最后一发即本 tick 所写）。 */
+      if (window.__changesUserTouched) {
+        state.pendingChangeEntry = null;
+        window.removeEventListener("hashchange", once);
+        return;
+      }
       const selA = document.getElementById("sel-a");
       const selB = document.getElementById("sel-b");
       const ready = selA && selB && selB.options.length > 0;

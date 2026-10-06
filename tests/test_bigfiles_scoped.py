@@ -715,3 +715,228 @@ class TestScopedCli:
             rc = cli.main(argv)
         assert rc == 0, err.getvalue()
         assert "当前逻辑大小" in out.getvalue()
+
+
+# ---------- ISS-177：生效范围下的查询范围语义 ----------
+
+class TestEffectiveScopeQueryRoot:
+    """bigfiles 的实际查询范围必须跟随**生效范围**，而不是旧单根。
+
+    上游反例（真实 HTTP 实测，ISS-177）：
+    旧根 = 临时目录 A；保存并列目录 B 为生效范围后——
+    - ``GET /api/bigfiles?path=B`` → 400「必须位于旧根 A」（B 就在生效范围
+      内，却在旧根外），显式 path 被错误拒绝；
+    - ``GET /api/bigfiles``（无 path）→ 200，但 ``scope.resolved_root`` 仍是
+      A，静默继续查询旧根。
+
+    因此本组用例一律**核对 resolved_root 与返回文件的归属**，不只断言状态码。
+    """
+
+    @pytest.fixture
+    def client(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+        import fathom.api as api_mod
+        root = tmp_path / "scanroot"
+        root.mkdir()
+        monkeypatch.setattr(config, "DEFAULT_ROOT", root)
+        monkeypatch.setattr(api_mod, "_BIGFILES_MANAGER", None)
+        with TestClient(api_mod.app,
+                        base_url=f"http://127.0.0.1:{config.PORT}") as c:
+            yield c, api_mod, root
+
+    @staticmethod
+    def _enable_scope(monkeypatch, *roots: Path) -> None:
+        """把生效范围设为给定各根（绕过 HTTP 保存层，直接置生效选择）。"""
+        selection = config.ScopeSelection(
+            mode="custom_directory",
+            roots=tuple(str(root.resolve()) for root in roots),
+        )
+        monkeypatch.setattr(
+            config, "_USER_SETTINGS",
+            config.UserSettings(storage_scope=selection))
+
+    def test_in_scope_new_root_queryable_returns_its_own_files(self, client,
+                                                               tmp_path,
+                                                               monkeypatch):
+        """①范围内的**新根**可查，且返回该根的文件（不是旧根的）。"""
+        c, _api_mod, old_root = client
+        _make_file(old_root / "old_only.bin", 9 * 1024 * 1024)
+        new_root = tmp_path / "vol-b"
+        _make_file(new_root / "new_only.bin", 3 * 1024 * 1024)
+        self._enable_scope(monkeypatch, new_root)
+
+        r = c.get("/api/bigfiles", params={"mode": "largest", "path": str(new_root),
+                                           "min_mb": 1, "topn": 10})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["scope"]["resolved_root"] == str(new_root.resolve())
+        names = {Path(f["path"]).name for f in body["files"]}
+        assert names == {"new_only.bin"}, f"查到了旧根的文件：{names}"
+
+    def test_each_of_multiple_roots_queryable(self, client, tmp_path,
+                                              monkeypatch):
+        """②多根：每个根各自可查，且各自只返回自己的文件。"""
+        c, _api_mod, old_root = client
+        _make_file(old_root / "old_only.bin", 9 * 1024 * 1024)
+        root_a = tmp_path / "vol-a"
+        root_b = tmp_path / "vol-b"
+        _make_file(root_a / "a.bin", 3 * 1024 * 1024)
+        _make_file(root_b / "b.bin", 4 * 1024 * 1024)
+        self._enable_scope(monkeypatch, root_a, root_b)
+
+        for root, expected in ((root_a, "a.bin"), (root_b, "b.bin")):
+            r = c.get("/api/bigfiles", params={"mode": "largest",
+                                               "path": str(root),
+                                               "min_mb": 1, "topn": 10})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["scope"]["resolved_root"] == str(root.resolve())
+            names = {Path(f["path"]).name for f in body["files"]}
+            assert names == {expected}, f"{root.name} 查到了别人的文件：{names}"
+
+    def test_no_path_resolves_to_first_scope_root_not_old_root(self, client,
+                                                               tmp_path,
+                                                               monkeypatch):
+        """④无 path：``resolved_root`` 落在生效范围语义承诺的根（首根），不静默查旧根。"""
+        c, _api_mod, old_root = client
+        _make_file(old_root / "old_only.bin", 9 * 1024 * 1024)
+        root_a = tmp_path / "vol-a"
+        root_b = tmp_path / "vol-b"
+        _make_file(root_a / "a.bin", 3 * 1024 * 1024)
+        _make_file(root_b / "b.bin", 4 * 1024 * 1024)
+        self._enable_scope(monkeypatch, root_a, root_b)
+
+        r = c.get("/api/bigfiles", params={"mode": "largest", "min_mb": 1,
+                                           "topn": 10})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        # ISS-155 保存语义：roots 顺序即采集顺序，首根即缺省查询根。
+        assert body["scope"]["resolved_root"] == str(root_a.resolve())
+        assert body["scope"]["root"] == str(root_a.resolve())
+        assert body["scope"]["scope_roots"] == [str(root_a.resolve()),
+                                                str(root_b.resolve())]
+        names = {Path(f["path"]).name for f in body["files"]}
+        assert names == {"a.bin"}, f"无 path 却查了旧根/第二个根：{names}"
+
+    def test_out_of_scope_path_rejected_naming_effective_scope(self, client,
+                                                               tmp_path,
+                                                               monkeypatch):
+        """范围外的 path 仍 fail-closed，且错误信息指认生效范围而非旧根。"""
+        c, _api_mod, old_root = client
+        root_a = tmp_path / "vol-a"
+        root_a.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        self._enable_scope(monkeypatch, root_a)
+
+        # 旧根此时**不在**生效范围内 → 必须被拒绝。
+        r = c.get("/api/bigfiles", params={"mode": "largest",
+                                           "path": str(old_root)})
+        assert r.status_code == 400, r.text
+        assert "已选范围" in r.json()["detail"]
+        for raw in (str(outside), f"{root_a}-evil",
+                    str(root_a / ".." / "outside"), "relative/child"):
+            r = c.get("/api/bigfiles", params={"mode": "largest", "path": raw})
+            assert r.status_code == 400, (raw, r.status_code, r.text)
+
+    def test_symlink_escape_rejected(self, client, tmp_path, monkeypatch):
+        """③符号链接越界：指向范围外的链接仍被拒绝（守卫强度不降）。"""
+        c, _api_mod, _old_root = client
+        root_a = tmp_path / "vol-a"
+        root_a.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        _make_file(outside / "leak.bin", 3 * 1024 * 1024)
+        (root_a / "link").symlink_to(outside)
+        self._enable_scope(monkeypatch, root_a)
+
+        r = c.get("/api/bigfiles", params={"mode": "largest",
+                                           "path": str(root_a / "link"),
+                                           "min_mb": 1, "topn": 10})
+        assert r.status_code == 400, r.text
+        assert "已拒绝" in r.json()["detail"]
+
+    def test_legacy_scope_disabled_behavior_unchanged(self, client, tmp_path):
+        """⑤legacy（未启用范围）：无 path 仍查旧根，``scope_roots`` 为 null。"""
+        c, _api_mod, root = client
+        _make_file(root / "legacy.bin", 3 * 1024 * 1024)
+        # 不启用范围：_USER_SETTINGS.storage_scope 保持 None。
+        r = c.get("/api/bigfiles", params={"mode": "largest", "min_mb": 1,
+                                           "topn": 10})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["scope"]["resolved_root"] == str(root.resolve())
+        assert body["scope"]["root"] == str(root)
+        assert body["scope"]["scope_roots"] is None
+        names = {Path(f["path"]).name for f in body["files"]}
+        assert names == {"legacy.bin"}
+
+    def test_legacy_explicit_path_outside_old_root_rejected(self, client,
+                                                            tmp_path):
+        """⑤legacy 逐字节不变：旧根之外的 path 仍按旧口径 400。"""
+        c, _api_mod, root = client
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        r = c.get("/api/bigfiles", params={"mode": "largest",
+                                           "path": str(elsewhere)})
+        assert r.status_code == 400, r.text
+        assert "监控根" in r.json()["detail"]
+
+
+class TestResolveQueryRootAllowedRoots:
+    """``resolve_query_root`` 的多根口径（单元层，守卫逐条对齐单根版）。"""
+
+    def test_none_returns_first_allowed_root(self, tmp_path):
+        a = tmp_path / "a"
+        a.mkdir()
+        b = tmp_path / "b"
+        b.mkdir()
+        assert bigfiles.resolve_query_root(
+            None, allowed_roots=[a, b]) == a.resolve()
+
+    def test_prefix_sibling_of_allowed_root_rejected(self, tmp_path):
+        root = tmp_path / "r"
+        (root).mkdir()
+        (tmp_path / "r-evil").mkdir()
+        with pytest.raises(bigfiles.BigfilesScopeError) as ei:
+            bigfiles.resolve_query_root(str(tmp_path / "r-evil"),
+                                        allowed_roots=[root])
+        assert ei.value.status == 400
+        assert "已选范围" in str(ei.value)
+
+    def test_dotdot_escape_rejected(self, tmp_path):
+        root = tmp_path / "r"
+        root.mkdir()
+        (tmp_path / "outside").mkdir()
+        with pytest.raises(bigfiles.BigfilesScopeError) as ei:
+            bigfiles.resolve_query_root(str(root / ".." / "outside"),
+                                        allowed_roots=[root])
+        assert ei.value.status == 400
+
+    def test_symlink_escape_rejected(self, tmp_path):
+        root = tmp_path / "r"
+        root.mkdir()
+        (tmp_path / "outside").mkdir()
+        (root / "link").symlink_to(tmp_path / "outside")
+        with pytest.raises(bigfiles.BigfilesScopeError) as ei:
+            bigfiles.resolve_query_root(str(root / "link"), allowed_roots=[root])
+        assert ei.value.status == 400
+
+    def test_moved_away_is_404(self, tmp_path):
+        import shutil
+        root = tmp_path / "r"
+        (root / "gone").mkdir(parents=True)
+        shutil.rmtree(root / "gone")
+        with pytest.raises(bigfiles.BigfilesScopeError) as ei:
+            bigfiles.resolve_query_root(str(root / "gone"), allowed_roots=[root])
+        assert ei.value.status == 404
+
+    def test_empty_allowed_roots_falls_back_to_legacy_single_root(self, tmp_path,
+                                                                 monkeypatch):
+        """空/None 的 allowed_roots 逐字节回落单根旧口径。"""
+        root = tmp_path / "r"
+        (root / "sub").mkdir(parents=True)
+        monkeypatch.setattr(config, "DEFAULT_ROOT", root)
+        assert bigfiles.resolve_query_root(None, allowed_roots=[]) == root.resolve()
+        assert bigfiles.resolve_query_root(
+            str(root / "sub"), allowed_roots=None) == (root / "sub").resolve()

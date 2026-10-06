@@ -46,6 +46,13 @@ def _isolated_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "REPORTS_DIR", runtime_dir / "reports")
     monkeypatch.setattr(config, "LOGS_DIR", runtime_dir / "logs")
     monkeypatch.setattr(config, "DEFAULT_ROOT", scan_root)
+    # 进程级持久化设置必须逐测试归零，且保存不得落到真实 settings.json：
+    # 本文件用 PUT /api/storage/scope 真实保存范围选择，若沿用进程全局
+    # _USER_SETTINGS 与真实 settings 路径，保存结果会**跨文件泄漏**给随后运行
+    # 的用例（实测污染 test_bigfiles_scoped 的 scope.root 与路径守卫）。
+    monkeypatch.setattr(config, "_USER_SETTINGS", config.UserSettings())
+    monkeypatch.setattr(config, "settings_path",
+                        lambda: runtime_dir / "settings.json")
 
 
 @pytest.fixture
@@ -171,17 +178,42 @@ class TestSamePlanConsumers:
         assert cross_b not in ids  # 异 plan 不入 plan-1 窗口
 
     def test_bigfiles_query_allowed_under_scope(self, client, tmp_path):
-        """组 1 的 bigfiles 侧：生效范围下可查（此前一律 409）。"""
+        """组 1 的 bigfiles 侧：生效范围下可查（此前一律 409）。
+
+        ISS-177 升级：只断言状态码会漏掉「查的其实是旧根」——必须核对
+        ``resolved_root`` 落在已选范围内，且返回的文件确实属于该根
+        （夹具在旧根 scanroot 与新根 vol-a 各放一个同名可区分文件）。
+        """
         vol = tmp_path / "vol-a"
-        vol.mkdir()
+        (vol / "inside").mkdir(parents=True)
+        (vol / "inside" / "vol_a_only.bin").write_bytes(b"a" * (3 * 1024 * 1024))
+        # 旧根（fixture 的 FATHOM_SCAN_ROOT）里放一个不该被查到的大文件。
+        old_root = Path(config.DEFAULT_ROOT)
+        (old_root / "old_root_only.bin").write_bytes(b"b" * (9 * 1024 * 1024))
         save = client.put("/api/storage/scope", json={
             "mode": "custom_directory", "roots": [str(vol)],
             "expected_revision": config.effective_scope_selection().revision
             if config.effective_scope_selection() else 0,
         }, headers={"X-Fathom-Token": client.headers["X-Fathom-Token"]})
         assert save.status_code == 200, save.text
-        resp = client.get("/api/bigfiles", params={"wait": "false"})
+
+        # ① 显式 path 指向已选新根：可查，且 resolved_root 就是该根。
+        explicit = client.get("/api/bigfiles", params={
+            "mode": "largest", "path": str(vol), "min_mb": 1, "topn": 10})
+        assert explicit.status_code == 200, explicit.text
+        body = explicit.json()
+        assert body["scope"]["resolved_root"] == str(vol.resolve())
+        names = {Path(f["path"]).name for f in body["files"]}
+        assert names == {"vol_a_only.bin"}, f"查到了范围外的文件：{names}"
+
+        # ② 无 path：resolved_root 落在已选范围内（不得静默继续查旧根）。
+        resp = client.get("/api/bigfiles", params={
+            "mode": "largest", "min_mb": 1, "topn": 10})
         assert resp.status_code in (200, 202), resp.text
+        body = resp.json()
+        assert body["scope"]["resolved_root"] == str(vol.resolve())
+        assert str(vol.resolve()) in body["scope"]["scope_roots"]
+        assert body["scope"]["resolved_root"] != str(old_root.resolve())
 
 
 class TestCrossPlanStillRejected:

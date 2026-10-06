@@ -210,8 +210,50 @@ class BigfilesScopeError(ValueError):
         self.status = status
 
 
+def _resolve_within_roots(raw: Optional[str], roots: list[Path]) -> Path:
+    """按**生效范围**（多根）解析查询目录（ISS-177）。
+
+    守卫强度与单根 ``resolve_query_root`` 口径逐条对齐（ISS-022/ISS-150），
+    只是判定对象从「旧根一个」换成「生效范围各根逐个判定」：
+
+    - 无 path → 第一个生效根（ISS-155 保存语义：roots 顺序 = 采集顺序，首根
+      即主根）。这是**明确声明**的缺省语义，绝不静默继续查旧根。
+    - 字符串层：必须等于某个生效根或以 ``<根>/`` 开头——相对路径与前缀同名
+      根（``/root-evil`` 不是 ``/root``）在 resolve 之前就拒绝。
+    - resolve 层：规范化后必须仍在**某个**生效根之内，挡 ``..`` 折叠与指向
+      范围外的符号链接。
+    - 目标不存在或不是目录 → 404（与越界 400 不混淆）。
+
+    错误信息只列生效根本身（调用方已知、且就是它选的），不回显解析后的用户
+    路径——与 ISS-050 起的日志/消息不泄露口径一致。
+    """
+    if raw is None:
+        return roots[0]
+    if not isinstance(raw, str) or not raw:
+        raise BigfilesScopeError("path 参数必须是非空字符串")
+    if not any(raw == str(root) or raw.startswith(str(root).rstrip("/") + "/")
+               for root in roots):
+        listed = "、".join(str(root) for root in roots)
+        raise BigfilesScopeError(
+            f"path 参数必须是已选范围 {listed} 之内的绝对路径")
+    try:
+        resolved = Path(raw).resolve()
+        root_reals = {root.resolve() for root in roots}
+    except (OSError, ValueError, RuntimeError):
+        raise BigfilesScopeError("path 参数无法规范化") from None
+    if not any(resolved == root_real or root_real in resolved.parents
+               for root_real in root_reals):
+        raise BigfilesScopeError("path 参数规范化后位于已选范围之外，已拒绝")
+    if not resolved.is_dir():
+        raise BigfilesScopeError(
+            "path 参数不存在或不是目录（可能已被移动或删除）", status=404)
+    return resolved
+
+
 def resolve_query_root(raw: Optional[str], *,
-                       default_root: Optional[Path] = None) -> Path:
+                       default_root: Optional[Path] = None,
+                       allowed_roots: Optional[Sequence[Path]] = None
+                       ) -> Path:
     """把用户请求的查询目录解析为允许范围内的规范目录（ISS-150）。
 
     合同：
@@ -221,7 +263,21 @@ def resolve_query_root(raw: Optional[str], *,
     - 目标不存在或不是目录 → ``status=404``（路径可能已被移动或删除），
       不与越界 400 混淆，也不产生空结果；
     - 返回 ``resolve()`` 后的规范路径；不因历史路径存在而允许读取任意盘。
+
+    ``allowed_roots``（ISS-177）：**生效范围**（用户显式选择的范围根，按选择
+    顺序）非空时，校验与缺省根都以它为准，而不是旧的单根 ``DEFAULT_ROOT``：
+
+    - 显式 path 必须落在**任一**生效根之内（逐根判定，守卫强度与单根口径
+      一致：字符串层挡前缀同名根，resolve 层挡 ``..`` 与符号链接越界）；
+    - 无 path 时取**第一个生效根**（ISS-155 保存语义里 roots 的顺序即采集
+      顺序，首根即主根）——绝不静默回落到旧根继续查；
+    - 越界错误信息指认生效范围（列出各根），不再声称「必须位于旧根」。
+
+    ``allowed_roots`` 为 ``None``/空时逐字节保持 ISS-150 单根旧口径（legacy）。
     """
+    roots = [Path(item) for item in (allowed_roots or ())]
+    if roots:
+        return _resolve_within_roots(raw, roots)
     base = Path(default_root) if default_root is not None else Path(config.DEFAULT_ROOT)
     if raw is None:
         return base

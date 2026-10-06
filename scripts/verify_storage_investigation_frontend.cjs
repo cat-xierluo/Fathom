@@ -364,16 +364,20 @@ async function main() {
       return { a: opts("#sel-a"), b: opts("#sel-b") };
     });
     const dateOf = (o) => ((o.t.match(/(\d{4}-\d{2}-\d{2})/) || [])[1] || "");
-    // 回归发现：选项列表未按数据集收敛（会暴露 decoy/异数据集快照）。本卡不改
-    // 变化页选项过滤语义（属原责任卡），此处只取**同一数据集**内的历史区间断言。
+    // ISS-170 R1（不对称收敛）：a 侧（历史点）收敛到当前 b 所属数据集，只列
+    // 同身份快照；b 侧（对比基准）**不收敛**，始终全列——用户改 b 即切换数据集，
+    // 这是跨数据集可达性的唯一入口。两侧同收敛会把它堵死（产品级不可达）。
     const OLDHOME_IDS = new Set([String(a1), String(a2), String(a2b), String(a3)]);
     const byDate = [...histPair.a].filter((o) => OLDHOME_IDS.has(String(o.v))
         && histPair.b.some((x) => String(x.v) === String(o.v)))
       .sort((x, y) => (dateOf(x) + x.v).localeCompare(dateOf(y) + y.v));
     const crossDatasetOffered = [...histPair.a].filter((o) => !OLDHOME_IDS.has(String(o.v)));
+    // b 侧必须仍是全量（含异数据集快照）——否则用户没有任何 UI 路径切数据集
+    const bIsFullCatalog = histPair.b.length >= OLDHOME_IDS.size;
     record("journey-snapshot-options-cross-dataset-exposed",
-      crossDatasetOffered.length > 0,
-      `已登记缺陷：选项含 ${crossDatasetOffered.length} 个异数据集快照（${crossDatasetOffered.map((o) => "#" + o.v).join(",")}）——回原责任卡`);
+      crossDatasetOffered.length === 0 && bIsFullCatalog,
+      `ISS-170 R1 不对称口径：a 侧同数据集 ${histPair.a.length} 项（${histPair.a.map((o) => "#" + o.v).join(",")}），无异数据集快照；` +
+      `b 侧全列 ${histPair.b.length} 项（跨数据集切换入口保留）`);
     const histA = byDate[0];
     const histB = byDate[1];
     await page.selectOption("#sel-a", histA.v);

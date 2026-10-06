@@ -15,6 +15,20 @@ from . import config
 
 SCHEMA_VERSION = 8
 
+# v8 之后的纯性能增量（ISS-168）：entries 的主键是
+# (snapshot_id, path) WITHOUT ROWID，path 不是主键前缀，因此 trend 的
+# path 等值查询（fathom/api.py::_trend_points 的
+# "SELECT snapshot_id, size_kb FROM entries WHERE path = ?"）用不上主键，
+# 只能全表扫描——100 万档大库实测 252ms，索引后为 log N。
+#
+# 硬约束：纯索引——不加列、不重建表、不迁移数据、不改 SCHEMA_VERSION
+# 语义。CREATE INDEX IF NOT EXISTS 命中即空操作，旧库打开时自动补建，
+# 对既有数据与行内容零风险（不动任何一行业务行）。
+_ENTRIES_PATH_INDEX = "idx_entries_path"
+_INDEX_STATEMENTS = (
+    f"CREATE INDEX IF NOT EXISTS {_ENTRIES_PATH_INDEX} ON entries(path)",
+)
+
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE snapshots (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -531,6 +545,18 @@ def _create_missing_tables(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
+def _ensure_indexes(conn: sqlite3.Connection) -> None:
+    """幂等补建查询用二级索引（ISS-168），不参与版本号语义。
+
+    纯增量 DDL：只加索引，不加列、不重建表、不迁移数据。已存在时
+    CREATE INDEX IF NOT EXISTS 是空操作，因此对「已是当前 schema」的
+    库可在每次打开时无副作用地调用——connect() 快路径正是这样补建
+    索引的，否则不跑迁移链的老库永远拿不到索引。
+    """
+    for statement in _INDEX_STATEMENTS:
+        conn.execute(statement)
+
+
 def _migrate_v0(conn: sqlite3.Connection) -> None:
     """把可识别的无版本开发库提升为 v1；不改写既有业务行。
 
@@ -790,6 +816,7 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
             )
         if version == SCHEMA_VERSION:
             _validate_schema(conn, allow_missing=False)
+            _ensure_indexes(conn)
         elif version < SCHEMA_VERSION:
             _check_integrity(conn, label="数据库")
             tables = _user_tables(conn)
@@ -814,6 +841,9 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
                     # 结构和版本是同一迁移单元：必须在 commit 前验证，
                     # 否则失败会留下“标成 v1 但缺表”且不可重试的半成品。
                     _validate_schema(conn, allow_missing=False)
+                    # 纯索引在同一事务内幂等补建：新建库与旧库升级两条
+                    # 路径到达完全相同的最终结构（ISS-168）。
+                    _ensure_indexes(conn)
                 elif locked_version != SCHEMA_VERSION:
                     raise UnsupportedSchemaVersion(
                         f"迁移竞争后 schema={locked_version}，当前支持 {SCHEMA_VERSION}"
@@ -855,6 +885,10 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
                 )
             if version == SCHEMA_VERSION:
                 _validate_schema(current, allow_missing=False)
+                # 已是当前 schema 也不跑迁移链，老库仍可能缺 ISS-168 的
+                # 纯索引；CREATE INDEX IF NOT EXISTS 命中即空操作，
+                # 因此快路径上无副作用，且不必串行化所有读连接。
+                _ensure_indexes(current)
                 current.execute("PRAGMA journal_mode=WAL")
                 current.execute("PRAGMA foreign_keys=ON")
                 return current

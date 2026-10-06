@@ -219,7 +219,7 @@ assert_result_json "$tree_out" "$expected_scope_settings" "scope settings fronte
 # stale、差额 null 不可比、不出现数值）。失败自身非零退出，pipefail 直通判
 # 红；计数漂移由 EXPECTED_STORAGE_OVERVIEW_PASSED 兜底（同树形口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_storage_overview_frontend.cjs | tee "$tree_out"
-expected_storage_overview="${EXPECTED_STORAGE_OVERVIEW_PASSED:-57}"
+expected_storage_overview="${EXPECTED_STORAGE_OVERVIEW_PASSED:-59}"
 assert_result_json "$tree_out" "$expected_storage_overview" "storage overview frontend"
 
 # ISS-160：跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI 隔离入口 + 生产页面实点）。
@@ -231,5 +231,5 @@ assert_result_json "$tree_out" "$expected_storage_overview" "storage overview fr
 # 失败自身非零退出，pipefail 直通判红；计数漂移由
 # EXPECTED_INVESTIGATION_PASSED 兜底（同树形口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_storage_investigation_frontend.cjs | tee "$tree_out"
-expected_investigation="${EXPECTED_INVESTIGATION_PASSED:-49}"
+expected_investigation="${EXPECTED_INVESTIGATION_PASSED:-50}"
 assert_result_json "$tree_out" "$expected_investigation" "storage investigation frontend"

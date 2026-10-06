@@ -960,8 +960,8 @@ def difference_view(*, comparable: bool, free_before: int | None,
 
     1. 只有**同主体 + 同计划 + 两侧都有效**时才给数字；否则差额为
        ``None`` 并给出原因，绝不用 0 冒充「没有变化」。
-    2. 差额是**有符号**的差值，不是垃圾量、不是可回收量：free 增加
-       （用户删了东西）会得到负差额，措辞与字段名都不得暗示可回收。
+    2. 差额是**有符号**的差值，不是垃圾量、不是可回收量：它只衡量
+       「容器占用变化」与「目录测量变化」之差，措辞与字段名都不得暗示可回收。
     3. 目录测量缺失成员/错时点时不算差额——缺失不是「变化为零」。
     """
     if not comparable:
@@ -971,8 +971,9 @@ def difference_view(*, comparable: bool, free_before: int | None,
     if None in (free_before, free_after, measured_before, measured_after):
         return {"bytes": None, "comparable": False, "limitation": None,
                 "reason": reason or "两侧存在缺失读数，差额不可计算（缺失不补 0）。"}
-    # 符号约定：free 减少 = 容器占用增加（正方向）。free 增加（用户删了
-    # 东西）得到负值，措辞与字段名都不得暗示可回收。
+    # 符号约定：free 减少 = 容器占用增加（正方向）。差额为负**不**等于容器
+    # 占用减少：只要目录测量涨得比容器占用更多即为负，两侧可同时增长
+    # （压缩/克隆/共享），措辞与字段名都不得把负值说成占用减少或可回收。
     free_delta = int(free_before) - int(free_after)     # 正=容器占用增加
     measured_delta = int(measured_after) - int(measured_before)
     return {
@@ -981,7 +982,10 @@ def difference_view(*, comparable: bool, free_before: int | None,
         "limitation": UNEXPLAINED_LIMITATION,
         "free_delta_bytes": free_delta,
         "measured_delta_bytes": measured_delta,
-        "sign_semantics": ("有符号差值：正=容器占用增加多于目录测量，"
-                           "负=容器占用减少；不代表垃圾量或可回收空间。"),
+        "sign_semantics": ("有符号差值：正=容器占用增加多于目录测量；"
+                           "负=目录测量增长大于容器占用增长（容器占用本身"
+                           "可能仍在增长，原因可能为压缩/克隆/共享），"
+                           "负值不等于容器占用减少；"
+                           "不代表垃圾量或可回收空间。"),
         "reason": None,
     }

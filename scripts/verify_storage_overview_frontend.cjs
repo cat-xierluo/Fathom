@@ -453,6 +453,33 @@ async function runPhase(withStale) {
       legacyHead.includes("尚未启用整盘范围") && legacySub.includes("不把目录结果冒充整盘") && !legacyCta,
       `head=${legacyHead.trim()}`);
     record("ui-legacy-settings-entry", Boolean(await page.$("[data-test='storage-settings-entry']")), "给设置入口");
+
+    /* ISS-171 容量文案：负差额不得表述为「容器占用减少」。反例口径——
+     * 容器占用其实**增加**了（free 100MB→90MB 即占用 +10MB），只是目录测量
+     * 增长更大（+24MB），差额 = 10 − 24 = −14MB。负号只说明「目录测量增长
+     * 大于容器占用增长」，推不出占用减少（旧文案在此失真）。 */
+    await page.route("**/api/storage/summary", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ scope: { container_id: null, mode: "startup_storage",
+        roots: ["/fixture/negative-delta"] },
+        capacity: { subject: null, free_bytes: 90 * 1024 * 1024, total_bytes: 100 * 1024 ** 3 },
+        round: { id: 2 }, previous_round: { id: 1 }, attribution: null,
+        unexplained: { bytes: -14 * 1024 ** 2, comparable: true,
+          limitation: "尚无法由目录变化解释" } }),
+    }));
+    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+await page.waitForSelector("[data-test='storage-unexplained']", { timeout: 20000 });
+    const negFlat = (await page.$eval("[data-test='storage-unexplained']",
+      (el) => el.textContent)).replace(/\s+/g, " ");
+    const negBytes = await page.$eval("[data-test='storage-unexplained']", (el) => el.dataset.bytes);
+    record("ui-negative-unexplained-not-claimed-as-shrink",
+      negBytes === String(-14 * 1024 ** 2)
+        && negFlat.includes("目录测量增长大于容器占用增长")
+        && !negFlat.includes("容器占用减少")
+        && !/占用减少/.test(negFlat),
+      `bytes=${negBytes}（数值未变），文案=${negFlat.slice(0, 110)}`);
+
     await page.unroute("**/api/storage/summary");
 
     record("ui-console-clean", consoleErrors.length === 0,

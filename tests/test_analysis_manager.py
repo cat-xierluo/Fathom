@@ -144,6 +144,28 @@ def wait_terminal(manager: am.AnalysisManager, job_id: str,
     raise AssertionError(f"job 未在 {timeout}s 内到终态：{view}")
 
 
+def wait_running(manager: am.AnalysisManager, job_id: str,
+                 timeout: float = 15.0) -> dict:
+    """条件等待 job 进入 running：等状态而非等时间（ISS-169）。
+
+    旧形态是 ``time.sleep(0.3)  # 进入 running``——等的是时钟不是状态：
+    冷启动/高负载下 job 还在启动途中，撤销动作落在运行之前，用例就测不到
+    「运行中撤销」这条合同（假绿）；反之机器够快时 0.3s 又纯属多余。
+    改为轮询至 running 出现，上限 ``timeout``（默认 15s，与同族
+    wait_terminal 同档），既不吞掉真失败，也不再吃冷启动的调度余量。
+    """
+    deadline = time.monotonic() + timeout
+    view = None
+    while True:
+        view = manager.job_view(job_id)
+        if view["status"] == "running":
+            return view
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    raise AssertionError(f"job 未在 {timeout}s 内进入 running：{view}")
+
+
 def agent_rows() -> list[sqlite3.Row]:
     conn = db.connect()
     try:
@@ -862,7 +884,8 @@ class TestCancelAndTimeout:
         t0 = time.monotonic()
         final = wait_terminal(manager, job["job_id"], timeout=15)
         assert final["status"] == "timed_out"
-        assert time.monotonic() - t0 < 10
+        # ISS-169：与上方 wait_terminal(timeout=15) 同界限（原 10s 更窄）
+        assert time.monotonic() - t0 <= 15
         assert agent_rows() == []
 
 
@@ -1139,7 +1162,7 @@ class TestRevocationGates:
         preview = manager.create_preview(a, b)
         job, _ = manager.start_job(preview.preview_id, preview.request_digest,
                                    "key-disable")
-        time.sleep(0.3)  # 进入 running
+        wait_running(manager, job["job_id"])  # ISS-169：等 running 而非 sleep(0.3)
         config.update_user_settings({"analysis": {"enabled": False}})
         manager.refresh_policy()
         final = wait_terminal(manager, job["job_id"])
@@ -1176,7 +1199,7 @@ class TestRevocationGates:
         preview = manager.create_preview(a, b)
         job, _ = manager.start_job(preview.preview_id, preview.request_digest,
                                    "key-late-write")
-        time.sleep(0.3)
+        wait_running(manager, job["job_id"])  # ISS-169：等 running 而非 sleep(0.3)
         from fathom import upgrade
         journal = upgrade.journal_path_from_db(Path(config.DB_PATH))
         journal.write_text(json.dumps({"txn_id": "t2", "phase": "prepared"}),

@@ -83,7 +83,9 @@ def test_subcommand_watchdog_kills_group_bounded(tmp_path):
     # 或目标先退时的 137/143；合同关注组内有界消失而非具体码。
     assert rc in (-9, 137, 143)
     assert gone
-    assert wall < 6
+    # ISS-169：期限 0.6s + 宽限 0.3s 的上界原为 6s（比同文件 proc.wait 的 15s
+    # 窄 2.5x），冷启动/高负载下假翻红；对齐 :45 的 15s 口径。
+    assert wall < 15
 
 
 def test_runner_with_subcommand_factory_equivalent(tmp_path):

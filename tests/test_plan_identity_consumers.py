@@ -53,6 +53,11 @@ def _isolated_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_USER_SETTINGS", config.UserSettings())
     monkeypatch.setattr(config, "settings_path",
                         lambda: runtime_dir / "settings.json")
+    # ISS-177：bigfiles manager 是进程级单例——test_bigfiles_scoped 等先行
+    # 测试会以桩 find 工厂固化它，本文件的真实 HTTP 查询会拿到桩输出
+    # （实测全量下 names={'big_0.bin'}）。逐用例归零，让 API 按当前 config
+    # 重建真实 manager。
+    monkeypatch.setattr(api, "_BIGFILES_MANAGER", None)
 
 
 @pytest.fixture

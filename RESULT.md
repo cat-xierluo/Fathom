@@ -11,11 +11,12 @@
 
 ## 测试
 
-- 新增 `tests/test_plan_identity_consumers.py`（14 例：四端点×三身份组 HTTP 回归）+ `test_scope_config.py`/`test_trend_anchor.py` 增补；**净 +11 新 −2 旧占位（diff 核对），EXPECTED_PYTEST 1472→1481（PM 按净数核定）**。
+- 新增 `tests/test_plan_identity_consumers.py`（14 例：四端点×三身份组 HTTP 回归）+ `test_scope_config.py`/`test_trend_anchor.py` 增补；**净 +11 新（def 数）−2 旧占位替换；EXPECTED_PYTEST 1472→**1492**——首版按 def 数定 1481，CI collect 实测 1492（参数化展开差 11），以 CI collect 为权威修正**。
 - 前端 +5 断言（plan 档收敛/混搭拒绝/snapshots 字段）→ EXPECTED_INVESTIGATION 50→**55**（实测 55/55 自洽）。
 
 ## 验证（PM 实跑）
 
 - test_plan_identity_consumers：14 passed；test_scope_config+trend_anchor：66 passed
 - 160 套件 55/55（exit 0）；先红后绿证据见 worker 会话（占位闸门反例先行）
+- bigfiles 套件：PM 发现「确定性 task_id 未随 scope_key 第 7 段同步」的套件口径过时（404 未知句柄）——已对齐服务端拼接并修 pollStatus 的 404=已清理终态容错，套件全绿 exit 0
 - NOT_VERIFIED：CI 冷环境首跑（本 PR run）；受控卷/真实整盘 plan 数据（归 161/163）

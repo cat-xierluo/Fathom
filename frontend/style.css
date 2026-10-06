@@ -1316,3 +1316,25 @@ code {
 }
 .browse-snap-bar select { max-width: 320px; }
 .browse-snap-bar .hint { min-width: 0; word-break: break-word; }
+
+/* ===== ISS-158 整盘总览 =====
+   整盘读数与未知差额同屏；未知差额用中性可读块，绝不用「可回收/垃圾」
+   绿意措辞（那会把未知量说成可清理量）。长范围名靠 text-overflow 截断，
+   完整路径在 title 中，不撑破布局。 */
+.ov-unexplained {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+}
+.ov-unexplained .rl { display: block; font-size: 12px; opacity: 0.72; }
+.ov-unexplained .rv { font-size: 22px; font-variant-numeric: tabular-nums; }
+.ov-unexplained[data-state="known"] { border-color: rgba(190, 140, 80, 0.4); }
+.ov-unexplained[data-state="unknown"] { border-style: dashed; }
+.ov-unexplained .hint { margin: 4px 0 0; }
+.ov-members { margin-top: 8px; font-size: 13px; opacity: 0.85; }
+#overview-storage [data-test="storage-meta"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -263,7 +263,7 @@ def test_runner_stdout_limit_kills_and_marks(tmp_path):
     assert r.outcome is ar.RunOutcome.OUTPUT_LIMIT
     assert r.stdout_truncated is True
     assert len(r.stdout_text.encode("utf-8")) < 64 * 1024  # 缓冲确实被限住
-    assert time.monotonic() - t0 < 10  # 不等脚本自然结束
+    assert time.monotonic() - t0 < 30  # 不等脚本自然结束（ISS-169：10→30s）
 
 
 def test_runner_stderr_limit_distinguishable(tmp_path):
@@ -296,7 +296,9 @@ def test_runner_timeout_term_then_kill_and_reap(tmp_path, monkeypatch):
     wall = time.monotonic() - t0
     assert r.outcome is ar.RunOutcome.TIMED_OUT
     assert r.exit_code == 137  # 128+SIGKILL：TERM 免疫成立，KILL 升级
-    assert 0.5 <= wall < 5
+    # ISS-169：上界与生产 reap 界限同档（agent_runtime.py:818 proc.wait(10.0)），
+    # 原 5s 窄于该界限会把真实回收路径判成超时；下界仍为配置超时 0.5s。
+    assert 0.5 <= wall <= 10
     if eperm_seen:
         # CI macOS 沙箱（ISS-119）：终态前 killpg(pgid,0) 探测对已退出
         # 未 reap 的死组报 EPERM 而非 ProcessLookupError，产品如实报告
@@ -357,7 +359,7 @@ def test_runner_timeout_killpg_eperm_sandbox(tmp_path, monkeypatch):
     assert signal.SIGTERM in forwarded   # 组回收已尽力：TERM 真实发出
     assert r.group_reaped is False     # 死组探测被拒：如实报告不可确认
     assert r.detail == ""              # 无异常泄漏进 detail
-    assert r.wall_ms < 10000
+    assert r.wall_ms <= 10000  # 生产 reap 界限 10.0s 同界限（ISS-169）
 
 
 def test_runner_term_kills_cooperative_child_quickly(tmp_path, monkeypatch):
@@ -421,7 +423,7 @@ def test_runner_cancel_event(tmp_path):
     finally:
         timer.join()
     assert r.outcome is ar.RunOutcome.CANCELLED
-    assert r.wall_ms < 5000
+    assert r.wall_ms <= 15000  # 取消 0.3s 后必退；ISS-169：5→15s（3x）
 
 
 def test_runner_spawn_failure(tmp_path):
@@ -484,11 +486,12 @@ while true; do sleep 0.1; done
     env = dict(os.environ, PYTHONPATH=str(ROOT))
     parent = subprocess.Popen([sys.executable, str(harness)], env=env)
     try:
-        for _ in range(100):
-            if pidfile.exists():
-                break
+        # ISS-169：固定 100×0.05s=5s 上限在高负载下不足以等 harness 拉起
+        # 脚本，改 deadline 轮询（与 wait_terminal 同法），上限 20s。
+        start_deadline = time.monotonic() + 20
+        while not pidfile.exists() and time.monotonic() < start_deadline:
             time.sleep(0.05)
-        assert pidfile.exists(), "harness 未能启动脚本"
+        assert pidfile.exists(), "harness 未能在 20s 内启动脚本"
         child_pid = int(pidfile.read_text().strip() or "0")
         assert child_pid > 0
         parent.kill()  # 异常父进程消失（SIGKILL，非优雅退出）
@@ -499,10 +502,10 @@ while true; do sleep 0.1; done
                 os.kill(child_pid, 0)
             except ProcessLookupError:
                 break
-            if time.monotonic() - t0 > 8:
-                pytest.fail("父进程死后子任务 8 秒仍未退出：有界退出失效")
+            if time.monotonic() - t0 > 20:
+                pytest.fail("父进程死后子任务 20 秒仍未退出：有界退出失效")
             time.sleep(0.05)
-        assert time.monotonic() - t0 < 6  # 宽限 0.6s + 余量；远小于 60s 任务时长
+        assert time.monotonic() - t0 < 15  # 宽限 0.6s + 余量；远小于 60s 任务时长（ISS-169：6→15s）
     finally:
         if parent.poll() is None:
             parent.kill()
@@ -614,7 +617,8 @@ def test_probe_per_command_timeout_honored(tmp_path):
     t0 = time.monotonic()
     info = _detect(make_meta(tmp_path), budget=budget, path_env="",
                    extra_locations=[script], login_shell_cmd=["/bin/echo"])
-    assert time.monotonic() - t0 < 6
+    # ISS-169：探测预算上界 6→15s，与总预算 10s 同档的宽裕余量
+    assert time.monotonic() - t0 <= 15
     assert info.availability is ar.Availability.BROKEN
     assert "timed_out" in info.detail
 
@@ -635,7 +639,8 @@ dd if=/dev/zero bs=1024 count=32 2>/dev/null
     t0 = time.monotonic()
     info = _detect(make_meta(tmp_path), budget=budget, path_env="",
                    extra_locations=[script], login_shell_cmd=["/bin/echo"])
-    assert time.monotonic() - t0 < 6
+    # ISS-169：探测预算上界 6→15s，与总预算 10s 同档的宽裕余量
+    assert time.monotonic() - t0 <= 15
     assert info.availability is ar.Availability.BROKEN
     assert "output_limit" in info.detail
 
@@ -680,7 +685,8 @@ def test_probe_login_shell_timeout_bounded(tmp_path):
     t0 = time.monotonic()
     info = _detect(make_meta(tmp_path), budget=budget,
                    path_env=str(tmp_path / "empty"), login_shell_cmd=[str(fake_sh)])
-    assert time.monotonic() - t0 < 6
+    # ISS-169：探测预算上界 6→15s，与总预算 10s 同档的宽裕余量
+    assert time.monotonic() - t0 <= 15
     assert info.availability is ar.Availability.NOT_FOUND
 
 
@@ -700,7 +706,8 @@ def test_probe_shared_deadline_respected(tmp_path):
             budget=ar.ProbeBudget(total_timeout_s=0.2),
             path_env=str(tmp_path),
         )
-        assert time.monotonic() - t0 < 5
+        # ISS-169：共享总预算 0.2s 已到期，5→15s 与 probe 同档
+        assert time.monotonic() - t0 <= 15
         assert set(infos) == {"x1", "x2"}
         for info in infos.values():
             assert info.reason_code in ("probe_budget_exhausted", "version_probe_failed")

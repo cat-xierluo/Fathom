@@ -247,9 +247,11 @@ main(sys.argv[1])
 `;
 
 /** 服务端去重键 → 确定性 task_id（与 bigfiles.BigfilesManager.task_id_for
- * 同一拼接与哈希口径；scope_version 取种子回传的 config 值）。 */
+ * 同一拼接与哈希口径；scope_version 取种子回传的 config 值）。
+ * ISS-176：服务端键追加 scope_key 第 7 段（本套件未启用范围 → 空串），
+ * 套件拼接同步补段，否则确定性句柄与服务端不一致（404）。 */
 function taskIdFor(resolvedRoot, mode, days, minMb, topn, scopeVersion) {
-  const raw = [resolvedRoot, mode, days, minMb, topn, scopeVersion]
+  const raw = [resolvedRoot, mode, days, minMb, topn, scopeVersion, ""]
     .map((x) => String(x)).join("\x1f");
   return "bf-" + crypto.createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 16);
 }
@@ -324,6 +326,9 @@ async function main() {
     let last = null;
     while (Date.now() < deadline) {
       const r = await statusOf(taskId);
+      /* ISS-176：范围身份贯通后查询可能先于轮询完成并被清理（404「未知或
+       * 已过期」）——404 即「不再有在途查询」，按已清理终态交付。 */
+      if (r.status === 404) return { terminal: true, cleaned_up: true };
       if (r.status === 200) {
         last = r.json;
         if (pred(last)) return last;
@@ -623,7 +628,11 @@ async function main() {
     await page.click("#btn-bigfiles");
     const cancelPostsBefore = apiCounts.cancel;
     await page.click('a[data-page="overview"]');
-    const leaveCancelled = await pollStatus(slowTask(), (s) => s.terminal, 15000, "离开取消收敛");
+    /* ISS-176：范围身份贯通后该查询真实执行并可能先于轮询完成清理
+     * （404「未知或已过期」）——离开收敛的目标是「不再有在途查询」，
+     * 终态与已清理同等满足；取消 POST 仍由离开钩子真实发出另行断言。 */
+    const leaveCancelled = await pollStatus(slowTask(), (s) => s.terminal,
+      15000, "离开取消收敛（终态或已清理）");
     record("leave-page-cancels-task-via-handle",
       leaveCancelled.state === "cancelled" && apiCounts.cancel > cancelPostsBefore,
       `state=${leaveCancelled.state} cancelPosts=${apiCounts.cancel}`);

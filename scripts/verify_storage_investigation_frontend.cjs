@@ -127,13 +127,13 @@ OLD = os.path.join(scanroot, "oldhome")
 DISK = os.path.join(scanroot, "wholedisk")
 DECOY = os.path.join(scanroot, "decoy")
 
-def insert(conn, when, root, entries, status="full", vanished=0):
+def insert(conn, when, root, entries, status="full", vanished=0, plan_id=None):
     cur = conn.execute(
         "INSERT INTO snapshots(created_at, root, dir_count, denied_count, du_seconds, "
-        "total_kb, min_kb, collection_status, vanished_count, exclude_names) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "total_kb, min_kb, collection_status, vanished_count, exclude_names, plan_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (when, root, len(entries) + 1, 0, 0.0,
-         max(entries.values(), default=0), 1024, status, vanished, ""))
+         max(entries.values(), default=0), 1024, status, vanished, "", plan_id))
     sid = cur.lastrowid
     conn.executemany("INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,?)",
                      [(sid, p, s) for p, s in entries.items()])
@@ -180,9 +180,21 @@ w2 = insert(conn, "2026-09-29T13:00:00", DISK,
             {DISK: 44_000_000, os.path.join(DISK, "System"): 24_000_000})
 # decoy 故意最早：总览只取当前数据集最新两个快照，decoy 不得成为 latest
 d1 = insert(conn, "2026-09-20T12:00:00", DECOY, {DECOY: 777})
+
+# ISS-176：真实 plan 身份数据（v8 plan_id 列）——此前本套件整盘夹具从不写
+# plan_id，其通过不能证明新身份数据在产品里可查。PLAN 档两个快照**同 plan**
+# （前端 #sel-a 应收敛到这两个），PX 档一条**异 plan**（不得并入同窗）。
+PLAN = os.path.join(scanroot, "planvol")
+plan_entries = lambda n: {PLAN: 20_000_000 + n, os.path.join(PLAN, "media"): n}
+# 时间刻意早于 decoy/整盘/旧 HOME：本套件的总览「最近变化」恒取**当前数据集
+# 最新**快照，若 plan 行成为全局最新，a 侧无同 plan 前驱会让 J1 结论卡 409。
+p1 = insert(conn, "2026-09-21T12:00:00", PLAN, plan_entries(6_000_000), plan_id="plan-1")
+p2 = insert(conn, "2026-09-22T12:00:00", PLAN, plan_entries(7_000_000), plan_id="plan-1")
+px = insert(conn, "2026-09-23T12:00:00", PLAN, plan_entries(8_000_000), plan_id="plan-2")
 conn.close()
 print(json.dumps({"a1": a1, "a2": a2, "a2b": a2b, "a3": a3, "w1": w1,
                   "w2": w2, "decoy": d1, "old": OLD, "disk": DISK,
+                  "p1": p1, "p2": p2, "px": px, "plan": PLAN,
                   "scanroot": scanroot}), flush=True)
 `;
 
@@ -234,10 +246,13 @@ async function main() {
       code === 0 ? resolve(buf) : reject(new Error(`seed exit ${code}: ${buf.slice(-800)}`)));
   });
   const info = JSON.parse(seedOut.trim().split("\n").filter((l) => l.startsWith("{")).pop());
-  const { a1, a2, a2b, a3, w1, w2, old: OLD, disk: DISK } = info;
+  const { a1, a2, a2b, a3, w1, w2, old: OLD, disk: DISK,
+          p1, p2, px, plan: PLAN } = info;
   record("fixture-seed-ok",
-    a1 < a2 && a2 < a2b && a2b < a3 && w1 < w2 && OLD !== DISK,
-    `a1=${a1} a2=${a2} a2b=${a2b} a3=${a3} w1=${w1} w2=${w2}`);
+    a1 < a2 && a2 < a2b && a2b < a3 && w1 < w2 && OLD !== DISK
+      && p1 < p2 && p2 < px && PLAN !== OLD,
+    `a1=${a1} a2=${a2} a2b=${a2b} a3=${a3} w1=${w1} w2=${w2} `
+    + `p1=${p1} p2=${p2} px=${px}`);
 
   // ---------- 2. 真实 serve（身份断言后继续） ----------
   const child = spawn(PY, ["-m", "fathom", "serve"], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -589,6 +604,67 @@ async function main() {
       oldStillThere.status === 200
         && ((oldStillThere.json.grown) || []).some((g) => String(g.path).endsWith("vault1")),
       `旧根区间仍可查 status=${oldStillThere.status}`);
+
+    // ---------- J2-ISS176：plan 档前端收敛（真实 plan_id 夹具） ----------
+    //
+    // datasetKey 升级为两档（ISS-176）：plan 档按 plan_id、legacy 档按三元组。
+    // b 选同 plan 的 p2 时，a 侧应收敛为**同 plan 的 p1**，异 plan 的 px 与
+    // legacy 全部不得进入 a 侧选项（后端 same_dataset 对混搭亦返回 false）。
+    await page.click(".nav-item[data-page='changes']");
+    await page.waitForSelector("#sel-b", { timeout: 20000 });
+    await page.selectOption("#sel-b", String(p2));
+    await page.waitForFunction(
+      (want) => Array.from(document.getElementById("sel-a").options)
+        .some((o) => o.value === want),
+      String(p1), { timeout: 20000 });
+    const planAOpts = await page.$eval("#sel-a", (el) =>
+      Array.from(el.options).map((o) => o.value));
+    // a 侧应收敛为「b 所属数据集」的全部快照 = 同 plan 的 p1 与 p2（含 b 自身：
+    // b 恒在其所属数据集内，不是数据集外的额外项）；异 plan 与 legacy 均不得混入。
+    const wantPlanOpts = [String(p1), String(p2)].sort();
+    const gotPlanOpts = [...planAOpts].sort();
+    record("journey-plan-tier-a-converges-to-same-plan",
+      JSON.stringify(gotPlanOpts) === JSON.stringify(wantPlanOpts),
+      `b=#${p2}(plan-1) 时 a 侧选项=[${planAOpts.join(",")}]`
+      + ` 期望=[${wantPlanOpts.join(",")}]（异 plan #${px} 与 legacy #${a1} 不得混入）`);
+
+    // 同 plan 两快照：真实 diff 可查（此前后端一律 409，见 ISS-155 占位闸门）
+    const samePlanDiff = await get(`/api/diff?a=${p1}&b=${p2}`);
+    record("journey-same-plan-diff-comparable",
+      samePlanDiff.status === 200
+        && samePlanDiff.json?.a?.plan_id === "plan-1"
+        && samePlanDiff.json?.b?.plan_id === "plan-1",
+      `同 plan #${p1}→#${p2} status=${samePlanDiff.status}`
+      + ` plan_id=${samePlanDiff.json?.a?.plan_id}→${samePlanDiff.json?.b?.plan_id}`);
+
+    // 跨 plan 仍拒绝：a 侧无法构造、真实 HTTP 也 409
+    const crossPlanDiff = await get(`/api/diff?a=${p1}&b=${px}`);
+    record("journey-cross-plan-still-rejected",
+      crossPlanDiff.status === 409
+        && crossPlanDiff.json?.detail?.code === "plan_identity_unsupported",
+      `跨 plan #${p1}→#${px} status=${crossPlanDiff.status}`
+      + ` code=${crossPlanDiff.json?.detail?.code}`);
+
+    // /api/snapshots 下发 plan_id：前端两档收敛的数据来源
+    const snapsWithPlan = await get("/api/snapshots");
+    const byId = new Map((snapsWithPlan.json || []).map((s) => [s.id, s]));
+    record("journey-snapshots-expose-plan-id",
+      byId.get(p1)?.plan_id === "plan-1" && byId.get(a1)?.plan_id == null,
+      `plan 行 #${p1} plan_id=${JSON.stringify(byId.get(p1)?.plan_id)}`
+      + `；legacy 行 #${a1} plan_id=${JSON.stringify(byId.get(a1)?.plan_id)}`);
+
+    // 交还旧 HOME 数据集：J3 段全程在 legacy 口径下驱动，a 侧选项此刻已收敛到
+    // plan 档，必须把 b 切回旧 HOME 快照把 a 侧重填，否则后续 selectOption
+    // 找不到旧选项（本段只读断言，不得给后续旅程留状态）。
+    await page.selectOption("#sel-b", String(a3));
+    await page.waitForFunction(
+      (want) => Array.from(document.getElementById("sel-a").options)
+        .some((o) => o.value === want),
+      String(a1), { timeout: 20000 });
+    record("journey-plan-tier-leaves-no-stale-state",
+      (await page.$eval("#sel-a", (el) =>
+        Array.from(el.options).map((o) => o.value))).includes(String(a1)),
+      "切回旧 HOME 数据集后 a 侧重新列出 legacy 快照，后续旅程状态未被 plan 档污染");
 
 
     // ---------- J3-a：快速切页（改范围/重复请求不残留错读） ----------

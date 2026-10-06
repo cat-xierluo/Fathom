@@ -94,9 +94,16 @@ class BigfilesQuery:
 
     ``mode``（ISS-150）：``recent`` 保持既有行为（近 N 天修改，mtime 过滤）；
     ``largest`` 按当前 st_size 逻辑大小排序、不带 mtime 过滤。
-    ``scope_version`` 是允许范围配置版本的接缝（155 引入 allowlisted scope
-    身份时递增即可使旧缓存/去重失效）；缓存与并发去重键由
-    (规范根, mode, days, min_mb, topn, scope_version) 组成。
+    ``scope_version`` 是范围**配置**版本的接缝（155 引入 allowlisted scope
+    身份时递增即可使旧缓存/去重失效）。
+
+    ``scope_key``（ISS-176）：范围**身份**串，进 ``key``。原先键里只有
+    ``scope_version``（一个整数接缝），范围启用后同一目录可能属于不同计划
+    下的不同数据集，两个计划的结果会按同一键互相复用——正是 ISS-150 要避免
+    的越界读取。ISS-155 因此在 API 层对已启用范围的 bigfiles 一律 409；
+    本字段把缝补上：``scope_key`` 缺省空串（legacy 旧口径，键逐字节不变），
+    范围启用时由 API 传入已选范围的身份串，不同范围选择不再共享去重/缓存
+    条目，无需再拒绝。
     """
 
     root: Path
@@ -105,11 +112,12 @@ class BigfilesQuery:
     topn: int
     mode: str = "recent"
     scope_version: int = 0
+    scope_key: str = ""
 
     @property
     def key(self) -> tuple:
         return (str(self.root), str(self.mode), int(self.days), int(self.min_mb),
-                int(self.topn), int(self.scope_version))
+                int(self.topn), int(self.scope_version), str(self.scope_key))
 
 
 @dataclass(slots=True)
@@ -507,6 +515,7 @@ class BigfilesManager:
         timeout: Optional[float] = None,
         force_refresh: bool = False,
         scope_version: Optional[int] = None,
+        scope_key: str = "",
     ) -> BigfilesFuture:
         """显式触发一次查询；并发同参数请求共享同一 ``BigfilesFuture``。
 
@@ -516,9 +525,10 @@ class BigfilesManager:
 
         ``mode``（ISS-150）：``recent``（默认，保持既有行为）或 ``largest``
         （按当前 st_size 逻辑大小排序，不带 mtime 过滤）。``scope_version``
-        缺省取 ``config.BIGFILE_SCOPE_VERSION``；缓存/去重键由
-        (规范根, mode, days, min_mb, topn, scope_version) 组成，不同模式或
-        不同范围配置版本互不共享。
+        缺省取 ``config.BIGFILE_SCOPE_VERSION``；``scope_key`` 缺省空串
+        （legacy 旧口径，键与 ISS-155 前逐字节一致）。缓存/去重键由
+        (规范根, mode, days, min_mb, topn, scope_version, scope_key) 组成，
+        不同模式、不同范围配置版本或不同范围身份互不共享（ISS-176）。
 
         过期语义（ISS-032 修复）：缓存条目超过 ``cache_ttl_s`` 即视为不存在
         ——首个这样的调用在锁内丢弃过期条目，随后与缓存未命中完全一致地走
@@ -536,7 +546,8 @@ class BigfilesManager:
                      else int(scope_version))
         query = BigfilesQuery(root=root_path, days=eff_days,
                               min_mb=eff_mb, topn=int(topn),
-                              mode=mode, scope_version=eff_scope)
+                              mode=mode, scope_version=eff_scope,
+                              scope_key=str(scope_key))
         key = query.key
         effective_timeout = self._default_timeout_s if timeout is None else timeout
 

@@ -19,7 +19,10 @@ CREATE INDEX IF NOT EXISTS 在「新建库」与「先建旧库再打开」两�
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import time
+from pathlib import Path
 
 import pytest
 
@@ -44,6 +47,18 @@ def _isolated_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", runtime_dir / "data")
     monkeypatch.setattr(config, "DB_PATH", runtime_dir / "data" / "fathom.db")
     monkeypatch.setattr(config, "DEFAULT_ROOT", scan_root)
+
+
+@pytest.fixture(autouse=True)
+def _reset_pending_index_registry():
+    """待补建登记簿是进程内全局状态；逐例隔离，避免跨例污染与顺序依赖。"""
+    with db._PENDING_INDEX_LOCK:
+        db._PENDING_INDEXES.clear()
+        db._PENDING_INDEX_LOGGED.clear()
+    yield
+    with db._PENDING_INDEX_LOCK:
+        db._PENDING_INDEXES.clear()
+        db._PENDING_INDEX_LOGGED.clear()
 
 
 def _index_names(conn: sqlite3.Connection) -> set[str]:
@@ -227,3 +242,180 @@ def test_ensure_index_is_idempotent_across_repeated_opens(tmp_path):
         finally:
             conn.close()
     assert db.schema_version(db.connect(path)) == db.SCHEMA_VERSION
+
+
+# ---------------------------------------------------------------------------
+# ISS-173：建索引 DDL 的写锁竞争收口
+#
+# 反例来源（上游终审百万 entries 实测）：旧库缺 idx_entries_path 且另一连接
+# 持 BEGIN IMMEDIATE 写锁时，connect() 快路径上的 CREATE INDEX 要抢写锁，
+# 10.39s 后以 "database is locked" 失败——扫描写锁被转化为用户可见的打开
+# 失败。修法：快路径先纯读廉价检查，真要建时才给 250ms 短预算试探；抢不到
+# 就跳过本次补建、登记待办、记一次日志，让打开照常成功，下次连接重试。
+# ---------------------------------------------------------------------------
+
+
+def _legacy_db_without_index(tmp_path, name: str = "legacy-locked.db") -> Path:
+    """造「结构是当前 schema 但缺索引」的老库：快路径的唯一补建入口。"""
+    path = tmp_path / name
+    conn = db.connect(path)
+    try:
+        _seed(conn)
+        _drop_index(conn)
+    finally:
+        conn.close()
+    return path
+
+
+def _hold_write_lock(path: Path):
+    """持 BEGIN IMMEDIATE 写锁的独立连接，模拟扫描协调器的写事务。"""
+    holder = sqlite3.connect(path, timeout=10)
+    holder.execute("PRAGMA journal_mode=WAL")
+    holder.execute("BEGIN IMMEDIATE")
+    holder.execute(
+        "INSERT INTO scan_runs(started_at, status) VALUES (?, ?)",
+        ("2026-10-06T12:00:00", "running"),
+    )
+    return holder
+
+
+def test_bare_index_ddl_under_write_lock_is_blocked(tmp_path):
+    """反例自证：写锁持锁时裸 DDL 确实抢不到写锁 —— 让步分支不是防御性空转。
+
+    不给断言设时间上限（那会让慢机偶发红），只断言 DDL 确实因写锁失败。
+    """
+    path = _legacy_db_without_index(tmp_path)
+    holder = _hold_write_lock(path)
+    try:
+        victim = sqlite3.connect(path, timeout=1)
+        try:
+            with pytest.raises(sqlite3.OperationalError) as excinfo:
+                victim.execute(f"CREATE INDEX {INDEX_NAME} ON entries(path)")
+            assert "is locked" in str(excinfo.value).lower()
+        finally:
+            victim.close()
+    finally:
+        holder.rollback()
+        holder.close()
+
+
+def test_connect_succeeds_quickly_when_index_build_loses_write_lock(tmp_path):
+    """核心断言：持写锁 + 缺索引 → connect() 快速成功，绝不 10s 后失败。
+
+    这是 ISS-173 的红线：打开成败不得取决于后台索引补建能否抢到写锁。
+    """
+    path = _legacy_db_without_index(tmp_path)
+    holder = _hold_write_lock(path)
+    try:
+        started = time.perf_counter()
+        conn = db.connect(path)          # 旧实现在这里 10.39s 后抛 DatabaseOpenError
+        elapsed = time.perf_counter() - started
+        try:
+            assert elapsed < 3.0, (
+                f"让步路径必须在短预算内返回，实际 {elapsed:.2f}s"
+                f"（阈值取 3s 兼顾慢机，仍远低于 10s busy_timeout）"
+            )
+            # 真的让步了：本次没有建索引
+            assert INDEX_NAME not in _index_names(conn)
+            # 让步后连接依然可用：查询照常返回正确行
+            rows = conn.execute(SQL, (TARGET,)).fetchall()
+            assert [int(r[1]) for r in rows] == [100, 101, 102]
+        finally:
+            conn.close()
+    finally:
+        holder.rollback()
+        holder.close()
+
+
+def test_lost_index_build_is_logged_once_with_diagnosis(tmp_path, caplog):
+    """失败诊断：让步必须留一条 warning，含索引名与原始错误，且只记一次。"""
+    path = _legacy_db_without_index(tmp_path)
+    holder = _hold_write_lock(path)
+    try:
+        with caplog.at_level(logging.WARNING, logger="fathom.db"):
+            for _ in range(3):
+                db.connect(path).close()  # 连续三次抢不到写锁
+    finally:
+        holder.rollback()
+        holder.close()
+
+    messages = [r.getMessage() for r in caplog.records
+                if r.name == "fathom.db" and INDEX_NAME in r.getMessage()]
+    assert len(messages) == 1, f"让步诊断只应记一次，实际 {len(messages)} 次"
+    assert "写锁" in messages[0]
+    assert "database is locked" in messages[0].lower()
+
+
+def test_pending_index_build_retried_and_cleared_after_unlock(tmp_path):
+    """待办语义：让步登记入册，解锁后的下一次连接自动补建并清空登记。"""
+    path = _legacy_db_without_index(tmp_path)
+    holder = _hold_write_lock(path)
+    try:
+        db.connect(path).close()
+        assert INDEX_NAME in db.pending_index_builds(), "抢不到写锁应登记待办"
+    finally:
+        holder.rollback()
+        holder.close()
+
+    conn = db.connect(path)
+    try:
+        assert INDEX_NAME in _index_names(conn), "解锁后重连必须补建待办索引"
+        assert db.pending_index_builds() == frozenset(), "补建成功后登记簿清空"
+        assert "USING INDEX " + INDEX_NAME in _plan(conn)
+    finally:
+        conn.close()
+
+
+def test_normal_open_never_registers_pending_build(tmp_path):
+    """无竞争时不得留待办：普通打开仍应当场建好索引（ISS-168 语义不退化）。"""
+    path = _legacy_db_without_index(tmp_path)
+    conn = db.connect(path)
+    try:
+        assert INDEX_NAME in _index_names(conn)
+        assert db.pending_index_builds() == frozenset()
+    finally:
+        conn.close()
+
+
+def test_non_lock_errors_are_not_swallowed_as_deferral(tmp_path):
+    """fail-closed：让步只对写锁竞争生效，其余 DDL 失败必须原样上抛。"""
+    path = _legacy_db_without_index(tmp_path)
+    conn = db.connect(path)
+    try:
+        _drop_index(conn)
+        conn.execute("DROP TABLE entries")          # 表没了 → 建索引必失败
+        with pytest.raises(sqlite3.Error):
+            db._ensure_indexes(conn)  # 默认严格模式：写事务路径语义
+        assert db.pending_index_builds() == frozenset(), "非竞争失败不得登记待办"
+    finally:
+        conn.close()
+
+
+def test_migration_path_still_builds_index_under_write_lock(tmp_path):
+    """写事务路径仍严格：迁移链内的补建不认让步语义（写锁已自持）。
+
+    迁移在 BEGIN IMMEDIATE 内补建索引，不受外部写锁影响，因此 ISS-173 的
+    让步不得放宽这条路径 —— 否则迁移完成却可能留下缺索引的库。
+    """
+    path = tmp_path / "migrate-strict.db"
+    legacy = sqlite3.connect(path)
+    try:
+        legacy.execute("PRAGMA journal_mode=WAL")
+        for statement in db._SCHEMA_STATEMENTS:
+            legacy.execute(statement)
+        legacy.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb) VALUES ('2026-10-01T12:00:00', ?, 1, 0, 0.1, 42)",
+            (ROOT,),
+        )
+        legacy.commit()
+    finally:
+        legacy.close()
+
+    conn = db.connect(path)
+    try:
+        assert INDEX_NAME in _index_names(conn)
+        assert db.schema_version(conn) == db.SCHEMA_VERSION
+        assert db.pending_index_builds() == frozenset()
+    finally:
+        conn.close()

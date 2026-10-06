@@ -78,6 +78,7 @@ let snapshotSelectionRevision = 0;  // 用户改选计数：晚到的快照列�
 let snapshotCatalog = [];           // ISS-170：最近一次 /api/snapshots 原始列表（收敛与守卫的判据）
 let currentSort = { key: "delta" };  // 同级排序走接口 sort 参数；方向由接口语义固定
 let lastDiff = null;                 // 最近一次成功 diff（/api/diff），用于解读区对位
+let diffIntentAB = "";               // ISS-170 R2：最近一次合法发起方落定的 sel 意图（票据）
 let changesTabs = null;               // ISS-094 页内二级导航（五分区 tab）
 
 /* ISS-148 树形同级表状态：一次 diff 对应一个 treeState 实例。所有层级
@@ -243,8 +244,19 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
 
   // ISS-170：缓存原始列表（收敛与守卫共用），再按当前生效数据集收敛两侧选项
   snapshotCatalog = snaps;
-  const selectedA = snapshotSelectionRevision === selectionRevision ? previousA : selA.value;
-  const selectedB = snapshotSelectionRevision === selectionRevision ? previousB : selB.value;
+  /* ISS-170 R2：fetch /api/snapshots 期间用户已改选（revision 推进）→ 本二发
+   * 整体放弃：不收敛、不落定 sel、不发 diff，只重建 b 侧全列数据。此前仅用
+   * revision 切换「取发起时值还是实时值」，仍会按旧意图落定并以最新世代补发
+   * diff，作废用户自己的请求（CI 三连发 (1,4)/(1,2)/(1,4) 的最后一发即此路
+   * 径）。收敛落定与 loadDiff 之间是同步代码，放弃判断放在 fetch 之后即无
+   * 竞争窗口。 */
+  if (snapshotSelectionRevision !== selectionRevision) {
+    replaceSnapshotOptions(selB, snaps);
+    if (!selA.options.length) replaceSnapshotOptions(selA, snaps);
+    return;
+  }
+  const selectedA = previousA;
+  const selectedB = previousB;
   const anchor = anchorSnapshot(snaps, selectedB);
   const group = sameDatasetGroup(snaps, anchor);
   const ids = group.map((s) => String(s.id));
@@ -312,6 +324,13 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
     ? "所选快照已更新或不再可用，已切换到最近有效快照。"
     : "");
   setDiffControlsEnabled(true);
+  /* ISS-170 R2：本函数从 enter 钩子/恢复流程异步到达，await /api/snapshots
+   * 期间用户可能已改选。此时 nextA/nextB（按发起时意图收敛）已不代表用户
+   * 意图——实测三连发 (1,4)/(1,2)/(1,4) 中最后一发即此路径，它以新世代
+   * 作废用户自己的 diff，渲染复核门又拦掉它，净变化行无人更新。sel 当前值
+   * 与收敛结果不一致说明用户意图已更新，交给用户改选触发的 loadDiff 接管，
+   * 这里不再补发。 */
+  diffIntentAB = `${nextA}\u0000${nextB}`;
   await loadDiff({ retryOnMissing: false, successMessage: fallbackNotice });
 }
 
@@ -792,6 +811,7 @@ function onSelectionChange(changedId) {
   // 改选使旧对比的详情侧栏失效：关闭并作废在途 trend/browse，迟到响应
   // 不得写入（焦点留在用户正在操作的 select，不回焦已销毁的行）。
   directoryDetail.invalidate();
+  diffIntentAB = `${a}\u0000${b}`;
   loadDiff();
 }
 
@@ -810,9 +830,15 @@ function crossDatasetBlock(a, b) {
 }
 
 async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
-  const request = beginRequest("diff");
   const a = document.getElementById("sel-a").value;
   const b = document.getElementById("sel-b").value;
+  /* ISS-170 R2：意图票据。只有 onSelectionChange / 目录收敛落定这两个合法
+   * 发起方设置的最新意图才放行；实测（CI 冷环境 + 本地网络监听）存在迟到的
+   * 恢复/交接流程以旧 sel 值补发 diff（三连发 (1,4)/(1,2)/(1,4)），其新世代
+   * 会作废用户自己的请求，渲染复核门又拦掉它——净变化行无人更新。票据不符
+   * 的调用在门口直接拒绝，不发起请求。 */
+  if (diffIntentAB !== `${a}\u0000${b}`) return;
+  const request = beginRequest("diff");
   if (!a || !b) return;
   const blocked = crossDatasetBlock(a, b);
   if (blocked) {
@@ -825,6 +851,12 @@ async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
   try {
     const d = await fetchJSON(`/api/diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
     if (!request.current()) return;
+    /* ISS-170 R2：世代守卫之外再复核「最后一次用户意图」。响应到达时若两侧
+     * select 已被改选（任何未走 beginRequest("diff") 的写入路径，例如外部脚本
+     * 或跨页交接直接改选项），本次读数一律丢弃——用户改选后，任何迟到响应
+     * 都不得覆盖他刚做的选择。渲染 #changes-net 的唯一写路径，两道门缺一不可。*/
+    if (document.getElementById("sel-a").value !== a ||
+        document.getElementById("sel-b").value !== b) return;
     lastDiff = d;
     renderDeltaBars("chart-grown", d.grown, cssVar("--grow"));
     renderDeltaBars("chart-shrunk", d.shrunk, cssVar("--mineral"));
@@ -1817,9 +1849,13 @@ export const changesPage = {
     // ISS-094：页内二级导航（五分区 tab；index.html 静态 DOM）。
     changesTabs = initPageTabs({ page: "changes", defaultTab: "detail" });
     // ISS-093：选择即比对——select 改选（鼠标或键盘）在选齐后自动触发加载。
+    // ISS-170 R2：真实用户改选（isTrusted）置全局标志——总览交接的迟到 tick
+    //（8s 窗口）据此放弃写入，不得把用户已改选的区间覆盖回入口旧值。
     ["sel-a", "sel-b"].forEach((id) => {
-      document.getElementById(id).addEventListener("change", (e) =>
-        onSelectionChange(e.target.id));
+      document.getElementById(id).addEventListener("change", (e) => {
+        if (e.isTrusted) window.__changesUserTouched = true;
+        onSelectionChange(e.target.id);
+      });
     });
     // ISS-148：排序表头（delta/size/name 走接口 sort；同级内排序）
     document.querySelectorAll("#changes-table .th-sort").forEach((btn) => {

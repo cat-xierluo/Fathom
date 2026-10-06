@@ -280,6 +280,14 @@ def api_status():
 
 @app.get("/api/snapshots")
 def api_snapshots():
+    """快照列表（含卷容量）。
+
+    ISS-176：下发 ``plan_id``（新身份行非空，legacy 行为 null），前端
+    ``changes.js`` 的 datasetKey 据此分两档（plan 档按 plan_id、legacy 档
+    按三元组），与后端 ``reports.same_dataset`` 同一口径——此前前端拿不到
+    plan_id，只能把新身份行按三元组并进 legacy 窗口。字段命名与既有响应
+    一致，直接取列值不做派生。
+    """
     conn = _get_conn()
     try:
         rows = conn.execute(
@@ -287,6 +295,7 @@ def api_snapshots():
                       s.min_kb, s.collection_status,
                       s.vanished_count, s.exclude_names,
                       s.confirmed_missing_count, s.path_unverified_count,
+                      s.plan_id,
                       v.total_bytes, v.free_bytes
                FROM snapshots s LEFT JOIN volume_stats v ON v.snapshot_id = s.id
                ORDER BY s.created_at DESC, s.id DESC"""
@@ -425,16 +434,21 @@ def api_trees(snapshot_id: int | None = None, min_kb: int = Query(51200, ge=1)):
         conn.close()
 
 
-# ---------- 新身份消费者的显式拒绝闸门（ISS-155 续作） ----------
+# ---------- 跨身份闸门（ISS-155 引入，ISS-176 按完整身份放开） ----------
 #
 # ISS-153 起的范围快照带 ``plan_id``（新身份），legacy 行为 NULL。跨快照
 # 读取（diff / trend / children 树）依赖 ``(root, min_kb, exclude_names)``
 # 三元组身份——三元组**无法区分同一目录在不同计划下的两次采集**，拿它读
 # 新身份行会静默产出「看起来可比、实际口径不同」的折线/排名（AUD-05 同类）。
 #
-# 本闸门把该缺口从「隐性失真」变成「显式拒绝」：任一侧快照带 plan_id 即
-# 409 + 稳定 code，**绝不**回落 legacy 三元组口径。legacy 行（plan_id
-# 为 NULL，或窄行无该列）行为逐字节不变。
+# ISS-155 的做法是把带 plan_id 的行**一律** 409 掉（范围能力未落地时的
+# 占位闸门）。ISS-176 补齐范围侧身份后该占位不再成立：v8 的 plan_id 已
+# 编码规范根/范围卷/计量版本/阈值/排除掩码，**同 plan 即可比**，两档口径
+# 统一由 ``reports.same_dataset`` 承担。本闸门只负责它之前那一层：
+# 两侧身份**互相矛盾**时（跨 plan、legacy↔plan 混搭）显式 409，
+# **绝不**回落 legacy 三元组口径去混读。
+#
+# legacy 行（plan_id 为 NULL，或窄行无该列）行为逐字节不变。
 _NEW_IDENTITY_HTTP = 409
 _NEW_IDENTITY_CODE = "plan_identity_unsupported"
 
@@ -447,19 +461,35 @@ def _row_plan_id(row: object) -> object:
         return None
 
 
-def _reject_new_plan_identity(
+def _reject_mixed_plan_identity(
     rows: Sequence[tuple[str, object]],
 ) -> None:
-    """任一快照行带新身份即 409 拒绝（ISS-155 消费者闸门）。
+    """两侧身份互相矛盾即 409 拒绝（跨 plan / legacy↔plan 混搭）。
 
-    ``rows`` 为 ``(标签, 快照行)`` 序列，标签只进消息（告诉调用方是哪个
-    快照参数被拒），不参与判定。抛 ``HTTPException`` 而非静默降级：新身份
-    快照在 ``/api/snapshots`` 与 status 仍可查（可观测），只是**跨快照
-    口径读取**在范围能力落地前不支持。
+    ``rows`` 为 ``(标签, 快照行)`` 序列。判定分两档（与
+    ``reports.same_dataset`` 同一口径，ISS-176 对齐）：
+
+    - 全部 legacy（plan_id 皆为空）：本闸门直接放行，后续三元组口径
+      （同根同 min_kb 同排除掩码）按 ISS-021/ISS-066 既有语义判定；
+    - 全部新身份且 plan_id 相同：放行——v8 的 plan_id 已编码规范根、
+      范围卷、计量版本、阈值与排除掩码，同 plan 即可比，跨快照读取
+      按完整身份工作（ISS-176）；
+    - 其余（plan_id 不同，或一侧新身份一侧 legacy）：矛盾，409 拒绝。
+
+    标签只进消息（告诉调用方是哪个快照参数被拒），不参与判定。抛
+    ``HTTPException`` 而非静默降级：矛盾身份下按三元组混读会产出
+    「看起来可比、实际口径不同」的折线/排名。快照本身仍可在
+    ``/api/snapshots`` 与 ``/api/status`` 中查看。
     """
-    offending = [label for label, row in rows if _row_plan_id(row) is not None]
+    plans = [(label, _row_plan_id(row)) for label, row in rows]
+    if all(plan is None for _label, plan in plans):
+        return  # 纯 legacy 档：交回三元组口径
+    if all(plan is not None for _label, plan in plans) \
+            and len({plan for _label, plan in plans}) == 1:
+        return  # 同一计划的两次采集：按完整身份可比
+    offending = [label for label, plan in plans if plan is not None]
     if not offending:
-        return
+        offending = [label for label, plan in plans]
     labels = "、".join(offending)
     raise HTTPException(
         _NEW_IDENTITY_HTTP,
@@ -467,10 +497,11 @@ def _reject_new_plan_identity(
             "error": "plan_identity_unsupported",
             "code": _NEW_IDENTITY_CODE,
             "message": (
-                f"{labels} 属于新身份范围数据集（带 plan_id）。跨快照的对比/趋势"
-                "需要范围计划级的可比性判定，当前版本尚不支持按新身份解读，"
-                "已明确拒绝而不是按旧单根口径混读。快照本身仍可在 "
-                "/api/snapshots 与 /api/status 中查看。"
+                f"{labels} 的数据集身份互相矛盾（跨 plan_id，或新身份与 legacy "
+                "混搭）。跨快照的对比/趋势需要同一范围计划下的可比性判定，"
+                "已明确拒绝而不是按旧单根三元组口径混读。同一 plan_id 的两个"
+                "快照可正常对比；快照本身仍可在 /api/snapshots 与 /api/status "
+                "中查看。"
             ),
             "snapshots": offending,
         },
@@ -482,35 +513,42 @@ def _new_identity_scope_active() -> bool:
     return config.effective_scope_selection() is not None
 
 
-def _reject_bigfiles_under_new_identity() -> None:
-    """bigfiles 在新身份范围下显式拒绝（ISS-150 预留接缝，ISS-155 接线）。
+def _bigfiles_scope_key() -> str:
+    """已选范围的身份串，进 bigfiles 去重/缓存键（ISS-176）。
 
-    ISS-150 的 ``BigfilesManager`` 去重/缓存键只含「规范根 + 模式 + 参数 +
-    范围配置版本」，**不含 scope_id/plan_id**（ISS-153 留下的预留缝）。范围
-    启用后同一目录可能属于不同计划下的不同数据集，此时按旧键去重会把两个
-    计划的结果互相复用——那正是 ISS-150 要避免的越界读取，只是方向反了。
-
-    与其静默复用错误结果，本期直接拒绝并说明；同时明确 reveal（已接线，
-    按已选规范根逐个放行）与 bigfiles 的差别：reveal 是逐路径判定，天然
-    支持多范围；bigfiles 是**单根聚合查询**，没有计划身份就无法绑定口径。
+    未启用范围时返回空串——legacy 旧口径的键与 ISS-155 之前逐字节一致，
+    旧缓存条目继续可命中，既有行为零变化。启用范围时把 mode、按位置成对的
+    规范根与 scope_id、container_id 一起并入：不同范围选择（含同一目录归属
+    不同计划的组合）产生不同键，两个计划的结果不会互相复用。含
+    ``identity_version``，范围身份口径升级时旧键自然失效。
     """
-    if not _new_identity_scope_active():
-        return
     selection = config.effective_scope_selection()
-    roots = "、".join(selection.roots) if selection is not None else ""
-    raise HTTPException(
-        _NEW_IDENTITY_HTTP,
-        detail={
-            "error": "plan_identity_unsupported",
-            "code": _NEW_IDENTITY_CODE,
-            "message": (
-                "已启用范围采集，但当前最大文件/近期大文件查询尚未绑定计划身份"
-                "（去重与缓存键缺 scope_id）。为避免把不同计划下的结果互相复用，"
-                f"已拒绝本次查询。已选范围：{roots}。单根旧口径不受影响。"
-            ),
-            "selected_roots": list(selection.roots) if selection is not None else [],
-        },
-    )
+    if selection is None:
+        return ""
+    parts = [str(selection.mode), str(selection.identity_version)]
+    roots = list(selection.roots)
+    scope_ids = list(selection.scope_ids)
+    for idx, root in enumerate(roots):
+        scope_id = scope_ids[idx] if idx < len(scope_ids) else ""
+        parts.append(f"{root}#{scope_id}")
+    parts.append(str(selection.container_id or ""))
+    return "|".join(parts)
+
+
+def _reject_bigfiles_under_new_identity() -> None:
+    """保留：bigfiles 的新身份闸门（ISS-176 起不再按范围启用即拒绝）。
+
+    ISS-150 的 ``BigfilesManager`` 去重/缓存键原只含「规范根 + 模式 + 参数 +
+    范围配置版本」，**不含 scope_id/plan_id**，范围启用后同一目录可能属于
+    不同计划下的不同数据集，按旧键去重会把两个计划的结果互相复用。ISS-176
+    在 ``bigfiles.BigfilesQuery.key`` 补入范围身份（``scope_key``）后该缝
+    已闭合：不同范围选择不再共享去重/缓存条目，故本函数不再拒绝任何请求，
+    保留函数体为空转仅为不改动 ``/api/bigfiles`` 的调用形状与既有断言。
+
+    与 reveal 的差别不变：reveal 逐路径判定，多范围天然支持；bigfiles 是
+    **单根聚合查询**，其口径现在由去重键里的范围身份逐次绑定。
+    """
+    return None
 
 
 @app.get("/api/diff")
@@ -541,9 +579,9 @@ def api_diff(
             if row is None:
                 raise HTTPException(404, f"快照 {sid} 不存在")
             meta[sid] = row
-        # ISS-155：身份闸门先于同口径校验（新身份行只按三元组会得到失真的
-        # dataset_mismatch，无法区分计划）。legacy 行行为不变。
-        _reject_new_plan_identity(((f"快照 {a}", meta[a]), (f"快照 {b}", meta[b])))
+        # ISS-176：身份矛盾闸门先于同口径校验（跨 plan/混搭若落到三元组
+        # 会得到失真的 dataset_mismatch）。同 plan 对与 legacy 对均放行。
+        _reject_mixed_plan_identity(((f"快照 {a}", meta[a]), (f"快照 {b}", meta[b])))
         if not reports.same_dataset(meta[a], meta[b]):
             raise HTTPException(
                 400,
@@ -607,9 +645,9 @@ def api_diff_children(
             if row is None:
                 raise HTTPException(404, f"快照 {sid} 不存在")
             meta[sid] = row
-        # ISS-155：身份闸门先于同口径校验（新身份行只按三元组会得到失真的
-        # dataset_mismatch，无法区分计划）。legacy 行行为不变。
-        _reject_new_plan_identity(((f"快照 {a}", meta[a]), (f"快照 {b}", meta[b])))
+        # ISS-176：身份矛盾闸门先于同口径校验（跨 plan/混搭若落到三元组
+        # 会得到失真的 dataset_mismatch）。同 plan 对与 legacy 对均放行。
+        _reject_mixed_plan_identity(((f"快照 {a}", meta[a]), (f"快照 {b}", meta[b])))
         if not reports.same_dataset(meta[a], meta[b]):
             raise HTTPException(
                 400,
@@ -665,6 +703,8 @@ def api_diff_children(
                 "min_kb": meta[a]["min_kb"],
                 # v5+ schema 恒有该列；NULL 不可能出现（NOT NULL DEFAULT ''）
                 "exclude_names": meta[a]["exclude_names"] or "",
+                # ISS-176：下发身份档位，供前端两档收敛（与 same_dataset 同口径）
+                "plan_id": _row_plan_id(meta[a]),
             },
             "path": target,
             "ancestors": [r.to_dict() for r in hierarchy.ancestor_rows(
@@ -722,8 +762,8 @@ def api_trend(path: str = Query(..., min_length=1),
             ).fetchone()
             if anchor is None:
                 raise HTTPException(404, f"快照 {anchor_snapshot_id} 不存在")
-            # ISS-155：锚快照带新身份即拒绝，不按旧三元组窗口混读。
-            _reject_new_plan_identity(((f"锚快照 {anchor_snapshot_id}", anchor),))
+            # ISS-176：锚定形态按锚快照的完整身份取窗口（find_same_dataset_snapshot_rows
+            # 已按 plan_id 分档），跨身份矛盾由 _reject_mixed_plan_identity 兜底。
             identity = reports.dataset_identity(anchor)
             all_rows = reports.find_same_dataset_snapshot_rows(conn, identity)
             truncated = len(all_rows) > limit
@@ -743,7 +783,11 @@ def api_trend(path: str = Query(..., min_length=1),
                 "path": path,
                 "anchor_snapshot_id": anchor["id"],
                 "dataset": {"root": identity[0], "min_kb": identity[1],
-                            "exclude_names": identity[2]},
+                            "exclude_names": identity[2],
+                            # ISS-176：随响应下发身份档位，前端据此判断
+                            # 窗口是 plan 档（按 plan_id）还是 legacy 档
+                            # （按三元组），与 datasetKey 两档判定同源。
+                            "plan_id": identity[3] if len(identity) > 3 else None},
                 "points": points,
                 "total_snapshots": len(all_rows),
                 "truncated": truncated,
@@ -757,9 +801,10 @@ def api_trend(path: str = Query(..., min_length=1),
         ).fetchone()
         if anchor is None:
             return {"path": path, "points": []}
-        # ISS-155：旧形态（无显式锚）命中的新身份快照同样拒绝——否则它会
-        # 悄悄用旧三元组窗口把不同计划的点连成一条「可比」折线。
-        _reject_new_plan_identity(((f"路径 {path} 的最新记录快照 {anchor['id']}", anchor),))
+        # ISS-176：旧形态（无显式锚）同样按锚快照的完整身份取窗口（下方
+        # dataset_identity + find_same_dataset_snapshot_rows 已按 plan_id 分档），
+        # 新身份点不再被拒，也不再被旧三元组窗口连成混读折线。单行锚定不存在
+        # 「两侧身份矛盾」，故不需要 _reject_mixed_plan_identity。
         # 旧形态兼容：与旧实现逐点等价——数据集内该路径**有记录的点**按
         # (created_at, id) 倒序取最新 limit 条再正序输出（缺测快照本就不
         # 出现）。数据集身份（窗口）来自 reports 辅助，entries 只按 path 取。
@@ -826,7 +871,7 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
     - ``wait=true`` 语义逐字段不变（仅新增 ``task_id``）：旧前端/CLI 零改动；
       被取消/超时时 409/504 响应体附增 ``task_id`` 供前端恢复句柄。
     """
-    # ISS-155：新身份范围下显式拒绝（ISS-150 预留接缝未绑定 scope_id）。
+    # ISS-176：范围身份已并入去重/缓存键，闸门不再拒绝（见函数 docstring）。
     _reject_bigfiles_under_new_identity()
     try:
         resolved_root = bigfiles.resolve_query_root(path)
@@ -835,9 +880,11 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
     timeout_s = (config.BIGFILE_LARGEST_TIMEOUT_S if mode == "largest"
                  else config.BIGFILE_FIND_TIMEOUT_S)
     manager = _get_bigfiles_manager()
+    # ISS-176：把已选范围身份并入去重/缓存键——不同范围选择（或与未启用范围
+    # 的旧口径）不再共享同一条查询结果，因此无需再对已启用范围一律 409。
     future = manager.submit(
         resolved_root, days=days, min_mb=min_mb, topn=topn, mode=mode,
-        timeout=timeout_s,
+        timeout=timeout_s, scope_key=_bigfiles_scope_key(),
     )
     task_id = future.task_id
     scope = {

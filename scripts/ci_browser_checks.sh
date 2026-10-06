@@ -231,5 +231,5 @@ assert_result_json "$tree_out" "$expected_storage_overview" "storage overview fr
 # 失败自身非零退出，pipefail 直通判红；计数漂移由
 # EXPECTED_INVESTIGATION_PASSED 兜底（同树形口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_storage_investigation_frontend.cjs | tee "$tree_out"
-expected_investigation="${EXPECTED_INVESTIGATION_PASSED:-50}"
+expected_investigation="${EXPECTED_INVESTIGATION_PASSED:-55}"
 assert_result_json "$tree_out" "$expected_investigation" "storage investigation frontend"

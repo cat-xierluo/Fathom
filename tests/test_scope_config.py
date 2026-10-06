@@ -442,9 +442,16 @@ def _insert_snapshot(conn, *, path_root, plan_id, created_at, sid_hint=None):
 
 
 class TestNewIdentityRejection:
-    """diff / trend / children 遇新身份快照必须 409，不静默 legacy 解读。"""
+    """diff / trend / children 按完整身份工作：同 plan 放行、矛盾身份 409（ISS-176）。
 
-    def test_diff_rejects_new_identity(self, client, tmp_path):
+    ISS-155 曾把带 plan_id 的行一律 409（范围能力未落地时的占位）。ISS-176
+    补齐后 v8 的 plan_id 已编码规范根/范围卷/计量版本/阈值/排除掩码，
+    **同 plan 即可比**，四端点按完整身份贯通；跨 plan 与 legacy↔plan 混搭
+    仍显式 409（_reject_mixed_plan_identity），绝不回落三元组混读。
+    """
+
+    def test_diff_same_plan_allowed(self, client, tmp_path):
+        """同 plan 两快照：diff 可比（ISS-176 核心反例——此前 409）。"""
         root = tmp_path / "scanroot"
         conn = db.connect()
         try:
@@ -455,10 +462,11 @@ class TestNewIdentityRejection:
         finally:
             conn.close()
         resp = client.get("/api/diff", params={"a": a, "b": b})
-        assert resp.status_code == 409
-        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["a"]["plan_id"] == "plan-1"
 
-    def test_diff_children_rejects_new_identity(self, client, tmp_path):
+    def test_diff_children_same_plan_allowed(self, client, tmp_path):
+        """同 plan 两快照：children 可下钻。"""
         root = tmp_path / "scanroot"
         conn = db.connect()
         try:
@@ -469,32 +477,99 @@ class TestNewIdentityRejection:
         finally:
             conn.close()
         resp = client.get("/api/diff/children", params={"a": a, "b": b})
-        assert resp.status_code == 409
-        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["dataset"]["plan_id"] == "plan-1"
 
-    def test_trend_anchor_rejects_new_identity(self, client, tmp_path):
+    def test_trend_anchor_same_plan_allowed(self, client, tmp_path):
+        """同 plan：锚定形态按 plan 档窗口出点。"""
         root = tmp_path / "scanroot"
         conn = db.connect()
         try:
             a = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
                                  created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-05T10:00:00+00:00")
         finally:
             conn.close()
         resp = client.get("/api/trend", params={
             "path": f"{root}/dir", "anchor_snapshot_id": a})
-        assert resp.status_code == 409
-        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert payload["dataset"]["plan_id"] == "plan-1"
+        # 窗口按 plan 取：同 plan 两个快照各出一个点
+        assert [p["snapshot_id"] for p in payload["points"]] == [a, b]
 
-    def test_trend_legacy_call_rejects_new_identity(self, client, tmp_path):
-        """旧形态（无显式锚）命中新身份快照同样拒绝，不得混读成折线。"""
+    def test_trend_legacy_call_same_plan_allowed(self, client, tmp_path):
+        """旧形态（无显式锚）命中新身份快照同样按 plan 档工作，不被拒。"""
         root = tmp_path / "scanroot"
         conn = db.connect()
         try:
+            _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                             created_at="2026-10-04T10:00:00+00:00")
             _insert_snapshot(conn, path_root=root, plan_id="plan-1",
                              created_at="2026-10-05T10:00:00+00:00")
         finally:
             conn.close()
         resp = client.get("/api/trend", params={"path": f"{root}/dir"})
+        assert resp.status_code == 200, resp.text
+        assert len(resp.json()["points"]) == 2
+
+    def test_diff_cross_plan_still_rejected(self, client, tmp_path):
+        """跨 plan（同根同阈值）仍 409——不按三元组混读。"""
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id="plan-2",
+                                 created_at="2026-10-05T10:00:00+00:00")
+        finally:
+            conn.close()
+        resp = client.get("/api/diff", params={"a": a, "b": b})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+
+    def test_diff_children_cross_plan_still_rejected(self, client, tmp_path):
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id="plan-2",
+                                 created_at="2026-10-05T10:00:00+00:00")
+        finally:
+            conn.close()
+        resp = client.get("/api/diff/children", params={"a": a, "b": b})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+
+    def test_diff_legacy_mixed_with_plan_still_rejected(self, client, tmp_path):
+        """legacy↔plan 混搭仍 409：旧行不补造卷 UUID，身份不可证同源。"""
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id=None,
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-05T10:00:00+00:00")
+        finally:
+            conn.close()
+        resp = client.get("/api/diff", params={"a": a, "b": b})
+        assert resp.status_code == 409
+        assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
+
+    def test_diff_children_legacy_mixed_with_plan_still_rejected(self, client,
+                                                                 tmp_path):
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id=None,
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-05T10:00:00+00:00")
+        finally:
+            conn.close()
+        resp = client.get("/api/diff/children", params={"a": a, "b": b})
         assert resp.status_code == 409
         assert resp.json()["detail"]["code"] == "plan_identity_unsupported"
 
@@ -516,20 +591,62 @@ class TestNewIdentityRejection:
             "path": f"{root}/dir", "anchor_snapshot_id": a})
         assert trend.status_code == 200
         assert trend.json()["dataset"]["root"] == str(root)
+        assert trend.json()["dataset"]["plan_id"] is None
+
+    def test_snapshots_list_carries_plan_id(self, client, tmp_path):
+        """/api/snapshots 下发 plan_id：新身份行非空、legacy 行为 null。
+
+        前端 changes.js 的 datasetKey 据此分两档收敛（此前拿不到该字段）。
+        """
+        root = tmp_path / "scanroot"
+        conn = db.connect()
+        try:
+            a = _insert_snapshot(conn, path_root=root, plan_id="plan-1",
+                                 created_at="2026-10-04T10:00:00+00:00")
+            b = _insert_snapshot(conn, path_root=root, plan_id=None,
+                                 created_at="2026-10-05T10:00:00+00:00")
+        finally:
+            conn.close()
+        rows = {r["id"]: r for r in client.get("/api/snapshots").json()}
+        assert rows[a]["plan_id"] == "plan-1"
+        assert rows[b]["plan_id"] is None
 
 
 class TestBigfilesNewIdentitySeam:
-    """ISS-150 预留接缝：范围启用后 bigfiles 显式拒绝（缓存键缺 scope_id）。"""
+    """ISS-150 预留接缝：范围身份并入去重/缓存键（ISS-176 闭合，不再 409）。
 
-    def test_bigfiles_rejected_under_selected_scope(self, client, tmp_path):
+    ISS-155 曾对已启用范围的 bigfiles 一律 409，因为去重/缓存键不含 scope_id，
+    两个计划的结果会互相复用。ISS-176 把范围身份串（``scope_key``）并入
+    ``BigfilesQuery.key``，缝已闭合：范围启用时可查，且不同范围选择不共享
+    缓存/去重条目。legacy 旧口径的键逐字节不变。
+    """
+
+    def test_bigfiles_allowed_under_selected_scope(self, client, tmp_path):
+        """已启用范围时可查（此前 409）：身份绑定交给去重键，不再拒绝。"""
         a = tmp_path / "vol-a"
         a.mkdir()
         assert _select(client, [a]).status_code == 200
         resp = client.get("/api/bigfiles", params={"wait": "false"})
-        assert resp.status_code == 409
-        detail = resp.json()["detail"]
-        assert detail["code"] == "plan_identity_unsupported"
-        assert detail["selected_roots"] == [str(a)]
+        assert resp.status_code in (200, 202), resp.text
+        assert resp.json()["scope"]["root"] is not None
+
+    def test_bigfiles_scope_key_binds_range_identity(self, client, tmp_path):
+        """范围选择进 scope_key：不同范围不共享去重/缓存条目。"""
+        from fathom import bigfiles as bf
+
+        legacy_key = bf.BigfilesQuery(root=Path("/r"), days=7, min_mb=100,
+                                      topn=30).key
+        assert legacy_key[-1] == ""  # legacy 旧口径：末位空串，旧键形状不变
+
+        a = tmp_path / "vol-a"
+        a.mkdir()
+        assert _select(client, [a]).status_code == 200
+        scoped = bf.BigfilesQuery(root=Path("/r"), days=7, min_mb=100, topn=30,
+                                  scope_key=api._bigfiles_scope_key()).key
+        assert scoped[-1] != ""
+        assert scoped != legacy_key
+        # 范围选择落盘后，scope_key 稳定可复现（同一范围 → 同一键）
+        assert api._bigfiles_scope_key() == api._bigfiles_scope_key()
 
     def test_bigfiles_unchanged_without_scope(self, client, tmp_path):
         """反例对照：未启用范围（旧口径）时 bigfiles 不被新闸门拦截。"""

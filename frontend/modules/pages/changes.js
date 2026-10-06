@@ -37,9 +37,9 @@
  * - #sel-a（历史点侧）收敛到**当前 b 所属数据集**，只列同身份快照，跨数据集
  *   组合在选项层不可构造；改 b 后 a 侧选项重填为 b 数据集并按「a 取其前驱」
  *   落定，改 a 只在 b 数据集内收敛、不动 b；
- * - 身份口径复用后端 reports.same_dataset 的 legacy 档三元组
- *   (root, min_kb, exclude_names)，逐字段同源、不新造判定（/api/snapshots
- *   不下发 plan_id，故前端只能取该档；带新身份的行由后端闸门继续把关）；
+ * - 身份口径复用后端 reports.same_dataset（ISS-176 两档）：plan 档按
+ *   plan_id、legacy 档按 (root, min_kb, exclude_names)，逐字段同源、不新造
+ *   判定；/api/snapshots 自 ISS-176 起下发 plan_id，前端可取 plan 档；
  * - 残余缝隙（异步竞态、跨页交接）由 loadDiff 发请求前的守卫兜底：跨身份
  *   组合就地给一句说明并保留上一有效读数，不静默、不把 400 伪装成成功。
  *
@@ -156,17 +156,27 @@ function clearDiffResults() {
   sessionTree = null;
 }
 
-/* ISS-170：数据集身份口径——与后端 fathom/reports.py::same_dataset 的 legacy
- * 档逐字段同源：(root, min_kb, exclude_names) 三元组相等即可比。
- * 归一化照抄后端语义：min_kb 为 NULL 是「该根的口径未知」数据集，彼此可比较；
- * exclude_names 缺列（v5 之前）兜底为 ""，与新写入的「无配置」同身份。
- * /api/snapshots 不下发 plan_id，故前端只能取该档——带新身份（plan_id 非空）
- * 的行是否可比的判断仍由后端闸门负责，本卡不放宽后端。 */
+/* ISS-176：数据集身份口径升级为两档——与后端 fathom/reports.py::same_dataset
+ * 完全同口径（ISS-153 起）：
+ * - plan 档（plan_id 非空）：只按 plan_id 判等。v8 的 plan_id 已编码规范根、
+ *   范围卷、计量版本、阈值与排除掩码，同 plan 即同数据集；同路径换卷或换
+ *   计划都形成新计划，不可比——所以这里**不**再拼三元组，否则同 plan 内
+ *   口径微调会被误判成两个数据集；
+ * - legacy 档（plan_id 为空）：沿用 (root, min_kb, exclude_names) 三元组
+ *   （ISS-021/ISS-066 口径不变），归一化照抄后端语义：min_kb 为 NULL 是
+ *   「该根的口径未知」数据集，彼此可比较；exclude_names 缺列（v5 之前）
+ *   兜底为 ""，与新写入的「无配置」同身份。
+ * 两档不混：key 带档位前缀，故 plan 行与 legacy 行永不相等（后端
+ * same_dataset 对混搭同样返回 false）。/api/snapshots 自 ISS-176 起下发
+ * plan_id，前端此前拿不到该字段、只能把新身份行按三元组并进 legacy 窗口。
+ * 仅收敛判定改口径：不对称收敛与票据语义（R2）零改动。 */
 function datasetKey(snap) {
+  const plan = snap.plan_id == null ? "" : String(snap.plan_id);
+  if (plan !== "") return JSON.stringify(["plan", plan]);
   const root = snap.root == null ? "" : String(snap.root);
   const minKb = snap.min_kb == null ? "" : String(snap.min_kb);
   const exclude = snap.exclude_names == null ? "" : String(snap.exclude_names);
-  return JSON.stringify([root, minKb, exclude]);
+  return JSON.stringify(["legacy", root, minKb, exclude]);
 }
 
 function findSnapshot(id) {

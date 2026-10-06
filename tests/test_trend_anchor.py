@@ -202,8 +202,10 @@ class TestAnchoredWindow:
         path, s1, s2, s3 = self._seed_gap_series()
         body = client.get(
             f"/api/trend?path={path}&anchor_snapshot_id={s3}").json()
+        # ISS-176：随响应下发身份档位（plan 档按 plan_id、legacy 档按三元组），
+        # 前端据此两档收敛；本套件种的是 legacy 行，plan_id 为 null。
         assert body["dataset"] == {"root": ROOT_A, "min_kb": 1024,
-                                   "exclude_names": ""}
+                                   "exclude_names": "", "plan_id": None}
         assert body["total_snapshots"] == 3
         assert body["truncated"] is False
 

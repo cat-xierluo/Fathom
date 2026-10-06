@@ -830,6 +830,24 @@ def api_trend(path: str = Query(..., min_length=1),
         conn.close()
 
 
+def _bigfiles_allowed_roots() -> Optional[list[Path]]:
+    """bigfiles 查询的**生效范围根**列表；``None`` = 未启用范围（legacy 旧根）。
+
+    ISS-177：范围启用后，实际查询范围必须跟着用户已选范围走，而不是继续用
+    旧的单根 ``DEFAULT_ROOT``——否则显式 path 会被错误拒绝（该目录就在生效
+    范围内），且无 path 时会静默继续查旧根。返回按选择顺序的根（顺序即
+    ISS-155 的采集顺序，首根即缺省查询根）。
+
+    未启用时返回 None，``bigfiles.resolve_query_root`` 走 ISS-150 单根旧口径，
+    行为与去重键逐字节不变。
+    """
+    selection = config.effective_scope_selection()
+    if selection is None:
+        return None
+    roots = [Path(root) for root in selection.roots]
+    return roots or None
+
+
 @app.get("/api/bigfiles")
 def api_bigfiles(days: int = Query(7, ge=1, le=90),
                  min_mb: int = Query(100, ge=1, le=10240),
@@ -854,6 +872,12 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
     - ``path`` 限定查询目录：仅接受监控根内的规范化目录（经
       ``bigfiles.resolve_query_root``，拒绝 ``..``/相似前缀根/符号链接越界，
       路径已移走返回 404）；不传即监控根。
+    - ISS-177（查询范围语义）：范围启用后，**校验与缺省根都以已选范围为准**，
+      不再按旧根 ``DEFAULT_ROOT`` 判定——显式 path 落在任一已选根内即可查，
+      无 path 时取**第一个已选根**（ISS-155 保存语义里 roots 的顺序即采集
+      顺序，首根即主根）。``scope.root``/``scope.resolved_root``/
+      ``scope.scope_roots`` 如实反映实际查询范围。范围未启用时逐字节回落
+      旧单根口径（``scope_roots`` 为 null）。
     - ``incomplete=True`` 表示时间/输出预算提前截断，``files`` 只是
       「已检查文件中的较大项」而非目录的当前最大文件。
     - ``stats.started_at``/``stats.finished_at`` 为查询起止（epoch 秒）。
@@ -873,8 +897,11 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
     """
     # ISS-176：范围身份已并入去重/缓存键，闸门不再拒绝（见函数 docstring）。
     _reject_bigfiles_under_new_identity()
+    # ISS-177：实际查询范围随**生效范围**走（未启用时为 None = 旧单根口径）。
+    allowed_roots = _bigfiles_allowed_roots()
     try:
-        resolved_root = bigfiles.resolve_query_root(path)
+        resolved_root = bigfiles.resolve_query_root(path,
+                                                     allowed_roots=allowed_roots)
     except bigfiles.BigfilesScopeError as exc:
         raise HTTPException(exc.status, str(exc))
     timeout_s = (config.BIGFILE_LARGEST_TIMEOUT_S if mode == "largest"
@@ -888,8 +915,13 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
     )
     task_id = future.task_id
     scope = {
-        "root": str(config.DEFAULT_ROOT),
+        # ISS-177：``root``/``resolved_root`` 必须如实反映**实际查询范围**，
+        # 不能在范围启用后仍回显旧根（旧根此时根本没被查过）。
+        "root": str(allowed_roots[0]) if allowed_roots
+        else str(config.DEFAULT_ROOT),
         "resolved_root": str(resolved_root),
+        "scope_roots": [str(root) for root in allowed_roots]
+        if allowed_roots else None,
         "requested_path": path,
         "mode": mode,
         "days": days,

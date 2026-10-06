@@ -1005,26 +1005,58 @@ class AnalysisManager:
     def cancel_job(self, job_id: str) -> dict:
         """请求取消：置 cancel_event 并转 cancelling；终态不复活。
 
-        与完成竞争只有一个确定结果：先到终态者胜，本方法看到终态即返回
-        当前视图（``terminal=True``，409 语义由 API 层映射），绝不改写
-        终态。本进程没有该在途任务时（如另一进程持有租约）不按 PID 发
-        信号，仅在状态仍可取消时标记 cancelling，由持有方收敛终态。"""
+        返回 job 视图 + 一个**仅取消响应语义**的 ``cancel_accepted`` 标记
+        （ISS-175）。该标记回答「这次调用是否真的让取消生效」，而不是
+        「最后一次读取看见的状态」——两者不是一回事：
+
+        - ``cancel_accepted=True``：**本次调用受理了取消**。任务在请求到达时
+          仍是非终态（starting/running/cancelling），且本次取消在生效：要么
+          本次调用把行推入 cancelling（受理判定见 ``_mark_cancelling``），
+          要么取消早已受理、仍在收敛。此时最终视图**可以**已经是终态
+          ``cancelled``——那是 worker 在本次取消驱动下收敛的结果，属成功。
+        - ``cancel_accepted=False``：**请求到达前任务已终结**（cancelled/
+          failed/succeeded/timed_out/interrupted 皆然），或到达后、完成抢先
+          写入了终态。取消没有生效，绝不改写终态，由 API 层映射为具名 409
+          ``job_terminal``。
+
+        旧实现用「返回时是否终态」代理「取消是否生效」，于是受理了取消却在
+        worker 已于毫秒内收敛后收到 409「取消不再生效」——观察竞态，不是取消
+        失败。受理与否现在由**到达态 + 本次 mark 的 rowcount**判定，与返回
+        时刻的读取结果解耦。
+
+        与完成竞争仍只有一个确定结果（先到终态者胜），且线性化来源不变：本
+        进程没有该在途任务时（如另一进程持有租约）不按 PID 发信号，仅在状态
+        仍可取消时标记 cancelling，由持有方收敛终态。
+        """
         with self._lock:
             rec = self._jobs.get(job_id)
-        if rec is None:
-            row = self._job_row(job_id)
-            if row is None:
-                raise AnalysisError("job_not_found", "未知分析任务",
-                                    status_code=404)
-            if row["status"] in TERMINAL_STATUSES:
-                return self.job_view(job_id)
-        self._mark_cancelling(job_id)
+        row = self._job_row(job_id)
+        if row is None:
+            raise AnalysisError("job_not_found", "未知分析任务",
+                                status_code=404)
+        # 到达态先行读一次：这是「到达前已终结」的判定依据，与后续任何读取
+        # （受理、worker 收敛）都无竞争，因此本调用自身是确定的。
+        if row["status"] in TERMINAL_STATUSES:
+            view = self.job_view(job_id)
+            view["cancel_accepted"] = False
+            return view
+        marked = self._mark_cancelling(job_id)
         if rec is not None:
             rec.cancel_event.set()
-        return self.job_view(job_id)
+        view = self.job_view(job_id)
+        # 受理 = 本次 mark 命中，或返回时仍未终结（取消已受理、正在收敛）。
+        # 返回时已终态且 mark 未命中的那一格，是完成抢在受理之前赢——取消确实
+        # 没生效，落 409；mark 命中后收敛的终态仍是取消的结果，落 200。
+        view["cancel_accepted"] = marked or not view["terminal"]
+        return view
 
-    def _mark_cancelling(self, job_id: str) -> None:
+    def _mark_cancelling(self, job_id: str) -> bool:
         """受理取消：置 cancelling（不写终态，终态由持有方收敛）。
+
+        返回**本次调用是否把行推入 cancelling**（rowcount>=1）。该返回是
+        ``cancel_job`` 的受理判定依据（ISS-175）：False 意味着到达时的
+        starting/running 已被别的写者改写（通常完成抢先），本次取消没有
+        受理，终态不该被算作取消的结果。
 
         **线性化来自 SQL 条件与写事务，不是这把锁**：_commit_success 的
         ``BEGIN IMMEDIATE`` 全程持有 SQLite 写锁，本 UPDATE 的
@@ -1038,11 +1070,12 @@ class AnalysisManager:
         with self._commit_lock:
             conn = db.connect(self._db_path)
             try:
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE analysis_runs SET status='cancelling' WHERE "
                     "job_id=? AND status IN ('starting','running')",
                     (job_id,))
                 conn.commit()
+                return cur.rowcount > 0
             finally:
                 conn.close()
 

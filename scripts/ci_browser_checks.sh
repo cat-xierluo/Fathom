@@ -58,6 +58,10 @@
 # EXPECTED_BROWSE_SNAPSHOT_PASSED 默认 33）：真实 serve + 真实 Chromium，
 # HTTP 层旧行为形态/历史实点/次级差分/404 语义 + 页面层快照选择/结构
 # 节点/HTML 转义/单时点详情/恢复/分页/三视口。
+# ISS-160 新增跨页上下文/恢复/重扫核对闭环回归
+# （verify_storage_investigation_frontend，EXPECTED_INVESTIGATION_PASSED）：
+# 真实 serve 入口全流程 + net0/历史非 latest/分页/数据集切换 + 快速切页
+# 与故障不残留错读 + 键盘焦点/三视口/图表恢复 + mock 纪律对照。
 # verify 脚本自身任一检查失败都会以非零退出（pipefail 直通，不走门禁
 # 兜底），计数门禁只拦空跑与静默漂移。
 set -euo pipefail
@@ -208,3 +212,24 @@ assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot fron
 FATHOM_PYTHON="$tree_python" node scripts/verify_scope_settings_frontend.cjs | tee "$tree_out"
 expected_scope_settings="${EXPECTED_SCOPE_SETTINGS_PASSED:-37}"
 assert_result_json "$tree_out" "$expected_scope_settings" "scope settings frontend"
+
+# ISS-158：整盘总览与变化入口回归（真实 FastAPI 隔离入口 + 生产总览页实点）。
+# 57 项——两个隔离夹具：clean（两侧可比：容器 +26MB / 目录 +20MB ⇒ 未知差额
+# 6MB，两卷共享 free 不翻倍，重叠测量根去重）与 stale（本轮失败成员 ⇒ 旧值
+# stale、差额 null 不可比、不出现数值）。失败自身非零退出，pipefail 直通判
+# 红；计数漂移由 EXPECTED_STORAGE_OVERVIEW_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_storage_overview_frontend.cjs | tee "$tree_out"
+expected_storage_overview="${EXPECTED_STORAGE_OVERVIEW_PASSED:-57}"
+assert_result_json "$tree_out" "$expected_storage_overview" "storage overview frontend"
+
+# ISS-160：跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI 隔离入口 + 生产页面实点）。
+# 真实 serve 入口全流程（总览→树展开→绑定历史详情→largest→返回→分布→设置→重扫）
+# + net0 内部变化/历史非 latest/分页/旧 HOME·新整盘切换 + 快速切页/改范围/重复
+# 请求/500/取消/同日替换/淘汰不残留错读 + 键盘与焦点返回/三桌面尺寸/图表隐藏恢复
+# + mock 仅注入受控故障。mock 纪律：page.route 只注入受控故障/系统动作，且每处
+# 都有撤除后真实 /api 端点恢复的对照断言；生产模块与 API 调用不被替身取代。
+# 失败自身非零退出，pipefail 直通判红；计数漂移由
+# EXPECTED_INVESTIGATION_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_storage_investigation_frontend.cjs | tee "$tree_out"
+expected_investigation="${EXPECTED_INVESTIGATION_PASSED:-49}"
+assert_result_json "$tree_out" "$expected_investigation" "storage investigation frontend"

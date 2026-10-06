@@ -603,6 +603,28 @@ class TestReplayReleasesLease:
     def _acquire_or_busy(manager: am.AnalysisManager) -> "am.AnalysisLease":
         return am.AnalysisLease.acquire(manager._lock_path, source="lease-probe")
 
+    def _acquire_after_release(self, manager: am.AnalysisManager,
+                               timeout: float = 30.0) -> "am.AnalysisLease":
+        """等 worker 收尾把租约还回来再抢，而不是终态一可见就抢。
+
+        wait_terminal() 只等 SQLite 终态行落地，而分析租约的释放发生在之后
+        工作线程的 finally 块里，二者之间存在收尾窗口（实测最坏约 280ms，
+        ISS-167）。终态可见的瞬间直接抢租约会落进这个窗口抛 AnalysisBusy：
+        那是等待条件不完整，不是产品泄漏——租约最终一定归还。
+
+        这里只把「立刻抢」放宽为「条件等待」，被断言的语义不变：抢到的仍
+        必须是本进程自己的租约，真泄漏依然会超时失败。
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                return self._acquire_or_busy(manager)
+            except am.AnalysisBusy:
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"租约在 {timeout}s 内未归还，仍被占用") from None
+                time.sleep(0.05)
+
     def test_same_key_replay_uses_pre_lease_fast_path(self, ok_setup,
                                                       monkeypatch):
         """常规同键重放在取租约之前就返回（start_job 幂等快检）。
@@ -631,7 +653,7 @@ class TestReplayReleasesLease:
                                              "lease-after")
         assert replay is True and replayed["job_id"] == job["job_id"]
         assert acquired == [], "幂等快检命中时不应再取租约"
-        lease = self._acquire_or_busy(manager)
+        lease = self._acquire_after_release(manager)
         lease.release()
 
     def test_replay_inside_lease_releases_lease(self, ok_setup):
@@ -662,7 +684,7 @@ class TestReplayReleasesLease:
             manager._find_job_by_idempotency = original_find
         assert calls == 2, "应走「预检 miss → 租约内重查 hit」的出口"
         assert replay is True and replayed["job_id"] == job["job_id"]
-        lease = self._acquire_or_busy(manager)
+        lease = self._acquire_after_release(manager)
         lease.release()
 
         # 不止「锁能再取」：重放之后必须真能启动一个新任务跑到终态。
@@ -719,7 +741,7 @@ class TestReplayReleasesLease:
             manager._find_job_by_idempotency = original_find
         assert calls == 3, "应走 INSERT 撞唯一约束再重查的重放路径"
         assert replay is True and replayed["job_id"] == planted["job_id"]
-        lease = self._acquire_or_busy(manager)
+        lease = self._acquire_after_release(manager)
         lease.release()
 
     def test_active_job_still_blocks_concurrent_analysis(self, ok_setup):

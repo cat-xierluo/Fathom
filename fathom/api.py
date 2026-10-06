@@ -24,7 +24,7 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - POST /api/analysis/jobs              执行预览（只收 preview_id/digest/幂等键）
 - GET  /api/analysis/jobs/{id}         查询 job 状态（纯读无副作用）
 - GET  /api/analysis/jobs?a=&b=        按区间查在途 job（仅非终态，ISS-120）
-- POST /api/analysis/jobs/{id}/cancel  取消（终态不复活）
+- POST /api/analysis/jobs/{id}/cancel  取消（本次受理 200；到达前已终结 409）
 - GET  /api/analyses?a=&b=             某 a→b 区间的历史解读（含过期原因）
 - DELETE /api/analyses/{id}            撤销解读（删除正文与关联事实包）
 
@@ -1117,17 +1117,29 @@ def api_analysis_jobs_lookup(a: int = Query(...), b: int = Query(...)):
 
 @app.post("/api/analysis/jobs/{job_id}/cancel")
 def api_analysis_job_cancel(job_id: str):
-    """请求取消：可经 cancelling；终态不复活（409 job_terminal，响应携带
-    最终状态——与完成竞争只有一个确定结果）。"""
+    """请求取消：本次受理 → 200；到达前已终结 → 具名 409（ISS-175）。
+
+    两种响应各自对应一个确定事实，判据来自 ``cancel_job`` 的受理标记而**不是**
+    「返回时是否终态」：
+
+    - **200**：本次调用受理了取消（到达时非终态，且取消已生效）。响应里的
+      ``job.status`` 如实反映当下，**可以是终态 cancelled**——那是 worker 在
+      本次取消驱动下于毫秒内收敛的结果，属取消成功，不是取消失败。
+    - **409 + reason_code=job_terminal**：请求到达前任务已是终态，或到达后完成
+      抢先写入终态。取消确实没生效；响应携带真实终态，绝不复活终态。
+
+    终态不复活、取消先到即取消胜的不变量不变（见
+    ``analysis_manager.cancel_job`` / ``_commit_success``）。
+    """
     view = _get_analysis_manager().cancel_job(job_id)
-    if view.get("terminal"):
-        return JSONResponse(
-            {"reason_code": "job_terminal",
-             "detail": "任务已结束，取消不再生效",
-             "job": view},
-            status_code=409,
-        )
-    return {"job": view}
+    if view.get("cancel_accepted"):
+        return {"job": view}
+    return JSONResponse(
+        {"reason_code": "job_terminal",
+         "detail": "任务已结束，取消不再生效",
+         "job": view},
+        status_code=409,
+    )
 
 
 @app.get("/api/analyses")

@@ -272,8 +272,9 @@ async function main() {
     record("page-opens-default-diff", true, "状态行完成态出现");
 
     // weird 基线断言：默认数据集已随 ISS-149 seed 前移，显式切到 #14 → #15
-    await page.selectOption("#sel-a", "14");
     await page.selectOption("#sel-b", "15");
+    await page.selectOption("#sel-a", "14");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #14 → #15"),
       20000, "weird 对比完成");
 
@@ -299,8 +300,9 @@ async function main() {
     record("tree-root-hides-crumbs-and-parent", parentHiddenAtRoot === true);
 
     /* ---- chain（#1 → #2）：数值、展开三层、详情、聚焦、面包屑、Esc、键盘 ---- */
-    await page.selectOption("#sel-a", "1");
     await page.selectOption("#sel-b", "2");
+    await page.selectOption("#sel-a", "1");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #1 → #2"),
       20000, "chain 对比完成");
     await page.screenshot({ path: path.join(SHOTS, "chain-root-before-expand.png") });
@@ -518,8 +520,9 @@ async function main() {
     await waitUntil(async () => (await rowDepth("/synthetic/chain/child/grand")) === -1, 10000, "返修复位收起");
 
     /* ---- netzero（#3 → #4）：父 0 子抵消 + changed 保留导航父行 ---- */
-    await page.selectOption("#sel-a", "3");
     await page.selectOption("#sel-b", "4");
+    await page.selectOption("#sel-a", "3");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #3 → #4"),
       20000, "netzero 完成");
     await page.click('#changes-body [data-expand="/synthetic/netzero/zero"]');
@@ -552,8 +555,9 @@ async function main() {
 
     /* ---- 错误与重试：children 中断在表内展示错误，重试恢复（基础完成态不受影响） ---- */
     await page.route("**/api/diff/children*", (r) => r.abort("internetdisconnected"));
-    await page.selectOption("#sel-a", "8");
     await page.selectOption("#sel-b", "9");
+    await page.selectOption("#sel-a", "8");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #8 → #9"),
       20000, "children 中断但 diff 完成态");
     const errRow = await page.evaluate(() => ({
@@ -568,8 +572,9 @@ async function main() {
     record("tree-children-retry-recovers", true);
 
     /* ---- gap（#8 → #9）：缺父结构节点不渲染 0 ---- */
-    await page.selectOption("#sel-a", "8");
     await page.selectOption("#sel-b", "9");
+    await page.selectOption("#sel-a", "8");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #8 → #9"),
       20000, "gap 完成");
     const gapRow = await page.evaluate(() => {
@@ -592,8 +597,9 @@ async function main() {
     record("gap-leaf-measured-below-structural", leafDelta === "+100.0 KB", leafDelta);
 
     /* ---- oneside（#10 → #11）：单侧未记录 / 首次记录 ---- */
-    await page.selectOption("#sel-a", "10");
     await page.selectOption("#sel-b", "11");
+    await page.selectOption("#sel-a", "10");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #10 → #11"),
       20000, "oneside 完成");
     const oneside = await page.evaluate(() => {
@@ -615,8 +621,9 @@ async function main() {
       JSON.stringify(oneside));
 
     /* ---- pages（#12 → #13）：130 兄弟分页与加载更多 ---- */
-    await page.selectOption("#sel-a", "12");
     await page.selectOption("#sel-b", "13");
+    await page.selectOption("#sel-a", "12");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #12 → #13"),
       20000, "pages 完成");
     const firstPage = await rowPaths();
@@ -635,8 +642,9 @@ async function main() {
       `rows=${allRows.length} dup=${allRows.length - new Set(allRows).size}`);
 
     /* ---- hist（#5 → #6）：旧区间详情绑定，最新口径另标 ---- */
-    await page.selectOption("#sel-a", "5");
     await page.selectOption("#sel-b", "6");
+    await page.selectOption("#sel-a", "5");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #5 → #6"),
       20000, "hist 完成");
     await page.click('#changes-body tr[data-path="/synthetic/hist/x"] .tree-name');
@@ -700,8 +708,9 @@ async function main() {
       JSON.stringify(trendLegacy));
 
     // 详情实点：选 #16 → #18 打开 leaf 详情——缺测断线（data 含 null）
-    await page.selectOption("#sel-a", "16");
     await page.selectOption("#sel-b", "18");
+    await page.selectOption("#sel-a", "16");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #16 → #18"),
       20000, "trendgap 完成");
     await page.click(`#changes-body tr[data-path="${TG_LEAF}"] .tree-name`);
@@ -798,8 +807,9 @@ async function main() {
     await page.click(`#changes-body tr[data-path="${TG_LEAF}"] .tree-name`);
     await waitUntil(async () => page.evaluate(() => !document.getElementById("changes-detail").hidden),
       10000, "延迟详情打开");
-    await page.selectOption("#sel-a", "19");
     await page.selectOption("#sel-b", "20");
+    await page.selectOption("#sel-a", "19");
+
     await waitUntil(async () => page.evaluate(() => document.getElementById("changes-detail").hidden),
       10000, "改选后详情关闭");
     await page.unroute("**/api/trend*");
@@ -830,8 +840,9 @@ async function main() {
     await page.keyboard.press("Escape");
 
     /* ---- 竞态：快速改选 a/b，迟到的旧层级/详情响应不混入 ---- */
-    await page.selectOption("#sel-a", "1");
     await page.selectOption("#sel-b", "2");
+    await page.selectOption("#sel-a", "1");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #1 → #2"),
       20000, "回 chain");
     // 给 pages 根层请求注入 2s 延迟，然后先选 pages 再立即改选 chain
@@ -843,10 +854,12 @@ async function main() {
         route.continue();
       }
     });
-    await page.selectOption("#sel-a", "12");
     await page.selectOption("#sel-b", "13");
-    await page.selectOption("#sel-a", "1");
+    await page.selectOption("#sel-a", "12");
+
     await page.selectOption("#sel-b", "2");
+    await page.selectOption("#sel-a", "1");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #1 → #2"),
       20000, "chain 再对比");
     await sleep(2600);  // 等迟到的 pages 响应到达
@@ -860,8 +873,9 @@ async function main() {
     await page.click('#changes-body tr[data-path="/synthetic/chain/child"] .tree-name');
     await waitUntil(async () => page.evaluate(() => !document.getElementById("changes-detail").hidden),
       5000, "详情打开（竞态前）");
-    await page.selectOption("#sel-a", "3");
     await page.selectOption("#sel-b", "4");
+    await page.selectOption("#sel-a", "3");
+
     await sleep(800);
     const detailGone = await page.evaluate(() => document.getElementById("changes-detail").hidden);
     record("race-detail-invalidated-on-range-change", detailGone === true);
@@ -891,8 +905,9 @@ async function main() {
 
     /* ---- 三视口无页面横向溢出；窄窗详情可见且有返回 ---- */
     // 场景：chain 三层展开 + 详情打开（最重状态）
-    await page.selectOption("#sel-a", "1");
     await page.selectOption("#sel-b", "2");
+    await page.selectOption("#sel-a", "1");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #1 → #2"),
       20000, "chain 复位");
     await page.click('#changes-body [data-expand="/synthetic/chain/child"]');
@@ -929,8 +944,9 @@ async function main() {
     await page.keyboard.press("Escape");
 
     /* ---- weird 详情：恶意路径在详情内仍为纯文本 ---- */
-    await page.selectOption("#sel-a", "14");
     await page.selectOption("#sel-b", "15");
+    await page.selectOption("#sel-a", "14");
+
     await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #14 → #15"),
       20000, "weird 复位");
     await page.click('#changes-body tr[data-path="/synthetic/weird/中文目录"] .tree-name');

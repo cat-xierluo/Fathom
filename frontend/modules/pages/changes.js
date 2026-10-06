@@ -31,6 +31,18 @@
  * - 树内每个请求域绑定 treeState 实例 + treeEpoch：改选 a/b、切筛选/
  *   排序即整体作废在途层级请求，迟到的旧层级响应不混入新视图。
  *
+ * 数据集收敛（ISS-170）：**不对称收敛**——收敛锚点恒为 b（对比基准侧）：
+ * - #sel-b（对比基准侧）**不收敛**：始终列出全部快照（按既有顺序），用户改 b
+ *   即切换数据集。这是跨数据集可达性的唯一入口，两侧同收敛会把它堵死；
+ * - #sel-a（历史点侧）收敛到**当前 b 所属数据集**，只列同身份快照，跨数据集
+ *   组合在选项层不可构造；改 b 后 a 侧选项重填为 b 数据集并按「a 取其前驱」
+ *   落定，改 a 只在 b 数据集内收敛、不动 b；
+ * - 身份口径复用后端 reports.same_dataset 的 legacy 档三元组
+ *   (root, min_kb, exclude_names)，逐字段同源、不新造判定（/api/snapshots
+ *   不下发 plan_id，故前端只能取该档；带新身份的行由后端闸门继续把关）；
+ * - 残余缝隙（异步竞态、跨页交接）由 loadDiff 发请求前的守卫兜底：跨身份
+ *   组合就地给一句说明并保留上一有效读数，不静默、不把 400 伪装成成功。
+ *
  * 交互（ISS-093）：选择即比对——两个 select 改选后在选齐时自动加载对比，
  * 无确认按钮；未选齐保持空态 + 引导文案；对比失败在状态行内展示
  * 「重试」小按钮（原确认按钮兼任的失败重试语义收拢到失败态）。
@@ -63,6 +75,7 @@ import { icon } from "../../icons.js";
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 let snapshotSelectionRevision = 0;  // 用户改选计数：晚到的快照列表不得覆盖改选结果
+let snapshotCatalog = [];           // ISS-170：最近一次 /api/snapshots 原始列表（收敛与守卫的判据）
 let currentSort = { key: "delta" };  // 同级排序走接口 sort 参数；方向由接口语义固定
 let lastDiff = null;                 // 最近一次成功 diff（/api/diff），用于解读区对位
 let changesTabs = null;               // ISS-094 页内二级导航（五分区 tab）
@@ -136,12 +149,75 @@ function clearDiffResults() {
   sessionTree = null;
 }
 
+/* ISS-170：数据集身份口径——与后端 fathom/reports.py::same_dataset 的 legacy
+ * 档逐字段同源：(root, min_kb, exclude_names) 三元组相等即可比。
+ * 归一化照抄后端语义：min_kb 为 NULL 是「该根的口径未知」数据集，彼此可比较；
+ * exclude_names 缺列（v5 之前）兜底为 ""，与新写入的「无配置」同身份。
+ * /api/snapshots 不下发 plan_id，故前端只能取该档——带新身份（plan_id 非空）
+ * 的行是否可比的判断仍由后端闸门负责，本卡不放宽后端。 */
+function datasetKey(snap) {
+  const root = snap.root == null ? "" : String(snap.root);
+  const minKb = snap.min_kb == null ? "" : String(snap.min_kb);
+  const exclude = snap.exclude_names == null ? "" : String(snap.exclude_names);
+  return JSON.stringify([root, minKb, exclude]);
+}
+
+function findSnapshot(id) {
+  return snapshotCatalog.find((s) => String(s.id) === String(id)) || null;
+}
+
+/** 收敛锚点：当前 b（/api/snapshots 已按时间倒序，列表首个即最新）。
+ * 不对称收敛下锚点恒为 b——它是「切换数据集」的唯一入口，也是口径基准。
+ * b 不可用时兜底取列表首个，保证总有一个合法 b。 */
+function anchorSnapshot(snaps, selectedB) {
+  const byId = new Map(snaps.map((s) => [String(s.id), s]));
+  return byId.get(String(selectedB)) || snaps[0] || null;
+}
+
+/** 与锚点同数据集身份的快照（保持原顺序，不重排）。 */
+function sameDatasetGroup(snaps, anchor) {
+  if (!anchor) return [];
+  const key = datasetKey(anchor);
+  return snaps.filter((s) => datasetKey(s) === key);
+}
+
 function replaceSnapshotOptions(select, snaps) {
   const options = snaps.map((s) => {
     const label = `#${s.id} ${s.created_at.slice(0, 16).replace("T", " ")}`;
     return new Option(label, String(s.id));
   });
   select.replaceChildren(...options);
+}
+
+/** 不对称收敛：b 侧**不收敛**（全列，用户改 b 即切换数据集），a 侧收敛到
+ * b 所属数据集（只列同身份快照），跨数据集组合在选项层不可构造。
+ * - b = keepB 仍在目录内则保留，否则取目录首个（最新）；
+ * - a = keepA 仍在 b 数据集内则保留，否则按「a 取其前驱」落定（组内 b 之外
+ *   的最新一个），保证自动对比总有合法区间；
+ * - userChanged 非空（用户改选任一侧）时**不排除** keepA === b：那是用户显式
+ *   造成的无效区间，交由后端 409/失败态如实暴露，不静默改写用户刚做的选择。
+ *   只在初始加载/快照列表刷新（userChanged 为空）时强制取前驱。
+ * 返回落定值与 a 侧所属的数据集分组（供「数据集内不足两个」判定复用）。 */
+function applyConvergedOptions(selA, selB, snaps, { keepA, keepB, userChanged = "" } = {}) {
+  // 用户显式清空某一侧是「请选择基线与对比快照」的合法意图，不静默补回合法值
+  const userEmptyA = Boolean(userChanged) && String(keepA) === "";
+  const userEmptyB = Boolean(userChanged) && String(keepB) === "";
+  const nextB = userEmptyB
+    ? ""
+    : (findSnapshot(keepB) ? String(keepB) : String((snaps[0] || {}).id ?? ""));
+  // a 侧收敛的锚：正常恒为 b；b 被用户清空时退回 a 自身，避免两侧一起变空
+  const group = sameDatasetGroup(snaps, findSnapshot(nextB) || findSnapshot(keepA) || snaps[0] || null);
+  const ids = group.map((s) => String(s.id));
+  const keepAOk = ids.includes(String(keepA)) && String(keepA) !== "";
+  const predecessor = ids.find((id) => id !== nextB) || "";
+  const nextA = userEmptyA
+    ? ""
+    : (keepAOk && (userChanged || String(keepA) !== nextB) ? String(keepA) : predecessor);
+  replaceSnapshotOptions(selB, snaps);  // b 侧不收敛：跨数据集可达性入口
+  replaceSnapshotOptions(selA, group);  // a 侧收敛到 b 所属数据集
+  selA.value = nextA;
+  selB.value = nextB;
+  return { nextA, nextB, group };
 }
 
 async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
@@ -165,18 +241,19 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
   }
   if (!request.current()) return;
 
-  const ids = snaps.map((s) => String(s.id));
+  // ISS-170：缓存原始列表（收敛与守卫共用），再按当前生效数据集收敛两侧选项
+  snapshotCatalog = snaps;
   const selectedA = snapshotSelectionRevision === selectionRevision ? previousA : selA.value;
   const selectedB = snapshotSelectionRevision === selectionRevision ? previousB : selB.value;
-  const validA = ids.includes(selectedA), validB = ids.includes(selectedB);
-  let nextB = validB ? selectedB : (ids[0] || "");
-  let nextA = validA && selectedA !== nextB
-    ? selectedA : (ids.find((id) => id !== nextB) || "");
-
-  replaceSnapshotOptions(selA, snaps);
-  replaceSnapshotOptions(selB, snaps);
-  selA.value = nextA;
-  selB.value = nextB;
+  const anchor = anchorSnapshot(snaps, selectedB);
+  const group = sameDatasetGroup(snaps, anchor);
+  const ids = group.map((s) => String(s.id));
+  const allIds = snaps.map((s) => String(s.id));
+  // b 侧全列故只需在目录内有效；a 侧收敛后须落在 b 所属数据集内
+  const validA = ids.includes(selectedA), validB = allIds.includes(selectedB);
+  // 收敛后原选择若被排除在数据集外（异数据集/该数据集内已不可用），按既有形状落定
+  const { nextA, nextB } = applyConvergedOptions(selA, selB, snaps,
+    { keepA: selectedA, keepB: selectedB });
 
   const fellBack = Boolean((selectedA && !validA) || (selectedB && !validB));
 
@@ -214,13 +291,20 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
     return;
   }
 
-  if (snaps.length < 2) {
+  if (group.length < 2) {
     invalidateRequest("diff");
     clearDiffResults();
     setDiffControlsEnabled(false);
-    setDiffStatus(snaps.length === 1
-      ? "基线已建立；需要另一个不同日期的有效快照才能比较，分布现在可用。"
-      : "尚无快照，请先扫描建立基线。");
+    // 整个库只有一个快照：沿用既有单快照文案（其他套件按此断言）。
+    // 库里有多个快照、但当前生效数据集内不足两个：另给数据集口径的说明，
+    // 不得让用户以为「再扫一次就能比较」（同库内已有别的数据集快照）。
+    if (group.length === 1 && snaps.length > 1) {
+      setDiffStatus("当前生效数据集只有一个快照；需要同一数据集内另一个不同日期的有效快照才能比较，其他数据集的快照不与它构成区间。");
+    } else {
+      setDiffStatus(group.length === 1
+        ? "基线已建立；需要另一个不同日期的有效快照才能比较，分布现在可用。"
+        : "尚无快照，请先扫描建立基线。");
+    }
     return;
   }
 
@@ -684,11 +768,21 @@ function renderNetLine(d) {
  * 连点触发多次 loadDiff 时，diff 域世代号守卫保证只渲染最后一次；
  * 未选齐（某侧为空）保持空态 + 引导文案，不发请求。
  * select 的 change 由键盘改选同样派发（原生行为），路径不变。 */
-function onSelectionChange() {
+function onSelectionChange(changedId) {
   snapshotSelectionRevision += 1;
   sessionTree = null;  // 用户改选：跨页保留的旧树视图作废
-  const a = document.getElementById("sel-a").value;
-  const b = document.getElementById("sel-b").value;
+  const selA = document.getElementById("sel-a");
+  const selB = document.getElementById("sel-b");
+  // ISS-170：不对称收敛——锚点恒为 b。改 b 即切换数据集（b 侧全列），a 侧
+  // 随之重填为 b 数据集并按「a 取其前驱」落定；改 a 只在 b 数据集内收敛，
+  // b 侧选项与取值不动。目录未就绪时不动选项（保留既有选项，交给 loadDiff
+  // 的守卫与后端闸门处理）。
+  if (snapshotCatalog.length) {
+    applyConvergedOptions(selA, selB, snapshotCatalog,
+      { keepA: selA.value, keepB: selB.value, userChanged: changedId });
+  }
+  const a = selA.value;
+  const b = selB.value;
   if (!a || !b) {
     invalidateRequest("diff");
     clearDiffResults();
@@ -701,11 +795,32 @@ function onSelectionChange() {
   loadDiff();
 }
 
+/** ISS-170 守卫：发请求前判跨数据集组合。选项层已收敛，这里兜底残余缝隙
+ * （异步竞态、跨页交接、外部写入 select）。跨身份就地给一句说明并保留上一
+ * 有效读数；判据缺失（目录未就绪）时放行给后端闸门——400 是正确的 fail-closed，
+ * 会走失败态展示，不静默、不伪装成功。返回空串表示可发请求。 */
+function crossDatasetBlock(a, b) {
+  const sa = findSnapshot(a), sb = findSnapshot(b);
+  if (!sa || !sb || datasetKey(sa) === datasetKey(sb)) return "";
+  const keep = lastDiff
+    ? "已保留上一次有效读数；"
+    : "尚无可保留的读数，已清空结果区；";
+  return `快照 #${a} 与 #${b} 不属于同一数据集（测量根或计量阈值口径不同），`
+    + `无法构成有效对比区间。${keep}请在基线/对比下拉中改选同一数据集的快照。`;
+}
+
 async function loadDiff({ retryOnMissing = true, successMessage = "" } = {}) {
   const request = beginRequest("diff");
   const a = document.getElementById("sel-a").value;
   const b = document.getElementById("sel-b").value;
   if (!a || !b) return;
+  const blocked = crossDatasetBlock(a, b);
+  if (blocked) {
+    // 有上一有效读数就原样留着（不改成 0、不清空），只把状态行说清楚
+    if (!lastDiff) clearDiffResults();
+    setDiffStatus(blocked);
+    return;
+  }
   setDiffStatus("正在加载快照对比…");
   try {
     const d = await fetchJSON(`/api/diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
@@ -1703,7 +1818,8 @@ export const changesPage = {
     changesTabs = initPageTabs({ page: "changes", defaultTab: "detail" });
     // ISS-093：选择即比对——select 改选（鼠标或键盘）在选齐后自动触发加载。
     ["sel-a", "sel-b"].forEach((id) => {
-      document.getElementById(id).addEventListener("change", onSelectionChange);
+      document.getElementById(id).addEventListener("change", (e) =>
+        onSelectionChange(e.target.id));
     });
     // ISS-148：排序表头（delta/size/name 走接口 sort；同级内排序）
     document.querySelectorAll("#changes-table .th-sort").forEach((btn) => {

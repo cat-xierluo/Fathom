@@ -60,8 +60,12 @@ def _select_container(monkeypatch, container_id=CONTAINER):
 
 def _seed(conn, *, roots, total_kb, plan_ids, container_id=CONTAINER,
           free_bytes=0, source="storage-discovery", quality="full",
-          round_prefix="2026-10-0", status="full"):
+          round_prefix="2026-10-0", status="full", member_containers=None):
     """落两轮事实：轮次 + 成员 + 计划/范围 + 快照 + 容器容量样本。
+
+    ``member_containers`` 按 seq 覆盖每个成员所属容器（可含 ``None`` 表示
+    范围身份缺失），用于复现「同轮混容器 / 成员身份为 NULL」两类旁路；
+    为 None 时全部成员同属 ``container_id``。
 
     返回 [(round_id, {root: total_kb})]，按时间正序。
     """
@@ -74,13 +78,15 @@ def _seed(conn, *, roots, total_kb, plan_ids, container_id=CONTAINER,
              f"{round_prefix}{idx+1}T01:10:00", status),
         ).lastrowid
         for seq, (root, plan_id) in enumerate(zip(roots, plan_ids)):
+            m_container = (container_id if member_containers is None
+                           else member_containers[seq])
             # 范围与计划跨轮**稳定**（同主体同计划正是差额可比较的前提），
             # 故按根复用而非每轮新造。
             conn.execute(
                 "INSERT OR IGNORE INTO scan_scopes(scope_id, kind, "
                 "container_id, mount_path, display_name, created_at) "
                 "VALUES (?,?,?,?,?,?)",
-                (f"scope-{seq}", "apfs_volume", container_id,
+                (f"scope-{seq}", "apfs_volume", m_container,
                  root, f"v{seq}", "2026-10-01T00:00:00"),
             )
             conn.execute(
@@ -600,3 +606,109 @@ class TestCapacityBoundToSelectedContainer:
         assert data["unexplained"]["comparable"] is False
         assert data["unexplained"]["bytes"] is None
         assert data["unexplained"]["reason"]
+
+
+class TestMemberContainerBinding:
+    """B3 返修：可比性必须在**成员级**绑定容器，而非只查「所选容器在集合内」。
+
+    上游在 a30cbbf 的独立 HTTP 实测给出两条旁路，本组逐条钉死：
+
+    反例①（集合成员旁路）：两轮成员都横跨 C1+C2、根集合与计划集合完全
+    一致、生效容器为 C1。旧实现只做 ``C1 in {C1, C2}`` 的包含判断即放行，
+    仍判 comparable=true 并输出 6291456 bytes 差额——但参与求和的
+    ``measured_kb`` 里混着 C2 的目录测量，差额说的不是所选容器的变化。
+    反例②（NULL 身份旁路）：第二个成员 ``container_id`` 为 NULL 时，
+    归因集合把它过滤掉，``{C1} in {C1}`` 仍成立，同样放行。
+    反例③（防过紧）：全部成员都属所选容器时必须**保持**可比，不得因这次
+    收紧被误伤。
+    """
+
+    OTHER = "apfs-container:9999-8888"
+
+    def test_mixed_member_containers_block_numeric_difference(self, client,
+                                                              monkeypatch):
+        _select_container(monkeypatch)  # 生效容器 = C1
+        conn = db.connect()
+        try:
+            _seed(conn, roots=("/scanroot", "/scanroot2"),
+                  total_kb=([0, 0], [20 * 1024, 0]),
+                  plan_ids=("p1", "p2"),
+                  free_bytes=(100 * 1024 ** 2, 74 * 1024 ** 2),
+                  member_containers=(CONTAINER, self.OTHER))
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        assert data["comparability"]["comparable"] is False, \
+            "同轮混有其他容器的成员时不得判可比"
+        assert data["comparability"]["member_reasons"], \
+            "应给出成员级容器不匹配原因"
+        assert any(self.OTHER in r for r in
+                   data["comparability"]["member_reasons"]), \
+            "原因文本应指名混入的容器"
+        assert data["unexplained"]["bytes"] is None, \
+            "成员容器不匹配时差额必须是 null"
+        assert data["unexplained"]["comparable"] is False
+        assert data["unexplained"]["reason"]
+
+    def test_null_member_container_blocks_numeric_difference(self, client,
+                                                             monkeypatch):
+        _select_container(monkeypatch)  # 生效容器 = C1
+        conn = db.connect()
+        try:
+            _seed(conn, roots=("/scanroot", "/scanroot2"),
+                  total_kb=([0, 0], [20 * 1024, 0]),
+                  plan_ids=("p1", "p2"),
+                  free_bytes=(100 * 1024 ** 2, 74 * 1024 ** 2),
+                  member_containers=(CONTAINER, None))
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        assert data["comparability"]["comparable"] is False, \
+            "成员容器身份为 NULL 时不得判可比"
+        assert data["comparability"]["member_reasons"], \
+            "应给出成员级容器身份缺失原因"
+        assert data["unexplained"]["bytes"] is None, \
+            "成员身份缺失时差额必须是 null，不得拿它凑齐"
+        assert data["unexplained"]["comparable"] is False
+
+    def test_all_members_in_selected_container_stays_comparable(self, client,
+                                                               monkeypatch):
+        """防过紧：成员级绑定收紧后，全成员同容器的正常路径必须仍可比。"""
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            _seed(conn, roots=("/scanroot",), total_kb=([0], [20 * 1024]),
+                  plan_ids=("p1",),
+                  free_bytes=(100 * 1024 ** 2, 74 * 1024 ** 2))
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        assert data["comparability"]["member_reasons"] == [], \
+            "全成员同属所选容器时不应报成员级原因"
+        assert data["comparability"]["comparable"] is True, \
+            "收紧成员绑定不得误伤同容器正常路径"
+        assert data["unexplained"]["bytes"] == 6 * 1024 ** 2
+
+    def test_attribution_flag_agrees_with_top_level_verdict(self, client,
+                                                             monkeypatch):
+        """P3：归因内 comparable_to_previous 不得与顶层 comparability 矛盾。"""
+        _select_container(monkeypatch)
+        conn = db.connect()
+        try:
+            # 跨计划：两侧各自都 full 无 stale，旧实现仍给
+            # attribution.comparable_to_previous=true，与顶层 false 矛盾。
+            _seed(conn, roots=("/scanroot",), total_kb=([0], [20 * 1024]),
+                  plan_ids=("p1",), free_bytes=(100 * 1024 ** 2,
+                                                74 * 1024 ** 2))
+            conn.execute("UPDATE scan_round_members SET plan_id='p9' "
+                         "WHERE round_id=(SELECT MIN(id) FROM scan_rounds)")
+            conn.execute("UPDATE scan_plans SET plan_id='p9' "
+                         "WHERE plan_id='p1'")
+            conn.commit()
+        finally:
+            conn.close()
+        data = client.get("/api/storage/summary").json()
+        assert data["comparability"]["comparable"] is False
+        assert data["attribution"]["comparable_to_previous"] is False, \
+            "归因内标志必须与顶层跨轮结论一致（顶层为唯一权威）"
+        assert data["attribution"]["comparable_note"]

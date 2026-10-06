@@ -88,7 +88,11 @@ expected="${EXPECTED_PYTEST_PASSED:-1407}"
 # ISS-157 +18：tests/test_storage_summary.py——容器容量与目录归因摘要（共享
 # free 只计一次/父子根不可加/差额带限制且有符号/不可比为 null/失败成员标
 # stale/整轮跨时间/不算伪覆盖率/不隐式扫描）（1426 → 1444）。
-expected="${EXPECTED_PYTEST_PASSED:-1451}"
+# ISS-157 B3 +4：tests/test_storage_summary.py 成员级容器绑定——混容器成员与
+# container_id=NULL 成员均不得判可比（差额 null + 点名原因）、全成员同属
+# 所选容器保持可比防过紧、归因内 comparable_to_previous 与顶层权威结论
+# 一致（1451 → 1455）。
+expected="${EXPECTED_PYTEST_PASSED:-1455}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

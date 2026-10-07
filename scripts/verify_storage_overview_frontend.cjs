@@ -397,6 +397,96 @@ async function runPhase(withStale) {
       Boolean(aVal) && aVal !== bVal && [...s1, ...s2].map(String).includes(aVal),
       `sel-a=${aVal} sel-b=${bVal}（a 须为真实且不同于 b）`);
 
+    /* ISS-178 D2：交接后基线（a 侧）必须非空且可构造对比。
+     *
+     * 实机反例：总览 CTA 带 data-a="" 交接，b 侧正确带入，但 a 侧选项为空，
+     * 对比无法构造。根因是交接在**派发 b 侧 change 之前**就读 a 侧选项，而 a 侧
+     * 要等变化页按 b 所属数据集收敛（applyConvergedOptions）才重填。
+     *
+     * 本段先**预热**变化页（把 b 选到预热集合的快照，让 a 侧先行收敛落定），
+     * 再回总览点 CTA 交接 summary 侧的真实 b，断言交接后 a 侧非空、与 b 同
+     * 数据集、且 diff 自动构造。 */
+    const d2 = await (async () => {
+      // 用**页内 hash 导航**（与真实用户一致），不做整页 goto：整页导航会卸载
+      // 文档、打断在途 fetch，凭空制造「无法连接本地服务」控制台错误。
+      const goHash = async (hash) => {
+        await page.evaluate((h) => { location.hash = h; }, hash);
+        await page.waitForFunction((h) => (location.hash || "") === h, hash,
+          { timeout: 10000 });
+      };
+      await goHash("#/changes");
+      await page.waitForFunction(() => {
+        const sel = document.getElementById("sel-b");
+        return sel && sel.options.length > 1;
+      }, null, { timeout: 20000 });
+      const otherB = String((s1 && s1[0]) ?? "");
+      if (!otherB) return { skipped: true };
+      await page.selectOption("#sel-b", otherB);
+      await page.waitForFunction((id) => document.getElementById("sel-b").value === id,
+        otherB, { timeout: 15000 });
+      // 预热：a 侧此刻已收敛到 otherB 所属数据集
+      const staleOpts = await page.$$eval("#sel-a option", (els) =>
+        els.map((o) => o.value).filter(Boolean));
+
+      await goHash("#/overview");
+      const cta = await page.waitForSelector("[data-test='storage-cta']",
+        { timeout: 20000 }).catch(() => null);
+      if (!cta) return { skipped: true, noCta: true };
+      const wantB = await page.$eval("[data-test='storage-cta']", (el) => el.dataset.b);
+      await page.click("[data-test='storage-cta']");
+      await page.waitForFunction(() => (location.hash || "").startsWith("#/changes"),
+        null, { timeout: 15000 });
+      await page.waitForFunction((want) => {
+        const sel = document.getElementById("sel-b");
+        return sel && sel.options.length > 0 && sel.value === want;
+      }, String(wantB), { timeout: 20000 });
+      await page.waitForFunction(() => {
+        const sel = document.getElementById("sel-a");
+        return sel && sel.options.length > 0 && sel.value !== "";
+      }, null, { timeout: 20000 }).catch(() => {});
+      const now = await page.evaluate(() => {
+        const a = document.getElementById("sel-a");
+        const b = document.getElementById("sel-b");
+        return {
+          aValue: a.value,
+          aOptions: Array.from(a.options).map((o) => o.value).filter(Boolean),
+          bValue: b.value,
+        };
+      });
+      return { skipped: false, staleOpts, otherB, wantB: String(wantB),
+               aValue: String(now.aValue), aOptions: now.aOptions,
+               bValue: String(now.bValue) };
+    })();
+
+    if (!d2.skipped) {
+      // 交接后 a 侧非空、选中值非空且不同于 b
+      record("ui-cta-handoff-baseline-non-empty",
+        d2.aOptions.length > 0 && d2.aValue !== "" && d2.aValue !== d2.bValue,
+        `预热 a 侧=${JSON.stringify(d2.staleOpts)} → 交接后 a=#${d2.aValue}`
+        + `（${d2.aOptions.map((v) => "#" + v).join(",")}）b=#${d2.bValue}`);
+      // a 侧必须已收敛到 b 所属数据集（同身份），不得残留别的数据集的选项。
+      // 判据直接取 /api/snapshots 的真实 plan_id（ISS-176 前端同源口径），
+      // 不假设夹具里哪两个集合跨数据集。
+      const snapJson = await httpJson("GET", "/api/snapshots", port).catch(() => null);
+      const allSnaps = (snapJson && snapJson.json) || [];
+      const keyOf = (id) => {
+        const s = allSnaps.find((x) => String(x.id) === String(id));
+        if (!s) return null;
+        return s.plan_id ? `plan:${s.plan_id}` : `legacy:${s.root}`;
+      };
+      const bKey = keyOf(d2.bValue);
+      const foreign = d2.aOptions.filter((v) => keyOf(v) && bKey && keyOf(v) !== bKey);
+      record("ui-cta-baseline-same-dataset-as-b",
+        Boolean(bKey) && foreign.length === 0 && d2.aOptions.length > 0,
+        `b=#${d2.bValue}(${bKey}) a 侧=${JSON.stringify(d2.aOptions)}`
+        + ` 异数据集残留=${JSON.stringify(foreign)}`);
+      // 交接语义不变：绝不塞假基线——a 必须是目录里真实的快照
+      const net0 = await page.$eval("#changes-net", (el) => el.textContent).catch(() => "");
+      record("ui-cta-diff-autoconstructed",
+        net0.trim().length > 0 && !/正在读取|正在加载/.test(net0),
+        net0.replace(/\s+/g, " ").slice(0, 90));
+    }
+
     // C4：键盘 + 图表恢复非零
     await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("[data-test='storage-cta']", { timeout: 20000 });

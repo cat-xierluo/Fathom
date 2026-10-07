@@ -1709,11 +1709,27 @@ async def api_storage_scope_put(request: Request):
 
 @app.post("/api/scan")
 def api_scan():
+    """触发一次手动扫描（后台执行，状态入 scan_runs 表）。
+
+    ISS-178（D1）：**范围采集复用 scan_coordinator 的多范围路径**。已启用范围
+    能力时，本端点与 CLI ``scan --scope`` 调用同一个执行体（``start_scan``
+    收到 ``scopes``），因此 UI 触发的快照带 ``plan_id``，``scan_plans`` /
+    ``scan_rounds`` / ``scan_round_members`` 正常落库；D1 之前这里恒传
+    ``scopes=None``，UI 静默走单根旧路径，三张表全空。
+
+    未启用范围能力（``effective_scope_selection()`` 为 ``None``）→ ``scopes``
+    为空列表，仍走原单根口径，行为逐字节不变。
+
+    语义不变：「保存只影响下一轮计划」「立即扫描＝旧单根口径的手动扫描入口」
+    均不因本改动而变形——范围计划由**已保存的生效选择**构造，不是临时猜测。
+    """
     global _active_scan, _active_scan_thread
     if not _scan_lock.acquire(blocking=False):
         return JSONResponse({"ok": False, "message": "已有扫描在进行中"}, status_code=409)
     try:
-        session = scan_coordinator.start_scan(source="api")
+        from . import cli as _cli  # 延迟导入：复用 CLI 公共化的范围构造段
+        scopes = _cli.scope_specs_from_effective_selection()
+        session = scan_coordinator.start_scan(source="api", scopes=scopes)
         _active_scan = session
         run_id = session.run_id
     except scan_coordinator.ScanBusyError as exc:
@@ -1725,6 +1741,11 @@ def api_scan():
             }},
             status_code=409,
         )
+    except scan_coordinator.ScanScopeError as exc:
+        # ISS-178：范围规格构造失败（生效选择与范围 ID 不一一对应等）是**用法
+        # 错误**，如实 400 回传，不静默回落到单根旧路径假装扫描成功。
+        _scan_lock.release()
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
     except scan_coordinator.UpgradeWriteStopError as exc:
         # ISS-097 停写条件：升级事务进行中（journal 在位），拒绝开始写入。
         _scan_lock.release()
@@ -1766,7 +1787,8 @@ def api_scan():
             _scan_lock.release()
         return JSONResponse({"ok": False, "message": "扫描线程启动失败", "run_id": run_id},
                             status_code=503)
-    return {"ok": True, "message": "扫描已启动", "run_id": run_id}
+    return {"ok": True, "message": "扫描已启动", "run_id": run_id,
+            "scopes": len(session.scopes)}
 
 
 @app.get("/api/scan/status")

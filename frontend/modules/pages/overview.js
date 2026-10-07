@@ -640,15 +640,10 @@ function _ovCta(summary) {
  * 点击时记下 a/b，进入 #/changes 后等它自己的快照选项就绪，再写进
  * 它自有的 sel-a/sel-b 并派发 change——由变化页按自己的列表校验有效性。
  * 绝不伪造基线 ID；找不到对应选项就放弃交接（变化页保持自己的默认选择）。 */
-/* 从变化页自己的快照列表里取 b 之前最近的一个真实快照 ID（列表已按时间
- * 倒序：新 → 旧）。找不到（b 之外没有别的快照）返回 null，交接放弃。 */
-function _pickPredecessorId(selA, b) {
-  const values = [...selA.options].map((o) => o.value);
-  const i = values.indexOf(String(b));
-  if (i < 0) return values[0] ?? null;
-  return i + 1 < values.length ? values[i + 1] : null;
-}
-
+/* ISS-178：a 侧落定改由变化页自己的收敛逻辑负责——派发 b 侧 change 后
+ * `applyConvergedOptions` 会把 a 侧重填为 b 数据集并按「a 取其前驱」取到
+ * 同 plan 的真实前驱（D2）。本文件不再自建前驱挑选（原 `_pickPredecessorId`
+ * 读的是收敛**之前**的旧选项集，正是 D2 留空的根因），以免两处判定漂移。 */
 function _handOffChangeEntry(a, b) {
   state.pendingChangeEntry = { a: a || null, b: String(b) };
   window.addEventListener("hashchange", function once() {
@@ -675,18 +670,26 @@ function _handOffChangeEntry(a, b) {
       const ready = selA && selB && selB.options.length > 0;
       const hasB = ready && [...selB.options].some((o) => o.value === entry.b);
       if (hasB) {
-        selB.value = entry.b;
-        // a 优先用入口带来的真实 ID；入口没带 a 时，从变化页**自己的**快照
-        // 列表里挑一个真实存在且不同于 b 的前驱（取 b 之前最近的一个）。
-        // 绝不让 a === b（那是无效区间），也绝不塞自造的假基线 ID。
-        const aWanted = entry.a && [...selA.options].some((o) => o.value === entry.a)
-          && entry.a !== entry.b
-          ? entry.a
-          : _pickPredecessorId(selA, entry.b);
-        if (aWanted) selA.value = aWanted;
         state.pendingChangeEntry = null;
-        selA.dispatchEvent(new Event("change", { bubbles: true }));
+        /* ISS-178 D2 根因：a 侧选项是**变化页按 b 所属数据集收敛后才重填**的
+         * （changes.js `onSelectionChange` → `applyConvergedOptions`）。此前本
+         * 函数先读 `selA.options` 再派发 b 侧 change，读到的是**旧 b** 的选项
+         * 集（交接时 b 刚被改写，a 侧尚未重填，常为空）→ `aWanted` 为空 →
+         * a 侧留空，对比无法构造。
+         *
+         * 修法：先派发 b 侧 change，让变化页按自己的收敛逻辑把 a 侧重填为 b
+         * 数据集并按「a 取其前驱」落定（D2 期望的同 plan 前驱由它给出）；随后
+         * **入口真的带了 a**（真实快照 ID）且它此刻确实在 a 侧选项里时才覆盖。
+         *
+         * 语义不变：真实 a 照旧带入；入口不带 a 时取同数据集真实前驱；a 为空
+         * 或与 b 相同都绝不塞假基线，找不到就放弃交接。 */
+        selB.value = entry.b;
         selB.dispatchEvent(new Event("change", { bubbles: true }));
+        if (entry.a && entry.a !== entry.b
+            && [...selA.options].some((o) => o.value === entry.a)) {
+          selA.value = entry.a;
+          selA.dispatchEvent(new Event("change", { bubbles: true }));
+        }
         return;
       }
       if (Date.now() > deadline) { state.pendingChangeEntry = null; return; }

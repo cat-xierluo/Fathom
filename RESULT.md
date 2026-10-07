@@ -1,64 +1,292 @@
-# ISS-177 交付报告：bigfiles 查询范围语义跟随生效范围
+# ISS-178 交付报告：范围采集 UI 接线（D1）+ 交接基线空（D2）
 
-基线 `3760ac3`（0.4.0 发版文档对账）。分支 `iss-177-bigfiles-scope-semantics`。中文提交、无署名、未 push。
+基线 `601636c`（ISS-177 bigfiles 范围语义）。分支 `iss-178-scope-collect-wiring`。中文提交、无署名、未 push。
 
-## 根因（上游反例已复现确认）
+## 前置说明
 
-`fathom/api.py` 的 `/api/bigfiles` 仍调用 `bigfiles.resolve_query_root(path)`，而该函数**只认 `config.DEFAULT_ROOT`**。#270（ISS-176）的 `scope_key` 只把范围身份并入去重/缓存键，**没有改变实际查询范围**，因此：
+任务卡引用的 `verify-results/iss161-native-20261007-191108/REPORT.md` **不在本仓库任何 worktree 中**
+（`fathom/` 下 14 个 worktree 全量查找无 `iss161` 目录）。本卡的修法完全依据任务卡内转述的实机验收
+结论推进，症状与卡内描述逐条对齐；若上游报告有更细的复现步骤，需二次核对。
 
-1. 显式 `path` 指向生效范围内、旧根之外的目录 → 400「必须位于旧根 A」；
-2. 无 `path` 请求 → 200，但 `scope.resolved_root` 仍是旧根 A，静默继续查询旧根。
+---
 
-既有 `tests/test_plan_identity_consumers.py:173` 只断言无路径请求的状态码、未核对查的是哪个目录，故漏过。
+## D1（P1）：范围采集按钮没走多范围路径
 
-## 修法
+### 根因（已复现确认）
 
-### 1. `fathom/bigfiles.py`：解析层支持多根生效范围
+`fathom/api.py` 的 `POST /api/scan` 恒调 `scan_coordinator.start_scan(source="api")`，**不传 `scopes`**。
+`start_scan` 的 `scopes` 为空 → `ScanSession.scopes == []` → `is_round` 为假 → 走原**单根旧路径**。
 
-- 新增 `resolve_query_root(..., allowed_roots=None)` 关键字参数。
-- `allowed_roots` 非空 → 走新增的 `_resolve_within_roots()`：逐个生效根判定，无 path 取**首根**，越界信息指认生效范围。
-- `allowed_roots` 为 `None`/空 → **逐字节回落** ISS-150 单根旧口径（含原错误文案 `监控根 … 之内的绝对路径`），legacy 行为与去重键不变。
-- 守卫强度不降：字符串层挡相对路径与前缀同名根（`/root-evil` 不是 `/root`），resolve 层挡 `..` 折叠与符号链接越界，目标不存在/非目录仍 404（与越界 400 不混淆）。错误信息只列生效根本身，不回显解析后的用户路径。
+于是：快照 `root` = `config.DEFAULT_ROOT`（打包态即隔离 HOME）、`plan_id` 为 NULL，
+`scan_plans` / `scan_rounds` / `scan_round_members` 三表全空。
 
-### 2. `fathom/api.py`：端点按生效范围校验并如实反映
+CLI 侧 `cmd_scan` 走 `_scan_scopes(args)` → 传 `scopes=` → 走多范围执行体，因此 CLI 贯通。
+**同一环境两种入口分叉**，是 D1 的全部来源。设置页 `settings.js:2887` 的
+`apiPost("/api/scan", {})` 正是这个端点，所以「开始首次采集」= 旧单根口径。
 
-- 新增 `_bigfiles_allowed_roots()`：读 `config.effective_scope_selection()`，返回按选择顺序的根列表；未启用返回 `None`（legacy）。
-- 端点把 `allowed_roots` 传入解析层。
-- 响应字段如实反映**实际查询范围**：`scope.root` 改为生效范围首根（未启用时仍是 `DEFAULT_ROOT`）、`scope.resolved_root` 为真实查询根、新增 `scope.scope_roots`（未启用时为 `null`）。
-- 端点 docstring 补 ISS-177 段落写明缺省语义。
+### 修法
 
-## 范围语义取舍（ISS-155 一致性）
+**1. `fathom/cli.py`：范围构造逻辑公共化（CLI/UI 唯一实现）**
 
-**选定：范围启用时，无 `path` 的缺省查询根 = 生效范围的第一个根（`roots[0]`）。**
+- 新增 `scope_specs_from_paths(paths, ids)`：顺序即采集顺序、`ids` 按位置一一对应、
+  缺省由 `ScopeSpec.from_path` 按规范根派生 path 型 ID（**绝不伪造** `apfs-volume:<uuid>`，ISS-153 身份合同）。
+- 新增 `scope_specs_from_effective_selection()`：由 `config.effective_scope_selection()` 构造；
+  为 `None`（用户从未选择范围）时返回 `[]`，调用方据此回落旧单根口径。
+- `_scan_scopes(args)` 改为调用 `scope_specs_from_paths`，**CLI 行为与出口码零变化**。
 
-理由（与 ISS-155 配置保存语义最一致）：`ScopeSelection.roots` 的顺序在 ISS-155 里就是**采集顺序**（"顺序即采集顺序"，`_validated_scope_roots` 与 docstring 均如此定义），首根即主根；`save_scope_selection` 与 `_plan_preview` 都按该顺序解释范围。选首根让 bigfiles 的缺省查询与扫描计划的第一个成员同源，不引入第二套"主根"判定。
+**2. `fathom/api.py`：`/api/scan` 复用多范围执行体**
 
-**已排除的备选**：把缺省设为「多根聚合查询」——bigfiles 是单根聚合端点（`find` 单根执行、结果集单根），聚合会改变结果集口径与去重键语义，属更大设计变更，超出本卡修法范围。`scope.scope_roots` 字段已如实下发完整根集，前端可据此显式选择要查的根。
+- 延迟导入 `cli`，取 `scope_specs_from_effective_selection()` 传入 `start_scan(scopes=...)`。
+- 新增 `ScanScopeError` → **400 如实报错**，绝不静默回落到单根旧路径假装扫描成功。
+- 响应新增 `scopes`（本轮范围数）如实带出单根/多范围形态。
+
+**3. 语义保持不变**：「保存只影响下一轮计划」「立即扫描＝旧单根口径手动扫描入口」均不变形——
+范围计划由**已保存的生效选择**构造，不是临时猜测；`scan_coordinator` 零改动。
+
+### D2（P2）：交接后基线（a 侧）选项为空
+
+### 根因（先诊断后修，非试改）
+
+`overview.js` 的 `_handOffChangeEntry` 在 tick 里的顺序是：
+
+```
+selB.value = entry.b;
+const aWanted = ... [...selA.options] ...   ← 在这里读 a 侧选项
+selB.dispatchEvent(change)                   ← 变化页此时才重填 a 侧
+```
+
+而 **a 侧选项是变化页按 b 所属数据集收敛后才重填的**（`changes.js` 的 `onSelectionChange`
+→ `applyConvergedOptions`：a 侧收敛到 b 的数据集、b 侧不收敛）。交接时 b 刚被改写、a 侧尚未重填，
+读到的是**旧 b 的选项集**（常为空）→ `aWanted` 为空 → a 侧留空 → 无法构造对比。
+
+**这不是「R2 收敛逻辑没跑到」也不是「被让位拦截」**：R2 的 `window.__changesUserTouched` 让位门在
+交接场景下并不触发（真实用户改选才置标志，交接是合成事件）。真正断的是**读取时机**。
+
+### 修法（`frontend/modules/pages/overview.js`）
+
+- 改为**先派发 `selB` 的 change**，让变化页按自己的收敛逻辑把 a 侧重填为 b 数据集、
+  并按「a 取其前驱」落定（**同 plan 前驱由变化页给出**）；
+- 随后**入口真的带了 a**（真实快照 ID）且它此刻确实在 a 侧选项里时才覆盖。
+- 删除死函数 `_pickPredecessorId`（它读的正是收敛**之前**的旧选项集，是 D2 留空的根因），
+  避免两处前驱判定漂移。
+
+**交接语义不变**：真实 a 照旧带入；入口不带 a 时取同数据集真实前驱；
+a 为空或 `a === b` 都绝不塞假基线，找不到就放弃交接。
+**「跨数据集不可比」既有断言零回归**——收敛逻辑未动，只改了读取时机。
+
+---
 
 ## 测试
 
-**新增用例 13 个**（`tests/test_bigfiles_scoped.py`，diff 核对）：
-- `TestEffectiveScopeQueryRoot`（7 个，HTTP 端点层）：①范围内新根可查且返回**该根**文件（夹具在旧根放诱饵文件）；②多根各自可查且只返回自己的文件；③符号链接越界拒绝；④无 path 的 `resolved_root` == 首根且**不含旧根文件**；范围外 path 拒绝且信息指认生效范围；⑤legacy 两条（无 path 仍查旧根、`scope_roots` 为 null；旧根外 path 仍按旧文案 400）。
-- `TestResolveQueryRootAllowedRoots`（6 个，单元层）：首根缺省、前缀同名根/`..`/symlink 拒绝、404、空 roots 回落 legacy。
+### pytest：新增 12 个用例（`tests/test_scope_collect_wiring.py`，全新文件）
 
-**升级既有断言 1 处**（`tests/test_plan_identity_consumers.py:173`）：从"只断言状态码"升级为核对 `resolved_root` 落在已选根内 + 显式 path 返回的文件确属该根 + 无 path 请求的 `resolved_root` 不等于旧根。
+1. **D1 核心反例**：`test_api_scan_with_scope_selection_lands_plan_and_round`——UI 触发落库
+   **带 plan_id**、`scan_rounds` 1 条、`scan_round_members` 2 条、成员都挂上快照、轮次状态如实。
+2. `test_api_scan_uses_derived_scope_id_when_ids_absent`——未给 ID 时派生 `path:` 型，不伪造卷身份。
+3. `test_scope_ids_mismatch_returns_400_not_silent_legacy`——错位 → 400，不静默回落，不留锁。
+4. `test_no_scope_selection_keeps_single_root_legacy_path`——未启用时 `plan_id IS NULL`、无轮次（**逐字节不变**）。
+5. `test_legacy_snapshot_root_is_default_root`——legacy 根仍是 `FATHOM_SCAN_ROOT` 解析值。
+6. `test_cli_and_api_share_one_builder`——CLI 入口与公共段产出**完全相同**的范围规格。
+7. `test_effective_selection_builder_matches_selection` / `test_no_selection_yields_empty_scopes`
+   / `test_preserves_collection_order_of_selection` / `test_id_count_mismatch_raises_scope_error`。
+8. `test_scan_status_endpoint_still_polls` / `test_api_scan_source_stays_api`——既有轮询面与来源登记不漂移。
 
-**顺带修隔离缺陷 1 处**（同文件 `_isolated_runtime`）：本文件用 `PUT /api/storage/scope` 真实保存范围，若沿用进程级 `config._USER_SETTINGS`，保存结果会**跨文件泄漏**污染随后运行的用例（实测污染 `test_bigfiles_scoped` 的 `scope.root`）。已按 `conftest.isolated` 的既有做法在夹具里逐测试归零。
+**先红后绿已实证**：临时 `git stash` 掉三处源文件改动后重跑 → **8 failed / 4 passed**；
+恢复后 **12 passed**。
 
-断言强度：所有新用例均核对**返回文件归属**与 `resolved_root`，不只状态码。
+### 前端套件：D2 断言落在 `verify_storage_overview_frontend.cjs`（**与任务卡指定位置不同，已改**）
 
-## 验证（真实执行）
+**卡要求把 D2 断言加进 `verify_storage_investigation_frontend.cjs`（55→N）。实测该套件夹具
+从不让范围能力生效**——总览恒渲染「尚未启用整盘范围」，`[data-test='storage-cta']` 永不出现
+（套件内 `journey-rescan-shows-real-before-after` 的 detail 即为「尚未启用整盘范围」）。
+故 D2 交接在 160 套件里**根本无法构造**，断言放进去只会 3 条恒红（已实证：加进去即
+`passed:55, failed:3`，detail=「总览未渲染整盘 CTA」）。已把该改动回退，套件回到 55 零破坏。
+
+D2 断言改加在 **`scripts/verify_storage_overview_frontend.cjs`**——该套件夹具**确实启用了
+范围能力**，且 C3 段本就是整盘 CTA 交接旅程（`ui-cta-carries-real-b` / `ui-cta-a-real-predecessor`）。
+新增 3 条（59 → 64 passed）：
+
+- `ui-cta-handoff-baseline-non-empty`：交接后 a 侧选项非空、选中值非空、`a !== b`。
+- `ui-cta-baseline-same-dataset-as-b`：a 侧已收敛到 b 所属数据集（判据取 `/api/snapshots` 的
+  真实 `plan_id`，ISS-176 前端同源口径，不假设夹具里哪两个集合跨数据集），**无异数据集残留**。
+- `ui-cta-diff-autoconstructed`：diff 自动构造（结果区非空、非加载态）。
+
+**为什么原套件抓不到 D2**：原 C3 点的 CTA 其 `data-b` 就是变化页的**默认 b**（最新快照），
+交接不发生数据集切换，a 侧本来就是对的——旧代码因此 59 全绿。新断言先**预热**变化页让 a 侧
+先行收敛落定，再交接 summary 侧的真实 b。
+
+---
+
+## 验证（真实执行，命令 + 退出码）
+
+| 命令 | 退出码 | 结果 |
+|---|---|---|
+| `python3 -m pytest tests/test_scope_collect_wiring.py -q` | 0 | 12 passed |
+| `python3 -m pytest tests/test_plan_identity_consumers.py tests/test_scope_config.py -q`（×3） | 0 / 0 / 0 | 66 passed ×3，稳定 |
+| `python3 -m pytest tests/ -q -k "scan or scope"` | 0 | 398 passed（重跑；见下偶发项） |
+| `node scripts/verify_storage_investigation_frontend.cjs` | 0 | 55 passed, 0 failed（零破坏） |
+| `node scripts/verify_storage_overview_frontend.cjs` | 1 | 64 passed, 1 failed（既有偶发项，见下） |
+| `node scripts/verify_frontend_refresh.cjs` | 见下 | 217 |
+
+### 两处非本卡引入的失败（均已归因，不掩盖）
+
+1. **`pytest -k "scan or scope"` 首轮**：`test_analysis_upgrade_gate.py::test_analysis_running_scan_flock_and_short_writes_free`
+   首轮 397 passed / 1 failed（`AnalysisError`）。**重跑全绿：398 passed，退出码 0**；
+   且该用例单独运行带修复/不带修复均通过 → 既有的顺序/时序偶发，与本卡无因果。
+2. **`verify_storage_overview_frontend.cjs` 的 `ui-console-clean`**（detail「无法连接本地服务」）：
+   **已实测基线**——把 `overview.js` 与该套件脚本一起 stash 回基线后重跑，
+   同样失败（`passed:58, failed:1`，同一条 detail）。基线 58+1=59 条既有检查，
+   修复后 64 passed + 同一条既有失败 → **59 条既有检查零破坏**，失败为既有问题、非本卡引入。
+
+### 关于 D2 断言的诚实说明（先红未能在前端套件达成）
+
+D2 的**根因诊断与修法**是确定的（a 侧选项在 b 侧 change 之后才重填，读取时机错位）。
+但**本仓库两个前端套件的夹具都无法复现 D2 的触发时序**：
+- `verify_storage_investigation_frontend.cjs` 夹具从不让范围能力生效 → 整盘 CTA 永不出现；
+- `verify_storage_overview_frontend.cjs` 夹具只有一个数据集，且 CTA 的 `data-b` 恰是变化页的
+  **默认 b** → 交接**不发生数据集切换**，a 侧本就是对的，修复前后都通过。
+
+因此新增的 3 条断言是**交接合同的回归护栏**（a 侧非空 / 与 b 同数据集 / diff 自动构造），
+**不是**对旧代码的「先红」证明。D2 的先红证据目前只有根因代码分析，无自动化反例——
+已如实上报 PM，建议由 PM 决定是否追加一个跨数据集夹具（需新造第二个数据集快照）来补这条红。
+
+（新增断言已用「页内 hash 导航」而非整页 `goto`：整页导航会卸载文档、打断在途 fetch，
+凭空制造「无法连接本地服务」控制台错误，污染 `ui-console-clean`。）
+
+## PM 收口附记（2026-10-07 深夜）
+
+- 验证复核：test_scope_collect_wiring 12 passed；160 套件 55/55（首轮 keyboard 单项=ISS-172 既有债，重跑绿）；overview 套件「无法连接本地服务」console 噪音（stash 基线同挂的 serve 竞态回声）按资源噪音过滤后 **65/65 ×2 全绿**——计数定稿 OVERVIEW 59→65、PYTEST 1492→**1504**（12 例 diff 核定），双处同步由 PM 补提交。
+- 160 前端消费端断言缺失（先红未达）如实保留：消费端行为归 161 完整 UI 轮实机复验。
+
+---
+
+# R2 窄返修（D2 两处 CI 失败，plan 档 / CI 慢环境）
+
+基线 `ea79fbf`（D1 交付，PYTEST 1517 五 job 绿）。分支 `iss-178-r2-plan-tier-converge`。
+**D1 三文件（`fathom/api.py`、`fathom/cli.py`、`tests/test_scope_collect_wiring.py`）零改动。**
+
+两处失败都在「本机热页 65/65 全绿、CI arm64 冷环境才现」，因此**先定位时序差，再决定改哪一侧**。
+
+## 失败 1：`ui-cta-baseline-same-dataset-as-b`（detail `b=#4(plan:p-kid) a 侧=["3","1"]`）
+
+### 归因：断言抢在收敛落地前读表（不是收敛逻辑错判数据集）
+
+原断言只等「a 侧非空且取值非空」：
+
+```js
+await page.waitForFunction(() => {          // ← 上一版判据
+  const sel = document.getElementById("sel-a");
+  return sel && sel.options.length > 0 && sel.value !== "";
+}, null, { timeout: 20000 }).catch(() => {});
+```
+
+而**预热段遗留的旧选项集**（预热把 b 选到 #1，a 侧已收敛为 `#1` 所属数据集 `[#3,#1]`、a=#3）
+在交接后的收敛重填发生前，**同样满足**这个判据。慢环境下断言抢跑，读到的正是过渡态的
+`["3","1"]`——与 b（`#4`，`plan:p-kid`）不同数据集，于是报「异数据集残留=[3,1]」。
+本地热页收敛在断言前已落地，故全绿；CI 冷环境才现。**这是时序假红**。
+
+关键佐证：`applyConvergedOptions`（`changes.js:218`）里 b 侧不收敛、全列，a 侧收敛到 b 数据集；
+一旦收敛真的跑过，a 侧**不可能**同时留着别的数据集的选项。读到 `["3","1"]` 只可能是**还没重填**。
+
+### 任务卡给的①②取舍：本轮**只取①的判据形态，不动前端收敛**
+
+- ①「catalog 失效刷新」：查过 `changes.js`，`loadSnapshotsForDiff` 每次都重新 fetch
+  `/api/snapshots` 并在 fetch 后 `snapshotCatalog = snaps` 再收敛（`changes.js:262`），
+  **没有**需要失效的持久陈旧缓存；交接 tick 期间用的 catalog 即使是旧的，
+  在途的那次 fetch 落地后也会**按新数据重新收敛**（自愈）。再加一层刷新只是多一次往返，
+  且会牵动 `onSelectionChange` 的世代/票据守卫（ISS-170 R2 的三连发防线），风险大于收益。
+- ②「派发后异步确认重试」：与①同样问题——它治的是**产品行为**，而本处证据表明产品行为最终是对的。
+- **取舍结论**：过渡态是**测试读数**问题，不是产品缺陷。改断言的**稳定性判据**（等收敛真落定），
+  是最小、最贴合证据的修法；前端收敛逻辑与交接语义一字不动。
+
+### 修法（`scripts/verify_storage_overview_frontend.cjs`）
+
+断言前等 a 侧**收敛真的落定**，判据与断言**同源**（`/api/snapshots` 的真实 `plan_id`，ISS-176 前端口径）：
+
+- a 侧选项**全部**与 b 同数据集 → 收敛完成；
+- a 侧为空 → 无可比区间，交给变化页就地说明（也接受）；
+- 其余形态继续等，**等到超时再让断言如实判红**（detail 追加「a 侧未在 20s 内收敛到 b 数据集」）——
+  不再 `.catch` 掉后立刻拿过渡态当结果。
+
+## 失败 2：stale 相 `browser-flow-error`（waitForFunction 20s 超时）
+
+### 归因：交接等待窗口 8s 在冷环境下先到期，套件 20s 等一个不会来的 b
+
+`_handOffChangeEntry`（`overview.js`）的 tick 每 100ms 轮询等 b 落进 `sel-b` 选项，
+到 `deadline = Date.now() + 8000` 就**静默放弃交接**（`state.pendingChangeEntry = null`）。
+8s 是按「本机热页」的直觉定的：变化页挂载 + `/api/snapshots` 往返 + 首次渲染。冷启动
+（CI arm64 首访）完全可能超过它——**tick 到期即放弃 ⇒ `sel-b` 永远停在旧值**，
+套件随后在「等 b 落位」处 20s 超时，未捕获 ⇒ 整段判 `browser-flow-error`。
+只出现在 stale 相，是因为它是同一进程里的**第二轮**：服务端刚起、首个真实请求，全链路最冷。
+
+### 修法（`frontend/modules/pages/overview.js`）
+
+交接等待窗口 **8s → 30s**，并把**套件侧等待窗口同步对齐到 30s**：套件窗口必须 ≥ 页面窗口，
+否则慢环境下是**套件先放弃**（假红），而不是页面交接失败。
+
+**交接语义一字未变**：不塞假基线、a 为空即放弃、用户已改选（`__changesUserTouched`）立即放弃、
+收敛逻辑（`applyConvergedOptions`）与票据守卫零改动。放宽窗口只推迟「确实没有该快照」时的放弃。
+
+### stale 相断言改为宽容终态（`ui-cta-diff-autoconstructed`）
+
+身份闸门（ISS-176 起）变严后，混搭身份（legacy↔plan）被后端 400 拒绝是**正确行为**——
+绝不能为凑一条对比而造无效区间。stale 相尤其如此：本轮有失败成员、父子根被吸收，
+交接落下的 a/b 未必落在同一数据集，此时期望的终态是「**就地说明为什么不可比**」，
+而不是死等一个不会来的完成态。断言放宽为二选一：
+
+1. **diff 完成态**：净变化行渲染出来，且不在加载中；
+2. **就地说明**：状态行出现身份/不可比说明（如「不属于同一数据集」「无法构成有效对比区间」）。
+
+两者都要求状态行**不滞留加载态**；页面崩溃不放行——由 `ui-console-clean` 的 `pageerror`
+收集单独判红。
+
+### 是否该在 overview 侧就拦掉 stale 相的 CTA？（任务卡征询）——**不该，理由如下**
+
+- CTA 的存在依据是 `attr.measured_members` 里有**真实落库的快照 ID**，stale 相里该条件成立；
+  stale 影响的是「本轮与前轮**可比**性」，不是「b 这个快照是否存在」。
+- 交接落下的 a/b 若真的跨身份，**正确终态就是就地说明**——这正是上面第 ② 分支要断言的行为。
+  在 overview 侧提前拦掉，等于把「不可比」藏起来，用户看不到任何解释，反而违背 ISS-176 的 fail-closed 口径。
+- 且这需要改 CTA 渲染条件，任务卡明确划为不扩张的范围。**故不动。**
+
+---
+
+## R2 验证（真实执行）
+
+| 命令 | 结果 |
+|---|---|
+| `python3 -m pytest tests/test_scope_collect_wiring.py tests/test_plan_identity_consumers.py -q` | **26 passed**（D1 零回归，7.29s） |
+| `node scripts/verify_storage_overview_frontend.cjs`（含 clean/stale 两相） | **65/65**（完成轮次） |
+| `node scripts/verify_storage_investigation_frontend.cjs` | **54/55**（唯一失败为既有债，见下） |
+| `git diff ea79fbf --name-only` | 仅 3 个写域文件；**D1 三文件 0 改动** |
+
+### 写域合规
 
 ```
-python3 -m pytest tests/test_plan_identity_consumers.py tests/test_bigfiles_scoped.py -q   # ×3
-python3 -m pytest tests/ -q -k "bigfiles or scope"
+frontend/modules/pages/overview.js            |  8 ++-   （交接等待窗口 8s→30s + 注释）
+scripts/verify_storage_overview_frontend.cjs | 98 +++-- （断言与等待窗口）
+RESULT.md                                    | 90 ++
+fathom/api.py · fathom/cli.py · tests/test_scope_collect_wiring.py → 0 改动
 ```
 
-- 三文件 ×3 全绿（稳定复跑，无 flake）。
-- 定向 `-k "bigfiles or scope"` 全绿。
+`changes.js` **零改动**：查证后确认收敛逻辑无缺陷（见失败 1 取舍），不需要动它。
 
-## 差异说明（供 PM 核对）
+### 未达成的部分与既有债（如实记录，不掩盖）
 
-- `tests/test_directory_bigfiles_frontend.py` **在本仓不存在**（`ls tests/ | grep -i "front\|director\|bigfile"` 只有 `test_bigfiles_scoped.py`、`test_bigfiles_task_handle.py`、`test_bigfiles.py`）。该文件为上游卡里列出的验证路径，本仓无对应物，故实际执行了等价的两文件 ×3。
-- 未改 `CHANGELOG`/文档（写域之外）。
-- `scope` 响应新增 `scope_roots` 字段：未启用范围时为 `null`，旧前端不读该键不受影响。
+1. **`investigation` 套件 54/55**：`journey-keyboard-expand-esc-focus-return`
+   （detail「Enter 开详情→Esc 关闭→焦点回到 BODY」）。这是本卡上一轮 PM 已记录的
+   **ISS-172 既有债**（RESULT.md 上文「160 套件 55/55（首轮 keyboard 单项=ISS-172
+   既有债，重跑绿）」）。本轮 `changes.js` 零改动、该用例走的键盘焦点链路不在
+   写域内，与本卡无因果。
+2. **`overview` 套件仍有 1 处间歇失败**：clean 相 D2 段
+   `page.waitForFunction`（等 `sel-b` 选项 > 1）**45s 未落位** → 记 `browser-flow-error`，
+   当轮 51/52（后续十几条被跳过）。**该等待在改动前就存在**（原 20s），
+   本轮只是把窗口放宽到 45s；且同一份代码在完成轮次上 65/65 全绿。
+   **未能在本地稳定复现、也未能归因到确切的页面/后端环节**——按实况上报，
+   不宣称已解决。CI 若仍现，方向是给该等待**兜底成一条记录**（而非中断整段），
+   但套件 CI 按 **65 条精确计数**（`EXPECTED_STORAGE_OVERVIEW_PASSED`），
+   改成跳过/兜底会动计数、须 PM 拍板，故本轮未擅自改。
+3. **失败 1 的「先红」仍只能在慢环境复现**：本地热页收敛总在断言前落地，
+   改前 65/65、改后 65/65 均绿。本轮的判据修正依据是**代码级时序分析**
+   （预热旧选项集同样满足旧判据）+ CI detail 的 `["3","1"]` 形态
+   （`applyConvergedOptions` 收敛过后 a 侧不可能残留别的数据集选项），
+   **不是**本地可复现的先红证据——如实标注。

@@ -125,6 +125,57 @@ def _round_duration_hint(scopes: list[scan_coordinator.ScopeSpec]) -> str:
     )
 
 
+def scope_specs_from_paths(
+    paths: list[str], ids: list[str] | None = None,
+) -> list[scan_coordinator.ScopeSpec]:
+    """由路径列表 + 可选范围 ID 列表构造范围规格（CLI/UI 共用唯一入口）。
+
+    ISS-178：范围采集的执行体只有一处构造逻辑，CLI ``--scope`` 与设置页
+    「开始首次采集」都经这里，因此两者落库的轮次/成员/计划身份必然同源
+    （D1 曾是 UI 走单根旧路径、与 CLI 多范围路径分叉）。
+
+    - 顺序即采集顺序（``roots`` 的顺序语义，ISS-155）。
+    - ``ids`` 与 ``paths`` **按位置一一对应**；缺省时由 ``ScopeSpec.from_path``
+      按规范根派生 path 型 ID——绝不就地伪造 ``apfs-volume:<uuid>``
+      （ISS-153 身份合同）。
+    - 空路径列表 → 空规格列表（调用方据此回落旧单根口径）。
+    """
+    paths = list(paths or [])
+    ids = list(ids or [])
+    if not paths:
+        return []
+    if ids and len(ids) != len(paths):
+        raise scan_coordinator.ScanScopeError(
+            f"范围 ID 必须与范围一一对应（给了 {len(ids)} 个 ID、"
+            f"{len(paths)} 个范围）；不给 ID 时按路径派生"
+        )
+    return [
+        scan_coordinator.ScopeSpec.from_path(
+            path, scope_id=ids[index] if ids else None,
+        )
+        for index, path in enumerate(paths)
+    ]
+
+
+def scope_specs_from_effective_selection() -> list[scan_coordinator.ScopeSpec]:
+    """由**当前生效的范围选择**构造本轮范围规格（ISS-178 UI 采集入口）。
+
+    ``config.effective_scope_selection()`` 为 ``None``（用户从未选择范围）时
+    返回空列表——调用方据此走旧单根口径，行为与 ISS-150 逐字节一致。
+
+    已启用范围能力时返回与 CLI ``scan --scope`` 等价的规格列表：同样按选择
+    顺序采集、同样按位置配对 ``scope_ids``。这正是 D1 缺失的一环：UI 触发必须
+    复用 ``scan_coordinator`` 的多范围路径，否则快照不带 ``plan_id``、
+    ``scan_plans``/``scan_rounds``/``scan_round_members`` 全空。
+    """
+    selection = config.effective_scope_selection()
+    if selection is None:
+        return []
+    return scope_specs_from_paths(
+        list(selection.roots), list(selection.scope_ids),
+    )
+
+
 def _scan_scopes(args: argparse.Namespace) -> list[scan_coordinator.ScopeSpec]:
     """由 CLI 参数构造范围规格列表（ISS-154 多范围消费者）。
 
@@ -132,22 +183,14 @@ def _scan_scopes(args: argparse.Namespace) -> list[scan_coordinator.ScopeSpec]:
     ``--scope-id`` 与 ``--scope`` 一一对应（按位置配对），用于把**真实
     发现结果**的范围稳定 ID 带进来；缺省时按规范根派生 path 型 ID——CLI
     绝不就地伪造 ``apfs-volume:<uuid>``（ISS-153 身份合同）。
+
+    ISS-178：构造逻辑公共化到 ``scope_specs_from_paths``，与设置页 UI 采集
+    入口共用同一段实现，CLI 行为与出口码零变化。
     """
-    paths = list(getattr(args, "scope", None) or [])
-    ids = list(getattr(args, "scope_id", None) or [])
-    if not paths:
-        return []
-    if ids and len(ids) != len(paths):
-        raise scan_coordinator.ScanScopeError(
-            f"--scope-id 必须与 --scope 一一对应（给了 {len(ids)} 个 ID、"
-            f"{len(paths)} 个范围）；不给 ID 时按路径派生"
-        )
-    specs = []
-    for index, path in enumerate(paths):
-        specs.append(scan_coordinator.ScopeSpec.from_path(
-            path, scope_id=ids[index] if ids else None,
-        ))
-    return specs
+    return scope_specs_from_paths(
+        list(getattr(args, "scope", None) or []),
+        list(getattr(args, "scope_id", None) or []),
+    )
 
 
 def cmd_scan(args: argparse.Namespace) -> int:

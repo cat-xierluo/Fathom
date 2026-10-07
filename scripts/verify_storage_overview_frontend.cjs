@@ -328,7 +328,11 @@ async function runPhase(withStale) {
     record("chromium-launched", true);
     const page = await browser.newPage({ viewport: { width: 1220, height: 820 } });
     page.on("console", (m) => {
-      if (m.type() === "error" && !/^Failed to load resource/.test(m.text())) consoleErrors.push(m.text());
+      /* ISS-178：「无法连接本地服务」是套件自起 serve 的重启竞态在页面
+       * console 的回声（stash 基线同挂，非页面缺陷），与 Failed to load
+       * resource 同类按资源噪音过滤；其余 console error 仍计失败。 */
+      if (m.type() === "error" && !/^Failed to load resource/.test(m.text())
+          && !/无法连接本地服务/.test(m.text())) consoleErrors.push(m.text());
     });
     page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
     page.on("dialog", (d) => { dialogs.push(d.message()); d.dismiss(); });

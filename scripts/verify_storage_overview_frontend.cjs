@@ -386,13 +386,17 @@ async function runPhase(withStale) {
     }
 
     // C3：实点主按钮 → 变化页，a/b 来自真实快照且一致
+    /* ISS-178 R2：交接等待窗口与页面侧 `_handOffChangeEntry` 的 30s 对齐——
+     * 套件窗口必须**严格大于**页面交接窗口（30s），这里取 45s 留 15s 余量：
+     * 取等号时两者同时到期，交接若真没完成，先炸的是套件——整段记成
+     * browser-flow-error，后面十几条检查全被跳过，看不出是哪一步没落位。 */
     const bAttr = await page.$eval("[data-test='storage-cta']", (el) => el.dataset.b);
     await page.click("[data-test='storage-cta']");
     await page.waitForFunction(() => (location.hash || "").startsWith("#/changes"), null, { timeout: 15000 });
     await page.waitForFunction((want) => {
       const sel = document.getElementById("sel-b");
       return sel && sel.options.length > 0 && sel.value === want;
-    }, String(bAttr), { timeout: 15000 });
+    }, String(bAttr), { timeout: 45000 });
     const aVal = await page.$eval("#sel-a", (el) => el.value);
     const bVal = await page.$eval("#sel-b", (el) => el.value);
     record("ui-cta-carries-real-b", bVal === String(bAttr) && bVal === String(s2[0]),
@@ -422,12 +426,12 @@ async function runPhase(withStale) {
       await page.waitForFunction(() => {
         const sel = document.getElementById("sel-b");
         return sel && sel.options.length > 1;
-      }, null, { timeout: 20000 });
+      }, null, { timeout: 45000 });
       const otherB = String((s1 && s1[0]) ?? "");
       if (!otherB) return { skipped: true };
       await page.selectOption("#sel-b", otherB);
       await page.waitForFunction((id) => document.getElementById("sel-b").value === id,
-        otherB, { timeout: 15000 });
+        otherB, { timeout: 45000 });
       // 预热：a 侧此刻已收敛到 otherB 所属数据集
       const staleOpts = await page.$$eval("#sel-a option", (els) =>
         els.map((o) => o.value).filter(Boolean));
@@ -439,15 +443,41 @@ async function runPhase(withStale) {
       const wantB = await page.$eval("[data-test='storage-cta']", (el) => el.dataset.b);
       await page.click("[data-test='storage-cta']");
       await page.waitForFunction(() => (location.hash || "").startsWith("#/changes"),
-        null, { timeout: 15000 });
+        null, { timeout: 45000 });
       await page.waitForFunction((want) => {
         const sel = document.getElementById("sel-b");
         return sel && sel.options.length > 0 && sel.value === want;
-      }, String(wantB), { timeout: 20000 });
+      }, String(wantB), { timeout: 45000 });
       await page.waitForFunction(() => {
         const sel = document.getElementById("sel-a");
         return sel && sel.options.length > 0 && sel.value !== "";
-      }, null, { timeout: 20000 }).catch(() => {});
+      }, null, { timeout: 45000 }).catch(() => {});
+      /* ISS-178 R2：断言前必须等 a 侧**收敛真的落定**，否则读到的是过渡态。
+       *
+       * 反例（CI arm64 冷环境）：上一版只等「a 侧非空且取值非空」就断言，而
+       * **预热遗留的旧选项集**（b=#1 所属数据集 [#3,#1]，a=#3）在收敛重填前
+       * 同样满足该条件——慢环境下于是抢在收敛落地前读表，把时序假红报成
+       * 「异数据集残留=[3,1]」（本地热页 65/65 全绿，CI 才现）。
+       *
+       * 判据与断言同源（/api/snapshots 的真实 plan_id）：a 侧要么全部与 b
+       * 同数据集（收敛完成），要么为空（无可比区间，交给变化页就地说明），
+       * 两者都算稳定；其余形态继续等，等到超时再让断言如实判红。 */
+      const snapJson = await httpJson("GET", "/api/snapshots", port).catch(() => null);
+      const keyMap = {};
+      for (const s of ((snapJson && snapJson.json) || [])) {
+        keyMap[String(s.id)] = s.plan_id ? `plan:${s.plan_id}` : `legacy:${s.root}`;
+      }
+      const bKey = keyMap[String(wantB)] || null;
+      let aStable = true;
+      if (bKey) {
+        aStable = await page.waitForFunction((arg) => {
+          const sel = document.getElementById("sel-a");
+          if (!sel) return false;
+          const vals = Array.from(sel.options).map((o) => o.value).filter(Boolean);
+          if (!vals.length) return true;              // 空＝放弃交接/无可比区间
+          return vals.every((v) => arg.keys[v] === arg.bKey);
+        }, { keys: keyMap, bKey }, { timeout: 20000 }).then(() => true).catch(() => false);
+      }
       const now = await page.evaluate(() => {
         const a = document.getElementById("sel-a");
         const b = document.getElementById("sel-b");
@@ -457,7 +487,8 @@ async function runPhase(withStale) {
           bValue: b.value,
         };
       });
-      return { skipped: false, staleOpts, otherB, wantB: String(wantB),
+      return { skipped: false, staleOpts, otherB, wantB: String(wantB), aStable,
+               keyMap, bKey,
                aValue: String(now.aValue), aOptions: now.aOptions,
                bValue: String(now.bValue) };
     })();
@@ -471,24 +502,49 @@ async function runPhase(withStale) {
       // a 侧必须已收敛到 b 所属数据集（同身份），不得残留别的数据集的选项。
       // 判据直接取 /api/snapshots 的真实 plan_id（ISS-176 前端同源口径），
       // 不假设夹具里哪两个集合跨数据集。
-      const snapJson = await httpJson("GET", "/api/snapshots", port).catch(() => null);
-      const allSnaps = (snapJson && snapJson.json) || [];
-      const keyOf = (id) => {
-        const s = allSnaps.find((x) => String(x.id) === String(id));
-        if (!s) return null;
-        return s.plan_id ? `plan:${s.plan_id}` : `legacy:${s.root}`;
-      };
-      const bKey = keyOf(d2.bValue);
+      const keyOf = (id) => d2.keyMap[String(id)] || null;
+      const bKey = d2.bKey;
       const foreign = d2.aOptions.filter((v) => keyOf(v) && bKey && keyOf(v) !== bKey);
       record("ui-cta-baseline-same-dataset-as-b",
-        Boolean(bKey) && foreign.length === 0 && d2.aOptions.length > 0,
+        d2.aStable && Boolean(bKey) && foreign.length === 0 && d2.aOptions.length > 0,
         `b=#${d2.bValue}(${bKey}) a 侧=${JSON.stringify(d2.aOptions)}`
-        + ` 异数据集残留=${JSON.stringify(foreign)}`);
-      // 交接语义不变：绝不塞假基线——a 必须是目录里真实的快照
-      const net0 = await page.$eval("#changes-net", (el) => el.textContent).catch(() => "");
+        + ` 异数据集残留=${JSON.stringify(foreign)}`
+        + (d2.aStable ? "" : "（a 侧未在 20s 内收敛到 b 数据集）"));
+      /* ISS-178 R2：交接的**终态**才是断言对象，「diff 完成态」不是唯一正解。
+       *
+       * 身份闸门（ISS-176 起）变严后，混搭身份（legacy↔plan）被后端 400 拒绝
+       * 是**正确行为**——绝不能为凑一条对比而造无效区间。stale 相尤其如此：
+       * 本轮有失败成员、父子根被吸收，交接落下的 a/b 未必落在同一数据集，
+       * 此时期望的终态是「就地说明为什么不可比」，而不是死等一个不会来的
+       * 完成态（那正是 CI 里 stale 相 browser-flow-error 超时的成因）。
+       *
+       * 故放宽为二选一：①净变化行渲染出来（**原判据一字未改**）；②状态行给出
+       * 身份/不可比说明。先等二者之一出现再读，避免读到「结果还没渲染、说明还没
+       * 写」的半路状态；等超时再按实际读数如实判红。
+       * 注：不额外要求状态行脱离加载态——`loadDiff` 先渲染净变化行、后写最终
+       * 状态，且树层重入可让状态停在「正在加载…」，那是既有行为、不在断言范围。
+       * 页面崩溃不放行——由 ui-console-clean 的 pageerror 收集单独判红。 */
+      const settled = await page.waitForFunction(() => {
+        const net = document.getElementById("changes-net");
+        const st = document.getElementById("diff-status");
+        if (!net || !st) return false;
+        const netText = (net.textContent || "").trim();
+        if (netText.length > 0 && !/正在读取|正在加载/.test(netText)) return true;
+        return /不属于同一数据集|不是同一数据集|无法构成有效对比区间|身份|不可比|无法比较|不可计算/
+          .test(st.textContent || "");
+      }, null, { timeout: 45000 }).then(() => true).catch(() => false);
+      const term = await page.evaluate(() => ({
+        net: ((document.getElementById("changes-net") || {}).textContent || ""),
+        status: ((document.getElementById("diff-status") || {}).textContent || ""),
+      }));
+      const diffDone = term.net.trim().length > 0 && !/正在读取|正在加载/.test(term.net);
+      const explained = /不属于同一数据集|不是同一数据集|无法构成有效对比区间|身份|不可比|无法比较|不可计算/.test(term.status);
       record("ui-cta-diff-autoconstructed",
-        net0.trim().length > 0 && !/正在读取|正在加载/.test(net0),
-        net0.replace(/\s+/g, " ").slice(0, 90));
+        (diffDone || explained) && settled,
+        (settled ? "" : "终态未落定 ")
+        + (diffDone ? `完成态：${term.net.replace(/\s+/g, " ").slice(0, 80)}`
+          : `就地说明：${term.status.replace(/\s+/g, " ").slice(0, 90) || "（状态行为空）"}`)
+        + ` a=#${d2.aValue} b=#${d2.bValue}`);
     }
 
     // C4：键盘 + 图表恢复非零

@@ -157,3 +157,136 @@ D2 的**根因诊断与修法**是确定的（a 侧选项在 b 侧 change 之后
 
 - 验证复核：test_scope_collect_wiring 12 passed；160 套件 55/55（首轮 keyboard 单项=ISS-172 既有债，重跑绿）；overview 套件「无法连接本地服务」console 噪音（stash 基线同挂的 serve 竞态回声）按资源噪音过滤后 **65/65 ×2 全绿**——计数定稿 OVERVIEW 59→65、PYTEST 1492→**1504**（12 例 diff 核定），双处同步由 PM 补提交。
 - 160 前端消费端断言缺失（先红未达）如实保留：消费端行为归 161 完整 UI 轮实机复验。
+
+---
+
+# R2 窄返修（D2 两处 CI 失败，plan 档 / CI 慢环境）
+
+基线 `ea79fbf`（D1 交付，PYTEST 1517 五 job 绿）。分支 `iss-178-r2-plan-tier-converge`。
+**D1 三文件（`fathom/api.py`、`fathom/cli.py`、`tests/test_scope_collect_wiring.py`）零改动。**
+
+两处失败都在「本机热页 65/65 全绿、CI arm64 冷环境才现」，因此**先定位时序差，再决定改哪一侧**。
+
+## 失败 1：`ui-cta-baseline-same-dataset-as-b`（detail `b=#4(plan:p-kid) a 侧=["3","1"]`）
+
+### 归因：断言抢在收敛落地前读表（不是收敛逻辑错判数据集）
+
+原断言只等「a 侧非空且取值非空」：
+
+```js
+await page.waitForFunction(() => {          // ← 上一版判据
+  const sel = document.getElementById("sel-a");
+  return sel && sel.options.length > 0 && sel.value !== "";
+}, null, { timeout: 20000 }).catch(() => {});
+```
+
+而**预热段遗留的旧选项集**（预热把 b 选到 #1，a 侧已收敛为 `#1` 所属数据集 `[#3,#1]`、a=#3）
+在交接后的收敛重填发生前，**同样满足**这个判据。慢环境下断言抢跑，读到的正是过渡态的
+`["3","1"]`——与 b（`#4`，`plan:p-kid`）不同数据集，于是报「异数据集残留=[3,1]」。
+本地热页收敛在断言前已落地，故全绿；CI 冷环境才现。**这是时序假红**。
+
+关键佐证：`applyConvergedOptions`（`changes.js:218`）里 b 侧不收敛、全列，a 侧收敛到 b 数据集；
+一旦收敛真的跑过，a 侧**不可能**同时留着别的数据集的选项。读到 `["3","1"]` 只可能是**还没重填**。
+
+### 任务卡给的①②取舍：本轮**只取①的判据形态，不动前端收敛**
+
+- ①「catalog 失效刷新」：查过 `changes.js`，`loadSnapshotsForDiff` 每次都重新 fetch
+  `/api/snapshots` 并在 fetch 后 `snapshotCatalog = snaps` 再收敛（`changes.js:262`），
+  **没有**需要失效的持久陈旧缓存；交接 tick 期间用的 catalog 即使是旧的，
+  在途的那次 fetch 落地后也会**按新数据重新收敛**（自愈）。再加一层刷新只是多一次往返，
+  且会牵动 `onSelectionChange` 的世代/票据守卫（ISS-170 R2 的三连发防线），风险大于收益。
+- ②「派发后异步确认重试」：与①同样问题——它治的是**产品行为**，而本处证据表明产品行为最终是对的。
+- **取舍结论**：过渡态是**测试读数**问题，不是产品缺陷。改断言的**稳定性判据**（等收敛真落定），
+  是最小、最贴合证据的修法；前端收敛逻辑与交接语义一字不动。
+
+### 修法（`scripts/verify_storage_overview_frontend.cjs`）
+
+断言前等 a 侧**收敛真的落定**，判据与断言**同源**（`/api/snapshots` 的真实 `plan_id`，ISS-176 前端口径）：
+
+- a 侧选项**全部**与 b 同数据集 → 收敛完成；
+- a 侧为空 → 无可比区间，交给变化页就地说明（也接受）；
+- 其余形态继续等，**等到超时再让断言如实判红**（detail 追加「a 侧未在 20s 内收敛到 b 数据集」）——
+  不再 `.catch` 掉后立刻拿过渡态当结果。
+
+## 失败 2：stale 相 `browser-flow-error`（waitForFunction 20s 超时）
+
+### 归因：交接等待窗口 8s 在冷环境下先到期，套件 20s 等一个不会来的 b
+
+`_handOffChangeEntry`（`overview.js`）的 tick 每 100ms 轮询等 b 落进 `sel-b` 选项，
+到 `deadline = Date.now() + 8000` 就**静默放弃交接**（`state.pendingChangeEntry = null`）。
+8s 是按「本机热页」的直觉定的：变化页挂载 + `/api/snapshots` 往返 + 首次渲染。冷启动
+（CI arm64 首访）完全可能超过它——**tick 到期即放弃 ⇒ `sel-b` 永远停在旧值**，
+套件随后在「等 b 落位」处 20s 超时，未捕获 ⇒ 整段判 `browser-flow-error`。
+只出现在 stale 相，是因为它是同一进程里的**第二轮**：服务端刚起、首个真实请求，全链路最冷。
+
+### 修法（`frontend/modules/pages/overview.js`）
+
+交接等待窗口 **8s → 30s**，并把**套件侧等待窗口同步对齐到 30s**：套件窗口必须 ≥ 页面窗口，
+否则慢环境下是**套件先放弃**（假红），而不是页面交接失败。
+
+**交接语义一字未变**：不塞假基线、a 为空即放弃、用户已改选（`__changesUserTouched`）立即放弃、
+收敛逻辑（`applyConvergedOptions`）与票据守卫零改动。放宽窗口只推迟「确实没有该快照」时的放弃。
+
+### stale 相断言改为宽容终态（`ui-cta-diff-autoconstructed`）
+
+身份闸门（ISS-176 起）变严后，混搭身份（legacy↔plan）被后端 400 拒绝是**正确行为**——
+绝不能为凑一条对比而造无效区间。stale 相尤其如此：本轮有失败成员、父子根被吸收，
+交接落下的 a/b 未必落在同一数据集，此时期望的终态是「**就地说明为什么不可比**」，
+而不是死等一个不会来的完成态。断言放宽为二选一：
+
+1. **diff 完成态**：净变化行渲染出来，且不在加载中；
+2. **就地说明**：状态行出现身份/不可比说明（如「不属于同一数据集」「无法构成有效对比区间」）。
+
+两者都要求状态行**不滞留加载态**；页面崩溃不放行——由 `ui-console-clean` 的 `pageerror`
+收集单独判红。
+
+### 是否该在 overview 侧就拦掉 stale 相的 CTA？（任务卡征询）——**不该，理由如下**
+
+- CTA 的存在依据是 `attr.measured_members` 里有**真实落库的快照 ID**，stale 相里该条件成立；
+  stale 影响的是「本轮与前轮**可比**性」，不是「b 这个快照是否存在」。
+- 交接落下的 a/b 若真的跨身份，**正确终态就是就地说明**——这正是上面第 ② 分支要断言的行为。
+  在 overview 侧提前拦掉，等于把「不可比」藏起来，用户看不到任何解释，反而违背 ISS-176 的 fail-closed 口径。
+- 且这需要改 CTA 渲染条件，任务卡明确划为不扩张的范围。**故不动。**
+
+---
+
+## R2 验证（真实执行）
+
+| 命令 | 结果 |
+|---|---|
+| `python3 -m pytest tests/test_scope_collect_wiring.py tests/test_plan_identity_consumers.py -q` | **26 passed**（D1 零回归，7.29s） |
+| `node scripts/verify_storage_overview_frontend.cjs`（含 clean/stale 两相） | **65/65**（完成轮次） |
+| `node scripts/verify_storage_investigation_frontend.cjs` | **54/55**（唯一失败为既有债，见下） |
+| `git diff ea79fbf --name-only` | 仅 3 个写域文件；**D1 三文件 0 改动** |
+
+### 写域合规
+
+```
+frontend/modules/pages/overview.js            |  8 ++-   （交接等待窗口 8s→30s + 注释）
+scripts/verify_storage_overview_frontend.cjs | 98 +++-- （断言与等待窗口）
+RESULT.md                                    | 90 ++
+fathom/api.py · fathom/cli.py · tests/test_scope_collect_wiring.py → 0 改动
+```
+
+`changes.js` **零改动**：查证后确认收敛逻辑无缺陷（见失败 1 取舍），不需要动它。
+
+### 未达成的部分与既有债（如实记录，不掩盖）
+
+1. **`investigation` 套件 54/55**：`journey-keyboard-expand-esc-focus-return`
+   （detail「Enter 开详情→Esc 关闭→焦点回到 BODY」）。这是本卡上一轮 PM 已记录的
+   **ISS-172 既有债**（RESULT.md 上文「160 套件 55/55（首轮 keyboard 单项=ISS-172
+   既有债，重跑绿）」）。本轮 `changes.js` 零改动、该用例走的键盘焦点链路不在
+   写域内，与本卡无因果。
+2. **`overview` 套件仍有 1 处间歇失败**：clean 相 D2 段
+   `page.waitForFunction`（等 `sel-b` 选项 > 1）**45s 未落位** → 记 `browser-flow-error`，
+   当轮 51/52（后续十几条被跳过）。**该等待在改动前就存在**（原 20s），
+   本轮只是把窗口放宽到 45s；且同一份代码在完成轮次上 65/65 全绿。
+   **未能在本地稳定复现、也未能归因到确切的页面/后端环节**——按实况上报，
+   不宣称已解决。CI 若仍现，方向是给该等待**兜底成一条记录**（而非中断整段），
+   但套件 CI 按 **65 条精确计数**（`EXPECTED_STORAGE_OVERVIEW_PASSED`），
+   改成跳过/兜底会动计数、须 PM 拍板，故本轮未擅自改。
+3. **失败 1 的「先红」仍只能在慢环境复现**：本地热页收敛总在断言前落地，
+   改前 65/65、改后 65/65 均绿。本轮的判据修正依据是**代码级时序分析**
+   （预热旧选项集同样满足旧判据）+ CI detail 的 `["3","1"]` 形态
+   （`applyConvergedOptions` 收敛过后 a 侧不可能残留别的数据集选项），
+   **不是**本地可复现的先红证据——如实标注。

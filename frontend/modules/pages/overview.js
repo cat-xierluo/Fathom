@@ -653,7 +653,13 @@ function _handOffChangeEntry(a, b) {
     }
     if (!(location.hash || "").startsWith("#/changes")) return;
     window.removeEventListener("hashchange", once);
-    const deadline = Date.now() + 8000;
+    /* ISS-178 R2：交接等待窗口 8s → 30s。8s 是按「本机热页」的直觉定的，
+     * 冷启动（CI arm64 首访：变化页挂载 + /api/snapshots 往返 + 首次渲染）
+     * 完全可能超过它——tick 到期即静默放弃交接，sel-b 永远停在旧值，
+     * 套件随后在「等 b 落位」处 20s 超时（stale 相整体判 browser-flow-error）。
+     * 放宽窗口只推迟「确实没有该快照」时的放弃，不改变交接语义：不塞假
+     * 基线、a 为空即放弃、用户已改选（__changesUserTouched）立即放弃。 */
+    const deadline = Date.now() + 30000;
     const tick = () => {
       const entry = state.pendingChangeEntry;
       if (!entry) return;

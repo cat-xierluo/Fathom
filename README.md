@@ -4,7 +4,7 @@
 
 # Fathom
 
-**macOS 目录容量历史追踪工具** —— 记录哪些目录在增长，把最近变化与历史证据放在一起，帮助理解空间去向。
+**Disk Insight for macOS** —— 记录哪些目录在增长，把最近变化与历史证据放在一起，帮助理解空间去向。
 
 [![CI](https://github.com/cat-xierluo/fathom/actions/workflows/ci.yml/badge.svg)](https://github.com/cat-xierluo/fathom/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/cat-xierluo/fathom)](https://github.com/cat-xierluo/fathom/releases)

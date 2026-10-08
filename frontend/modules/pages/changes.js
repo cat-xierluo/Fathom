@@ -76,6 +76,13 @@ const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyV
 
 let snapshotSelectionRevision = 0;  // 用户改选计数：晚到的快照列表不得覆盖改选结果
 let snapshotCatalog = [];           // ISS-170：最近一次 /api/snapshots 原始列表（收敛与守卫的判据）
+
+/* 诊断探针（无副作用）：仅当页面已置 window.__diag 时记录，供实机复现取序列。
+ * 不写 console、不改控制流；PM 决定保留或移除。 */
+function _diag(kind, detail) {
+  if (!window.__diag) return;
+  window.__diag.push({ t: Date.now(), kind, ...detail });
+}
 let currentSort = { key: "delta" };  // 同级排序走接口 sort 参数；方向由接口语义固定
 let lastDiff = null;                 // 最近一次成功 diff（/api/diff），用于解读区对位
 let diffIntentAB = "";               // ISS-170 R2：最近一次合法发起方落定的 sel 意图（票据）
@@ -810,8 +817,25 @@ function renderNetLine(d) {
  * 连点触发多次 loadDiff 时，diff 域世代号守卫保证只渲染最后一次；
  * 未选齐（某侧为空）保持空态 + 引导文案，不发请求。
  * select 的 change 由键盘改选同样派发（原生行为），路径不变。 */
-function onSelectionChange(changedId) {
-  snapshotSelectionRevision += 1;
+function onSelectionChange(changedId, { handoff = false } = {}) {
+  /* ISS-178 R3 D2 实机根因：入口交接写选的 change 是**合成事件**，此前与用户
+   * 改选同等处理，`changedId` 非空即被当作 userChanged：
+   * (1) `applyConvergedOptions` 的 `userEmptyA = userChanged && keepA === ""`
+   *     误判为「用户显式清空基线」→ a 侧被钉死成空串；
+   * (2) 推高 `snapshotSelectionRevision` → 在途 `loadSnapshotsForDiff` 命中
+   *     changes.js:269 的「fetch 期间用户改选 → 整体放弃」分支，该分支只
+   *     重建 b 侧全列，既不收敛 a、也不落定 a、不补发 diff。
+   * 叠加结果就是实机形态：b 侧正确带入、a 侧 value 空且选项状态未知。
+   * 交接事件带 `__fathomHandoff` 标记，与真实用户改选分流：交接**不**推用户
+   * 世代（在途目录仍按本次收敛落定），也**不**被当作 userChanged。 */
+  if (handoff) { /* 交接写选不推用户世代（见下） */ } else snapshotSelectionRevision += 1;
+  const _selA = document.getElementById("sel-a");
+  const _selB = document.getElementById("sel-b");
+  _diag("onSelectionChange", { changedId, handoff,
+    catalogLength: snapshotCatalog.length, userRevision: snapshotSelectionRevision,
+    before: { a: _selA.value, b: _selB.value,
+      aOptions: [..._selA.options].map((o) => o.value),
+      bOptions: [..._selB.options].map((o) => o.value) } });
   sessionTree = null;  // 用户改选：跨页保留的旧树视图作废
   const selA = document.getElementById("sel-a");
   const selB = document.getElementById("sel-b");
@@ -821,7 +845,7 @@ function onSelectionChange(changedId) {
   // 的守卫与后端闸门处理）。
   if (snapshotCatalog.length) {
     const { group } = applyConvergedOptions(selA, selB, snapshotCatalog,
-      { keepA: selA.value, keepB: selB.value, userChanged: changedId });
+      { keepA: selA.value, keepB: selB.value, userChanged: handoff ? "" : changedId });
     // ISS-171：改 b 换到够两个快照的数据集后必须把 a 一并放开——否则
     // 「单快照数据集只禁 a」会把 a 永久留在禁用态，即便新数据集已可构成区间。
     setDiffControlsEnabled(group.length >= 2,
@@ -1881,7 +1905,9 @@ export const changesPage = {
     ["sel-a", "sel-b"].forEach((id) => {
       document.getElementById(id).addEventListener("change", (e) => {
         if (e.isTrusted) window.__changesUserTouched = true;
-        onSelectionChange(e.target.id);
+        /* ISS-178 R3 D2：入口交接的合成事件带标记，转交 onSelectionChange 走
+         * 非用户路径（不推用户世代、不按 userChanged 处理），真实用户改选零变化。 */
+        onSelectionChange(e.target.id, { handoff: e.__fathomHandoff === true });
       });
     });
     // ISS-148：排序表头（delta/size/name 走接口 sort；同级内排序）

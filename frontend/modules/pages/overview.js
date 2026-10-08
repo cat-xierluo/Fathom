@@ -644,6 +644,29 @@ function _ovCta(summary) {
  * `applyConvergedOptions` 会把 a 侧重填为 b 数据集并按「a 取其前驱」取到
  * 同 plan 的真实前驱（D2）。本文件不再自建前驱挑选（原 `_pickPredecessorId`
  * 读的是收敛**之前**的旧选项集，正是 D2 留空的根因），以免两处判定漂移。 */
+/* ISS-178 R3 D2 实机根因：交接写入的 change 是**合成事件**（非 isTrusted），
+ * 但变化页此前把它与「用户改选」同等对待——`onSelectionChange` 收到
+ * changedId 非空即按 userChanged 处理：
+ * 1) `applyConvergedOptions` 的 `userEmptyA = userChanged && keepA === ""`
+ *    误判为「用户显式清空基线」，把 a 侧钉死成空串；
+ * 2) 它推高 `snapshotSelectionRevision`，让在途的 `loadSnapshotsForDiff`
+ *    走「用户在 fetch 期间改选 → 整体放弃收敛」分支（changes.js:269），
+ *    该分支只重建 b 侧全列、**既不收敛也不落定 a、也不补发 diff**。
+ * 两条叠加即实机形态：b 侧正确带入、a 侧 value 空且选项状态未知。
+ * 合成事件打上标记，交接与用户改选从此分流（D2 修复本体）。 */
+function _handoffEvent() {
+  const ev = new Event("change", { bubbles: true });
+  ev.__fathomHandoff = true;
+  return ev;
+}
+
+/* 诊断探针（无副作用）：只在 window.__diag 存在时记录，供实机复现取序列。
+ * PM 决定保留或移除；不写 console、不改控制流。 */
+function _diag(kind, detail) {
+  if (!window.__diag) return;
+  window.__diag.push({ t: Date.now(), kind, ...detail });
+}
+
 function _handOffChangeEntry(a, b) {
   state.pendingChangeEntry = { a: a || null, b: String(b) };
   window.addEventListener("hashchange", function once() {
@@ -675,6 +698,10 @@ function _handOffChangeEntry(a, b) {
       const selB = document.getElementById("sel-b");
       const ready = selA && selB && selB.options.length > 0;
       const hasB = ready && [...selB.options].some((o) => o.value === entry.b);
+      _diag("tick", { ready: Boolean(ready), hasB, entry: { ...entry },
+        selA: selA ? { value: selA.value, options: [...selA.options].map((o) => o.value) } : null,
+        selB: selB ? { value: selB.value, options: [...selB.options].map((o) => o.value) } : null,
+        userTouched: Boolean(window.__changesUserTouched) });
       if (hasB) {
         state.pendingChangeEntry = null;
         /* ISS-178 D2 根因：a 侧选项是**变化页按 b 所属数据集收敛后才重填**的
@@ -690,15 +717,19 @@ function _handOffChangeEntry(a, b) {
          * 语义不变：真实 a 照旧带入；入口不带 a 时取同数据集真实前驱；a 为空
          * 或与 b 相同都绝不塞假基线，找不到就放弃交接。 */
         selB.value = entry.b;
-        selB.dispatchEvent(new Event("change", { bubbles: true }));
+        selB.dispatchEvent(_handoffEvent());
         if (entry.a && entry.a !== entry.b
             && [...selA.options].some((o) => o.value === entry.a)) {
           selA.value = entry.a;
-          selA.dispatchEvent(new Event("change", { bubbles: true }));
+          selA.dispatchEvent(_handoffEvent());
         }
         return;
       }
-      if (Date.now() > deadline) { state.pendingChangeEntry = null; return; }
+      if (Date.now() > deadline) {
+        state.pendingChangeEntry = null;
+        _diag("tick-deadline", { entry: { ...entry } });
+        return;
+      }
       setTimeout(tick, 100);
     };
     tick();

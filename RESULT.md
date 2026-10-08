@@ -290,3 +290,113 @@ fathom/api.py · fathom/cli.py · tests/test_scope_collect_wiring.py → 0 改�
    （预热旧选项集同样满足旧判据）+ CI detail 的 `["3","1"]` 形态
    （`applyConvergedOptions` 收敛过后 a 侧不可能残留别的数据集选项），
    **不是**本地可复现的先红证据——如实标注。
+
+---
+
+# R3（D2 实机基线仍空：根因钉死与修复）
+
+基线 `c476bfb`（D2 前一轮 #273）。分支 `iss-178-r3-d2-native-rootcause`。
+**D1 三文件（`fathom/api.py`、`fathom/cli.py`、`tests/test_scope_collect_wiring.py`）与
+`scan_coordinator`/scanner/db 零改动**（`git diff --name-only` 核定）。
+
+## 根因（代码级钉死，附判定链）
+
+实机形态是 **b 侧正确带入、a 侧 `value` 为空且选项状态未知**——不是「选错」，是**从未落定**。
+任务卡列的四个怀疑项里，**b) `__changesUserTouched` 让位**与 **d) tick 超时**可排除：
+交接派发的是合成事件（`isTrusted === false`），让位标志不会被它置上（changes.js:1883）；
+tick 超时会留下 `sel-b` 停在旧值，与实机「b 正确」相反。
+
+真正断的是 **c 的近亲：交接的合成 change 被变化页当成了「用户改选」**。
+`overview.js` 的 `_handOffChangeEntry` 写入两侧后 `dispatchEvent(new Event("change"))`，
+`changes.js` 的监听器只区分 `isTrusted`（用于置让位标志），随后**一律**调
+`onSelectionChange(e.target.id)`——而 `onSelectionChange` 的语义是「用户改选」：
+
+```
+onSelectionChange(changedId):
+  snapshotSelectionRevision += 1          ← ①
+  applyConvergedOptions(..., { userChanged: changedId })   ← ②
+```
+
+两条后果叠加，正是实机形态：
+
+1. **② `userChanged` 误判**：`applyConvergedOptions` 里
+   `userEmptyA = Boolean(userChanged) && String(keepA) === ""`（changes.js:220）。
+   交接此刻 a 侧尚未落定、`keepA` 为空串，而 `userChanged` 因 `changedId="sel-a"/"sel-b"`
+   非空而**为真** → 判定成「用户显式清空了基线」→ `nextA = ""`，**a 侧被钉死为空**。
+   注释写明的「不静默补回合法值」是为用户意图设计的保护，被合成事件误触发。
+2. **① 推高用户世代**：交接恰落在 `loadSnapshotsForDiff` 的 `await fetchJSON("/api/snapshots")`
+   期间（打包态冷启动首次 CTA 必然如此：变化页刚挂载即交接）→ 命中
+   `changes.js:269` 的「fetch 期间用户改选 → 整体放弃」分支。该分支
+   `replaceSnapshotOptions(selB, snaps)` 后**直接 return**：不收敛、不落定 a、**不补发 diff**。
+   于是 a 侧既没被填、也没被补发，停在「value 空、选项状态未知」。
+
+**为什么套件抓不到**：套件 C3 段的 CTA `data-a` 是**空串**（`data-a=""`，overview.js:635），
+且交接前变化页已预热出可用的 a 侧；`userEmptyA` 需要 `keepA === ""` 才误判，
+预热把 a 填上后该分支**恰好不成立**——夹具的预热顺序正好掩盖了实机的冷启动时序。
+即：**热页 + 预热 ⇒ 缺陷不可见；冷启动首次 CTA ⇒ 缺陷必现。**
+
+## 修法（交接与用户改选分流）
+
+- `overview.js`：新增 `_handoffEvent()`，交接派发的两个 change 带 `__fathomHandoff = true` 标记。
+- `changes.js`：监听器把该标记传给 `onSelectionChange(id, { handoff })`；
+  `onSelectionChange` 在 `handoff` 为真时**不推 `snapshotSelectionRevision`**
+  （在途目录请求仍按本次收敛正常落定），并以 `userChanged: ""` 调用
+  `applyConvergedOptions`（不再误判为用户清空基线）。
+
+**交接语义一字未变**：不塞假基线、a 为空即放弃、用户已改选（`__changesUserTouched`）
+立即放弃、`applyConvergedOptions` 的收敛口径与票据守卫零改动。真实用户改选路径
+（`handoff === false`）逐字节保持原行为，ISS-170 R2 的三连发防线不受影响。
+
+**覆盖两种时序**：冷启动首次 CTA（`snapshotCatalog` 未就绪 → `onSelectionChange` 的
+`if (snapshotCatalog.length)` 跳过收敛，交接事件不推世代 → 在途 fetch 落地后按
+`changedId` 之外的正常路径收敛落定 a）；进过变化页后二次 CTA（catalog 已就绪 →
+交接事件走 `userChanged: ""`，a 按「取其前驱」落定）。
+
+## 诊断探针（无副作用，供实机取证）
+
+`window.__diag` 存在时记录：`overview.js` 每次 tick 的 `ready/hasB/entry/两侧 value 与
+options/userTouched` 与 `tick-deadline`；`changes.js` 每次 `onSelectionChange` 的
+`changedId/handoff/catalogLength/userRevision/收敛前后两侧取值与选项`。
+不写 console、不改控制流；**PM 决定保留（降为无副作用探针）或移除**。
+
+```js
+// 实机取序列：点击 CTA 前后在控制台执行
+window.__diag = [];
+// …点击「排查这次变化」…
+copy(JSON.stringify(window.__diag, null, 1));
+```
+
+## 验证（真实执行）
+
+> 环境说明：本 worktree 无 `.venv`，套件按 `FATHOM_PYTHON=$(which python3)` 注入解释器
+> 运行（`fastapi/uvicorn` 已在系统解释器可用）。**打包态实机复验仍待 PM 执行（最终门）。**
+
+| 命令 | 结果 |
+|---|---|
+| `verify_storage_overview_frontend.cjs` ×4（含带诊断探针的最终态） | **65/65 全绿 ×4** |
+| `verify_storage_investigation_frontend.cjs` ×2 | **55/55 ×2** |
+| `verify_frontend_refresh.cjs` | **217/217，0 failed** |
+| `pytest tests/test_scope_collect_wiring.py -q` | **12 passed**（D1 零回归） |
+
+D2 相关断言逐条实测（含带探针的最终态 ov4）：
+
+```
+PASS ui-cta-handoff-baseline-non-empty   | 预热 a 侧=["3","1"] → 交接后 a=#3（#3,#1）b=#1
+PASS ui-cta-baseline-same-dataset-as-b   | b=#1(plan:p-root) a 侧=["3","1"] 异数据集残留=[]
+PASS ui-cta-diff-autoconstructed         | 完成态：根同口径净变化 −20.0 MB（a=#3 b=#1）
+PASS ui-console-clean                    | 探针零副作用，未引入控制台噪音
+```
+
+## 如实记录的未达成部分
+
+1. **实机复现未能在本 worktree 达成**：打包态实例需 PM 启动（HOME 重定向隔离 +
+   FATHOM_PORT 注入 + 受控 APFS 卷 + 旧 HOME legacy 种子），本地只有套件夹具。
+   上述根因是**代码级钉死**（`userEmptyA` 误判 + 在途 fetch 放弃分支，两条都可在源码
+   逐行核对），并已装好 `window.__diag` 探针供实机取证——**但仍不是实机 __diag 序列本身**。
+2. **套件仍无法复现该缺陷的触发时序**（沿用前一轮结论）：C3 段 CTA 的 `data-a` 是空串且
+   交接前已预热出可用 a 侧，`userEmptyA` 的误判前提（`keepA === ""`）不成立。
+   新增探针与修复**未**把套件从「恒绿」变成「先红」——修法在套件形态下与旧行为等价。
+   要让套件具备先红能力，需要一个「冷启动即交接、a 侧未预热」的夹具变体，
+   属套件侧工作，本卡未擅自改动 CI 计数敏感区。
+3. **诊断探针去留待 PM 定**：当前为无副作用形态（仅在 `window.__diag` 存在时写数组，
+   不写 console、不改控制流），四个套件全绿未受其影响。

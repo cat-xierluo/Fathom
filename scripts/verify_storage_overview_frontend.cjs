@@ -374,11 +374,15 @@ async function runPhase(withStale) {
   let browser = null;
   const consoleErrors = [];
   const dialogs = [];
+  let flowStage = "browser-start";
+  let page = null;
+  let expectedB = null;
   try {
     const pw = require("playwright");
     browser = await pw.chromium.launch({ headless: true });
     record("chromium-launched", true);
-    const page = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    page = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    await page.addInitScript(() => { window.__diag = []; });
     page.on("console", (m) => {
       /* ISS-178：「无法连接本地服务」是套件自起 serve 的重启竞态在页面
        * console 的回声（stash 基线同挂，非页面缺陷），与 Failed to load
@@ -389,6 +393,7 @@ async function runPhase(withStale) {
     page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
     page.on("dialog", (d) => { dialogs.push(d.message()); d.dismiss(); });
 
+    flowStage = "initial-overview-render";
     await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
     await page.waitForSelector("[data-test='storage-panel']", { timeout: 20000 });
     await page.waitForFunction(() => {
@@ -443,8 +448,11 @@ async function runPhase(withStale) {
      * 取等号时两者同时到期，交接若真没完成，先炸的是套件——整段记成
      * browser-flow-error，后面十几条检查全被跳过，看不出是哪一步没落位。 */
     const bAttr = await page.$eval("[data-test='storage-cta']", (el) => el.dataset.b);
+    expectedB = String(bAttr);
+    flowStage = "initial-cta-route";
     await page.click("[data-test='storage-cta']");
     await page.waitForFunction(() => (location.hash || "").startsWith("#/changes"), null, { timeout: 15000 });
+    flowStage = "initial-cta-b";
     await page.waitForFunction((want) => {
       const sel = document.getElementById("sel-b");
       return sel && sel.options.length > 0 && sel.value === want;
@@ -484,31 +492,50 @@ const d2 = await (async () => {
           { timeout: 10000 });
       };
       await goHash("#/changes");
+      flowStage = "d2-options-ready";
       await page.waitForFunction(() => {
         const sel = document.getElementById("sel-b");
         return sel && sel.options.length > 1;
       }, null, { timeout: 45000 });
       const otherB = String((s1 && s1[0]) ?? "");
       if (!otherB) return { skipped: true };
+      expectedB = otherB;
       await page.selectOption("#sel-b", otherB);
+      flowStage = "d2-prewarm-b";
       await page.waitForFunction((id) => document.getElementById("sel-b").value === id,
         otherB, { timeout: 45000 });
       // 预热：a 侧此刻已收敛到 otherB 所属数据集
       const staleOpts = await page.$$eval("#sel-a option", (els) =>
         els.map((o) => o.value).filter(Boolean));
 
+      // As in C4, the hidden CTA survives hash navigation until summary renders.
+      // Exercise a real response arriving between pointerdown and pointerup:
+      // without the replacement wait below, the detached link loses its click.
+      const previousD2Cta = await page.$("[data-test='storage-cta']");
+      if (!previousD2Cta) throw new Error("D2 返回总览前缺少 CTA 节点");
+      const delayedD2Summary = async route => { await sleep(300); await route.continue(); };
+      await page.route("**/api/storage/summary", delayedD2Summary);
+      flowStage = "d2-overview-repaint";
       await goHash("#/overview");
+      await page.waitForFunction(old => !old.isConnected, previousD2Cta, { timeout: 20000 });
+      await previousD2Cta.dispose();
+      flowStage = "d2-overview-cta";
       const cta = await page.waitForSelector("[data-test='storage-cta']",
         { timeout: 20000 }).catch(() => null);
       if (!cta) return { skipped: true, noCta: true };
       const wantB = await page.$eval("[data-test='storage-cta']", (el) => el.dataset.b);
-      await page.click("[data-test='storage-cta']");
+      expectedB = String(wantB);
+      await page.click("[data-test='storage-cta']", { delay: 500 });
+      await page.unroute("**/api/storage/summary", delayedD2Summary);
+      flowStage = "d2-changes-route";
       await page.waitForFunction(() => (location.hash || "").startsWith("#/changes"),
         null, { timeout: 45000 });
+      flowStage = "d2-handoff-b";
       await page.waitForFunction((want) => {
         const sel = document.getElementById("sel-b");
         return sel && sel.options.length > 0 && sel.value === want;
       }, String(wantB), { timeout: 45000 });
+      flowStage = "d2-handoff-a";
       await page.waitForFunction(() => {
         const sel = document.getElementById("sel-a");
         return sel && sel.options.length > 0 && sel.value !== "";
@@ -531,6 +558,7 @@ const d2 = await (async () => {
       const bKey = keyMap[String(wantB)] || null;
       let aStable = true;
       if (bKey) {
+        flowStage = "d2-baseline-dataset";
         aStable = await page.waitForFunction((arg) => {
           const sel = document.getElementById("sel-a");
           if (!sel) return false;
@@ -585,6 +613,7 @@ const d2 = await (async () => {
        * 注：不额外要求状态行脱离加载态——`loadDiff` 先渲染净变化行、后写最终
        * 状态，且树层重入可让状态停在「正在加载…」，那是既有行为、不在断言范围。
        * 页面崩溃不放行——由 ui-console-clean 的 pageerror 收集单独判红。 */
+      flowStage = "d2-diff-terminal";
       const settled = await page.waitForFunction(() => {
         const net = document.getElementById("changes-net");
         const st = document.getElementById("diff-status");
@@ -614,6 +643,7 @@ const d2 = await (async () => {
     // that precise old node to be replaced by the real summary response before
     // focusing, otherwise a correct refresh discards the just-focused node.
     const previousCta = await page.$("[data-test='storage-cta']");
+    flowStage = "c4-overview-repaint";
     if (!previousCta) throw new Error("返回总览前缺少 CTA 节点");
     // Deliberately delay the real request (no response fixture) to exercise the
     // same cold-run DOM replacement race on every run.
@@ -710,7 +740,23 @@ await page.waitForSelector("[data-test='storage-unexplained']", { timeout: 20000
       consoleErrors.slice(0, 3).join(" ; ") || "无页面错误");
     record("ui-no-native-dialog", dialogs.length === 0, dialogs.join(" ; ") || "无原生弹窗");
   } catch (e) {
-    record("browser-flow-error", false, e.message);
+    let diagnosticTimer;
+    // Diagnostics must not prevent the finally blocks from reclaiming fixtures.
+    const dom = page ? await Promise.race([page.evaluate(() => {
+      const select = (id) => {
+        const el = document.getElementById(id);
+        return el ? { value: el.value, options: Array.from(el.options, o => o.value) } : null;
+      };
+      const cta = document.querySelector('[data-test="storage-cta"]');
+      return { hash: location.hash, a: select("sel-a"), b: select("sel-b"),
+        cta: cta ? { connected: cta.isConnected, b: cta.dataset.b } : null,
+        status: document.getElementById("diff-status")?.textContent || "",
+        diag: (window.__diag || []).slice(-12) };
+    }).catch(err => ({ unavailable: err.message })), new Promise(resolve => {
+      diagnosticTimer = setTimeout(() => resolve({ unavailable: "DOM diagnostic timeout" }), 2000);
+    })]).finally(() => clearTimeout(diagnosticTimer)) : null;
+    record("browser-flow-error", false,
+      `phase=${PHASE} stage=${flowStage} expectedB=${expectedB} ${e.stack || e.message} DOM=${JSON.stringify(dom)}`);
     if (serveLog) process.stderr.write(`serve stderr 尾部: ${serveLog.slice(-500)}\n`);
   } finally {
     if (browser) await browser.close().catch(() => {});

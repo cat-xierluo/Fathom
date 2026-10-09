@@ -1025,10 +1025,19 @@ async fn updater_install_transaction(
         expected_helper_pid,
     );
     let prepare_arg_refs: Vec<&str> = prepare_args.iter().map(String::as_str).collect();
-    let prepare = match run_upgrade_phase(
+    let prepare = match run_upgrade_phase_polled(
         &helper_bin,
         &runtime_dir,
         &prepare_arg_refs,
+        || {
+            let helper_state = app.state::<HelperState>();
+            let guard = helper_state.0.lock()
+                .map_err(|_| "helper 句柄锁中毒，无法回收旧进程".to_string())?;
+            if let Some(handle) = guard.as_ref() {
+                handle.reap_exited_child()?;
+            }
+            Ok(())
+        },
     ) {
         Ok(payload) => payload,
         Err(err) => serde_json::json!({ "ok": false, "kind": "internal", "error": err }),
@@ -1044,6 +1053,7 @@ async fn updater_install_transaction(
             .and_then(|value| value.as_str())
             .unwrap_or("未知失败")
             .to_string();
+        eprintln!("[updater] 升级准备失败（kind={kind}）：{error}");
         // prepare 已自回滚；壳侧（进程属主）补齐旧 helper 重启。
         rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "prepare 失败");
         let hint = prepare_failure_hint(&kind);
@@ -1492,8 +1502,22 @@ fn wait_child_bounded(
     child: &mut std::process::Child,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
+    wait_child_bounded_polled(child, timeout, || Ok(()))
+}
+
+/// 等待协调子进程时轮询父壳自有 helper 的退出回收；不提前终止 helper。
+fn wait_child_bounded_polled(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+    mut on_poll: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
+        if let Err(err) = on_poll() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
         match child.try_wait() {
             Ok(Some(_)) => return Ok(()),
             Ok(None) => {}
@@ -1519,12 +1543,23 @@ fn run_upgrade_phase(
     runtime_dir: &Path,
     extra_args: &[&str],
 ) -> Result<serde_json::Value, String> {
+    run_upgrade_phase_polled(bin, runtime_dir, extra_args, || Ok(()))
+}
+
+fn run_upgrade_phase_polled(
+    bin: &Path,
+    runtime_dir: &Path,
+    extra_args: &[&str],
+    on_poll: impl FnMut() -> Result<(), String>,
+) -> Result<serde_json::Value, String> {
     let mut child = upgrade_helper_command(bin, runtime_dir, extra_args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|err| format!("启动升级协调子命令失败（{}）：{err}", bin.display()))?;
-    wait_child_bounded(&mut child, std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S))?;
+    wait_child_bounded_polled(
+        &mut child, std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S), on_poll,
+    )?;
     let output = child
         .wait_with_output()
         .map_err(|err| format!("读取升级协调子命令输出失败：{err}"))?;
@@ -2849,6 +2884,98 @@ mod tests {
             .expect("子进程必须已退出");
         assert!(!reaped.success(), "被超时终止的 sleep 不应成功退出");
         let _ = child_pid;
+    }
+
+    /// ISS-179：旧 helper 的父进程是壳，而 prepare 是它的兄弟进程。
+    /// 不起额外 reaper；生产 ps -p 只有在壳 wait 后才会判退出。
+    #[test]
+    fn upgrade_wait_reaps_owned_exited_helper() {
+        let runtime = std::env::temp_dir().join(format!("fathom-reap-{}", std::process::id()));
+        let handle = helper::HelperHandle::new(runtime);
+        let child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id();
+        handle.adopt(child, 1, 0);
+        let mut prepare = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("while ps -p {pid} -o pid= >/dev/null; do sleep 0.05; done"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn().unwrap();
+        let result = wait_child_bounded_polled(
+            &mut prepare, std::time::Duration::from_secs(5), || handle.reap_exited_child(),
+        );
+        assert_eq!(handle.helper_pid(), None, "已退出句柄必须清除");
+        // 红测也回收自有 child，避免留下测试僵尸。
+        handle.stop().unwrap();
+        assert!(result.is_ok(), "壳必须在等待 prepare 时回收旧 helper：{result:?}");
+    }
+
+    /// 显式指定真实冻结 helper 才运行；使用空库、合成扫描根与独立端口。
+    #[test]
+    #[ignore = "requires FATHOM_UPGRADE_TEST_HELPER pointing to a frozen helper"]
+    fn frozen_upgrade_prepare_reaps_shell_owned_helper() {
+        let source = std::path::PathBuf::from(std::env::var("FATHOM_UPGRADE_TEST_HELPER").unwrap());
+        let root = std::env::temp_dir().join(format!("fathom-frozen-reap-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("scanroot")).unwrap();
+        // rollback 会恢复安装区；先复制到测试自有安装区，绝不写原 app。
+        assert!(std::process::Command::new("/bin/cp").arg("-R")
+            .arg(source.parent().unwrap()).arg(root.join("installed-helper"))
+            .status().unwrap().success());
+        let bin = root.join("installed-helper").join("fathom-helper");
+        let identity = probe_helper_identity(&bin).unwrap();
+        let from_version = identity["version"].as_str().unwrap();
+        let to_version = format!("{from_version}-test");
+        let runtime = root.join("runtime");
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        drop(socket);
+        let handle = helper::HelperHandle::new(runtime.clone());
+        struct StopOnDrop<'a>(&'a helper::HelperHandle);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) { let _ = self.0.stop(); }
+        }
+        let _cleanup = StopOnDrop(&handle);
+        let log = std::fs::File::create(root.join("serve.log")).unwrap();
+        let child = std::process::Command::new(&bin)
+            .args(["--runtime-dir", runtime.to_str().unwrap(), "--runtime-mode", "release",
+                   "--port", &port.to_string(), "--port-range", "0", "serve"])
+            .env("FATHOM_SCAN_ROOT", root.join("scanroot"))
+            .env_remove("FATHOM_DB").env_remove("FATHOM_RESOURCE_DIR")
+            .stdout(log.try_clone().unwrap()).stderr(log).spawn().unwrap();
+        let pid = child.id();
+        handle.adopt(child, port, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !matches!(helper::HelperHandle::probe_health(port), helper::ProbeKind::Ours { .. }) {
+            if std::time::Instant::now() > deadline {
+                let _ = handle.stop();
+                panic!("隔离 helper 启动超时；证据 {}", root.display());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        println!("本壳拥有的隔离 helper pid={pid}");
+        // 0.3.6 的 CLI 尚无 --expected-helper-pid，用其原有 argv 合同。
+        let args = ["upgrade-prepare", "--from", from_version, "--to", &to_version,
+                    "--helper-dir", bin.parent().unwrap().to_str().unwrap()];
+        let result = run_upgrade_phase_polled(&bin, &runtime, &args, || handle.reap_exited_child());
+        let _ = handle.stop();
+        let payload = result.unwrap();
+        std::fs::write(root.join("prepare.json"), serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
+        println!("frozen prepare evidence {}: {payload}", root.display());
+        assert_eq!(payload["ok"], true, "真实冻结入口必须完成 prepare：{payload}");
+        assert!(std::path::Path::new(payload["backup_path"].as_str().unwrap()).is_file());
+        assert!(!runtime.join("helper-instance.json").exists());
+        let rollback = run_upgrade_phase(&bin, &runtime, &["upgrade-rollback"]).unwrap();
+        assert_eq!(rollback["ok"], true, "{rollback}");
+    }
+
+    #[test]
+    fn upgrade_wait_poll_failure_reaps_own_coordinator() {
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let result = wait_child_bounded_polled(
+            &mut child, std::time::Duration::from_secs(5), || Err("probe failed".to_string()),
+        );
+        assert_eq!(result, Err("probe failed".to_string()));
+        assert!(child.try_wait().unwrap().is_some(), "错误出口须回收本次协调子进程");
     }
 
     /// ISS-097：有界等待不误伤快速退出的子进程（正常路径语义不变）。

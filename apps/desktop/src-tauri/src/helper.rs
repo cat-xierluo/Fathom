@@ -619,6 +619,24 @@ impl HelperHandle {
         self.own_child_pid()
     }
 
+    /// 回收本壳已退出的 helper（不发信号、不等待仍运行的进程）。
+    /// prepare 是 helper 的兄弟进程，不能 wait 它；若父壳不回收，ps -p
+    /// 会把已退出的僵尸进程继续判活。清掉句柄同时避免沿用已回收的 PID。
+    pub fn reap_exited_child(&self) -> Result<(), String> {
+        let mut guard = self.inner.lock()
+            .map_err(|_| "helper 子进程句柄锁中毒".to_string())?;
+        let exited = match guard.as_mut() {
+            Some(child) => child.try_wait()
+                .map_err(|err| format!("回收旧 helper 子进程失败：{err}"))?
+                .is_some(),
+            None => false,
+        };
+        if exited {
+            *guard = None;
+        }
+        Ok(())
+    }
+
     /// 最近一次端口耗尽信息（ISS-059）；未发生过为 ``None``。
     pub fn exhausted_info(&self) -> Option<ExhaustedInfo> {
         self.last_exhausted
@@ -901,6 +919,21 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn reap_exited_child_preserves_live_child_and_accepts_no_child() {
+        let handle = HelperHandle::new(std::env::temp_dir());
+        handle.reap_exited_child().unwrap(); // 复用模式无自有子进程，零副作用。
+        let child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        handle.adopt(child, 1, 0);
+        handle.reap_exited_child().unwrap();
+        assert_eq!(handle.helper_pid(), Some(pid));
+        assert!(handle.inner.lock().unwrap().as_mut().unwrap().try_wait().unwrap().is_none());
+        handle.stop().unwrap();
+        handle.reap_exited_child().unwrap();
+        assert_eq!(handle.helper_pid(), None);
+    }
 
     #[test]
     fn identity_constants_match_helper() {

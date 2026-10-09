@@ -231,3 +231,17 @@ helper 构建需已有 pinned PyInstaller 环境，按 `scripts/build_helper.sh`
 `.github/workflows/frozen-analysis.yml` 在原生 `macos-15-intel` 上断言 `uname -m=x86_64`，用既有锁定 Python/PyInstaller 依赖和 `scripts/build_helper.sh` 构建冻结 helper，再由 `scripts/ci_frozen_analysis.py run` 绑定源提交、真实文件 SHA256、Mach-O 架构与版本，显式传 build-ready manifest 给 `scripts/verify_frozen_analysis.py` 跑 33 项接线及生命周期检查。默认可执行路径按真实 onedir 输出为 `apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper/fathom-helper`；目录本身不能作为 helper。构建或身份验证失败时写失败 manifest、保留原退出码，不调用后续回归；回归失败也传回真实退出码。manifest/report/日志由 job 输出留存，不发布产物。
 
 合并前由目标 `main`、限定相关文件路径的 PR 触发，并显式检出 PR head SHA；合并后可用 `workflow_dispatch` 复跑指定 ref。工作流仅 `contents: read`，无发行秘密、tag、签名或 Release 写入。入口的 30 项定向测试用 `python -m pytest tests/test_ci_frozen_analysis.py -q --maxfail=1` 执行，普通 CI 总数在该次变更时同步为 1219（**历史数值，当前 pytest 门禁为 1492，见 §1**）。离线夹具或本机 arm64 检查不能证明 Intel 冻结路径通过；原生 Intel job 的固定源/产物指纹与真实 33 项结果才是该路径证据。33 项使用合成 shim，仅验证接线与生命周期，不证明真实模型质量或 Tauri GUI。
+
+### 升级准备的父进程回收回归
+
+桌面壳是 serve helper 的父进程，`upgrade-prepare` 是它的兄弟进程。测试不能提前用额外 reaper 线程回收 serve，否则会掩盖真实升级时 `ps -p` 把僵尸进程判活的失败。Rust 默认套件的 `upgrade_wait_reaps_owned_exited_helper` 使用真实子进程验证等待期间的回收；helper 仍运行时不得被终止或丢失句柄，外部实例拒绝、端口未释放与超时合同继续由既有测试覆盖。
+
+需要真实冻结入口时，显式指定一份已存在的 helper，运行：
+
+```bash
+FATHOM_UPGRADE_TEST_HELPER=/Applications/Fathom.app/Contents/Resources/helper/fathom-helper/fathom-helper \
+  cargo test --locked --offline --manifest-path apps/desktop/src-tauri/Cargo.toml \
+  frozen_upgrade_prepare_reaps_shell_owned_helper -- --ignored --nocapture
+```
+
+该测试创建独立临时运行根、空库、合成扫描根和随机回环端口，运行所指定的冻结 helper，但不复用生产实例、不扫描 HOME、不替换应用。断言 prepare 成功、一致备份真实生成、旧 helper 与实例文件退出，并执行 rollback 收口；日志与 JSON 留在测试输出所指临时目录。它验证真实冻结升级准备及壳的回收调用链，不代表完整下载/应用替换/重启升级已验收。

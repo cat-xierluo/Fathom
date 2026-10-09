@@ -21,10 +21,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > /tmp/k.pkey
+          chmod 600 /tmp/k.pkey
           npx @tauri-apps/cli@2.6.2 signer sign \
-            -f "$TAURI_SIGNING_PRIVATE_KEY" \
+            -f /tmp/k.pkey \
             -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
             Fathom_0.4.0_aarch64.app.tar.gz
+          rm -f /tmp/k.pkey
       - name: 生成 latest.json（回填本 Release 的下载 URL）
         run: |
           SIG=$(cat Fathom_0.4.0_aarch64.app.tar.gz.sig)

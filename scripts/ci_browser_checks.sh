@@ -161,6 +161,11 @@ assert_result_json "$out" "$expected" "browser checks"
 node scripts/verify_frontend_refresh.cjs | tee "$refresh_out"
 assert_result_json "$refresh_out" "$expected_refresh" "frontend refresh"
 
+# ISS-182：双 origin 重载、失败字段/installed 恢复、旧世代拒绝及事件订阅回归。
+# 壳 IPC 明示为夹具；真实包更新仍由发行 GUI 验收负责。
+node scripts/verify_updater_recovery.cjs | tee "$tree_out"
+assert_result_json "$tree_out" "${EXPECTED_UPDATER_RECOVERY_PASSED:-14}" "updater recovery frontend"
+
 # ISS-035C：AI 解读前端回归（同 refresh 机制：纯 Node 合成 API + Playwright，
 # 随机端口）。70 项——七态/检测列表/授权层/世代守卫/幂等/HTML 转义/双视口；
 # ISS-126 起 codex/hermes 披露断言；ISS-128 起 +7 项幂等键生命周期与重放终态；审查后 +3 项重入终态标记（59 项）；ISS-135 起 +7 项跨会话在途发现/区间守卫/查询失败/取消 = 70 项。

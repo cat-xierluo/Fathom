@@ -4464,7 +4464,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+module.exports = { createFixture };
+
+if (require.main === module) main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

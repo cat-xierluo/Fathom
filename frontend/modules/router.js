@@ -36,7 +36,9 @@ export function refreshActivePage() {
 
 export function navigate() {
   const previous = state.page;
-  const hash = (location.hash || "#/overview").slice(2);
+  const rawHash = location.hash || "#/overview";
+  // 设置页自身以 #settings/about 持久化分区；重载仍应进入设置页。
+  const hash = /^#settings\/[a-z]+$/i.test(rawHash) ? "settings" : rawHash.slice(2);
   state.page = PAGE_TITLES[hash] ? hash : "overview";
   if (previous !== state.page) PAGES[previous]?.leave?.();
 

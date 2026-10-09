@@ -4118,7 +4118,12 @@ async function main() {
 
     // 5j) invoke 返回渲染路径（事件未到）：resolve 模式下确认成功，
     //     返回值 ok:true 直接转 installed 态（与事件幂等）。
-    await tpage4.evaluate(() => { window.__installMode = "resolve"; });
+    await tpage4.reload({ waitUntil: "networkidle" });
+    await tpage4.click("[data-section='about']");
+    await tpage4.evaluate(() => {
+      window.__installMode = "resolve";
+      window.__updaterCheck = { state: "available", current_version: "0.3.0", available_version: "0.4.0" };
+    });
     await tpage4.click("[data-test='updater-check-btn']");
     await tpage4.waitForFunction(() =>
       (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("有可用更新"));
@@ -4168,6 +4173,13 @@ async function main() {
      * downloaded（ready）→ 「安装（需重启）」确认（复用 updater_install +
      * confirmed:true，六步合同不变）→ installed。下载阶段事件与取消语义
      * 复用 ISS-102 呈现（壳后台预下载与事务内下载同载荷）。 ---------- */
+    // 上一步已确认重启：IPC 夹具用新文档模拟新的壳生命周期，清旧 installed。
+    await tpage4.reload({ waitUntil: "networkidle" });
+    await tpage4.click("[data-section='about']");
+    await tpage4.evaluate(() => {
+      window.__installMode = "pending";
+      window.__updaterCheck = { state: "available", current_version: "0.3.0", available_version: "0.4.0" };
+    });
     // 8a) 开关拨回开：PUT true 落盘；重新检查回 available 后手动入口消失。
     await tpage4.click("[data-test='updater-check-btn']");
     await tpage4.waitForFunction(() =>

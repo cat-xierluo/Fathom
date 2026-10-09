@@ -525,6 +525,13 @@ impl UpdaterPresentationSnapshot {
         self.generation
     }
 
+    fn check_generation(&mut self, retry: bool, busy: bool) -> u64 {
+        // 查询本身不开始安装/下载。仅明确的失败重试可开启下一轮。
+        let retryable = matches!(self.activity.as_ref().and_then(|a| a["state"].as_str()),
+            Some("failed" | "cancelled"));
+        if retry && !busy && retryable { self.begin() } else { self.generation }
+    }
+
     fn allows_auto_prefetch(&self) -> bool {
         !matches!(self.activity.as_ref().and_then(|a| a["state"].as_str()),
             Some("installed" | "failed" | "cancelled"))
@@ -873,6 +880,7 @@ async fn updater_check(
     app: AppHandle,
     state: State<'_, UpdaterState>,
     recover: Option<bool>,
+    retry: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     if recover == Some(true) {
         return Ok(app.state::<UpdaterPresentation>().0.lock()
@@ -880,9 +888,9 @@ async fn updater_check(
             .unwrap_or_else(|_| serde_json::json!({ "recovery": true, "error": "更新呈现锁中毒" })));
     }
     let ctl = app.state::<UpdaterInstallCtl>();
-    let generation = if ctl.install_active.load(std::sync::atomic::Ordering::Acquire) {
-        app.state::<UpdaterPresentation>().0.lock().map(|s| s.generation).unwrap_or(0)
-    } else { begin_updater_presentation(&app) };
+    let busy = ctl.install_active.load(std::sync::atomic::Ordering::Acquire);
+    let generation = app.state::<UpdaterPresentation>().0.lock()
+        .map(|mut s| s.check_generation(retry == Some(true), busy)).unwrap_or(0);
     let mut status = perform_updater_check(&app, Some(state.inner())).await;
     if let Ok(mut snapshot) = app.state::<UpdaterPresentation>().0.lock() {
         if let Some(published) = snapshot.record(generation, status.clone(), false) {
@@ -2128,6 +2136,11 @@ mod tests {
             .record(generation, serde_json::json!({"state":"up_to_date"}), false)
             .unwrap();
         assert_eq!(state.snapshot()["activity"], terminal);
+        assert_eq!(state.check_generation(false, false), generation);
+        assert_eq!(state.snapshot()["activity"], terminal);
+        assert_eq!(state.check_generation(true, true), generation);
+        assert_eq!(state.check_generation(true, false), generation + 1);
+        assert!(state.snapshot()["activity"].is_null());
     }
 
     #[test]
@@ -2168,6 +2181,9 @@ mod tests {
                 true,
             )
             .unwrap();
+        assert_eq!(state.snapshot()["activity"], installed);
+        assert_eq!(state.check_generation(false, false), generation);
+        assert_eq!(state.check_generation(true, false), generation);
         assert_eq!(state.snapshot()["activity"], installed);
         assert!(!state.allows_auto_prefetch());
         assert!(state.begin_prefetch().is_none());

@@ -33,8 +33,17 @@ async function main() {
         return captured;
       }
       if (cmd === "updater_check") {
-        snapshot = { recovery: true, generation: snapshot.generation + 1, revision: snapshot.revision + 1, status: available, activity: null };
-        return { ...available, generation: snapshot.generation, revision: snapshot.revision };
+        const retry = args?.retry === true && ["failed", "cancelled"].includes(snapshot.activity?.state);
+        snapshot = { ...snapshot, generation: snapshot.generation + (retry ? 1 : 0),
+          revision: snapshot.revision + 1, status: available, activity: retry ? null : snapshot.activity };
+        const result = { ...available, generation: snapshot.generation, revision: snapshot.revision };
+        if (retry) {
+          // Explicit retry may reuse the already verified byte cache, as Rust does.
+          snapshot = { ...snapshot, revision: snapshot.revision + 1,
+            activity: { ...available, state: "downloaded", generation: snapshot.generation, revision: snapshot.revision + 1 } };
+          queueMicrotask(() => page.evaluate(payload => window.__listeners["updater-state"]?.({ payload }), snapshot.activity));
+        }
+        return result;
       }
       if (cmd === "updater_install") {
         if (rejectBusy) {
@@ -92,8 +101,9 @@ async function main() {
     await page.evaluate(payload => window.__listeners["updater-state"]?.({ payload }), { ...failed, generation: 3, revision: 7 });
     await page.click("[data-test='updater-check-btn']");
     await page.waitForSelector("[data-test='updater-install-btn']");
-    await page.evaluate(payload => window.__listeners["updater-state"]?.({ payload }), { ...failed, generation: 2, revision: 5 });
-    record("retry-rejects-previous-terminal", !(await text()), await text());
+    await page.evaluate(payload => window.__listeners["updater-state"]?.({ payload }), { ...failed, error: "superseded failure", generation: 2, revision: 5 });
+    record("query-keeps-current-failure-rejects-previous-terminal", (await text()).includes("invalid gzip header")
+      && !(await text()).includes("superseded failure"), await text());
     rejectBusy = true;
     await page.click("[data-test='updater-install-btn']");
     await page.click("[data-test='updater-confirm-yes']");
@@ -126,6 +136,12 @@ async function main() {
     await page.click("[data-test='updater-confirm-yes']");
     await page.waitForSelector("[data-test='updater-restart-btn']");
     record("new-install-result-shows-restart", await page.locator("[data-test='updater-restart-btn']").isVisible(), "invoke成功终态");
+    const installedGeneration = snapshot.generation;
+    await page.click("[data-test='updater-check-btn']");
+    const installedAfterQuery = await page.locator("[data-test='updater-status-text']").textContent();
+    record("manual-check-after-installed-keeps-restart", snapshot.generation === installedGeneration
+      && installedAfterQuery.includes("重启后生效") && await page.locator("[data-test='updater-restart-btn']").isVisible(),
+      installedAfterQuery);
     await page.evaluate(payload => window.__listeners["updater-state"]?.({ payload }),
       { ...available, state: "downloaded", generation: snapshot.generation, revision: snapshot.revision + 1 });
     record("new-install-rejects-same-generation-ready-before-reload",
@@ -150,6 +166,14 @@ async function main() {
     await page.click("[data-section='about']");
     const subscriptions = await page.evaluate(() => window.__listenerCount);
     record("page-reentry-has-one-updater-subscription", subscriptions === 1, `listeners=${subscriptions}`);
+    // A separate failed transaction can still be retried explicitly with auto download on.
+    snapshot = { recovery: true, generation: snapshot.generation + 1, revision: snapshot.revision + 10,
+      status: available, activity: failed };
+    await page.reload({ waitUntil: "networkidle" });
+    await page.click("[data-test='updater-retry-download-btn']");
+    await page.waitForSelector("[data-test='updater-install-ready-btn']");
+    record("explicit-download-retry-starts-next-generation", !(await text())
+      && snapshot.activity?.state === "downloaded", "显式重试仍可进入已验签就绪态");
   } finally {
     if (browser) await browser.close();
     for (const f of fixtures) { f.server.close(); await once(f.server, "close"); }

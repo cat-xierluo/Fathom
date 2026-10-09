@@ -2204,7 +2204,7 @@ function renderUpdaterBody(body, status, install, extraNote) {
   const installBtnNode = document.getElementById("btn-updater-install");
   if (installBtnNode) installBtnNode.addEventListener("click", () => confirmUpdaterInstall(body));
   const retryDownloadNode = document.getElementById("btn-updater-retry-download");
-  if (retryDownloadNode) retryDownloadNode.addEventListener("click", () => checkUpdater(body));
+  if (retryDownloadNode) retryDownloadNode.addEventListener("click", () => checkUpdater(body, true));
   const restartBtnNode = document.getElementById("btn-updater-restart");
   if (restartBtnNode) restartBtnNode.addEventListener("click", () => confirmUpdaterRestart(body));
   const cancelBtnNode = document.getElementById("btn-updater-cancel");
@@ -2243,7 +2243,7 @@ async function saveUpdaterAutoDownload(body, checked) {
  * 更新…」（Folia checking 语义）；结果做形状校验后渲染（失败也是可恢复
  * 状态行）。壳内发现 available 且开关开启时，检查返回即由后台下载事件
  * 推进（downloading → downloaded），前端无需本地触发。 */
-async function checkUpdater(body) {
+async function checkUpdater(body, retry = false) {
   const invoke = tauriInvoke();
   const checkBtn = document.getElementById("btn-updater-check");
   if (!invoke || !checkBtn) return;
@@ -2254,7 +2254,7 @@ async function checkUpdater(body) {
   renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
   let status = null;
   try {
-    status = await invoke("updater_check", {});
+    status = await invoke("updater_check", retry ? { retry: true } : {});
   } catch (e) {
     if (epoch !== updaterRecoveryEpoch) return;
     updaterChecking = false;
@@ -2271,11 +2271,15 @@ async function checkUpdater(body) {
   if (!acceptUpdaterRevision(status)) {
     renderUpdaterBody(body, lastUpdaterStatus, updaterInstall); return;
   }
+  // 普通查询不能消费已安装事务；运行中的旧壳版本仍可能检查到同一候选。
+  // installed 必须保持到用户明确重启，不能退回 downloaded/再次安装。
+  if (lastUpdaterStatus?.state === "installed") {
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+    return;
+  }
   lastUpdaterStatus = status;
-  // 新一轮检查取代上一轮呈现：旧安装事务终态（cancelled/failed——事务早已
-  // 结束，仅是呈现残留）与新结果并存会让状态行停留在旧终态；ready 在非
-  // available 确定态下也不再成立（如已最新）。
-  updaterInstall = null;
+  // 只有显式重试才放下失败终态；查询结果与失败原因可以同时呈现。
+  if (retry) updaterInstall = null;
   if (status.state !== "available") updaterReady = null;
   renderUpdaterBody(body, status, updaterInstall);
   renderAboutVersion();

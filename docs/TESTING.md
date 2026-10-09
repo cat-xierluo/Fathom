@@ -43,9 +43,9 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1517
 **2026-09-15 至 09-26 历史状态**：`CI` workflow 曾因额度停用（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发），当时 push/PR 不创建 run，`gh pr checks` 为空属预期。现已恢复实跑；下列本地替代链用于额度故障时按主干同一计数复跑，与云端作业对应：
 
 ```bash
-/bin/bash scripts/ci_pytest.sh                       # ↔ pytest (arm64)，CI env 断言 1492
+EXPECTED_PYTEST_PASSED=1517 /bin/bash scripts/ci_pytest.sh # ↔ pytest (arm64)，与CI计数一致
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 217 + AI 解读 77 + 六个前端家族（74/36/33/37/52/55）+ 升级恢复14
-/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 71
+/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 77
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
   rustup run stable cargo check --target x86_64-apple-darwin --locked --offline \
   --manifest-path apps/desktop/src-tauri/Cargo.toml  # ≈ cargo locked offline (x86_64)：交叉 check，非原生 build

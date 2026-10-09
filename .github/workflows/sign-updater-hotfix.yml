@@ -1,0 +1,54 @@
+name: Sign updater hotfix (ISS-178 发版补丁)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sign:
+    runs-on: macos-15
+    steps:
+      - name: 下载 v0.4.0 的更新包
+        run: |
+          gh release download v0.4.0 -R "$GITHUB_REPOSITORY" \
+            -p "Fathom_0.4.0_aarch64.app.tar.gz" -O .
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: 用生产私钥签名
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npx @tauri-apps/cli@2.6.2 signer sign \
+            -f "$TAURI_SIGNING_PRIVATE_KEY" \
+            -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            Fathom_0.4.0_aarch64.app.tar.gz
+      - name: 生成 latest.json（回填本 Release 的下载 URL）
+        run: |
+          SIG=$(cat Fathom_0.4.0_aarch64.app.tar.gz.sig)
+          TAG=v0.4.0
+          python3 - <<PY
+          import json, datetime
+          sig = open("Fathom_0.4.0_aarch64.app.tar.gz.sig").read().strip()
+          m = {
+            "version": "0.4.0",
+            "notes": "范围配置与多范围采集、整盘总览与排查入口、变化页数据集收敛与跨页上下文、趋势查询索引提速、AI 取消合同确定性化。",
+            "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "platforms": {"darwin-aarch64": {
+              "signature": sig,
+              "url": "https://github.com/cat-xierluo/fathom/releases/download/v0.4.0/Fathom_0.4.0_aarch64.app.tar.gz"}},
+          }
+          open("latest.json","w").write(json.dumps(m, ensure_ascii=False, indent=2))
+          PY
+      - name: 回填 Release 资产
+        run: |
+          gh release upload v0.4.0 Fathom_0.4.0_aarch64.app.tar.gz.sig latest.json -R "$GITHUB_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: 端到端校验
+        run: |
+          sleep 5
+          curl -sL "https://github.com/cat-xierluo/fathom/releases/latest/download/latest.json" -o /tmp/latest-check.json
+          python3 -c "import json; d=json.load(open('/tmp/latest-check.json')); print('version', d['version']); print('sig len', len(d['platforms']['darwin-aarch64']['signature']))"

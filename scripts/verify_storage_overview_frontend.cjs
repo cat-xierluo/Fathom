@@ -86,9 +86,57 @@ function httpJson(method, urlPath, port, { headers } = {}) {
         resolve({ status: res.statusCode, json, body });
       });
     });
+    req.setTimeout(2000, () => req.destroy(new Error("HTTP 请求超时")));
     req.on("error", reject);
     req.end();
   });
+}
+
+// close means the child has exited AND its piped stdio has closed. A released
+// HTTP port alone cannot prove this (the stale-phase early return leaked serve).
+function observeClose(child) {
+  const state = { closed: false, code: null, signal: null, error: null };
+  child.once("error", (e) => { state.error = e.message; });
+  child.once("close", (code, signal) => {
+    Object.assign(state, { closed: true, code, signal });
+  });
+  return state;
+}
+
+async function stopServe(child, state, port) {
+  let forced = false;
+  try {
+    if (!state.closed) child.kill("SIGTERM");
+    try {
+      await waitUntil(() => state.closed, 10000, "serve 退出及 stdio 关闭");
+    } catch (_) {
+      forced = true;
+      child.kill("SIGKILL"); // Only our own spawned child; never an inferred PID.
+      await waitUntil(() => state.closed, 5000, "serve 强制退出及 stdio 关闭");
+    }
+    // Probe the listener itself, rather than treating a failed /health request
+    // (e.g. timeout while the process is still alive) as proof of port release.
+    const portFreed = await waitUntil(() => new Promise((resolve, reject) => {
+      const socket = net.connect({ host: "127.0.0.1", port });
+      socket.setTimeout(1000, () => socket.destroy(new Error("端口探测超时")));
+      socket.once("connect", () => { socket.destroy(); resolve(false); });
+      socket.once("error", (e) => {
+        if (e.code === "ECONNREFUSED") resolve(true);
+        else reject(e);
+      });
+    }), 5000, "端口释放");
+    record("port-released", portFreed && state.closed && !forced && !state.error,
+      `127.0.0.1:${port} child=${child.pid} close=${state.closed}`
+      + ` code=${state.code} signal=${state.signal} forced=${forced}`);
+  } catch (e) {
+    record("port-released", false,
+      `${e.message}; child=${child.pid} close=${state.closed} error=${state.error}`);
+    // Release our local pipe handles after the bounded shutdown attempt. This
+    // reports failure, and does not pretend the child/port has been reclaimed.
+    child.stdout.destroy();
+    child.stderr.destroy();
+    child.unref();
+  }
 }
 
 /* ------------------------------------------------------------------
@@ -248,8 +296,13 @@ async function runPhase(withStale) {
     `phase=${PHASE} r1=${info.r1} r2=${info.r2} s1=${JSON.stringify(s1)} s2=${JSON.stringify(s2)}`);
 
   const child = spawn(PY, ["-m", "fathom", "serve"], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
+  const childState = observeClose(child);
   let serveLog = "";
+  child.stdout.on("data", (c) => (serveLog += String(c)));
   child.stderr.on("data", (c) => (serveLog += String(c)));
+  // Every path after spawn, including the deferred stale return and errors
+  // before Chromium starts, must close this owned serve process.
+  try {
   let health;
   try {
     health = await waitUntil(async () => {
@@ -259,7 +312,6 @@ async function runPhase(withStale) {
     }, 30000, "serve /health");
   } catch (e) {
     record("serve-health-identity", false, `${e.message}; serve=${serveLog.slice(-300)}`);
-    try { child.kill("SIGTERM"); } catch (_) {}
     return;
   }
   record("serve-health-identity",
@@ -557,7 +609,20 @@ const d2 = await (async () => {
     }
 
     // C4：键盘 + 图表恢复非零
+    // Hash-only goto keeps the document and the old (hidden) overview CTA.
+    // Selector presence is therefore not a render-complete signal. Wait for
+    // that precise old node to be replaced by the real summary response before
+    // focusing, otherwise a correct refresh discards the just-focused node.
+    const previousCta = await page.$("[data-test='storage-cta']");
+    if (!previousCta) throw new Error("返回总览前缺少 CTA 节点");
+    // Deliberately delay the real request (no response fixture) to exercise the
+    // same cold-run DOM replacement race on every run.
+    const delayedSummary = async (route) => { await sleep(300); await route.continue(); };
+    await page.route("**/api/storage/summary", delayedSummary);
     await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction((old) => !old.isConnected, previousCta, { timeout: 20000 });
+    await previousCta.dispose();
+    await page.unroute("**/api/storage/summary", delayedSummary);
     await page.waitForSelector("[data-test='storage-cta']", { timeout: 20000 });
     await page.focus("[data-test='storage-cta']");
     const focused = await page.evaluate(() =>
@@ -651,11 +716,9 @@ await page.waitForSelector("[data-test='storage-unexplained']", { timeout: 20000
     if (browser) await browser.close().catch(() => {});
   }
 
-  try { child.kill("SIGTERM"); } catch (_) { /* 已退出 */ }
-  const portFreed = await waitUntil(async () => {
-    try { await httpJson("GET", "/health", port); return false; } catch (_) { return true; }
-  }, 10000, "端口释放");
-  record("port-released", portFreed, `127.0.0.1:${port}`);
+  } finally {
+    await stopServe(child, childState, port);
+  }
 }
 
 async function main() {
@@ -680,4 +743,4 @@ async function main() {
 }
 
 let PHASE = "clean";
-main().catch((e) => { console.error(e); process.exit(1); });
+main().catch((e) => { console.error(e); process.exitCode = 1; });

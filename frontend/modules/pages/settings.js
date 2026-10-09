@@ -1969,6 +1969,10 @@ let updaterCancelRequested = false;  // 取消请求已发出（按钮转「正�
 let updaterPendingNote = null; // 已确认但首个阶段事件未到达前的过渡说明（不伪造阶段名）
 let updaterReady = null;       // ISS-113：downloaded 事件载荷（后台下载完成，待安装确认；null=无）
 let updaterChecking = false;   // ISS-113：检查请求在途（「正在检查更新」一句话）
+let updaterGeneration = -1, updaterRevision = -1;
+let updaterRecoveryEpoch = 0;
+let updaterEventSequence = 0;
+let updaterListener = null;
 let updaterToggleNote = null;  // ISS-113：自动下载开关保存失败的就近提示（成功即清）
 
 /** ISS-113：自动下载开关当前生效值（/api/config 的 auto_download_updates；
@@ -2099,7 +2103,7 @@ function updaterInstallHtml(install, status) {
     ? `下载已取消：旧版本保持运行，候选保留，可再次安装。`
     : `更新失败：${install.error || "未知原因"}${install.hint ? `（${install.hint}）` : ""}`;
   const terminalBlock = terminal
-    ? `<p class="hint ${install.state === "failed" ? "cfg-error" : ""}" data-test="updater-terminal">${escapeHtml(terminalText)}</p>`
+    ? `<p class="hint ${install.state === "failed" ? "cfg-error" : ""}" data-test="updater-terminal" data-kind="${escapeHtml(install.kind || "")}">${escapeHtml(terminalText)}</p>`
     : "";
   return `
     ${updaterProgressHtml(install)}
@@ -2200,7 +2204,7 @@ function renderUpdaterBody(body, status, install, extraNote) {
   const installBtnNode = document.getElementById("btn-updater-install");
   if (installBtnNode) installBtnNode.addEventListener("click", () => confirmUpdaterInstall(body));
   const retryDownloadNode = document.getElementById("btn-updater-retry-download");
-  if (retryDownloadNode) retryDownloadNode.addEventListener("click", () => checkUpdater(body));
+  if (retryDownloadNode) retryDownloadNode.addEventListener("click", () => checkUpdater(body, true));
   const restartBtnNode = document.getElementById("btn-updater-restart");
   if (restartBtnNode) restartBtnNode.addEventListener("click", () => confirmUpdaterRestart(body));
   const cancelBtnNode = document.getElementById("btn-updater-cancel");
@@ -2239,33 +2243,43 @@ async function saveUpdaterAutoDownload(body, checked) {
  * 更新…」（Folia checking 语义）；结果做形状校验后渲染（失败也是可恢复
  * 状态行）。壳内发现 available 且开关开启时，检查返回即由后台下载事件
  * 推进（downloading → downloaded），前端无需本地触发。 */
-async function checkUpdater(body) {
+async function checkUpdater(body, retry = false) {
   const invoke = tauriInvoke();
   const checkBtn = document.getElementById("btn-updater-check");
   if (!invoke || !checkBtn) return;
   if (updaterChecking) return;
+  const epoch = ++updaterRecoveryEpoch;
   checkBtn.disabled = true;
   updaterChecking = true;
   renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
   let status = null;
   try {
-    status = await invoke("updater_check", {});
+    status = await invoke("updater_check", retry ? { retry: true } : {});
   } catch (e) {
+    if (epoch !== updaterRecoveryEpoch) return;
     updaterChecking = false;
     renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `检查请求失败：${e?.message || e}`);
     return;
   }
+  if (epoch !== updaterRecoveryEpoch) return;
   updaterChecking = false;
   checkBtn.disabled = false;
   if (!status || typeof status.state !== "string" || !UPDATER_STATE_LABELS[status.state]) {
     renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, "状态返回异常（不是预期的更新状态结构）。");
     return;
   }
+  if (!acceptUpdaterRevision(status)) {
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall); return;
+  }
+  // 普通查询不能消费已安装事务；运行中的旧壳版本仍可能检查到同一候选。
+  // installed 必须保持到用户明确重启，不能退回 downloaded/再次安装。
+  if (lastUpdaterStatus?.state === "installed") {
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+    return;
+  }
   lastUpdaterStatus = status;
-  // 新一轮检查取代上一轮呈现：旧安装事务终态（cancelled/failed——事务早已
-  // 结束，仅是呈现残留）与新结果并存会让状态行停留在旧终态；ready 在非
-  // available 确定态下也不再成立（如已最新）。
-  updaterInstall = null;
+  // 只有显式重试才放下失败终态；查询结果与失败原因可以同时呈现。
+  if (retry) updaterInstall = null;
   if (status.state !== "available") updaterReady = null;
   renderUpdaterBody(body, status, updaterInstall);
   renderAboutVersion();
@@ -2277,6 +2291,11 @@ async function checkUpdater(body) {
 async function runUpdaterInstallTransaction(body, pendingNote, fallbackVersion, fallbackCurrent) {
   const invoke = tauriInvoke();
   if (!invoke) return;
+  ++updaterRecoveryEpoch;
+  const previousInstall = updaterInstall, previousReady = updaterReady;
+  const previousRevision = updaterRevision, previousGeneration = updaterGeneration;
+  const previousEventSequence = updaterEventSequence;
+  updaterChecking = false;
   // 新一轮事务：清除上一轮终态呈现与取消标记，避免旧终态残留误导
   updaterInstall = null;
   updaterCancelRequested = false;
@@ -2293,12 +2312,27 @@ async function runUpdaterInstallTransaction(body, pendingNote, fallbackVersion, 
     return;
   }
   updaterPendingNote = null;
+  // busy 是本次命令拒绝，不是已受理事务的新终态；保留已知快照并就近解释。
+  if (outcome?.state === "busy") {
+    if (updaterRevision === previousRevision && updaterGeneration === previousGeneration
+        && updaterEventSequence === previousEventSequence) {
+      updaterInstall = previousInstall;
+      updaterReady = previousReady;
+    }
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall,
+      `安装未完成：${outcome.error || "已有下载或安装事务在进行中"}`);
+    return;
+  }
+  if (outcome?.state && !acceptUpdaterRevision(outcome)) {
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall); return;
+  }
   if (outcome && outcome.ok === true) {
     // 事件 installed 可能尚未到达：按返回值渲染（事件到达后幂等覆盖）
     if (!updaterInstall || updaterInstall.state !== "installed") {
       updaterInstall = null;
       updaterReady = null;
       lastUpdaterStatus = {
+        ...outcome,
         state: "installed",
         current_version: outcome.current_version || fallbackCurrent,
         available_version: outcome.available_version || fallbackVersion,
@@ -2310,7 +2344,7 @@ async function runUpdaterInstallTransaction(body, pendingNote, fallbackVersion, 
     // 以返回值补建终态呈现（错误可读，不吞错）。ready 字节被 Rust 保留，
     // 若终态源自已就绪安装的失败，重试入口按 ready 语境回到「安装（需重启）」。
     if (!updaterInstall || updaterInstall.state !== outcome.state) {
-      updaterInstall = { state: outcome.state, error: outcome?.error || "未知原因" };
+      updaterInstall = { ...outcome, error: outcome?.error || "未知原因" };
     }
     renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
   } else {
@@ -2448,71 +2482,115 @@ function confirmUpdaterRestart(body) {
   }
 }
 
-function loadUpdater() {
+/** 世代/修订号来自壳；未标号载荷只兼容旧壳，在已同步新协议后不能覆盖快照。 */
+function acceptUpdaterRevision(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  const generation = payload.generation, revision = payload.revision;
+  if (!Number.isSafeInteger(generation) || !Number.isSafeInteger(revision)) {
+    return updaterGeneration < 0;
+  }
+  if (generation < updaterGeneration || revision < updaterRevision) return false;
+  updaterGeneration = generation;
+  updaterRevision = revision;
+  return true;
+}
+
+function applyUpdaterPayload(payload) {
+  const state = payload && typeof payload.state === "string" ? payload.state : null;
+  if (!state) return;
+  if (payload.presentation === "check") {
+    // 启动检查只更新检查事实；已安装的重启入口仍由事务终态决定。
+    if (lastUpdaterStatus?.state !== "installed") lastUpdaterStatus = payload;
+    return true;
+  }
+  if (state === "installed") {
+    // 事务成功：清安装事务/ready 呈现与过渡说明，检查态转 installed
+    lastUpdaterStatus = { ...(lastUpdaterStatus || {}), ...payload };
+    updaterInstall = null;
+    updaterReady = null;
+    updaterPendingNote = null;
+    updaterCancelRequested = false;
+  } else if (state === "downloaded") {
+    const terminal = updaterInstall || lastUpdaterStatus;
+    if (Number.isSafeInteger(payload.generation) && terminal?.generation === payload.generation
+        && ["failed", "cancelled", "installed"].includes(terminal.state)) return false;
+    // ISS-113：后台下载完成（ready）——旧终态呈现清除，等待安装确认。
+    updaterReady = payload;
+    updaterInstall = null;
+    updaterPendingNote = null;
+    updaterCancelRequested = false;
+  } else if (UPDATER_PHASE_LABELS[state]) {
+    // 安装事务阶段/终态：合并载荷（downloading 进度按节流事件推进）。
+    // downloading 到达即视为新一轮下载在途（壳预下载或事务内下载），
+    // 旧 ready 呈现不再成立。
+    updaterInstall = { ...payload };
+    if (state === "downloading") updaterReady = null;
+    if (state === "cancelled") updaterCancelRequested = false;
+    if (state === "preparing") updaterPendingNote = null;
+  } else if (UPDATER_STATE_LABELS[state]) {
+    // 检查类事件（unconfigured/unreachable/up_to_date/available/failed）
+    lastUpdaterStatus = payload;
+    // 非 available 的确定态（如已最新）使旧 ready 呈现不再成立；
+    // available 同版本时 ready 仍有效（壳会随即重发 downloaded）。
+    if (state !== "available") updaterReady = null;
+    else if (updaterReady && payload.available_version
+      && payload.available_version !== updaterReady.available_version) {
+      updaterReady = null;
+    }
+  } else {
+    return;
+  }
+  return true;
+}
+
+async function loadUpdater() {
   const panel = _ensureUpdaterPanel();
   if (!panel) return;
   const body = panel.querySelector("[data-test='updater-panel-body']");
-  if (!body) return;
   const invoke = tauriInvoke();
-  if (!invoke) {
-    renderUpdaterBody(body, null, null);
-    return;
-  }
+  if (!body) return;
+  if (!invoke) { renderUpdaterBody(body, null, null); return; }
   renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
-  // ISS-113 无感化：进入设置页即自动检查一次（用户不必手点才知道当前状态；
-  // 壳内发现 available 且开关开启时随后台下载事件推进到 ready）。仅在尚无
-  // 任何已知状态时发起，避免每次进页重复请求。
-  if (!lastUpdaterStatus && !updaterInstall && !updaterReady) {
-    checkUpdater(body);
-  }
-  // updater-state 事件（ISS-040B 检查类 + ISS-102 安装事务阶段 + ISS-113
-  // downloaded/ready）：统一分发——检查类状态更新 lastUpdaterStatus；安装
-  // 阶段/终态更新 updaterInstall；downloaded 更新 updaterReady（后台下载
-  // 完成）；installed 为事务成功终态（清事务与 ready 呈现，转「重启以完成」
-  // 语境）；未知状态不猜测、不覆盖既有呈现。
+  const epoch = ++updaterRecoveryEpoch;
+  // 先订阅、再回读，消除 listener 注册与 snapshot 返回之间的空窗；单文档只订阅一次。
   const tauri = window.__TAURI__;
-  if (tauri && tauri.event && typeof tauri.event.listen === "function") {
-    tauri.event.listen("updater-state", (event) => {
-      const payload = event && event.payload;
-      const state = payload && typeof payload.state === "string" ? payload.state : null;
-      if (!state) return;
-      if (state === "installed") {
-        // 事务成功：清安装事务/ready 呈现与过渡说明，检查态转 installed
-        lastUpdaterStatus = { ...(lastUpdaterStatus || {}), ...payload };
+  if (!updaterListener && typeof tauri?.event?.listen === "function") {
+    updaterListener = Promise.resolve(tauri.event.listen("updater-state", event => {
+      const payload = event?.payload;
+      if (!acceptUpdaterRevision(payload)) return;
+      if (!applyUpdaterPayload(payload)) return;
+      ++updaterEventSequence;
+      renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+      renderAboutVersion();
+    })).catch(() => { updaterListener = null; });
+  }
+  if (updaterListener) await updaterListener;
+  if (epoch !== updaterRecoveryEpoch) return;
+  try {
+    const snapshot = await invoke("updater_check", { recover: true });
+    if (epoch !== updaterRecoveryEpoch) return;
+    if (snapshot?.recovery === true) {
+      if (snapshot.error) throw new Error(snapshot.error);
+      if (acceptUpdaterRevision(snapshot)) {
+        lastUpdaterStatus = snapshot.status || null;
         updaterInstall = null;
         updaterReady = null;
         updaterPendingNote = null;
         updaterCancelRequested = false;
-      } else if (state === "downloaded") {
-        // ISS-113：后台下载完成（ready）——旧终态呈现清除，等待安装确认。
-        updaterReady = payload;
-        updaterInstall = null;
-        updaterPendingNote = null;
-        updaterCancelRequested = false;
-      } else if (UPDATER_PHASE_LABELS[state]) {
-        // 安装事务阶段/终态：合并载荷（downloading 进度按节流事件推进）。
-        // downloading 到达即视为新一轮下载在途（壳预下载或事务内下载），
-        // 旧 ready 呈现不再成立。
-        updaterInstall = { ...(updaterInstall || {}), ...payload };
-        if (state === "downloading") updaterReady = null;
-        if (state === "cancelled") updaterCancelRequested = false;
-        if (state === "preparing") updaterPendingNote = null;
-      } else if (UPDATER_STATE_LABELS[state]) {
-        // 检查类事件（unconfigured/unreachable/up_to_date/available/failed）
-        lastUpdaterStatus = payload;
-        // 非 available 的确定态（如已最新）使旧 ready 呈现不再成立；
-        // available 同版本时 ready 仍有效（壳会随即重发 downloaded）。
-        if (state !== "available") updaterReady = null;
-        else if (updaterReady && payload.available_version
-          && payload.available_version !== updaterReady.available_version) {
-          updaterReady = null;
-        }
-      } else {
-        return;
+        if (snapshot.activity) applyUpdaterPayload({ ...snapshot.activity,
+          generation: snapshot.generation, revision: snapshot.revision });
       }
-      renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
-      renderAboutVersion();
-    });
+    } else if (acceptUpdaterRevision(snapshot)) {
+      // 兼容旧壳：旧 updater_check 不识别 recover，会返回检查状态。
+      applyUpdaterPayload(snapshot);
+    }
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+    renderAboutVersion();
+    if (!lastUpdaterStatus && !updaterInstall && !updaterReady) checkUpdater(body);
+  } catch (e) {
+    if (epoch !== updaterRecoveryEpoch) return;
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall,
+      `更新状态恢复失败：${e?.message || e}；可手动检查更新。`);
   }
 }
 

@@ -97,7 +97,8 @@ env:
   EXPECTED_STORAGE_OVERVIEW_PASSED: "52"
   # ISS-160 跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI+生产页面实点）
   EXPECTED_INVESTIGATION_PASSED: "55"
-  EXPECTED_CARGO_PASSED: "74"
+  EXPECTED_CARGO_PASSED: "77"
+  EXPECTED_UPDATER_RECOVERY_PASSED: "16"
 
 jobs:
   pytest:
@@ -229,7 +230,7 @@ jobs:
           cargo --version
           [ "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION" ]
 
-      - name: Cargo.lock 锁定离线构建与单测（断言 69 项通过）
+      - name: Cargo.lock 锁定离线构建与单测（断言 77 项通过）
         env:
           CARGO_PREFETCH: '1'
         run: bash scripts/ci_cargo_locked.sh

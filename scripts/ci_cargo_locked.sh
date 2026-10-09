@@ -35,9 +35,9 @@ echo "cargo locked offline build: ok"
 # prefetch 决策分支、downloaded ready 载荷合同）+ 2（ISS-113 修复 episode 1：
 # 预下载独占门门序两钉子——持门期间 install 被拒 busy / CAS 失败放弃不扰动
 # 既有门）+ 2（ISS-114：原生 mask ABI 拒绝路径）= 67。
-# ISS-179：已有 71 项 + 升级回收/存活句柄/轮询失败回收 3 项 = 74；
+# ISS-179：已有 71 项 + 升级回收/存活句柄/轮询失败回收 3 项 + ISS-182 恢复状态机 3 项 = 77；
 # 真实冻结入口用例为显式 --ignored 验证，不计默认门禁。
-expected_tests="${EXPECTED_CARGO_PASSED:-74}"
+expected_tests="${EXPECTED_CARGO_PASSED:-77}"
 test_out="$(mktemp)"
 trap 'rm -f "$test_out"' EXIT
 cargo test --locked --offline --manifest-path "$manifest" | tee "$test_out"

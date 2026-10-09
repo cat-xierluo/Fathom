@@ -507,6 +507,83 @@ const UPDATER_EVENT: &str = "updater-state";
 /// （经确认层）取出执行；安装成功后清空，失败保留供重试。
 struct UpdaterState(Mutex<Option<tauri_plugin_updater::Update>>);
 
+/// ISS-182：壳内呈现快照跨 WebView/origin 重载存活；不写磁盘、不保存制品或密钥。
+/// 新操作推进世代；旧查询/事件不能复活已被新操作取代的终态。
+#[derive(Default)]
+struct UpdaterPresentationSnapshot {
+    generation: u64,
+    revision: u64,
+    status: Option<serde_json::Value>,
+    activity: Option<serde_json::Value>,
+}
+
+impl UpdaterPresentationSnapshot {
+    fn begin(&mut self) -> u64 {
+        self.generation += 1;
+        self.revision += 1;
+        self.activity = None;
+        self.generation
+    }
+
+    fn check_generation(&mut self, retry: bool, busy: bool) -> u64 {
+        // 查询本身不开始安装/下载。仅明确的失败重试可开启下一轮。
+        let retryable = matches!(self.activity.as_ref().and_then(|a| a["state"].as_str()),
+            Some("failed" | "cancelled"));
+        if retry && !busy && retryable { self.begin() } else { self.generation }
+    }
+
+    fn allows_auto_prefetch(&self) -> bool {
+        !matches!(self.activity.as_ref().and_then(|a| a["state"].as_str()),
+            Some("installed" | "failed" | "cancelled"))
+    }
+
+    fn begin_prefetch(&mut self) -> Option<u64> {
+        self.allows_auto_prefetch().then(|| self.begin())
+    }
+
+    fn record(&mut self, generation: u64, mut payload: serde_json::Value, activity: bool)
+        -> Option<serde_json::Value>
+    {
+        if generation != self.generation { return None; }
+        // 复用已下载字节的通知不是新操作，不能抹掉同一世代的失败或 installed。
+        if activity && payload["state"] == "downloaded" {
+            if let Some(previous) = &self.activity {
+                if previous["state"] != "downloading" && previous["state"] != "downloaded" {
+                    return None;
+                }
+            }
+        }
+        self.revision += 1;
+        payload["presentation"] = if activity { "activity" } else { "check" }.into();
+        payload["generation"] = self.generation.into();
+        payload["revision"] = self.revision.into();
+        if activity { self.activity = Some(payload.clone()); }
+        else { self.status = Some(payload.clone()); }
+        Some(payload)
+    }
+
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({ "recovery": true, "generation": self.generation,
+            "revision": self.revision, "status": self.status, "activity": self.activity })
+    }
+}
+
+struct UpdaterPresentation(Mutex<UpdaterPresentationSnapshot>);
+
+fn begin_updater_presentation(app: &AppHandle) -> u64 {
+    app.state::<UpdaterPresentation>().0.lock().map(|mut s| s.begin()).unwrap_or(0)
+}
+
+fn publish_updater_activity(app: &AppHandle, generation: u64, payload: serde_json::Value)
+    -> Option<serde_json::Value>
+{
+    let published = app.state::<UpdaterPresentation>().0.lock().ok()?
+        .record(generation, payload, true)?;
+    let _ = app.emit(UPDATER_EVENT, published.clone());
+    Some(published)
+}
+
+
 /// ISS-113：`auto_download_updates` 设置键。存储 = 运行根 ``settings.json``
 /// （Python ``fathom/config.py`` 持久化，前端经既有 PUT /api/config 写入，
 /// 壳侧**只读不写**——单一设置源，不引第二份壳侧存储）。缺键/文件缺失/
@@ -802,8 +879,28 @@ async fn perform_updater_check(
 async fn updater_check(
     app: AppHandle,
     state: State<'_, UpdaterState>,
+    recover: Option<bool>,
+    retry: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let status = perform_updater_check(&app, Some(state.inner())).await;
+    if recover == Some(true) {
+        return Ok(app.state::<UpdaterPresentation>().0.lock()
+            .map(|snapshot| snapshot.snapshot())
+            .unwrap_or_else(|_| serde_json::json!({ "recovery": true, "error": "更新呈现锁中毒" })));
+    }
+    let ctl = app.state::<UpdaterInstallCtl>();
+    let busy = ctl.install_active.load(std::sync::atomic::Ordering::Acquire);
+    let generation = app.state::<UpdaterPresentation>().0.lock()
+        .map(|mut s| s.check_generation(retry == Some(true), busy)).unwrap_or(0);
+    let mut status = perform_updater_check(&app, Some(state.inner())).await;
+    if let Ok(mut snapshot) = app.state::<UpdaterPresentation>().0.lock() {
+        if let Some(published) = snapshot.record(generation, status.clone(), false) {
+            status = published;
+        } else {
+            status["generation"] = generation.into();
+            status["revision"] = 0.into();
+            return Ok(status);
+        }
+    }
     maybe_spawn_updater_prefetch(&app, &status);
     Ok(status)
 }
@@ -863,7 +960,8 @@ async fn updater_install(
         }));
     }
     let _gate = InstallActiveGuard(ctl.inner());
-    updater_install_transaction(&app, &state, ctl.inner(), update).await
+    let generation = begin_updater_presentation(&app);
+    updater_install_transaction(&app, &state, ctl.inner(), update, generation).await
 }
 
 /// ISS-102/113：下载候选的结果三分支（原 ISS-102 事务内枚举上移——后台
@@ -882,6 +980,7 @@ async fn download_update_with_progress(
     app: &AppHandle,
     update: &tauri_plugin_updater::Update,
     ctl: &UpdaterInstallCtl,
+    generation: u64,
 ) -> UpdaterDownloadOutcome {
     let mut downloaded: u64 = 0;
     let mut last_emitted: u64 = 0;
@@ -893,8 +992,7 @@ async fn download_update_with_progress(
             downloaded = downloaded.saturating_add(chunk as u64);
             if progress_should_emit(last_emitted, downloaded, total) {
                 last_emitted = downloaded;
-                let _ = emit_app.emit(
-                    UPDATER_EVENT,
+                let _ = publish_updater_activity(&emit_app, generation,
                     updater_download_progress_json(
                         &current_version,
                         &target_version,
@@ -963,6 +1061,7 @@ async fn updater_install_transaction(
     state: &State<'_, UpdaterState>,
     ctl: &UpdaterInstallCtl,
     update: tauri_plugin_updater::Update,
+    generation: u64,
 ) -> Result<serde_json::Value, String> {
     // 协议①-④的 Python 侧入口 = 同一冻结 helper（生产 CLI fathom/__main__.py）。
     let runtime_dir = {
@@ -979,17 +1078,16 @@ async fn updater_install_transaction(
     let helper_bin = match locate_helper(&app) {
         Ok(bin) => bin,
         Err(err) => {
-            return Ok(serde_json::json!({
-                "ok": false,
-                "state": "failed",
+            let payload = serde_json::json!({ "ok": false, "state": "failed", "kind": "helper",
                 "error": format!("无法定位冻结 helper，升级未开始：{err}"),
-            }));
+                "hint": "升级未开始；请重试或手动安装 DMG",
+                "current_version": update.current_version, "available_version": update.version });
+            return Ok(publish_updater_activity(app, generation, payload.clone()).unwrap_or(payload));
         }
     };
 
     ctl.begin(UpdaterInstallPhase::Preparing);
-    let _ = app.emit(
-        UPDATER_EVENT,
+    let _ = publish_updater_activity(&app, generation,
         serde_json::json!({
             "state": "preparing",
             "current_version": update.current_version,
@@ -1054,24 +1152,12 @@ async fn updater_install_transaction(
             .unwrap_or("未知失败")
             .to_string();
         eprintln!("[updater] 升级准备失败（kind={kind}）：{error}");
-        // prepare 已自回滚；壳侧（进程属主）补齐旧 helper 重启。
-        rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "prepare 失败");
         let hint = prepare_failure_hint(&kind);
-        let _ = app.emit(
-            UPDATER_EVENT,
-            serde_json::json!({
-                "state": "failed",
-                "kind": kind,
-                "error": error,
-                "hint": hint,
-            }),
-        );
-        return Ok(serde_json::json!({
-            "ok": false,
-            "state": "failed",
-            "kind": kind,
-            "error": format!("{error}（{hint}）"),
-        }));
+        return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+            "prepare 失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                "kind": kind, "error": error, "hint": hint,
+                "current_version": update.current_version, "available_version": update.version })));
+
     }
 
     // ⑤ download_and_install 前半（download 内完成下载+minisign 验签）：
@@ -1089,36 +1175,18 @@ async fn updater_install_transaction(
             );
             bytes
         }
-        None => match download_update_with_progress(app, &update, ctl).await {
+        None => match download_update_with_progress(app, &update, ctl, generation).await {
             UpdaterDownloadOutcome::Cancelled => {
-                rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载取消");
-                let _ = app.emit(
-                    UPDATER_EVENT,
-                    serde_json::json!({
-                        "state": "cancelled",
-                        "current_version": update.current_version,
-                        "available_version": update.version,
-                        "hint": "下载已取消；旧版本保持运行，可再次安装",
-                    }),
-                );
-                return Ok(serde_json::json!({
-                    "ok": false,
-                    "state": "cancelled",
-                    "error": "下载已取消（旧版本保持运行，候选保留）",
-                }));
+                return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+                    "下载取消", generation, serde_json::json!({ "ok": false, "state": "cancelled",
+                        "kind": "cancelled", "error": "下载已取消",
+                        "current_version": update.current_version, "available_version": update.version })));
             }
             UpdaterDownloadOutcome::Failed(err) => {
-                rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载失败");
-                let error = format!("下载/验签失败（已回滚，候选保留，可重试）：{err}");
-                let _ = app.emit(
-                    UPDATER_EVENT,
-                    serde_json::json!({ "state": "failed", "error": error }),
-                );
-                return Ok(serde_json::json!({
-                    "ok": false,
-                    "state": "failed",
-                    "error": error,
-                }));
+                return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+                    "下载失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                        "kind": "download", "error": format!("下载/验签失败：{err}"),
+                        "current_version": update.current_version, "available_version": update.version })));
             }
             UpdaterDownloadOutcome::Completed(bytes) => bytes,
         },
@@ -1126,8 +1194,7 @@ async fn updater_install_transaction(
 
     // 进入安装（download_and_install 后半）：不可取消，文案明确（合同⑤）。
     ctl.begin(UpdaterInstallPhase::Installing);
-    let _ = app.emit(
-        UPDATER_EVENT,
+    let _ = publish_updater_activity(&app, generation,
         serde_json::json!({
             "state": "installing",
             "current_version": update.current_version,
@@ -1137,17 +1204,11 @@ async fn updater_install_transaction(
         }),
     );
     if let Err(err) = update.install(&bytes) {
-        rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "安装失败");
-        let error = format!("安装失败（已回滚到旧版本，候选保留，可重试）：{err}");
-        let _ = app.emit(
-            UPDATER_EVENT,
-            serde_json::json!({ "state": "failed", "error": error }),
-        );
-        return Ok(serde_json::json!({
-            "ok": false,
-            "state": "failed",
-            "error": error,
-        }));
+        return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+            "安装失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                "kind": "install", "error": format!("安装失败：{err}"),
+                "current_version": update.current_version, "available_version": update.version })));
+
     }
 
     // 新 helper 身份核验（030A step6 握手语义的壳侧生产化）：安装后 bundle
@@ -1158,27 +1219,10 @@ async fn updater_install_transaction(
         Err(err) => Err(format!("无法定位新 helper（身份核验失败）：{err}")),
     };
     if let Err(err) = verify {
-        rollback_upgrade_and_restart_helper(
-            app,
-            &helper_bin,
-            &runtime_dir,
-            "新 helper 握手失败",
-        );
-        let error = format!("{err}（已回滚到可运行旧版，旧数据不动）");
-        let _ = app.emit(
-            UPDATER_EVENT,
-            serde_json::json!({
-                "state": "failed",
-                "kind": "handshake",
-                "error": error,
-            }),
-        );
-        return Ok(serde_json::json!({
-            "ok": false,
-            "state": "failed",
-            "kind": "handshake",
-            "error": error,
-        }));
+        return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+            "新 helper 握手失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                "kind": "handshake", "error": err,
+                "current_version": update.current_version, "available_version": update.version })));
     }
 
     // ⑥成功收尾（ISS-098：数据库校验是成功判定的一部分）：upgrade-finalize
@@ -1200,26 +1244,11 @@ async fn updater_install_transaction(
                     .and_then(|value| value.as_str())
                     .unwrap_or("未知数据库校验失败")
                     .to_string();
-                rollback_upgrade_and_restart_helper(
-                    app,
-                    &helper_bin,
-                    &runtime_dir,
-                    "finalize 数据库校验失败",
-                );
-                let _ = app.emit(
-                    UPDATER_EVENT,
-                    serde_json::json!({
-                        "state": "failed",
-                        "kind": "db_verify_failed",
-                        "error": error.clone(),
-                    }),
-                );
-                return Ok(serde_json::json!({
-                    "ok": false,
-                    "state": "failed",
-                    "kind": "db_verify_failed",
-                    "error": error,
-                }));
+                return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+                    "finalize 数据库校验失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                        "kind": "db_verify_failed", "error": error,
+                        "current_version": update.current_version, "available_version": update.version })));
+
             }
         }
         Err(err) => {
@@ -1239,21 +1268,10 @@ async fn updater_install_transaction(
             *guard = None;
         }
     }
-    let _ = app.emit(
-        UPDATER_EVENT,
-        serde_json::json!({
-            "state": "installed",
-            "current_version": update.current_version,
-            "available_version": update.version,
-            "hint": "更新已安装；重启应用后生效",
-        }),
-    );
-    Ok(serde_json::json!({
-        "ok": true,
-        "state": "installed",
-        "current_version": update.current_version,
-        "available_version": update.version,
-    }))
+    let payload = serde_json::json!({ "ok": true, "state": "installed",
+        "current_version": update.current_version, "available_version": update.version,
+        "hint": "更新已安装；重启应用后生效" });
+    Ok(publish_updater_activity(app, generation, payload.clone()).unwrap_or(payload))
 }
 
 /// 重启应用以完成更新（独立命令，仅经「重启以完成」确认层调用）。
@@ -1662,6 +1680,7 @@ fn prepare_failure_hint(kind: &str) -> &'static str {
 /// 受理取消请求（UPDATER_CANCEL_EVENT 回调）：准备/下载阶段置取消标志
 /// （下载在 poll 边界中止并回滚）；已进入安装则拒绝并回明确文案。
 fn handle_cancel_request(app: &AppHandle) {
+    let generation = app.state::<UpdaterPresentation>().0.lock().map(|s| s.generation).unwrap_or(0);
     let ctl = app.state::<UpdaterInstallCtl>();
     let phase = ctl.current();
     if phase.allows_cancel() {
@@ -1675,8 +1694,7 @@ fn handle_cancel_request(app: &AppHandle) {
             "[updater] 取消请求被拒绝（阶段 {}）：{UPDATER_CANCEL_REFUSED_HINT}",
             phase.as_str()
         );
-        let _ = app.emit(
-            UPDATER_EVENT,
+        let _ = publish_updater_activity(&app, generation,
             serde_json::json!({
                 "state": phase.as_str(),
                 "cancellable": false,
@@ -1697,7 +1715,9 @@ fn rollback_upgrade_and_restart_helper(
     bin: &Path,
     runtime_dir: &Path,
     reason: &str,
-) {
+    generation: u64,
+    mut outcome: serde_json::Value,
+) -> serde_json::Value {
     // ISS-098：只有回滚子命令如实报告成功（旧版文件已恢复、身份与库校验
     // 通过——或材料缺失分支的既有语义）才重启 helper；恢复失败
     // （kind=restore_failed）时绝不启动安装区里未恢复的 N+1——材料与
@@ -1725,9 +1745,15 @@ fn rollback_upgrade_and_restart_helper(
              启动时经 upgrade-detect 可检测并恢复；不启动未核验的安装区 helper）"
         ),
     }
+    outcome["rollback_ok"] = should_restart.into();
     if !should_restart {
-        return;
+        outcome["hint"] = "自动恢复未完成；恢复材料与升级日志已保留，请先恢复后重试".into();
+    } else if outcome.get("hint").is_none() {
+        outcome["hint"] = "已恢复旧版本与数据库；候选保留，可重试".into();
     }
+    // 快照必须先存入壳，线程随后换端口/导航时任何新页面均可回读。
+    let outcome = publish_updater_activity(app, generation, outcome.clone()).unwrap_or(outcome);
+    if !should_restart { return outcome; }
     let handle = app.clone();
     let spawned = std::thread::Builder::new()
         .name("fathom-updater-helper-restart".to_string())
@@ -1742,6 +1768,7 @@ fn rollback_upgrade_and_restart_helper(
     if let Err(err) = spawned {
         eprintln!("[updater] 回滚后重启线程创建失败：{err}（握手页「重试握手」可手动恢复）");
     }
+    outcome
 }
 
 /// 启动延迟检查（ISS-040B）：std 线程 + async_runtime::block_on（不引 tokio
@@ -1755,13 +1782,16 @@ fn spawn_updater_startup_check(app: &AppHandle) {
         .name("fathom-updater-startup".to_string())
         .spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(UPDATER_STARTUP_DELAY_S));
+            let generation = handle.state::<UpdaterPresentation>().0.lock().map(|s| s.generation).unwrap_or(0);
             let store = handle.state::<UpdaterState>();
             let status =
                 tauri::async_runtime::block_on(perform_updater_check(&handle, Some(store.inner())));
-            if let Err(err) = handle.emit(UPDATER_EVENT, status.clone()) {
-                eprintln!("[updater] 启动延迟检查状态事件发送失败：{err}");
+            let published = handle.state::<UpdaterPresentation>().0.lock().ok()
+                .and_then(|mut s| s.record(generation, status, false));
+            if let Some(status) = published {
+                let _ = handle.emit(UPDATER_EVENT, status.clone());
+                maybe_spawn_updater_prefetch(&handle, &status);
             }
-            maybe_spawn_updater_prefetch(&handle, &status);
         });
     if let Err(err) = spawned {
         // 线程起不起来不阻塞启动：手动检查入口仍在。
@@ -1781,6 +1811,11 @@ fn spawn_updater_startup_check(app: &AppHandle) {
 /// UPDATER_CANCEL_EVENT 在 poll 边界受理。完成后只发 ready 事件，**绝不
 /// 安装**——六步安装合同不变，安装仍只经 updater_install（confirmed=true）。
 fn maybe_spawn_updater_prefetch(app: &AppHandle, status: &serde_json::Value) {
+    // 自动检查不能把尚待用户处理的失败/installed 变成另一轮下载。
+    // 显式检查或确认安装才会 begin 新世代并清理该终态。
+    if !app.state::<UpdaterPresentation>().0.lock()
+        .map(|s| s.allows_auto_prefetch()).unwrap_or(false) { return; }
+
     if status.get("state").and_then(|v| v.as_str()) != Some(UpdaterCheckState::Available.as_str())
     {
         return;
@@ -1826,8 +1861,8 @@ fn maybe_spawn_updater_prefetch(app: &AppHandle, status: &serde_json::Value) {
     ) {
         PrefetchPlan::Disabled => {}
         PrefetchPlan::AlreadyReady => {
-            let _ = app.emit(
-                UPDATER_EVENT,
+            let generation = app.state::<UpdaterPresentation>().0.lock().map(|s| s.generation).unwrap_or(0);
+            let _ = publish_updater_activity(&app, generation,
                 updater_prefetch_ready_json(&candidate.current_version, available_version),
             );
         }
@@ -1858,6 +1893,10 @@ fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater
                 );
                 return;
             };
+            // 线程排队期间可能已安装完毕，拿到门后再次原子核对并开始世代。
+            let generation = handle.state::<UpdaterPresentation>().0.lock().ok()
+                .and_then(|mut s| s.begin_prefetch());
+            let Some(generation) = generation else { return; };
             // 门已由本轮持有：先回 Preparing 复位上一轮可能残留的取消标志，
             // 再进 Downloading（取消只应在下载进行中受理，见
             // handle_cancel_request）。
@@ -1871,6 +1910,7 @@ fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater
                 &handle,
                 &update,
                 ctl.inner(),
+                generation,
             ));
             match outcome {
                 UpdaterDownloadOutcome::Completed(bytes) => {
@@ -1882,15 +1922,13 @@ fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater
                             });
                         }
                     }
-                    let _ = handle.emit(
-                        UPDATER_EVENT,
+                    let _ = publish_updater_activity(&handle, generation,
                         updater_prefetch_ready_json(&update.current_version, &update.version),
                     );
                     println!("[updater] 后台下载完成（ready 等待安装确认）：{}", update.version);
                 }
                 UpdaterDownloadOutcome::Cancelled => {
-                    let _ = handle.emit(
-                        UPDATER_EVENT,
+                    let _ = publish_updater_activity(&handle, generation,
                         serde_json::json!({
                             "state": "cancelled",
                             "current_version": update.current_version,
@@ -1901,8 +1939,7 @@ fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater
                 }
                 UpdaterDownloadOutcome::Failed(err) => {
                     let error = format!("后台下载失败（已停止，可重试）：{err}");
-                    let _ = handle.emit(
-                        UPDATER_EVENT,
+                    let _ = publish_updater_activity(&handle, generation,
                         serde_json::json!({ "state": "failed", "error": error }),
                     );
                     eprintln!("[updater] {error}");
@@ -1978,6 +2015,7 @@ pub fn run() {
             app.manage(HelperState(Mutex::new(Some(HelperHandle::new(runtime_dir)))));
             // ISS-040B：更新候选暂存句柄（启动延迟检查/手动检查写入）。
             app.manage(UpdaterState(Mutex::new(None)));
+            app.manage(UpdaterPresentation(Mutex::new(UpdaterPresentationSnapshot::default())));
             // ISS-113：后台预下载产物暂存（开关开启时检查发现 available 后
             // 自动下载；安装成功清空，失败/取消保留供重试）。
             app.manage(UpdaterPrefetch(Mutex::new(None)));
@@ -2063,6 +2101,101 @@ mod tests {
     use super::*;
     use helper::ExhaustedInfo;
     use tauri::plugin::Plugin;
+
+    #[test]
+    fn presentation_terminal_survives_reload_and_ready_notification() {
+        let mut state = UpdaterPresentationSnapshot::default();
+        let generation = state.begin();
+        state
+            .record(
+                generation,
+                serde_json::json!({"state":"available", "current_version":"0.4.0",
+            "available_version":"0.4.1"}),
+                false,
+            )
+            .unwrap();
+        let terminal = state
+            .record(
+                generation,
+                serde_json::json!({"state":"failed", "kind":"install",
+            "error":"invalid gzip header", "hint":"已恢复，可重试"}),
+                true,
+            )
+            .unwrap();
+        let recovered = state.snapshot();
+        assert_eq!(recovered["activity"], terminal);
+        assert!(!state.allows_auto_prefetch());
+        assert!(state.begin_prefetch().is_none());
+        assert_eq!(recovered["activity"]["kind"], "install");
+        assert_eq!(recovered["activity"]["error"], "invalid gzip header");
+        assert_eq!(recovered["activity"]["hint"], "已恢复，可重试");
+        assert!(state
+            .record(generation, serde_json::json!({"state":"downloaded"}), true)
+            .is_none());
+        state
+            .record(generation, serde_json::json!({"state":"up_to_date"}), false)
+            .unwrap();
+        assert_eq!(state.snapshot()["activity"], terminal);
+        assert_eq!(state.check_generation(false, false), generation);
+        assert_eq!(state.snapshot()["activity"], terminal);
+        assert_eq!(state.check_generation(true, true), generation);
+        assert_eq!(state.check_generation(true, false), generation + 1);
+        assert!(state.snapshot()["activity"].is_null());
+    }
+
+    #[test]
+    fn presentation_new_generation_rejects_stale_terminal() {
+        let mut state = UpdaterPresentationSnapshot::default();
+        let previous = state.begin();
+        state
+            .record(
+                previous,
+                serde_json::json!({"state":"failed", "error":"old failure"}),
+                true,
+            )
+            .unwrap();
+        let current = state.begin();
+        assert!(state.snapshot()["activity"].is_null());
+        let preparing = state
+            .record(current, serde_json::json!({"state":"preparing"}), true)
+            .unwrap();
+        assert!(preparing.get("error").is_none());
+        assert!(state
+            .record(previous, serde_json::json!({"state":"failed"}), true)
+            .is_none());
+        assert!(state
+            .record(previous, serde_json::json!({"state":"available"}), false)
+            .is_none());
+        assert_eq!(state.snapshot()["activity"], preparing);
+    }
+
+    #[test]
+    fn presentation_installed_survives_reload_until_new_operation() {
+        let mut state = UpdaterPresentationSnapshot::default();
+        let generation = state.begin();
+        let installed = state
+            .record(
+                generation,
+                serde_json::json!({"state":"installed",
+            "current_version":"0.4.0", "available_version":"0.4.1", "hint":"重启后生效"}),
+                true,
+            )
+            .unwrap();
+        assert_eq!(state.snapshot()["activity"], installed);
+        assert_eq!(state.check_generation(false, false), generation);
+        assert_eq!(state.check_generation(true, false), generation);
+        assert_eq!(state.snapshot()["activity"], installed);
+        assert!(!state.allows_auto_prefetch());
+        assert!(state.begin_prefetch().is_none());
+        assert!(state
+            .record(generation, serde_json::json!({"state":"downloaded"}), true)
+            .is_none());
+        state.begin();
+        assert!(state.snapshot()["activity"].is_null());
+        assert!(state.allows_auto_prefetch());
+        // 真正退出壳后的新进程没有旧快照，不用磁盘遗留终态替代新事实。
+        assert!(UpdaterPresentationSnapshot::default().snapshot()["activity"].is_null());
+    }
 
     /// ISS-068：断言**名字合同**（非注册护栏）——上游 tauri-plugin-opener 的
     /// `Plugin::name()` 必须等于前端命令前缀 `plugin:opener|open_url` 中的

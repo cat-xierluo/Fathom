@@ -13,7 +13,7 @@ jobs:
       - name: 下载 v0.4.0 的更新包
         run: |
           gh release download v0.4.0 -R "$GITHUB_REPOSITORY" \
-            -p "Fathom_0.4.0_aarch64.app.tar.gz" -O . --clobber
+            -p "Fathom_0.4.0_aarch64.app.tar.gz" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
       - name: 用生产私钥签名

@@ -275,3 +275,156 @@ class TestEndpointContractPreserved:
         finally:
             conn.close()
         assert src == "api"
+
+# ---------- ISS-185：启动卷身份须经发现验证并贯通真实采集 ----------
+
+def _startup_identity(tmp_path, monkeypatch):
+    from fathom import storage, notify
+    roots = (tmp_path / "system", tmp_path / "data")
+    for root in roots:
+        root.mkdir()
+        (root / "fixture.bin").write_bytes(b"x" * 4096)
+    container = storage.DiscoveredContainer(
+        storage.CONTAINER_SCHEMA, storage.DISCOVERY_VERSION, "container-uuid",
+        "disk9", 1024 ** 3, 900 * 1024 ** 2, ("disk9s1",), ("synthetic",))
+    volumes = tuple(storage.DiscoveredVolume(
+        storage.VOLUME_SCHEMA, storage.DISCOVERY_VERSION, f"volume-{i}",
+        container.container_id, "group-uuid", f"Synthetic{i}",
+        ("system",) if i == 0 else ("data",), f"disk9s{i+2}",
+        None if i == 0 else str(root), "unmounted" if i == 0 else "accessible",
+        False, 50 * 1024 ** 2, ("synthetic",)) for i, root in enumerate(roots))
+    entry = storage.VisibleEntry(
+        storage.VISIBLE_ENTRY_SCHEMA, storage.DISCOVERY_VERSION, str(roots[0]),
+        volumes[0].volume_id, container.container_id, "snapshot_mount",
+        "disk9s2s1", ("synthetic",))
+    discovery = storage.StorageDiscovery(
+        storage.DISCOVERY_SCHEMA, storage.DISCOVERY_VERSION,
+        storage.DiscoveryStatus.OK, "2026-10-10T00:00:00", "darwin",
+        container, volumes, (entry,), (), (), ())
+    state = {"discovery": discovery, "calls": []}
+    def discover(root="/", **kwargs):
+        state["calls"].append(str(root))
+        return state["discovery"]
+    monkeypatch.setattr(storage, "discover_startup", discover)
+    monkeypatch.setattr(config, "MIN_DIR_KB", 1)
+    monkeypatch.setattr(notify, "send_notification", lambda *a, **k: True)
+    selection = config.ScopeSelection(
+        mode=config.SCOPE_MODE_STARTUP, roots=tuple(map(str, roots)),
+        scope_ids=tuple(v.volume_id for v in volumes),
+        container_id=container.container_id)
+    return roots, selection, state
+
+
+class TestStartupIdentityPreserved:
+    def test_verified_specs_register_volume_and_container(self, tmp_path, monkeypatch):
+        roots, selection, state = _startup_identity(tmp_path, monkeypatch)
+        monkeypatch.setattr(config, "_USER_SETTINGS", config.UserSettings(storage_scope=selection))
+        specs = cli.scope_specs_from_effective_selection()
+        assert [(s.kind, s.container_id, s.volume_group_id) for s in specs] == [
+            ("apfs_volume", selection.container_id, "group-uuid")] * 2
+        # UUID 字符串不带 apfs 前缀，类型来自发现对象而非字符串猜测。
+        assert [str(s.root) for s in specs] == list(selection.roots)
+        conn = db.connect()
+        try:
+            plan = scan_coordinator.build_round_plan(conn, specs)
+            rows = [dict(r) for r in conn.execute("SELECT kind,container_id FROM scan_scopes")]
+            assert rows == [{"kind": "apfs_volume", "container_id": selection.container_id}] * 2
+            assert [m.spec.container_id for m in plan.members] == [selection.container_id] * 2
+        finally:
+            conn.close()
+        assert state["calls"] == ["/"]
+
+    def test_api_two_rounds_same_container_have_comparable_summary(self, client, tmp_path, monkeypatch):
+        import datetime as dt
+        from dataclasses import replace
+        roots, selection, state = _startup_identity(tmp_path, monkeypatch)
+        saved = client.put("/api/storage/scope", json={"mode": config.SCOPE_MODE_STARTUP, "roots": [], "expected_revision": 0})
+        assert saved.status_code == 200, saved.text
+        assert client.post("/api/scan").status_code == 200
+        _wait_idle()
+        # 和既有轮次测试同源：合成首轮时间置于昨日，避免同日替换无基线。
+        conn = db.connect()
+        try:
+            yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat() + "T03:00:00"
+            conn.execute("UPDATE snapshots SET created_at=?", (yesterday,))
+            conn.commit()
+        finally:
+            conn.close()
+        (roots[1] / "new.bin").write_bytes(b"y" * 4096)
+        old = state["discovery"]
+        state["discovery"] = replace(old, startup_container=replace(old.startup_container, shared_free_bytes=old.startup_container.shared_free_bytes - 8192))
+        assert client.post("/api/scan").status_code == 200
+        _wait_idle()
+        summary = client.get("/api/storage/summary").json()
+        assert summary["comparability"]["comparable"] is True, summary["comparability"]
+        assert summary["unexplained"]["comparable"] is True
+        assert summary["unexplained"]["bytes"] is not None
+        conn = db.connect()
+        try:
+            assert [tuple(r) for r in conn.execute("SELECT kind,container_id FROM scan_scopes")] == [("apfs_volume", selection.container_id)] * 2
+            assert conn.execute("SELECT COUNT(*) FROM scan_rounds WHERE status='full'").fetchone()[0] == 2
+        finally:
+            conn.close()
+        assert set(state["calls"]) == {"/"}
+
+    @pytest.mark.parametrize("fault", ["missing_ids", "missing_container", "other_container", "forged_volume", "wrong_root", "locked", "unknown_entry", "discovery_failed"])
+    def test_api_rejects_unverified_identity_without_collecting(self, client, tmp_path, monkeypatch, fault):
+        from dataclasses import replace
+        from fathom import storage
+        roots, selection, state = _startup_identity(tmp_path, monkeypatch)
+        if fault == "missing_ids": selection = replace(selection, scope_ids=())
+        elif fault == "missing_container": selection = replace(selection, container_id=None)
+        elif fault == "other_container": selection = replace(selection, container_id="other-container")
+        elif fault == "forged_volume": selection = replace(selection, scope_ids=("apfs-volume:forged", selection.scope_ids[1]))
+        elif fault == "wrong_root": selection = replace(selection, roots=(str(config.DEFAULT_ROOT), selection.roots[1]))
+        elif fault == "locked":
+            old = state["discovery"]
+            state["discovery"] = replace(old, startup_volumes=(old.startup_volumes[0], replace(old.startup_volumes[1], status="locked")))
+        elif fault == "unknown_entry":
+            old = state["discovery"]
+            state["discovery"] = replace(old, visible_entries=(replace(old.visible_entries[0], container_id=None),))
+        else:
+            def unavailable(*args, **kwargs): raise OSError("synthetic discovery failure")
+            monkeypatch.setattr(storage, "discover_startup", unavailable)
+        config.save_scope_selection(selection, expected_revision=0)
+        response = client.post("/api/scan")
+        assert response.status_code == 400, response.text
+        assert response.json()["message"]
+        assert not api._scan_lock.locked()
+        assert _table_counts() == {"snapshots": 0, "scan_plans": 0, "scan_rounds": 0, "scan_round_members": 0}
+
+    @pytest.mark.parametrize("mode", ["custom", "env", "cli"])
+    def test_custom_and_explicit_overrides_keep_path_identity(self, tmp_path, monkeypatch, mode):
+        from fathom import storage
+        roots, selection, _ = _startup_identity(tmp_path, monkeypatch)
+        def forbidden(*args, **kwargs): raise AssertionError("explicit isolation must not discover startup")
+        monkeypatch.setattr(storage, "discover_startup", forbidden)
+        if mode == "custom":
+            from dataclasses import replace
+            selection = replace(selection, mode=config.SCOPE_MODE_CUSTOM, scope_ids=("apfs-volume:untrusted-a", "apfs-volume:untrusted-b"))
+        monkeypatch.setattr(config, "_USER_SETTINGS", config.UserSettings(storage_scope=selection))
+        if mode == "env": monkeypatch.setenv("FATHOM_SCAN_ROOT", str(roots[0]))
+        elif mode == "cli": monkeypatch.setattr(config, "_CLI_SCAN_ROOT_PINNED", True)
+        specs = cli.scope_specs_from_effective_selection()
+        if mode != "custom": assert specs == []
+        else: assert [(s.kind, s.container_id) for s in specs] == [("path", None)] * 2
+
+    def test_api_old_misregistered_identity_stops_and_keeps_history(self, client, tmp_path, monkeypatch):
+        from fathom import scanner
+        roots, selection, _ = _startup_identity(tmp_path, monkeypatch)
+        config.save_scope_selection(selection, expected_revision=0)
+        conn = db.connect()
+        try:
+            scanner.ensure_scan_scope(conn, selection.scope_ids[0], "path", mount_path=str(roots[0]))
+            conn.execute("INSERT INTO snapshots(created_at,root,dir_count,denied_count,du_seconds,total_kb) VALUES ('2026-10-01',?,1,0,0.1,1)", (str(config.DEFAULT_ROOT),))
+            conn.commit()
+        finally: conn.close()
+        response = client.post("/api/scan")
+        assert response.status_code == 400, response.text
+        conn = db.connect()
+        try:
+            assert tuple(conn.execute("SELECT kind,container_id FROM scan_scopes").fetchone()) == ("path", None)
+            assert conn.execute("SELECT COUNT(*) FROM scan_runs").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM scan_rounds").fetchone()[0] == 0
+            assert conn.execute("SELECT plan_id FROM snapshots").fetchone()[0] is None
+        finally: conn.close()

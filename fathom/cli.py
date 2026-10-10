@@ -157,6 +157,49 @@ def scope_specs_from_paths(
     ]
 
 
+def _startup_scope_specs(selection: config.ScopeSelection) -> list[scan_coordinator.ScopeSpec]:
+    """只采用本次只读发现确认的卷/容器与入口，不从 ID 前缀推测身份。"""
+    from . import storage
+    try:
+        discovery = storage.discover_startup("/")
+    except Exception as exc:
+        raise scan_coordinator.ScanScopeError(f"启动盘身份发现失败，未开始采集：{exc}") from exc
+    container = discovery.startup_container
+    if (discovery.schema != storage.DISCOVERY_SCHEMA
+            or discovery.version != storage.DISCOVERY_VERSION
+            or container is None or not selection.container_id
+            or container.container_id != selection.container_id):
+        raise scan_coordinator.ScanScopeError("启动盘容器身份未知或已改变，未开始采集；请重新读取范围。")
+    if not selection.scope_ids or len(selection.scope_ids) != len(selection.roots):
+        raise scan_coordinator.ScanScopeError("启动盘范围缺少逐根卷身份，未开始采集。")
+    specs = []
+    for root, scope_id in zip(selection.roots, selection.scope_ids):
+        matches = [v for v in discovery.startup_volumes if v.volume_id == scope_id]
+        if len(matches) != 1 or matches[0].container_id != container.container_id:
+            raise scan_coordinator.ScanScopeError("启动盘卷身份未知、冲突或不属于当前容器，未开始采集。")
+        volume = matches[0]
+        entries = [e for e in discovery.visible_entries
+                   if e.volume_id == volume.volume_id
+                   and e.container_id == container.container_id]
+        snapshot_entries = [e for e in entries if e.via == "snapshot_mount"]
+        if volume.status != "accessible" and not (
+                volume.status == "unmounted" and "system" in volume.roles
+                and snapshot_entries):
+            raise scan_coordinator.ScanScopeError("启动盘卷未挂载、锁定或入口身份未知，未开始采集。")
+        candidates = [e.visible_path for e in entries]
+        if volume.status == "accessible" and volume.mount_point:
+            candidates.append(volume.mount_point)
+        spec = scan_coordinator.ScopeSpec.from_path(
+            root, scope_id=volume.volume_id, kind="apfs_volume",
+            container_id=container.container_id,
+            volume_group_id=volume.volume_group_id, display_name=volume.name)
+        known_roots = {str(Path(p).resolve()) for p in candidates}
+        if str(spec.root) not in known_roots or not spec.root.is_dir():
+            raise scan_coordinator.ScanScopeError("启动盘扫描根与已发现卷入口不匹配，未开始采集。")
+        specs.append(spec)
+    return specs
+
+
 def scope_specs_from_effective_selection(*, apply_default: bool = False) -> list[scan_coordinator.ScopeSpec]:
     """由**当前生效的范围选择**构造本轮范围规格（ISS-178 UI 采集入口）。
 
@@ -184,6 +227,8 @@ def scope_specs_from_effective_selection(*, apply_default: bool = False) -> list
             raise scan_coordinator.ScanScopeError(str(detail)) from exc
     if selection is None:
         return []
+    if selection.mode == config.SCOPE_MODE_STARTUP:
+        return _startup_scope_specs(selection)
     return scope_specs_from_paths(
         list(selection.roots), list(selection.scope_ids),
     )

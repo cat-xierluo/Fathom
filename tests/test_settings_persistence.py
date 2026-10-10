@@ -119,6 +119,40 @@ def test_merge_keeps_absent_fields():
     assert merged == config.UserSettings(scan_time="09:30", min_kb=512, free_alert_gb=2.5)
 
 
+@pytest.mark.parametrize("field", ["min_kb", "exclude_names", "auto_download_updates", "analysis", "storage_scope"])
+def test_merge_preserves_typed_objects_without_revalidating_old_resources(tmp_path, field):
+    """普通 patch 不把嵌套配置降成 wire dict，也不重验已经不可用的旧资源。"""
+    scope = config.ScopeSelection(mode="custom_directory", roots=(str(tmp_path / "unmounted"),),
+                                  scope_ids=("path:old",), revision=7)
+    analysis = config.AnalysisSettings(enabled=True, runtime_id="claude",
+                                       runtime_executable=str(tmp_path / "removed-cli"),
+                                       settings_revision=3, consent_revision=2)
+    current = config.UserSettings(scan_root=str(tmp_path / "old-root"),
+                                  storage_scope=scope, analysis=analysis)
+    payloads = {
+        "min_kb": 512, "exclude_names": ["cache"], "auto_download_updates": False,
+        "analysis": {"enabled": False},
+        "storage_scope": {"mode": "custom_directory", "roots": [str(tmp_path)],
+                          "scope_ids": ["path:new"], "revision": 8},
+    }
+    merged = config.merge_user_settings(current, {field: payloads[field]})
+    assert isinstance(merged.storage_scope, config.ScopeSelection)
+    assert isinstance(merged.analysis, config.AnalysisSettings)
+    if field != "storage_scope":
+        assert merged.storage_scope is scope
+    if field != "analysis":
+        assert merged.analysis is analysis
+    else:
+        assert merged.analysis.enabled is False
+        assert merged.analysis.runtime_executable == analysis.runtime_executable
+        assert merged.analysis.settings_revision == analysis.settings_revision
+    assert merged.scan_root == current.scan_root
+    config.save_user_settings(tmp_path / "settings.json", merged)
+    saved = json.loads((tmp_path / "settings.json").read_text())
+    assert saved["storage_scope"]["revision"] == (8 if field == "storage_scope" else 7)
+    assert saved["analysis"]["runtime"]["executable"] == analysis.runtime_executable
+
+
 # ---------- 原子写失败回退 ----------
 
 def test_atomic_write_failure_keeps_old_file_and_leaves_no_temp(tmp_path, monkeypatch):

@@ -29,7 +29,10 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", cfg.data_dir)
     monkeypatch.setattr(config, "REPORTS_DIR", cfg.reports_dir)
     monkeypatch.setattr(config, "LOGS_DIR", cfg.logs_dir)
+    monkeypatch.setattr(config, "FRONTEND_DIR", cfg.frontend_dir)
     monkeypatch.setattr(config, "EXCLUDE_NAMES", [])
+    for name in ("MIN_DIR_KB", "FREE_ALERT_GB", "SCAN_HOUR", "SCAN_MINUTE"):
+        monkeypatch.setattr(config, name, getattr(config, name))
     system, data = tmp_path / "system", tmp_path / "data"
     system.mkdir()
     data.mkdir()
@@ -155,3 +158,135 @@ def test_discovery_uses_boot_mount_not_scan_root(isolated, monkeypatch):
     monkeypatch.setattr(storage, "discover_startup", lambda root: observed.append(root) or Result())
     _REAL_DISCOVERY_PAYLOAD()
     assert observed == ["/"]
+
+
+@pytest.fixture
+def saved_selection(isolated):
+    cfg, system, _ = isolated
+    selection = config.save_scope_selection(config.ScopeSelection(
+        mode="custom_directory", roots=(str(system),),
+        scope_ids=("path:saved",),
+    ), expected_revision=0)
+    return cfg, selection
+
+
+@pytest.mark.parametrize("override", ["env", "cli"])
+def test_saved_selection_yields_to_process_scan_root(saved_selection, monkeypatch, override):
+    cfg, selection = saved_selection
+    if override == "env":
+        monkeypatch.setenv("FATHOM_SCAN_ROOT", str(cfg.scan_root))
+    else:
+        config.configure(scan_root=cfg.scan_root)
+    settings_before = config.settings_path().read_bytes()
+    assert cli.scope_specs_from_effective_selection() == []
+    assert cli.scope_specs_from_effective_selection(apply_default=True) == []
+    assert config.effective_scope_selection() == selection
+    assert config.settings_path().read_bytes() == settings_before
+
+
+@pytest.mark.parametrize("override", [
+    "none", "settings", "env", "cli", "command_root", "scope_env", "scope_cli",
+])
+def test_cli_saved_selection_priority(saved_selection, monkeypatch, override):
+    """真实 main 参数路由；只在执行边界截取根/范围，绝不启动 du。"""
+    cfg, selection = saved_selection
+    argv = ["--runtime-dir", str(cfg.runtime_dir)]
+    if override in {"env", "scope_env"}:
+        monkeypatch.setenv("FATHOM_SCAN_ROOT", str(cfg.scan_root))
+    elif override in {"cli", "scope_cli"}:
+        argv.extend(["--scan-root", str(cfg.scan_root)])
+    elif override == "settings":
+        config.update_user_settings({"scan_root": str(cfg.scan_root)})
+    argv.append("scan")
+    if override == "command_root":
+        argv.extend(["--root", str(cfg.scan_root)])
+    elif override.startswith("scope_"):
+        argv.extend(["--scope", str(cfg.scan_root), "--scope-id", "path:explicit"])
+    settings_before = config.settings_path().read_bytes()
+    observed = []
+    def capture_scan(**kwargs):
+        observed.append(kwargs)
+        raise scan_coordinator.ScanCancelledError("test execution boundary")
+    monkeypatch.setattr(scan_coordinator, "run_scan", capture_scan)
+    assert cli.main(argv) == 130
+    assert len(observed) == 1
+    called = observed[0]
+    if override in {"env", "cli", "command_root"}:
+        assert called["scopes"] == []
+        assert called["root"] == cfg.scan_root
+    elif override.startswith("scope_"):
+        assert called["root"] is None
+        assert [(s.root, s.scope_id) for s in called["scopes"]] == [
+            (cfg.scan_root, "path:explicit")]
+    else:
+        assert called["root"] is None
+        assert [(str(s.root), s.scope_id) for s in called["scopes"]] == list(
+            zip(selection.roots, selection.scope_ids))
+    assert config.effective_scope_selection() == selection
+    assert config.settings_path().read_bytes() == settings_before
+
+
+@pytest.mark.parametrize("override", ["none", "env", "cli"])
+def test_api_saved_selection_priority(client, saved_selection, monkeypatch, override):
+    """真实 POST /api/scan 在共用构造入口遵守进程覆盖，保存选择仍保留。"""
+    cfg, selection = saved_selection
+    if override == "env":
+        monkeypatch.setenv("FATHOM_SCAN_ROOT", str(cfg.scan_root))
+    elif override == "cli":
+        config.configure(scan_root=cfg.scan_root)
+    settings_before = config.settings_path().read_bytes()
+    observed = []
+    def capture_scan(**kwargs):
+        observed.append(kwargs)
+        raise scan_coordinator.ScanBusyError({"source": "test"})
+    monkeypatch.setattr(scan_coordinator, "start_scan", capture_scan)
+    response = client.post("/api/scan")
+    assert response.status_code == 409, response.text
+    assert len(observed) == 1
+    assert observed[0]["source"] == "api"
+    if override == "none":
+        assert [(str(s.root), s.scope_id) for s in observed[0]["scopes"]] == list(
+            zip(selection.roots, selection.scope_ids))
+    else:
+        assert observed[0]["scopes"] == []
+        assert config.DEFAULT_ROOT == cfg.scan_root
+    assert config.effective_scope_selection() == selection
+    assert config.settings_path().read_bytes() == settings_before
+
+
+@pytest.mark.parametrize("changes", [
+    {"min_kb": 512}, {"exclude_names": ["cache"]},
+    {"auto_download_updates": False}, {"analysis": {"enabled": True}},
+])
+def test_http_regular_save_preserves_scope_and_analysis(client, saved_selection, monkeypatch, changes):
+    _, selection = saved_selection
+    settings = replace(config.load_user_settings(config.settings_path()),
+                       analysis=config.AnalysisSettings(settings_revision=2))
+    config.save_user_settings(config.settings_path(), settings)
+    config.refresh_user_settings(settings)
+    class Manager:
+        def refresh_policy(self): pass
+    monkeypatch.setattr(api, "_get_analysis_manager", lambda: Manager())
+    def forbidden_scan(**kwargs):
+        pytest.fail("保存配置不得触发扫描")
+    monkeypatch.setattr(scan_coordinator, "start_scan", forbidden_scan)
+    response = client.put("/api/config", json=changes)
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] is True
+    stored = config.load_user_settings(config.settings_path())
+    assert stored.storage_scope == selection
+    assert isinstance(config._USER_SETTINGS.storage_scope, config.ScopeSelection)
+    assert isinstance(config._USER_SETTINGS.analysis, config.AnalysisSettings)
+    assert stored.analysis.enabled == ("analysis" in changes)
+    assert stored.analysis.settings_revision == (3 if "analysis" in changes else 2)
+    assert not config.DB_PATH.exists()
+
+
+@pytest.mark.parametrize("changes", [{"min_kb": 512}, {"scan_time": "09:30"}])
+def test_http_non_root_save_keeps_release_startup_default(client, changes):
+    response = client.put("/api/config", json=changes)
+    assert response.status_code == 200, response.text
+    assert response.json()["config"]["next_scan_default"] == "startup_storage"
+    stored = config.load_user_settings(config.settings_path())
+    assert stored.scan_root is None and stored.storage_scope is None
+    assert not config.DB_PATH.exists()

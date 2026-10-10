@@ -455,6 +455,12 @@ function showFeedback(text, kind) {
 /* ISS-108：预填模式下不再清空输入框——保存成功后 renderEffective 已用服务端
  * 返回的生效值重填（清空会制造「输入框为空但当前值存在」的反查负担）。
  * 留空字段仍按「不修改该项」跳过（防御路径，与既有 PUT 合同一致）。 */
+function rootForComparison(value) {
+  const root = String(value ?? "").trim();
+  // 只消除路径书写格式；不在前端猜测符号链接或 .. 的实际目标。
+  return root.startsWith("/") ? root.replace(/\/+/g, "/").replace(/\/$/, "") || "/" : root;
+}
+
 async function saveConfig(event) {
   event.preventDefault();
   const body = {};
@@ -468,6 +474,10 @@ async function saveConfig(event) {
   // 由服务端拒绝（校验以服务端为单一权威：正数/有限/格式都在后端钉住）
   for (const [key, value] of Object.entries(values)) {
     if (!value) continue;
+    // 预填旧 HOME 只是当前历史根，不代表用户要求改下一轮默认范围。
+    // 只有实际改根才写 scan_root；失败回填后仍与当前生效值比较。
+    if (key === "scan_root" && lastConfig &&
+        rootForComparison(value) === rootForComparison(lastConfig.scan_root)) continue;
     if (key === "min_kb" || key === "free_alert_gb") {
       const numeric = Number(value);
       body[key] = Number.isFinite(numeric) ? numeric : value;

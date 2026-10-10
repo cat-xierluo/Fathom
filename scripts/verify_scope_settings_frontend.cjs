@@ -94,6 +94,115 @@ function httpJson(method, urlPath, port, { body, headers } = {}) {
   });
 }
 
+async function verifyReleaseConfigSave(browser, tmp) {
+  // 没有进程扫描根覆盖的 release 入口；HOME 也指向合成目录，绝不点扫描。
+  const home = path.join(tmp, "release-home");
+  const runtime = path.join(tmp, "release-runtime");
+  const explicit = path.join(tmp, "release-explicit");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(explicit, { recursive: true });
+  const port = await freePort();
+  const env = { ...process.env, HOME: home, FATHOM_RUNTIME_MODE: "release",
+    FATHOM_RUNTIME_DIR: runtime, FATHOM_DB: path.join(runtime, "data", "fathom.db"),
+    FATHOM_RESOURCE_DIR: REPO, FATHOM_PORT: String(port), PYTHONPATH: REPO };
+  delete env.FATHOM_SCAN_ROOT;
+  const child = spawn(PY, ["-m", "fathom", "serve"], { cwd: REPO, env, stdio: "ignore" });
+  let page;
+  try {
+    const health = await waitUntil(async () => {
+      const r = await httpJson("GET", "/health", port);
+      return r.status === 200 && r.json?.pid ? r.json : null;
+    }, 30000, "release serve");
+    const initial = (await httpJson("GET", "/api/config", port)).json;
+    record("release-default-save-fixture-isolated", health.pid === child.pid &&
+      health.runtime_mode === "release" && initial.scan_root === fs.realpathSync(home) &&
+      initial.next_scan_default === "startup_storage");
+    page = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    const puts = [];
+    let scans = 0;
+    page.on("request", (req) => {
+      if (req.url().endsWith("/api/config") && req.method() === "PUT") puts.push(req.postDataJSON());
+      if (req.url().endsWith("/api/scan") && req.method() === "POST") scans += 1;
+    });
+    await page.goto(`http://127.0.0.1:${port}/#/settings/monitoring`, { waitUntil: "networkidle" });
+    await waitUntil(async () => (await page.inputValue("#cfg-scan-root")) === initial.scan_root,
+      15000, "release 根回填");
+    for (const field of ["#cfg-scan-root", "#cfg-min-kb"]) await page.fill(field, "");
+    await page.click("[data-test='settings-nav-schedule']");
+    for (const field of ["#cfg-scan-time", "#cfg-free-alert-gb"]) await page.fill(field, "");
+    await page.click("[data-test='settings-nav-monitoring']");
+    await page.click("#btn-config-save");
+    await waitUntil(async () => (await page.textContent("#config-feedback")).includes("没有要保存"),
+      8000, "空字段提示");
+    record("release-all-blank-save-no-write", puts.length === 0 &&
+      !fs.existsSync(path.join(runtime, "settings.json")));
+    // 重新进入生产页面恢复当前值，再仅改阈值和时间。
+    await page.reload({ waitUntil: "networkidle" });
+    await waitUntil(async () => (await page.inputValue("#cfg-scan-root")) === initial.scan_root,
+      15000, "release 根重新回填");
+    const submit = async () => {
+      const response = page.waitForResponse((r) => r.url().endsWith("/api/config") && r.request().method() === "PUT");
+      await page.click("#btn-config-save");
+      const res = await response;
+      const body = await res.json();
+      await waitUntil(async () => (await page.textContent("#config-feedback")).includes(res.ok() ? "已保存" : "保存失败") &&
+        (!res.ok() || await page.inputValue("#cfg-scan-root") === body.config.scan_root),
+        8000, "保存反馈");
+      return { status: res.status(), body };
+    };
+    await page.fill("#cfg-min-kb", "512");
+    await page.click("[data-test='settings-nav-schedule']");
+    await page.fill("#cfg-scan-time", "09:30");
+    await page.click("[data-test='settings-nav-monitoring']");
+    const ordinary = await submit();
+    const settings = JSON.parse(fs.readFileSync(path.join(runtime, "settings.json"), "utf8"));
+    record("release-ordinary-save-preserves-startup-default", ordinary.status === 200 &&
+      !Object.hasOwn(puts.at(-1), "scan_root") && !Object.hasOwn(settings, "scan_root") &&
+      ordinary.body.config.next_scan_default === "startup_storage" &&
+      settings.min_kb === 512 && settings.scan_time === "09:30", JSON.stringify(puts.at(-1)));
+    await page.fill("#cfg-scan-root", ` ${initial.scan_root}// `);
+    const formatted = await submit();
+    record("release-root-format-only-keeps-default-intent", formatted.status === 200 &&
+      !Object.hasOwn(puts.at(-1), "scan_root") &&
+      formatted.body.config.next_scan_default === "startup_storage");
+    await page.fill("#cfg-scan-root", explicit);
+    const changed = await submit();
+    record("release-explicit-root-save-persists", changed.status === 200 &&
+      puts.at(-1).scan_root === explicit && changed.body.config.scan_root === fs.realpathSync(explicit) &&
+      changed.body.config.sources.scan_root === "settings");
+    await page.click("#btn-config-reset");
+    const reset = await submit();
+    record("release-reset-default-root-still-persists", reset.status === 200 &&
+      puts.at(-1).scan_root === initial.defaults.scan_root &&
+      reset.body.config.scan_root === initial.defaults.scan_root);
+    const beforeBad = fs.readFileSync(path.join(runtime, "settings.json"), "utf8");
+    await page.fill("#cfg-scan-root", path.join(tmp, "missing-root"));
+    const bad = await submit();
+    record("release-invalid-root-keeps-old-value", bad.status === 400 &&
+      await page.inputValue("#cfg-scan-root") === reset.body.config.scan_root &&
+      fs.readFileSync(path.join(runtime, "settings.json"), "utf8") === beforeBad);
+    await page.fill("#cfg-min-kb", "256");
+    const retry = await submit();
+    record("release-save-after-error-does-not-resubmit-root", retry.status === 200 &&
+      !Object.hasOwn(puts.at(-1), "scan_root") && retry.body.config.min_kb === 256 &&
+      retry.body.config.scan_root === reset.body.config.scan_root);
+    const scanStatus = await httpJson("GET", "/api/scan/status?history=100", port);
+    record("release-config-saves-never-scan", scans === 0 &&
+      scanStatus.status === 200 && scanStatus.json.runs?.length === 0, `scan=${scans}`);
+  } finally {
+    if (page) await page.close().catch(() => {});
+    child.kill("SIGTERM");
+    await sleep(600);
+    try { process.kill(child.pid, 0); child.kill("SIGKILL"); } catch (_) { /* 已退出 */ }
+  }
+  const released = await new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.on("error", () => resolve(false));
+    srv.listen(port, "127.0.0.1", () => srv.close(() => resolve(true)));
+  });
+  record("release-config-serve-port-released", released, `port=${port}`);
+}
+
 async function main() {
   // ---------- 1. 隔离运行根（合成根，不开系统权限面板） ----------
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "iss156-verify-"));
@@ -196,6 +305,12 @@ async function main() {
         saved.json.plan?.plans?.[0]?.root === customReal &&
         String(saved.json.hint || "").includes("下一轮"),
       JSON.stringify(savedScope).slice(0, 200));
+
+    const ordinarySave = await jput("/api/config", { min_kb: 512 });
+    const scopeAfterOrdinary = await httpJson("GET", "/api/storage/plan/preview", port);
+    record("http-ordinary-save-keeps-scope-revision", ordinarySave.status === 200 &&
+      JSON.stringify(scopeAfterOrdinary.json.selection) === JSON.stringify(savedScope),
+      `status=${ordinarySave.status} revision=${scopeAfterOrdinary.json.selection?.revision}`);
 
     // ---------- 4. 真实 Chromium 实点生产设置页 ----------
     const consoleErrors = [];
@@ -542,6 +657,8 @@ async function main() {
       }
     }
     await page.setViewportSize({ width: 1220, height: 820 });
+
+    await verifyReleaseConfigSave(browser, tmp);
 
     record("no-page-console-errors", consoleErrors.length === 0,
       consoleErrors.slice(0, 3).join(" | ").slice(0, 300));

@@ -904,12 +904,15 @@ def merge_user_settings(
     缺省字段保持现值；因此「只把 enabled 关掉」不会意外丢掉已配置的
     Runtime。patch 为空对象视为无变化。
     """
-    merged = dict(current.as_dict())
+    # as_dict 是落盘 wire 形态，会把 analysis/storage_scope 转为 dict。
+    # 合并保留已校验的 typed 值，只校验本次 patch；旧挂载/执行文件当前
+    # 不可用时也不能因此阻断无关阈值、排除列表或更新开关的保存。
+    merged = {key: getattr(current, key) for key in _SETTING_KEYS}
     parsed = parse_user_settings({k: v for k, v in changes.items()
-                                  if k != "analysis"}).as_dict()
-    for key, value in parsed.items():
+                                  if k != "analysis"})
+    for key in _SETTING_KEYS:
         if key in changes:
-            merged[key] = value
+            merged[key] = getattr(parsed, key)
     if "analysis" in changes:
         base = current.analysis if current.analysis is not None else AnalysisSettings()
         patch = _validated_analysis_fields(changes["analysis"], partial=True)

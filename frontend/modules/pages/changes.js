@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 15318)
-Total output lines: 1211
-
 /* 变化页：快照对比（世代号防倒序 + 用户改选保护 + 404 协调）、树形同级
  * 变化表（ISS-148）、共用目录详情（directory-detail.js）、历史日报。
  *
@@ -410,7 +407,286 @@ function deltaCell(row) {
 function parentWithinRoot(path, root) {
   if (!path || path === root) return null;
   const idx = path.lastIndexOf("/");
-  const parent = idx…3318 tokens truncated…ll;
+  const parent = idx <= 0 ? "/" : path.slice(0, idx);
+  if (parent.length < root.length) return root;  // 防御：越出根时回到根
+  return parent;
+}
+
+/** 请求一个层级的同级行。append 时携带游标续页；任何写回前复核
+ * treeState 实例、treeEpoch 与请求域，三者任一变化即丢弃。 */
+async function loadTreeLevel(path, { cursor = null, append = false } = {}) {
+  const t = treeState;
+  if (!t) return null;
+  const epoch = treeEpoch;
+  const request = beginRequest(`tree:${path}`);
+  if (!append || !t.levels.has(path)) {
+    t.levels.set(path, { rows: [], pagination: null, parent: null,
+      status: "loading", error: null });
+    renderTree();
+  }
+  const level = t.levels.get(path);
+  const params = new URLSearchParams({ a: t.a, b: t.b, path });
+  params.set("filter", t.filter);
+  params.set("sort", t.sort);
+  if (cursor) params.set("cursor", cursor);
+  try {
+    const d = await fetchJSON(`/api/diff/children?${params.toString()}`);
+    if (treeState !== t || epoch !== treeEpoch || !request.current()) return null;
+    level.rows = append ? level.rows.concat(d.children || []) : (d.children || []);
+    level.pagination = d.pagination || null;
+    level.parent = d.parent || null;
+    level.status = "ready";
+    level.error = null;
+    renderTree();
+    return d;
+  } catch (e) {
+    if (treeState !== t || epoch !== treeEpoch || !request.current()) return null;
+    level.status = "error";
+    level.error = e;
+    renderTree();
+    return null;
+  }
+}
+
+/** 重置树状态并从数据集根开始加载（loadDiff 成功后调用）。 */
+function resetTree(d) {
+  treeEpoch += 1;
+  const root = (d.a && d.a.root) || "/";
+  treeState = {
+    a: String(d.a.id),
+    b: String(d.b.id),
+    root,
+    focus: root,
+    filter: document.getElementById("changes-filter")?.value || "all",
+    sort: currentSort.key,
+    levels: new Map(),
+    expanded: new Set(),
+  };
+  loadTreeLevel(root);
+}
+
+function treeAuxRow(depth, html, cls = "") {
+  const indent = `<span class="tree-indent" style="width:${depth * 18}px" aria-hidden="true"></span>`;
+  return `<tr class="tree-aux ${cls}"><td colspan="${TREE_COLUMNS}">${indent}${html}</td></tr>`;
+}
+
+/** 行自身路径是否命中搜索词（完整路径包含，与既有过滤口径一致）。 */
+function rowMatches(r, search) {
+  return r.path.toLowerCase().includes(search);
+}
+
+/** 该目录的已加载子树内是否存在命中行：仅沿 levels 中已就绪的层级向下看，
+ * 不发起请求——未加载的分页与未展开未加载的层级不参与（搜索边界如实）。 */
+function subtreeHasMatch(path, search) {
+  const level = treeState.levels.get(path);
+  if (!level || level.status !== "ready") return false;
+  return level.rows.some((r) => rowMatches(r, search) || subtreeHasMatch(r.path, search));
+}
+
+function renderLevelRows(path, depth, search) {
+  const level = treeState.levels.get(path);
+  if (!level) return "";
+  if (level.status === "error") {
+    const msg = level.error.status === 0
+      ? "无法连接本地服务，同级变化暂不可用。"
+      : `同级变化加载失败${level.error.status ? `（HTTP ${level.error.status}）` : ""}：${escapeHtml(level.error.message)}`;
+    return treeAuxRow(depth,
+      `<span class="tree-error-text">${msg}</span> ` +
+      `<button class="diff-retry" type="button" data-tree-retry="${escapeHtml(path)}" ` +
+      `aria-label="重试加载 ${escapeHtml(path)} 的同级变化">重试</button>`);
+  }
+  if (level.status === "loading") {
+    return treeAuxRow(depth, `<span class="hint">正在加载同级变化…</span>`);
+  }
+  // 搜索匹配：行自身路径命中，或其已加载子树内有命中（后者以祖先链弱化保留，
+  // 保证已加载后代不因父行不匹配而失联）；未加载的分页行不参与。
+  const rows = search
+    ? level.rows.filter((r) => rowMatches(r, search) || subtreeHasMatch(r.path, search))
+    : level.rows;
+  let out = "";
+  if (!rows.length) {
+    out = treeAuxRow(depth,
+      search
+        ? `<span class="hint">已加载的同级行中没有匹配“${escapeHtml(search)}”的目录。</span>`
+        : `<span class="hint">该目录下没有已入库的子目录记录（可能全部低于入库阈值）。</span>`);
+  }
+  // ISS-148 审计返修：深度优先输出——每行之后紧邻其子树（若有），再输出下一
+  // 兄弟，使 DOM 邻接关系与目录包含关系一致；同级之间保持 API 排序不变。
+  // 搜索激活时对每个保留行都递归已加载子层（子层未加载自然为空串），命中
+  // 后代因此可见；展开状态集合不被搜索读写，清空搜索后恢复折叠视图。
+  for (const r of rows) {
+    out += treeNodeHtml(r, depth, Boolean(search) && !rowMatches(r, search));
+    if (search || treeState.expanded.has(r.path)) {
+      out += renderLevelRows(r.path, depth + 1, search);
+    }
+  }
+  const pg = level.pagination;
+  if (pg && pg.has_more && pg.next_cursor) {
+    const loaded = search
+      ? rows.length
+      : (pg.offset || 0) + (pg.returned || 0);
+    out += treeAuxRow(depth, `
+      <button class="tree-load-more" type="button" data-load-more="${escapeHtml(path)}"
+              data-cursor="${escapeHtml(pg.next_cursor)}" data-test="tree-load-more"
+              aria-label="加载 ${escapeHtml(path)} 的更多同级行">
+        加载更多（已显示 ${loaded} / 共 ${escapeHtml(String(pg.total))} 个同级行）</button>`);
+  }
+  return out;
+}
+
+function treeNodeHtml(r, depth, ancestorOnly = false) {
+  const expanded = treeState.expanded.has(r.path);
+  const indent = `<span class="tree-indent" style="width:${depth * 18}px" aria-hidden="true"></span>`;
+  const toggle = r.has_children
+    ? `<button class="tree-toggle" type="button" data-expand="${escapeHtml(r.path)}"
+               data-test="tree-expand" aria-expanded="${expanded}"
+               aria-label="${expanded ? "收起" : "展开"} ${escapeHtml(r.name)} 的下级"
+               title="${expanded ? "收起" : "展开"}">${icon("chevron", 13)}</button>`
+    : `<span class="tree-toggle tree-toggle-leaf" aria-hidden="true"></span>`;
+  const prevTxt = r.old_kb == null ? `<span class="delta-none">—</span>` : `<span class="num">${escapeHtml(fmtKB(r.old_kb))}</span>`;
+  const currTxt = r.new_kb == null ? `<span class="delta-none">—</span>` : `<span class="num">${escapeHtml(fmtKB(r.new_kb))}</span>`;
+  // 搜索祖先链弱化：本行不命中但已加载后代命中——名称置灰并加「子级命中」
+  // 标注（读作导航节点），数值照常，不冒充命中行本身。
+  const nameCls = ancestorOnly ? "tree-name tree-name-ancestor" : "tree-name";
+  const ancestorMark = ancestorOnly
+    ? `<span class="tree-ancestor-mark" title="本行因下级命中搜索而保留">子级命中</span>`
+    : "";
+  return `<tr class="focusable${ancestorOnly ? " tree-ancestor-hit" : ""}" tabindex="0" role="button" data-path="${escapeHtml(r.path)}"
+              data-depth="${depth}" aria-label="查看目录详情：${escapeHtml(r.path)}">
+    <td class="dir-cell">${indent}${toggle}<button class="${nameCls}" type="button"
+            data-detail="${escapeHtml(r.path)}" title="${escapeHtml(r.path)}">${escapeHtml(r.name)}</button>${ancestorMark}
+      <button class="copy-path" type="button" data-copy="${escapeHtml(r.path)}"
+              aria-label="复制路径 ${escapeHtml(r.path)}" title="复制路径">复制</button>
+    </td>
+    <td class="num">${prevTxt}</td>
+    <td class="num">${currTxt}</td>
+    <td class="num">${deltaCell({ delta: r.delta_kb, prev: r.old_kb, curr: r.new_kb, status: r.status })}</td>
+    <td>${statusBadge(r.status)}</td>
+    <td>
+      <span class="row-actions">
+        <button class="btn-mini" data-focus="${escapeHtml(r.path)}" data-test="tree-focus"
+                aria-label="聚焦此目录" title="聚焦此目录">${icon("scope", 14)}</button>
+        <button class="btn-mini" data-reveal="${escapeHtml(r.path)}"
+                aria-label="在 Finder 中显示" title="在 Finder 中显示">${icon("folderOpen", 14)}</button>
+      </span>
+    </td>
+  </tr>`;
+}
+
+function renderTree() {
+  if (!treeState) return;
+  const tbody = document.getElementById("changes-body");
+  const search = (document.getElementById("changes-search")?.value || "").trim().toLowerCase();
+  updateTreeChrome();
+  const html = renderLevelRows(treeState.focus, 0, search);
+  tbody.innerHTML = html ||
+    `<tr><td colspan="${TREE_COLUMNS}" class="hint">该目录下没有已入库的子目录记录（可能全部低于入库阈值）。</td></tr>`;
+  updateSortIndicators();
+}
+
+/** 面包屑 / 本级目录摘要 / 动态说明（隐藏方向、搜索范围）。 */
+function updateTreeChrome() {
+  const crumbsEl = document.getElementById("tree-crumbs");
+  const parentEl = document.getElementById("tree-parent");
+  const noteEl = document.getElementById("tree-note");
+  const t = treeState;
+  const search = (document.getElementById("changes-search")?.value || "").trim().toLowerCase();
+  // 面包屑：focus 非根时展示祖先链（根 → … → 当前聚焦）
+  if (t && t.focus !== t.root) {
+    const chain = [];
+    if (t.root === "/") {
+      chain.push("/");
+      const segs = t.focus.split("/").filter(Boolean);
+      let acc = "";
+      for (const seg of segs) { acc += "/" + seg; chain.push(acc); }
+    } else {
+      chain.push(t.root);
+      const rel = t.focus.slice(t.root.length + 1);
+      let acc = t.root;
+      for (const seg of rel.split("/")) { acc += "/" + seg; chain.push(acc); }
+    }
+    const crumbs = [];
+    chain.forEach((p, i) => {
+      const name = p === "/" ? "/" : p === t.root ? t.root : p.slice(p.lastIndexOf("/") + 1);
+      if (i) crumbs.push('<span class="crumb-sep">/</span>');
+      crumbs.push(`<button class="crumb${p === t.focus ? " current" : ""}" data-crumb="${escapeHtml(p)}"
+        title="${escapeHtml(p)}">${escapeHtml(name)}</button>`);
+    });
+    crumbsEl.innerHTML = crumbs.join("");
+    crumbsEl.hidden = false;
+    crumbsEl.querySelectorAll("[data-crumb]").forEach((b) =>
+      b.addEventListener("click", () => focusTreePath(b.dataset.crumb)));
+  } else {
+    crumbsEl.hidden = true;
+    crumbsEl.innerHTML = "";
+  }
+  // 本级目录摘要：聚焦非根时展示其自身区间值（父行口径 = 含全部后代）
+  const level = t && t.levels.get(t.focus);
+  const parent = level && level.parent;
+  if (t && t.focus !== t.root && level && level.status === "ready" && parent) {
+    const oldTxt = parent.old_kb == null ? "—" : fmtKB(parent.old_kb);
+    const newTxt = parent.new_kb == null ? "—" : fmtKB(parent.new_kb);
+    const deltaTxt = parent.delta_kb == null ? "—" : fmtDelta(parent.delta_kb);
+    const unknown = parent.old_kb == null && parent.new_kb == null;
+    parentEl.innerHTML =
+      `<strong>${escapeHtml(t.focus)}</strong> ` +
+      (unknown
+        ? `<span class="hint">本级目录无直接入库记录（结构导航节点）：大小与差分未知，不以 0 冒充；展开可见其下已入库后代。</span>`
+        : `<span class="num">${escapeHtml(oldTxt)} → ${escapeHtml(newTxt)}</span>` +
+          `<span>本级净变化 <strong class="${parent.delta_kb > 0 ? "delta-grow" : parent.delta_kb < 0 ? "delta-shrink" : "delta-none"}">${escapeHtml(deltaTxt)}</strong></span>` +
+          `<span class="hint">本级大小为累计值（含全部后代），不与子行相加。</span>`) +
+      ` ${statusBadge(parent.status)}`;
+    parentEl.hidden = false;
+  } else if (parentEl) {
+    parentEl.hidden = true;
+    parentEl.innerHTML = "";
+  }
+  // 动态说明：changed 筛选的隐藏方向 + 搜索只作用于已加载行
+  const notes = [];
+  if (t && t.filter === "changed") {
+    notes.push("「仅变化」隐藏了本级无变化且无变化后代的同级行；有变化后代的目录行会保留以供展开，切换回「全部同级行」可查看完整同级清单。");
+  }
+  if (search) {
+    notes.push("搜索覆盖各级已加载的同级行与其已加载的子树，命中的下级行与其祖先链（标「子级命中」）一并显示；有「加载更多」时，未载入的分页行不参与搜索。");
+  }
+  if (noteEl) {
+    if (notes.length) {
+      noteEl.textContent = notes.join("");
+      noteEl.hidden = false;
+    } else {
+      noteEl.hidden = true;
+      noteEl.textContent = "";
+    }
+  }
+}
+
+function hideTreeChrome() {
+  ["tree-crumbs", "tree-parent", "tree-note"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) { el.hidden = true; el.innerHTML = ""; }
+  });
+}
+
+function updateSortIndicators() {
+  // 接口排序语义：delta/size 为降序口径，name 为升序口径（方向不可切换）
+  document.querySelectorAll("#changes-table th").forEach((th) => {
+    const btn = th.querySelector(".th-sort");
+    if (!btn) return;
+    if (btn.dataset.sort === currentSort.key) {
+      th.setAttribute("aria-sort", currentSort.key === "name" ? "ascending" : "descending");
+    } else {
+      th.removeAttribute("aria-sort");
+    }
+  });
+}
+
+function findTreeRow(path) {
+  if (!treeState) return null;
+  for (const level of treeState.levels.values()) {
+    const hit = level.rows.find((r) => r.path === path);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** 行内复制路径（DESIGN 长路径可达性）；失败不冒充成功。 */

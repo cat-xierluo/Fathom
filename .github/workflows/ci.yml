@@ -84,7 +84,7 @@ env:
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "1631"
+  EXPECTED_PYTEST_PASSED: "1655"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "77"
@@ -93,7 +93,7 @@ env:
   EXPECTED_TREE_PASSED: "74"
   # ISS-151 目录当前大文件回归（真实 FastAPI+生产页面实点）
   EXPECTED_DIR_BIGFILES_PASSED: "36"
-  EXPECTED_SCOPE_SETTINGS_PASSED: "62"
+  EXPECTED_SCOPE_SETTINGS_PASSED: "93"
   # ISS-158 整盘总览与变化入口回归（真实 FastAPI+生产总览页实点，57 项）
   EXPECTED_STORAGE_OVERVIEW_PASSED: "52"
   # ISS-188 总览交接意图与迟到目录响应（真实 serve/Chromium，三视口）
@@ -137,7 +137,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 1631 项通过）
+      - name: pytest（断言 1655 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh
@@ -182,7 +182,7 @@ jobs:
           npm install "playwright@${PLAYWRIGHT_VERSION}"
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" --version
 
-      - name: API/浏览器 39 项、前端 refresh 217 项、AI 解读 77 项与范围设置 62 项检查（断言计数）
+      - name: API/浏览器 39 项、前端 refresh 217 项、AI 解读 77 项与当前扫描对象设置 93 项检查（断言计数）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
           NODE_PATH: ${{ runner.temp }}/pw/node_modules

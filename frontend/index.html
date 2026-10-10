@@ -443,7 +443,7 @@
               <div class="panel scope-panel-wrap" aria-labelledby="settings-head-scope">
                 <div class="panel-head">
                   <h2 id="settings-head-scope">范围与覆盖</h2>
-                  <p class="hint">选择要监控的范围与覆盖方式；保存只影响下一轮计划，不会立即扫描</p>
+                  <p class="hint">当前扫描对象、覆盖与读取限制；采集是独立动作，无需选择或保存范围</p>
                 </div>
                 <div id="scope-panel" data-test="scope-panel">
                   <p class="hint">正在读取容器与卷信息…</p>
@@ -455,16 +455,6 @@
                   <p class="hint">当前值已填入输入框；改动保存后生效</p>
                 </div>
                 <form id="config-form" class="config-form" novalidate>
-                  <div class="cfg-row">
-                    <label for="cfg-scan-root">监控根目录</label>
-                    <div class="cfg-field">
-                      <input class="ctl-input cfg-wide" id="cfg-scan-root" type="text"
-                             autocomplete="off" spellcheck="false" placeholder="例如 /Users/你/项目">
-                      <p class="cfg-override" data-test="cfg-scan-root-override" hidden></p>
-                      <p class="cfg-desc">旧版单目录设置；整盘和多目录范围请在上方「范围与覆盖」中选择。
-                        更改范围会建立新基线，与原范围的历史对比将中断，原有历史保留。</p>
-                    </div>
-                  </div>
                   <div class="cfg-row">
                     <label for="cfg-min-kb">入库阈值</label>
                     <div class="cfg-field">

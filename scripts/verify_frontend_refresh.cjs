@@ -715,6 +715,15 @@ function createFixture() {
       }
       return json(res, 200, { ...state.config });
     }
+    if (url.pathname === "/api/storage/discovery") {
+      return json(res, 200, {ok:true,discovery:{startup_container:{container_id:"apfs-container:fixture"},startup_volumes:[],other_devices:[]}});
+    }
+    if (url.pathname === "/api/storage/plan/preview") {
+      const override=state.scenario === "scan-root-env" ? {source:"env",root:ROOT}:null;
+      return json(res, 200, {enabled:!override,source:override?"process_override":"startup_discovery",identity_version:1,selection:null,
+        effective_selection:override?null:{mode:"startup_storage",roots:[ROOT],scope_ids:["apfs-volume:fixture"],container_id:"apfs-container:fixture",revision:0},scan_override:override,
+        plan:override?null:{mode:"startup_storage",plans:[{root:ROOT,scope_id:"apfs-volume:fixture",plan_id:"plan:fixture"}],read_limits:{du_timeout_s:14400},budget:{min_kb:5120,exclude_names:[]},identity_version:1}});
+    }
     if (url.pathname === "/api/permissions") {
       // ISS-111：设置「权限」分区数据源。fda 三态由 scenario 驱动
       // （fda-denied / fda-unknown），默认 granted；notification/coverage
@@ -1342,7 +1351,7 @@ async function main() {
       effectiveHidden: document.getElementById("config-effective")?.hidden,
     }));
     record("settings-page-shows-server-config",
-      settingsLive.values.scanRoot === ROOT && settingsLive.values.scanTime === "13:30" &&
+      settingsLive.values.scanRoot === undefined && settingsLive.values.scanTime === "13:30" &&
         settingsLive.values.minKb === "5120" && settingsLive.values.freeAlert === "3.5" &&
         settingsLive.text.includes("21 天每日一份") && settingsLive.text.includes("8 周") &&
         !settingsLive.text.includes("35 天") && settingsLive.effectiveHidden === true,
@@ -1353,7 +1362,7 @@ async function main() {
     await page.waitForSelector("#settings-table tbody tr");
     const settingsText = await page.locator("#page-settings").textContent();
     record("settings-page-renders-config",
-      settingsText.includes("监控根目录") && settingsText.includes(ROOT) &&
+      settingsText.includes("当前扫描对象") && settingsText.includes(ROOT) &&
         settingsText.includes("服务地址"), settingsText.slice(0, 60));
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click());  // 回到监控供后续用例
     // ISS-105：设置分区二级选中态 = 浅品牌底 + 海沟蓝（用户裁决④，深色实底
@@ -1526,7 +1535,7 @@ async function main() {
         detailsHaveFnmatch: detailsEls.some((d) => d.textContent.includes("fnmatch")),
         // 白话说明就位：阈值字段就近说明 + 根目录换数据集确认（默认可见）
         hasPlainThresholdDesc: outsideText.includes("小于该值的目录不进入统计"),
-        hasDatasetInterruptNote: outsideText.includes("历史对比将中断"),
+        hasDatasetInterruptNote: outsideText.includes("旧历史") || outsideText.includes("旧用户目录历史"),
         hasKbUnit: Boolean(sec.querySelector(".cfg-input-unit .cfg-unit")),
       };
     });
@@ -1570,7 +1579,7 @@ async function main() {
     const advancedText = await page.locator("#settings-section-advanced").textContent();
     record("settings-advanced-section-has-runinfo-and-service",
       advancedText.includes("运行信息") && advancedText.includes("服务管理") &&
-        advancedText.includes("监控根目录") && advancedText.includes("服务地址"),
+        advancedText.includes("当前扫描对象") && advancedText.includes("服务地址"),
       advancedText.slice(0, 160));
 
     // 计划与通知区：扫描时间/低空间/扫描历史/权限/自启。
@@ -1631,13 +1640,13 @@ async function main() {
     const monitorApplied = await page.evaluate(() => ({
       feedback: document.getElementById("config-feedback").textContent,
       minKb: document.getElementById("cfg-min-kb").value,
-      root: document.getElementById("cfg-scan-root").value,
+      root: document.getElementById("cfg-scan-root")?.value,
     }));
     record("settings-monitor-form-save-applies-and-hints-reinstall",
       monitorApplied.minKb === "2048" &&
         monitorApplied.feedback.includes("需重新安装") &&
         fixture.state.config.min_kb === 2048 &&
-        monitorApplied.root === ROOT &&
+        monitorApplied.root === undefined &&
         (fixture.state.counts.configPut || 0) === putBefore + 1,
       JSON.stringify(monitorApplied).slice(0, 200));
 
@@ -1647,7 +1656,7 @@ async function main() {
     const putCountBeforeReset = fixture.state.counts.configPut || 0;
     await page.click("#btn-config-reset");
     const resetValues = await page.evaluate(() => ({
-      root: document.getElementById("cfg-scan-root").value,
+      root: document.getElementById("cfg-scan-root")?.value,
       time: document.getElementById("cfg-scan-time").value,
       min: document.getElementById("cfg-min-kb").value,
       free: document.getElementById("cfg-free-alert-gb").value,
@@ -1655,7 +1664,7 @@ async function main() {
     }));
     record("settings-restore-default-fills-without-saving",
       resetValues.time === "12:00" && resetValues.min === "10240" &&
-        resetValues.free === "10" && resetValues.root === "/fixture/home" &&
+        resetValues.free === "10" && resetValues.root === undefined &&
         fixture.state.config.scan_time === "09:15" &&
         (fixture.state.counts.configPut || 0) === putCountBeforeReset,
       JSON.stringify(resetValues).slice(0, 120));
@@ -1840,23 +1849,13 @@ async function main() {
      * 改变当前生效值）必须在被覆盖字段下方就近可见，不能随摘要一起消失。 */
     await setScenario("scan-root-env");
     await openPage("#/settings");
-    await page.waitForFunction(
-      (root) => document.getElementById("cfg-scan-root")?.value === root,
-      ROOT, { timeout: 10000 });
-    const scanRootEnvState = await page.evaluate(() => {
-      const note = document.querySelector('[data-test="cfg-scan-root-override"]');
-      return {
-        noteHidden: note ? note.hidden : null,
-        noteText: note ? note.textContent : "",
-        inputValue: document.getElementById("cfg-scan-root")?.value,
-      };
-    });
-    record("iss108-scan-root-env-override-labeled-at-field",
-      scanRootEnvState.noteHidden === false &&
-        scanRootEnvState.noteText.includes("FATHOM_SCAN_ROOT") &&
-        scanRootEnvState.noteText.includes("保存不会改变当前生效值") &&
-        scanRootEnvState.inputValue === ROOT,
-      JSON.stringify(scanRootEnvState));
+    await page.waitForSelector('[data-test="scope-current"]');
+    const scanRootEnvState = await page.evaluate(() => ({
+      choices: document.querySelectorAll('#cfg-scan-root,input[name="scope-mode"],#scope-roots').length,
+      root: document.querySelector('[data-test="scope-scan-override"]')?.textContent || "",
+    }));
+    record("iss191-scan-root-env-readonly-object", scanRootEnvState.choices === 0 &&
+      scanRootEnvState.root.includes("FATHOM_SCAN_ROOT") && scanRootEnvState.root.includes(ROOT), JSON.stringify(scanRootEnvState));
     await setScenario(null);
 
     /* ---------- ISS-069 续作：保存路径自身必须拦住超限列表 ---------- */
@@ -4343,7 +4342,7 @@ async function main() {
         browserModeRunInfo.tableText.includes("数据库") &&
         browserModeRunInfo.tableText.includes("du 安全时限") &&
         browserModeRunInfo.tableText.includes("桌面壳") &&
-        browserModeRunInfo.tableText.includes("监控根目录") &&
+        browserModeRunInfo.tableText.includes("当前扫描对象") &&
         !browserModeRunInfo.hasAdvancedPanel &&
         browserModeRunInfo.serviceInsideAdvancedExtra &&
         browserModeRunInfo.runInfoInsideAdvancedExtra &&
@@ -4399,7 +4398,7 @@ async function main() {
       };
     });
     record("settings-packaged-default-keeps-user-rows",
-      packagedDefault.table.includes("监控根目录") &&
+      packagedDefault.table.includes("当前扫描对象") &&
         packagedDefault.table.includes("快照保留") &&
         packagedDefault.table.includes("大文件默认范围") &&
         !packagedDefault.table.includes("服务地址") &&

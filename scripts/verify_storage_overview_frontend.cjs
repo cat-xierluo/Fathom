@@ -716,6 +716,37 @@ const d2 = await (async () => {
       `head=${legacyHead.trim()}`);
     record("ui-legacy-settings-entry", Boolean(await page.$("[data-test='storage-settings-entry']")), "给设置入口");
 
+    // ISS-191：legacy与整盘零/单轮状态均只导航查看对象，不提示选择、不触发扫描。
+    let scanPosts = 0;
+    const countScan = (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/scan") scanPosts++;
+    };
+    page.on("request", countScan);
+    const checkObjectEntry = async (kind) => {
+      const entry = await page.$eval("[data-test='storage-settings-entry']", (el) => ({
+        text: el.textContent.trim(), href: el.getAttribute("href"),
+      }));
+      record(`ui-${kind}-view-scan-object`,
+        entry.text === "查看扫描对象" && entry.href === "#/settings" && scanPosts === 0,
+        JSON.stringify({ ...entry, scanPosts }));
+    };
+    await checkObjectEntry("legacy");
+    for (const kind of ["empty", "single"]) {
+      await page.unroute("**/api/storage/summary");
+      await page.route("**/api/storage/summary", (route) => route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ scope: { container_id: null, mode: "startup_storage", roots: [tmp] },
+          capacity: null, round: kind === "single" ? { id: 1 } : null,
+          previous_round: null, attribution: null, unexplained: null }),
+      }));
+      await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector("[data-test='storage-state']", { timeout: 20000 });
+      await checkObjectEntry(kind);
+    }
+    page.off("request", countScan);
+    await page.unroute("**/api/storage/summary");
+
     /* ISS-171 容量文案：负差额不得表述为「容器占用减少」。反例口径——
      * 容器占用其实**增加**了（free 100MB→90MB 即占用 +10MB），只是目录测量
      * 增长更大（+24MB），差额 = 10 − 24 = −14MB。负号只说明「目录测量增长

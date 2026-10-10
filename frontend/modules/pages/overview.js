@@ -770,7 +770,7 @@ function _renderStorageLegacy(summary) {
        还没有整盘口径的容量与变化数据；这里不显示整盘结论，也不把目录结果冒充整盘。
        启用范围并完成首扫后，这里会出现「排查这次变化」。</p>
      <div class="conclusion-actions"><a class="btn primary" href="#/settings"
-       data-test="storage-settings-entry">去设置范围</a></div>`;
+       data-test="storage-settings-entry">查看扫描对象</a></div>`;
 }
 
 function _renderStorageWaiting(kind) {
@@ -783,7 +783,7 @@ function _renderStorageWaiting(kind) {
     `<p class="conclusion-kicker" data-test="storage-kicker">整盘总览</p>
      <div class="state-wait" data-test="storage-state"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>${escapeHtml(text)}</div>
      <div class="conclusion-actions"><a class="btn" href="#/settings"
-       data-test="storage-settings-entry">去设置范围</a></div>`;
+       data-test="storage-settings-entry">查看扫描对象</a></div>`;
 }
 
 function _renderStorageError(e) {

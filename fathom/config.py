@@ -1108,6 +1108,17 @@ def effective_scope_selection() -> ScopeSelection | None:
     return _USER_SETTINGS.storage_scope
 
 
+def process_scan_root_override() -> dict[str, str] | None:
+    """当前进程显式单根覆盖；采集与范围呈现共用，读取不改配置。"""
+    if _CLI_SCAN_ROOT_PINNED:
+        source = "cli"
+    elif os.environ.get("FATHOM_SCAN_ROOT", "").strip():
+        source = "env"
+    else:
+        return None
+    return {"source": source, "root": str(_ACTIVE.scan_root)}
+
+
 def default_startup_scope_requested() -> bool:
     """未选择范围的桌面用户默认采集内置启动盘；显式根和开发隔离优先。
 
@@ -1129,7 +1140,7 @@ def scope_enabled() -> bool:
 
 
 def scope_settings_view() -> dict[str, object]:
-    """范围配置读取面：生效选择 + 是否启用 + 来源/版本，供 API 组合返回。"""
+    """范围配置读取面：保存选择、来源/版本及本进程扫描根覆盖。"""
     selection = effective_scope_selection()
     return {
         "schema": SCOPE_SCHEMA,
@@ -1137,6 +1148,7 @@ def scope_settings_view() -> dict[str, object]:
         "source": "settings" if selection is not None else "default",
         "identity_version": SCOPE_IDENTITY_VERSION,
         "selection": None if selection is None else selection.as_dict(),
+        "scan_override": process_scan_root_override(),
     }
 
 
@@ -1171,11 +1183,11 @@ def save_scope_selection(
 
 def effective_settings_view() -> dict[str, object]:
     """GET /api/config 数据源：生效值 + 每项来源 + 默认值与只读策略。"""
-    env_scan_root = os.environ.get("FATHOM_SCAN_ROOT", "").strip()
     env_exclude_names = os.environ.get("FATHOM_EXCLUDE_NAMES", "").strip()
     settings = _USER_SETTINGS
-    if env_scan_root or _CLI_SCAN_ROOT_PINNED:
-        scan_root_source = "env" if env_scan_root else "cli"
+    override = process_scan_root_override()
+    if override:
+        scan_root_source = override["source"]
     elif settings.scan_root is not None:
         scan_root_source = "settings"
     else:

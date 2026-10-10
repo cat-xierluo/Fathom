@@ -522,28 +522,37 @@ class TestDefaults:
 class TestApiEndpoint:
     """``/api/bigfiles`` 返回 state / scope / stats / truncated / expired 字段。"""
 
-    def _make_client(self, tmp_path):
-        # 隔离运行目录与扫描根
-        import os
-        os.environ["FATHOM_RUNTIME_DIR"] = str(tmp_path / "rt")
-        os.environ["FATHOM_SCAN_ROOT"] = str(tmp_path / "scanroot")
-        # 重置 api 模块的进程级 bigfiles manager 单例
+    def _make_client(self, tmp_path, monkeypatch):
+        # 环境、配置与 manager 都随用例恢复；禁止 reload 共享模块改写
+        # 整个 pytest 进程状态（会把环境扫描根泄漏到后续范围采集用例）。
+        monkeypatch.setenv("FATHOM_RUNTIME_DIR", str(tmp_path / "rt"))
+        monkeypatch.setenv("FATHOM_SCAN_ROOT", str(tmp_path / "scanroot"))
         from fastapi.testclient import TestClient
         import fathom.api as api_mod
-        api_mod._BIGFILES_MANAGER = None
-        # 重置配置对象，让新环境变量生效
-        import importlib
         import fathom.config as cfg_mod
-        importlib.reload(cfg_mod)
-        importlib.reload(api_mod)
-        api_mod._BIGFILES_MANAGER = None
+        cfg = cfg_mod.RuntimeConfig.from_env({
+            "FATHOM_RUNTIME_MODE": "development",
+            "FATHOM_RUNTIME_DIR": str(tmp_path / "rt"),
+            "FATHOM_SCAN_ROOT": str(tmp_path / "scanroot"),
+        }, project_root=Path(__file__).resolve().parent.parent, home=tmp_path / "home")
+        monkeypatch.setattr(cfg_mod, "_ACTIVE", cfg)
+        monkeypatch.setattr(cfg_mod, "_USER_SETTINGS", cfg_mod.UserSettings())
+        monkeypatch.setattr(cfg_mod, "_CLI_SCAN_ROOT_PINNED", False)
+        for name, value in (
+            ("DATA_DIR", cfg.data_dir), ("REPORTS_DIR", cfg.reports_dir),
+            ("LOGS_DIR", cfg.logs_dir), ("DB_PATH", cfg.db_path),
+            ("FRONTEND_DIR", cfg.frontend_dir), ("DEFAULT_ROOT", cfg.scan_root),
+            ("PORT", cfg.port), ("EXCLUDE_NAMES", []),
+        ):
+            monkeypatch.setattr(cfg_mod, name, value)
+        monkeypatch.setattr(api_mod, "_BIGFILES_MANAGER", None)
         client = TestClient(api_mod.app, base_url=f"http://127.0.0.1:{api_mod.config.PORT}")
         return client, api_mod
 
-    def test_returns_state_scope_stats(self, tmp_path):
+    def test_returns_state_scope_stats(self, tmp_path, monkeypatch):
         (tmp_path / "scanroot").mkdir()
         _make_tree(tmp_path / "scanroot" / "r", large_files=2, mtime_age_days=0)
-        client, api_mod = self._make_client(tmp_path)
+        client, api_mod = self._make_client(tmp_path, monkeypatch)
         # 把 _get_bigfiles_manager 默认根重定向到扫描根的子目录
         api_mod.config.DEFAULT_ROOT = tmp_path / "scanroot" / "r"
         api_mod._BIGFILES_MANAGER = None
@@ -560,17 +569,17 @@ class TestApiEndpoint:
         assert body["expired"] is False
         assert isinstance(body["files"], list)
 
-    def test_bad_params_returns_400_via_global_validator(self, tmp_path):
+    def test_bad_params_returns_400_via_global_validator(self, tmp_path, monkeypatch):
         (tmp_path / "scanroot").mkdir()
-        client, _ = self._make_client(tmp_path)
+        client, _ = self._make_client(tmp_path, monkeypatch)
         # days > 90 违反 Query(le=90)
         r = client.get("/api/bigfiles?days=999&min_mb=1&topn=5")
         assert r.status_code == 400, r.text
         assert "请求参数无效" in r.json()["detail"]
 
-    def test_no_match_state_when_root_empty(self, tmp_path):
+    def test_no_match_state_when_root_empty(self, tmp_path, monkeypatch):
         (tmp_path / "scanroot" / "empty").mkdir(parents=True)
-        client, api_mod = self._make_client(tmp_path)
+        client, api_mod = self._make_client(tmp_path, monkeypatch)
         api_mod.config.DEFAULT_ROOT = tmp_path / "scanroot" / "empty"
         api_mod._BIGFILES_MANAGER = None
         r = client.get("/api/bigfiles?days=7&min_mb=100&topn=10")
@@ -579,10 +588,10 @@ class TestApiEndpoint:
         assert body["state"] == bigfiles.BigfilesState.NO_MATCH.value
         assert body["files"] == []
 
-    def test_truncated_state_when_topn_caps(self, tmp_path):
+    def test_truncated_state_when_topn_caps(self, tmp_path, monkeypatch):
         (tmp_path / "scanroot" / "r").mkdir(parents=True)
         _make_tree(tmp_path / "scanroot" / "r", large_files=5, mtime_age_days=0)
-        client, api_mod = self._make_client(tmp_path)
+        client, api_mod = self._make_client(tmp_path, monkeypatch)
         api_mod.config.DEFAULT_ROOT = tmp_path / "scanroot" / "r"
         api_mod._BIGFILES_MANAGER = None
         r = client.get("/api/bigfiles?days=7&min_mb=1&topn=2")

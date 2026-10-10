@@ -84,7 +84,7 @@ env:
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "1552"
+  EXPECTED_PYTEST_PASSED: "1556"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "77"
@@ -92,7 +92,7 @@ env:
   EXPECTED_TREE_PASSED: "74"
   # ISS-151 目录当前大文件回归（真实 FastAPI+生产页面实点）
   EXPECTED_DIR_BIGFILES_PASSED: "36"
-  EXPECTED_SCOPE_SETTINGS_PASSED: "50"
+  EXPECTED_SCOPE_SETTINGS_PASSED: "62"
   # ISS-158 整盘总览与变化入口回归（真实 FastAPI+生产总览页实点，57 项）
   EXPECTED_STORAGE_OVERVIEW_PASSED: "52"
   # ISS-160 跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI+生产页面实点）
@@ -179,7 +179,7 @@ jobs:
           npm install "playwright@${PLAYWRIGHT_VERSION}"
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" --version
 
-      - name: API/浏览器 39 项、前端 refresh 217 项、AI 解读 77 项与范围设置 50 项检查（断言计数）
+      - name: API/浏览器 39 项、前端 refresh 217 项、AI 解读 77 项与范围设置 62 项检查（断言计数）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
           NODE_PATH: ${{ runner.temp }}/pw/node_modules

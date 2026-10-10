@@ -216,7 +216,7 @@ assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot fron
 # 失败自身非零退出，pipefail 直通判红；计数漂移由
 # EXPECTED_SCOPE_SETTINGS_PASSED 兜底（同树形口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_scope_settings_frontend.cjs | tee "$tree_out"
-expected_scope_settings="${EXPECTED_SCOPE_SETTINGS_PASSED:-50}"
+expected_scope_settings="${EXPECTED_SCOPE_SETTINGS_PASSED:-62}"
 assert_result_json "$tree_out" "$expected_scope_settings" "scope settings frontend"
 
 # ISS-158：整盘总览与变化入口回归（真实 FastAPI 隔离入口 + 生产总览页实点）。

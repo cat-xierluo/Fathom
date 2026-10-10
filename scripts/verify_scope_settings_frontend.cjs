@@ -13,8 +13,9 @@
  * 4. AI 授权 / 更新恢复入口无退化（既有 settings 断言不破）；
  * 5. 980/1220/1440 视口 + 键盘焦点。
  *
- * 隔离边界（TESTING.md）：FATHOM_RUNTIME_DIR / FATHOM_DB / FATHOM_SCAN_ROOT /
- * FATHOM_PORT 全部指向临时目录与空闲端口；起服务前断言 /health 的 pid 等于
+ * 隔离边界（TESTING.md）：HOME / FATHOM_RUNTIME_DIR / FATHOM_DB 全部指向
+ * 临时目录，FATHOM_PORT 使用空闲端口；进程 env/CLI 根覆盖另起隔离服务。
+ * 起服务前断言 /health 的 pid 等于
  * 自 spawn 进程且 runtime_mode=development；结束杀掉自起进程并复核端口释放。
  *
  * 用法：node scripts/verify_scope_settings_frontend.cjs [--shots <dir>]
@@ -203,6 +204,85 @@ async function verifyReleaseConfigSave(browser, tmp) {
   record("release-config-serve-port-released", released, `port=${port}`);
 }
 
+async function verifyOverridePresentation(browser, tmp, source) {
+  const root = path.join(tmp, `override-${source}`);
+  const runtime = path.join(root, "runtime");
+  const explicit = path.join(root, "explicit");
+  const saved = path.join(root, "saved");
+  const candidate = path.join(root, "candidate");
+  for (const dir of [explicit, saved, candidate]) fs.mkdirSync(dir, { recursive: true });
+  const port = await freePort();
+  const env = { ...process.env, HOME: root, FATHOM_RUNTIME_MODE: "release",
+    FATHOM_RUNTIME_DIR: runtime, FATHOM_DB: path.join(runtime, "data", "fathom.db"),
+    FATHOM_RESOURCE_DIR: REPO, FATHOM_PORT: String(port), PYTHONPATH: REPO };
+  delete env.FATHOM_SCAN_ROOT;
+  if (source === "env") env.FATHOM_SCAN_ROOT = explicit;
+  const argv = source === "cli" ? ["-m", "fathom", "--scan-root", explicit, "serve"] : ["-m", "fathom", "serve"];
+  const child = spawn(PY, argv, { cwd: REPO, env, stdio: "ignore" });
+  let page;
+  try {
+    const health = await waitUntil(async () => {
+      const r = await httpJson("GET", "/health", port);
+      return r.status === 200 && r.json?.pid ? r.json : null;
+    }, 30000, `override ${source} serve`);
+    const token = (await httpJson("GET", "/api/bootstrap", port)).json.token;
+    const selection = await httpJson("PUT", "/api/storage/scope", port, {
+      body: JSON.stringify({ mode: "custom_directory", roots: [saved], expected_revision: 0 }),
+      headers: { "Content-Type": "application/json", "X-Fathom-Token": token },
+    });
+    const view = (await httpJson("GET", "/api/storage/plan/preview", port)).json;
+    const explicitReal = fs.realpathSync(explicit);
+    record(`override-${source}-api-matches-process-root`, health.pid === child.pid &&
+      selection.status === 200 && view.plan === null && view.plan_source === "process_override" &&
+      view.scan_override?.source === source && view.scan_override?.root === explicitReal &&
+      view.selection?.roots?.[0] === fs.realpathSync(saved));
+    page = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    let scans = 0;
+    page.on("request", (req) => {
+      if (req.url().endsWith("/api/scan") && req.method() === "POST") scans += 1;
+    });
+    await page.goto(`http://127.0.0.1:${port}/#/settings/monitoring`, { waitUntil: "networkidle" });
+    await waitUntil(async () => Boolean(await page.$("[data-test='scope-scan-override']")),
+      15000, "scope 进程覆盖披露");
+    const current = await page.textContent("[data-test='scope-current']");
+    const actual = await page.textContent("[data-test='scope-scan-override']");
+    record(`override-${source}-page-distinguishes-saved-and-actual`,
+      current.includes("已保存范围（本进程未使用）") && current.includes(fs.realpathSync(saved)) &&
+      actual.includes(explicitReal) && actual.includes("单目录扫描") && actual.includes("不使用上方保存范围") &&
+      actual.includes(source === "cli" ? "启动参数 --scan-root" : "环境变量 FATHOM_SCAN_ROOT"));
+    await page.fill("[data-test='scope-roots']", fs.realpathSync(candidate));
+    await page.click("[data-test='scope-preview-btn']");
+    await waitUntil(async () => (await page.textContent(".scope-plan-table").catch(() => "")).includes(fs.realpathSync(candidate)),
+      10000, "候选根预览");
+    record(`override-${source}-preview-labeled-candidate`,
+      (await page.textContent("[data-test='scope-preview-kind']")).includes("候选") &&
+      (await page.textContent("[data-test='scope-feedback']")).includes("不代表当前生效范围"));
+    await page.click("[data-test='scope-save-btn']");
+    await waitUntil(async () => Boolean(await page.$("[data-test='scope-firstrun']")), 10000, "覆盖态保存引导");
+    const first = await page.textContent("[data-test='scope-firstrun']");
+    record(`override-${source}-saved-scope-firstscan-not-promised`,
+      first.includes("等待解除启动覆盖") && first.includes(explicitReal) &&
+      first.includes("新基线尚未采集") && !first.includes("首次采集已就绪") &&
+      await page.isDisabled("[data-test='scope-firstscan-btn']"));
+    const after = (await httpJson("GET", "/api/storage/plan/preview", port)).json;
+    const status = (await httpJson("GET", "/api/scan/status?history=100", port)).json;
+    record(`override-${source}-save-never-scans-or-changes-process-root`, scans === 0 &&
+      status.runs?.length === 0 && after.plan === null && after.scan_override?.root === explicitReal &&
+      after.selection?.roots?.[0] === fs.realpathSync(candidate) && after.selection?.revision === 2);
+  } finally {
+    if (page) await page.close().catch(() => {});
+    child.kill("SIGTERM");
+    await sleep(600);
+    try { process.kill(child.pid, 0); child.kill("SIGKILL"); } catch (_) { /* 已退出 */ }
+  }
+  const released = await new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.on("error", () => resolve(false));
+    srv.listen(port, "127.0.0.1", () => srv.close(() => resolve(true)));
+  });
+  record(`override-${source}-serve-port-released`, released, `port=${port}`);
+}
+
 async function main() {
   // ---------- 1. 隔离运行根（合成根，不开系统权限面板） ----------
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "iss156-verify-"));
@@ -223,12 +303,17 @@ async function main() {
   const port = await freePort();
   const env = {
     ...process.env,
+    HOME: scanRoot,
+    FATHOM_RUNTIME_MODE: "development",
     FATHOM_RUNTIME_DIR: runtimeDir,
     FATHOM_DB: path.join(runtimeDir, "data", "fathom.db"),
-    FATHOM_SCAN_ROOT: scanRoot,
+    FATHOM_RESOURCE_DIR: REPO,
     FATHOM_PORT: String(port),
     PYTHONPATH: REPO,
   };
+  // 本组验证保存范围消费；HOME 同样是合成根，进程覆盖在后面的独立
+  // env/CLI 服务中验证，不能把保存范围在覆盖态冒充当前实际采集计划。
+  delete env.FATHOM_SCAN_ROOT;
 
   // ---------- 2. 起真实 serve 并核对身份 ----------
   const child = spawn(PY, ["-m", "fathom", "serve"], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
@@ -659,6 +744,8 @@ async function main() {
     await page.setViewportSize({ width: 1220, height: 820 });
 
     await verifyReleaseConfigSave(browser, tmp);
+    await verifyOverridePresentation(browser, tmp, "env");
+    await verifyOverridePresentation(browser, tmp, "cli");
 
     record("no-page-console-errors", consoleErrors.length === 0,
       consoleErrors.slice(0, 3).join(" | ").slice(0, 300));

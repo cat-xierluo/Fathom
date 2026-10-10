@@ -1615,23 +1615,35 @@ def _plan_preview(selection: config.ScopeSelection) -> dict:
     }
 
 
+def _process_scan_override_hint(override: dict[str, str]) -> str:
+    source = "启动参数 --scan-root" if override["source"] == "cli" else "环境变量 FATHOM_SCAN_ROOT"
+    return (f"本进程扫描使用{source}指定的根 {override['root']}（旧单目录口径），"
+            "不使用已保存范围；保存选择与候选预览不会解除该覆盖，也不触发扫描。")
+
+
 @app.get("/api/storage/plan/preview")
 def api_storage_plan_preview(mode: Optional[str] = Query(None),
                               roots: Optional[str] = Query(None)):
     """范围计划预览（只读）：校验给定选择并回显下一轮计划，不保存任何东西。
 
-    - 无候选参数时只回显当前选择和下一轮默认方式，不发现磁盘或保存计划。
+    - 无候选参数时回显保存选择及本进程覆盖；有覆盖时不返回未消费的
+      保存计划。读取不发现磁盘或保存计划。
     - 给定 ``mode``/``roots``（分号分隔）时按候选预览，供 UI「预览→保存」；
       启动盘无根候选解析真实挂载入口；校验失败 400、发现失败 503，均不落盘。
     """
     view = config.scope_settings_view()
+    override = view["scan_override"]
     if not mode and not roots:
         current = config.effective_scope_selection()
         return {"enabled": view["enabled"], "identity_version":
                 view["identity_version"],
                 "selection": view["selection"],
-                "plan": None if current is None else _plan_preview(current),
-                "hint": ("尚未选择范围：下一次主动扫描默认采集内置启动盘整体；旧历史保留。"
+                "scan_override": override,
+                "plan_source": ("process_override" if override else
+                                "saved_selection" if current is not None else "default"),
+                "plan": None if override or current is None else _plan_preview(current),
+                "hint": (_process_scan_override_hint(override) if override else
+                         "尚未选择范围：下一次主动扫描默认采集内置启动盘整体；旧历史保留。"
                          if config.default_startup_scope_requested() else
                          "扫描使用当前选择；尚未启用范围能力时按旧单根口径运行。"
                          "选择范围只改下一轮计划。")}
@@ -1639,8 +1651,12 @@ def api_storage_plan_preview(mode: Optional[str] = Query(None),
     return {"enabled": view["enabled"],
             "identity_version": view["identity_version"],
             "selection": view["selection"],
+            "scan_override": override,
+            "plan_source": "candidate",
             "plan": _plan_preview(candidate),
-            "hint": "预览不改任何配置；保存只影响下一轮计划，不触发扫描。"}
+            "hint": ("这是候选预览，不代表当前生效范围。预览不改任何配置；"
+                     "保存只影响下一轮计划，不触发扫描。"
+                     + (_process_scan_override_hint(override) if override else ""))}
 
 
 def _default_startup_selection() -> config.ScopeSelection:
@@ -1753,12 +1769,16 @@ async def api_storage_scope_put(request: Request):
         raise HTTPException(400, str(exc))
     except OSError as exc:
         raise HTTPException(500, f"settings.json 写入失败（旧文件未改动）：{exc}")
+    view = config.scope_settings_view()
+    override = view["scan_override"]
     return {
         "applied": True,
         "triggers_scan": False,
-        "scope": config.scope_settings_view(),
+        "scope": view,
         "plan": _plan_preview(saved),
-        "hint": ("范围选择已保存，仅影响下一轮计划；扫描需另行显式触发"
+        "plan_source": "saved_selection",
+        "hint": ("范围选择已保存。" + _process_scan_override_hint(override) if override else
+                 "范围选择已保存，仅影响下一轮计划；扫描需另行显式触发"
                  "（旧 HOME 历史快照保留为 legacy 口径，不与新基线混比）。"),
     }
 

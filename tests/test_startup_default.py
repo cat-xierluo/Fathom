@@ -290,3 +290,43 @@ def test_http_non_root_save_keeps_release_startup_default(client, changes):
     stored = config.load_user_settings(config.settings_path())
     assert stored.scan_root is None and stored.storage_scope is None
     assert not config.DB_PATH.exists()
+
+
+@pytest.mark.parametrize("override", ["none", "env", "cli", "cli_over_env"])
+def test_scope_presentation_matches_actual_process_scan(client, saved_selection, isolated, monkeypatch, override):
+    cfg, selection = saved_selection
+    _, _, other = isolated
+    if override in {"env", "cli_over_env"}:
+        monkeypatch.setenv("FATHOM_SCAN_ROOT", str(other if override == "cli_over_env" else cfg.scan_root))
+    if override in {"cli", "cli_over_env"}:
+        config.configure(scan_root=cfg.scan_root)
+    source = "cli" if override.startswith("cli") else "env"
+    expected = None if override == "none" else {"source": source, "root": str(cfg.scan_root)}
+    before = config.settings_path().read_bytes()
+    current = client.get("/api/storage/plan/preview").json()
+    assert current["scan_override"] == expected
+    assert current["selection"]["roots"] == list(selection.roots)
+    if expected:
+        assert current["plan"] is None  # 不能把未消费的保存范围当本轮计划
+        assert current["plan_source"] == "process_override"
+        assert str(cfg.scan_root) in current["hint"] and "不使用已保存范围" in current["hint"]
+        assert client.get("/api/config").json()["sources"]["scan_root"] == source
+        assert cli.scope_specs_from_effective_selection() == []
+    else:
+        assert current["plan_source"] == "saved_selection"
+        assert [p["root"] for p in current["plan"]["plans"]] == list(selection.roots)
+    candidate = client.get("/api/storage/plan/preview", params={
+        "mode": "custom_directory", "roots": str(other)}).json()
+    assert candidate["plan_source"] == "candidate"
+    assert candidate["scan_override"] == expected
+    assert [p["root"] for p in candidate["plan"]["plans"]] == [str(other)]
+    assert "候选" in candidate["hint"]
+    assert config.settings_path().read_bytes() == before
+    response = client.put("/api/storage/scope", json={
+        "mode": "custom_directory", "roots": [str(other)], "expected_revision": 1})
+    assert response.status_code == 200, response.text
+    assert response.json()["scope"]["scan_override"] == expected
+    assert response.json()["scope"]["selection"]["revision"] == 2
+    if expected:
+        assert "不使用已保存范围" in response.json()["hint"]
+    assert not config.DB_PATH.exists()

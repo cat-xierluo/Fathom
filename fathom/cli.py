@@ -169,7 +169,7 @@ def scope_specs_from_effective_selection(*, apply_default: bool = False) -> list
     复用 ``scan_coordinator`` 的多范围路径，否则快照不带 ``plan_id``、
     ``scan_plans``/``scan_rounds``/``scan_round_members`` 全空。
     """
-    if config._CLI_SCAN_ROOT_PINNED or os.environ.get("FATHOM_SCAN_ROOT", "").strip():
+    if config.process_scan_root_override():
         return []
     selection = config.effective_scope_selection()
     if selection is None and apply_default and config.default_startup_scope_requested():

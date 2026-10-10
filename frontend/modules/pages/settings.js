@@ -2717,6 +2717,21 @@ function _scopeCurrentRow() {
   if (!view) {
     return `<p class="hint" data-test="scope-current">当前生效范围读取中…</p>`;
   }
+  const override = view.scan_override;
+  if (override) {
+    const source = override.source === "cli" ? "启动参数 --scan-root" : "环境变量 FATHOM_SCAN_ROOT";
+    const saved = view.selection;
+    return `<p class="hint" data-test="scope-current" data-enabled="${view.enabled ? "1" : "0"}"
+        data-revision="${escapeHtml(String(saved?.revision ?? 0))}">
+      已保存范围（本进程未使用）：${saved
+        ? `模式 <code>${escapeHtml(saved.mode)}</code> · 修订 <code>${escapeHtml(String(saved.revision))}</code>
+           · 根：${(saved.roots || []).map((r) => `<code>${escapeHtml(r)}</code>`).join("、")}`
+        : "尚未保存范围选择"}</p>
+      <p class="hint" data-test="scope-scan-override" data-source="${escapeHtml(override.source)}">
+        本进程实际扫描范围：<code>${escapeHtml(override.root)}</code> · 来源：${escapeHtml(source)}。
+        使用单目录扫描，不使用上方保存范围；保存或预览不会解除该覆盖。
+        如需采集保存范围，请从未指定扫描根覆盖的入口启动。</p>`;
+  }
   if (!view.enabled || !view.selection) {
     return `<p class="hint" data-test="scope-current" data-enabled="0">
       当前生效范围：<strong>尚未启用范围能力</strong>（来源：${escapeHtml(view.source || "default")}）
@@ -2756,6 +2771,7 @@ function _scopePlanBlock() {
   const rl = plan.read_limits || {};
   const bg = plan.budget || {};
   return `<div data-test="scope-preview">
+    <p class="hint" data-test="scope-preview-kind">范围候选计划；是否用于扫描以上方实际范围为准。</p>
     <table class="scope-plan-table">
       <thead><tr><th>根目录</th><th>名称</th><th>范围身份</th><th>计划身份</th></tr></thead>
       <tbody>${rows}</tbody>
@@ -2775,6 +2791,16 @@ function _scopePlanBlock() {
 function _scopeFirstRunBlock() {
   const fr = scopeState.firstRun;
   if (!fr) return "";
+  const override = scopeState.view?.scan_override;
+  if (override) {
+    return `<div class="panel scope-firstrun" data-test="scope-firstrun">
+      <h3>范围已保存，等待解除启动覆盖</h3>
+      <p class="hint">本进程仍采集 <code>${escapeHtml(override.root)}</code>（旧单目录口径），
+        不使用已保存范围。保存范围不会自动扫描，其新基线尚未采集。</p>
+      <button type="button" class="btn" data-test="scope-firstscan-btn" disabled>采集已保存范围（当前被覆盖）</button>
+      <p class="hint" data-test="scope-snapshot-expect">如需采集保存范围，请从未指定扫描根覆盖的入口启动。</p>
+    </div>`;
+  }
   return `<div class="panel scope-firstrun" data-test="scope-firstrun">
       <h3>首次采集已就绪（独立动作）</h3>
       <p class="hint">保存范围**不会**自动扫描。首轮采集是下面这个独立动作，完成后才形成新基线。</p>
@@ -2923,7 +2949,7 @@ async function previewScope() {
     scopeState.previewError = null;
     scopeState.feedback = {
       kind: "",
-      text: "预览不改任何配置；保存后只影响下一轮计划，不触发扫描。",
+      text: data.hint || "候选预览不改任何配置；保存后只影响下一轮计划，不触发扫描。",
     };
   } catch (e) {
     if (!request.current()) return;
@@ -2960,6 +2986,7 @@ async function saveScope() {
       identity_version: data.scope?.identity_version,
       source: data.scope?.source,
       selection: data.scope?.selection,
+      scan_override: data.scope?.scan_override,
     };
     scopeState.preview = data.plan || null;
     scopeState.previewError = null;

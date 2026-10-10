@@ -233,6 +233,12 @@ FATHOM_PYTHON="$tree_python" node scripts/verify_storage_overview_frontend.cjs |
 expected_storage_overview="${EXPECTED_STORAGE_OVERVIEW_PASSED:-52}"
 assert_result_json "$tree_out" "$expected_storage_overview" "storage overview frontend"
 
+# ISS-188：合法 b1 预热后的 CTA 与迟到目录响应、较新改选/第二 CTA、
+# 快速离页重入与旧等待器取消。真实 serve/生产前端，受控合法响应，三视口。
+FATHOM_PYTHON="$tree_python" node scripts/verify_diff_handoff_frontend.cjs | tee "$tree_out"
+expected_diff_handoff="${EXPECTED_DIFF_HANDOFF_PASSED:-40}"
+assert_result_json "$tree_out" "$expected_diff_handoff" "diff handoff frontend"
+
 # ISS-160：跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI 隔离入口 + 生产页面实点）。
 # 真实 serve 入口全流程（总览→树展开→绑定历史详情→largest→返回→分布→设置→重扫）
 # + net0 内部变化/历史非 latest/分页/旧 HOME·新整盘切换 + 快速切页/改范围/重复

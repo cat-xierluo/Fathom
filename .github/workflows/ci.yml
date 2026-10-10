@@ -96,6 +96,8 @@ env:
   EXPECTED_SCOPE_SETTINGS_PASSED: "62"
   # ISS-158 整盘总览与变化入口回归（真实 FastAPI+生产总览页实点，57 项）
   EXPECTED_STORAGE_OVERVIEW_PASSED: "52"
+  # ISS-188 总览交接意图与迟到目录响应（真实 serve/Chromium，三视口）
+  EXPECTED_DIFF_HANDOFF_PASSED: "40"
   # ISS-160 跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI+生产页面实点）
   EXPECTED_INVESTIGATION_PASSED: "55"
   EXPECTED_CARGO_PASSED: "79"

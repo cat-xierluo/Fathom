@@ -64,6 +64,7 @@
  * 读数不依赖图表悬停。
  */
 import { fetchJSON, beginRequest, invalidateRequest, revealInFinder } from "../request.js";
+import { state } from "../state.js";
 import { createAnalysisPanel } from "../components/analysis-panel.js";
 import { datasetKey } from "../dataset.js";
 import { fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
@@ -244,6 +245,7 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
   const selA = document.getElementById("sel-a"), selB = document.getElementById("sel-b");
   const previousA = selA.value, previousB = selB.value;
   const selectionRevision = snapshotSelectionRevision;
+  _diag("catalog-request", { selectionRevision, a: previousA, b: previousB });
   let snaps;
   try {
     snaps = await fetchJSON("/api/snapshots");
@@ -257,19 +259,24 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
       : `快照列表加载失败${e.status ? `（HTTP ${e.status}）` : ""}：${e.message}`);
     return;
   }
+  _diag("catalog-response", { selectionRevision, currentRevision: snapshotSelectionRevision,
+    current: request.current(), a: selA.value, b: selB.value });
   if (!request.current()) return;
 
   // ISS-170：缓存原始列表（收敛与守卫共用），再按当前生效数据集收敛两侧选项
   snapshotCatalog = snaps;
-  /* ISS-170 R2：fetch /api/snapshots 期间用户已改选（revision 推进）→ 本二发
-   * 整体放弃：不收敛、不落定 sel、不发 diff，只重建 b 侧全列数据。此前仅用
-   * revision 切换「取发起时值还是实时值」，仍会按旧意图落定并以最新世代补发
-   * diff，作废用户自己的请求（CI 三连发 (1,4)/(1,2)/(1,4) 的最后一发即此路
-   * 径）。收敛落定与 loadDiff 之间是同步代码，放弃判断放在 fetch 之后即无
-   * 竞争窗口。 */
+  // 请求发起后有较新的用户/CTA 意图：只更新目录事实，不重新选择或补发 diff。
+  // replaceChildren 会把 select 重置为首项，因此重建 b 时须保留当前取值。
+  // 旧目录未包含较新选中的点时保留现有选项，交给该意图自己的请求校验，
+  // 不把缺失当成替用户选择其他区间的授权。
   if (snapshotSelectionRevision !== selectionRevision) {
-    replaceSnapshotOptions(selB, snaps);
-    if (!selA.options.length) replaceSnapshotOptions(selA, snaps);
+    const currentB = selB.value;
+    if (!currentB || snaps.some((s) => String(s.id) === currentB)) {
+      replaceSnapshotOptions(selB, snaps);
+      selB.value = currentB;
+    }
+    _diag("catalog-superseded", { selectionRevision, currentRevision: snapshotSelectionRevision,
+      a: selA.value, b: selB.value });
     return;
   }
   const selectedA = previousA;
@@ -283,6 +290,7 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
   // 收敛后原选择若被排除在数据集外（异数据集/该数据集内已不可用），按既有形状落定
   const { nextA, nextB } = applyConvergedOptions(selA, selB, snaps,
     { keepA: selectedA, keepB: selectedB });
+  _diag("catalog-settled", { selectionRevision, a: nextA, b: nextB });
 
   const fellBack = Boolean((selectedA && !validA) || (selectedB && !validB));
 
@@ -812,17 +820,9 @@ function renderNetLine(d) {
  * 未选齐（某侧为空）保持空态 + 引导文案，不发请求。
  * select 的 change 由键盘改选同样派发（原生行为），路径不变。 */
 function onSelectionChange(changedId, { handoff = false } = {}) {
-  /* ISS-178 R3 D2 实机根因：入口交接写选的 change 是**合成事件**，此前与用户
-   * 改选同等处理，`changedId` 非空即被当作 userChanged：
-   * (1) `applyConvergedOptions` 的 `userEmptyA = userChanged && keepA === ""`
-   *     误判为「用户显式清空基线」→ a 侧被钉死成空串；
-   * (2) 推高 `snapshotSelectionRevision` → 在途 `loadSnapshotsForDiff` 命中
-   *     changes.js:269 的「fetch 期间用户改选 → 整体放弃」分支，该分支只
-   *     重建 b 侧全列，既不收敛 a、也不落定 a、不补发 diff。
-   * 叠加结果就是实机形态：b 侧正确带入、a 侧 value 空且选项状态未知。
-   * 交接事件带 `__fathomHandoff` 标记，与真实用户改选分流：交接**不**推用户
-   * 世代（在途目录仍按本次收敛落定），也**不**被当作 userChanged。 */
-  if (handoff) { /* 交接写选不推用户世代（见下） */ } else snapshotSelectionRevision += 1;
+  // 交接也是较新的区间意图，须作废在途目录的旧落定。
+  // handoff 仍不作为 userChanged：入口空 a 可以找真实前驱，用户显式空值不补。
+  snapshotSelectionRevision += 1;
   const _selA = document.getElementById("sel-a");
   const _selB = document.getElementById("sel-b");
   _diag("onSelectionChange", { changedId, handoff,
@@ -1097,13 +1097,12 @@ export const changesPage = {
     // ISS-094：页内二级导航（五分区 tab；index.html 静态 DOM）。
     changesTabs = initPageTabs({ page: "changes", defaultTab: "detail" });
     // ISS-093：选择即比对——select 改选（鼠标或键盘）在选齐后自动触发加载。
-    // ISS-170 R2：真实用户改选（isTrusted）置全局标志——总览交接的迟到 tick
-    //（8s 窗口）据此放弃写入，不得把用户已改选的区间覆盖回入口旧值。
+    // 非交接的改选推进用户意图，尚未落位的 CTA 等待器据此放弃写入。
     ["sel-a", "sel-b"].forEach((id) => {
       document.getElementById(id).addEventListener("change", (e) => {
-        if (e.isTrusted) window.__changesUserTouched = true;
+        if (e.__fathomHandoff !== true) window.__changesUserTouched = true;
         /* ISS-178 R3 D2：入口交接的合成事件带标记，转交 onSelectionChange 走
-         * 非用户路径（不推用户世代、不按 userChanged 处理），真实用户改选零变化。 */
+         * 非用户路径（仍推意图世代，但不按 userChanged 处理）。 */
         onSelectionChange(e.target.id, { handoff: e.__fathomHandoff === true });
       });
     });
@@ -1190,6 +1189,8 @@ export const changesPage = {
     });
   },
   leave() {
+    // 旧页等待中的总览交接不能在快速重入后继续写选。
+    state.pendingChangeEntry = null;
     ["snapshots", "diff", "reportList", "reportContent",
      "detailTrend", "detailBrowse", "analysis", "analysisPoll"].forEach(invalidateRequest);
     // ISS-035C：离页停轮询并清内存预览态；不取消已授权任务（后台继续），

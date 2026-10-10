@@ -38,6 +38,9 @@ def _isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_ACTIVE", cfg)
     monkeypatch.setattr(config, "_USER_SETTINGS", config.UserSettings())
     monkeypatch.setattr(config, "_CLI_SCAN_ROOT_PINNED", False)
+    # 本组断言保存范围的采集；合成 legacy 根不是进程级覆盖意图。
+    # 进程环境覆盖另由 startup_default 套件显式验证。
+    monkeypatch.delenv("FATHOM_SCAN_ROOT", raising=False)
     for name, value in (
         ("DATA_DIR", cfg.data_dir), ("REPORTS_DIR", cfg.reports_dir),
         ("LOGS_DIR", cfg.logs_dir), ("DB_PATH", cfg.db_path),

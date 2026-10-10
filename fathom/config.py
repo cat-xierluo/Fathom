@@ -451,7 +451,7 @@ class UserSettings:
     exclude_names: str | None = None  # 规范串（排序去重后 ``;`` 拼接），无配置 = ""
     auto_download_updates: bool | None = None  # ISS-113；None = 未持久化 → 默认 True
     analysis: AnalysisSettings | None = None  # ISS-035B；None = 未持久化 → 全默认关闭
-    storage_scope: "ScopeSelection | None" = None  # ISS-155；None = 未选择 → 旧口径
+    storage_scope: "ScopeSelection | None" = None  # ISS-155；None = 尚未选择；采集入口决定默认方式
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -482,10 +482,10 @@ class UserSettings:
 
 # ---------- 范围配置（ISS-155：范围选择 + 计划预览 + 版本冲突保护） ----------
 #
-# **新能力不自动启用**：``storage_scope`` 未落盘时 ``effective_scope_selection()``
-# 返回 None，全链路按 ISS-016A 旧口径单根运行；旧 settings.json / FATHOM_SCAN_ROOT
-# / CLI ``--scan-root`` 的生产行为逐字节不变。本组常量与校验只服务「显式选择后
-# 下一轮计划」这条新路径，读取侧据此决定是否启用范围守卫。
+# ``storage_scope`` 未落盘时，读取接口返回 None，不发现磁盘或保存计划。
+# 未显式配置根的 release 用户主动扫描时生成启动盘默认计划；旧配置根、
+# FATHOM_SCAN_ROOT 和 CLI ``--scan-root`` 保持优先，开发隔离不扩大范围。
+# 本组常量与校验也服务显式选择，保存后仅下一轮采集使用新范围。
 
 SCOPE_SCHEMA = "fathom.scope.config"
 #: 身份/计划版本。落盘值与当前实现不一致时 fail-closed（拒绝回落为旧口径）。
@@ -904,12 +904,15 @@ def merge_user_settings(
     缺省字段保持现值；因此「只把 enabled 关掉」不会意外丢掉已配置的
     Runtime。patch 为空对象视为无变化。
     """
-    merged = dict(current.as_dict())
+    # as_dict 是落盘 wire 形态，会把 analysis/storage_scope 转为 dict。
+    # 合并保留已校验的 typed 值，只校验本次 patch；旧挂载/执行文件当前
+    # 不可用时也不能因此阻断无关阈值、排除列表或更新开关的保存。
+    merged = {key: getattr(current, key) for key in _SETTING_KEYS}
     parsed = parse_user_settings({k: v for k, v in changes.items()
-                                  if k != "analysis"}).as_dict()
-    for key, value in parsed.items():
+                                  if k != "analysis"})
+    for key in _SETTING_KEYS:
         if key in changes:
-            merged[key] = value
+            merged[key] = getattr(parsed, key)
     if "analysis" in changes:
         base = current.analysis if current.analysis is not None else AnalysisSettings()
         patch = _validated_analysis_fields(changes["analysis"], partial=True)
@@ -1101,17 +1104,43 @@ def effective_analysis_settings() -> AnalysisSettings:
 
 
 def effective_scope_selection() -> ScopeSelection | None:
-    """当前生效的范围选择；``None`` = 用户从未选择（继续按旧单根口径运行）。"""
+    """当前持久化范围选择；``None`` = 尚未选择，读取本身不生成默认计划。"""
     return _USER_SETTINGS.storage_scope
 
 
+def process_scan_root_override() -> dict[str, str] | None:
+    """当前进程显式单根覆盖；采集与范围呈现共用，读取不改配置。"""
+    if _CLI_SCAN_ROOT_PINNED:
+        source = "cli"
+    elif os.environ.get("FATHOM_SCAN_ROOT", "").strip():
+        source = "env"
+    else:
+        return None
+    return {"source": source, "root": str(_ACTIVE.scan_root)}
+
+
+def default_startup_scope_requested() -> bool:
+    """未选择范围的桌面用户默认采集内置启动盘；显式根和开发隔离优先。
+
+    本函数只判断下一轮默认方式，不发现磁盘、不保存或触发扫描。
+    新基线在用户实际发起采集时生成，既有 HOME 历史仍保留。
+    """
+    return (
+        _ACTIVE.mode == "release"
+        and _USER_SETTINGS.storage_scope is None
+        and _USER_SETTINGS.scan_root is None
+        and not _CLI_SCAN_ROOT_PINNED
+        and not os.environ.get("FATHOM_SCAN_ROOT", "").strip()
+    )
+
+
 def scope_enabled() -> bool:
-    """范围能力是否已由用户显式启用（**不**由发现结果自动启用）。"""
+    """范围计划是否已保存（发现/预览本身不启用；主动扫描可保存默认计划）。"""
     return _USER_SETTINGS.storage_scope is not None
 
 
 def scope_settings_view() -> dict[str, object]:
-    """范围配置读取面：生效选择 + 是否启用 + 来源/版本，供 API 组合返回。"""
+    """范围配置读取面：保存选择、来源/版本及本进程扫描根覆盖。"""
     selection = effective_scope_selection()
     return {
         "schema": SCOPE_SCHEMA,
@@ -1119,6 +1148,7 @@ def scope_settings_view() -> dict[str, object]:
         "source": "settings" if selection is not None else "default",
         "identity_version": SCOPE_IDENTITY_VERSION,
         "selection": None if selection is None else selection.as_dict(),
+        "scan_override": process_scan_root_override(),
     }
 
 
@@ -1153,11 +1183,11 @@ def save_scope_selection(
 
 def effective_settings_view() -> dict[str, object]:
     """GET /api/config 数据源：生效值 + 每项来源 + 默认值与只读策略。"""
-    env_scan_root = os.environ.get("FATHOM_SCAN_ROOT", "").strip()
     env_exclude_names = os.environ.get("FATHOM_EXCLUDE_NAMES", "").strip()
     settings = _USER_SETTINGS
-    if env_scan_root or _CLI_SCAN_ROOT_PINNED:
-        scan_root_source = "env" if env_scan_root else "cli"
+    override = process_scan_root_override()
+    if override:
+        scan_root_source = override["source"]
     elif settings.scan_root is not None:
         scan_root_source = "settings"
     else:
@@ -1197,8 +1227,10 @@ def effective_settings_view() -> dict[str, object]:
             "defaults": {"enabled": False},
         },
         # ISS-155：范围选择读取面。旧前端不认识该键也不受影响；未显式
-        # 选择时 enabled=False，生产行为与 ISS-016A 逐字节一致。
+        # 选择时 enabled=False；next_scan_default 单独说明下一轮默认方式。
         "storage_scope": scope_settings_view(),
+        "next_scan_default": (
+            SCOPE_MODE_STARTUP if default_startup_scope_requested() else None),
         "sources": sources,
         "defaults": {
             "scan_root": str(_ACTIVE.home_dir),

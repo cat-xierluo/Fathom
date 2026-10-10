@@ -250,7 +250,7 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
   try {
     snaps = await fetchJSON("/api/snapshots");
   } catch (e) {
-    if (!request.current()) return;
+    if (!request.current() || snapshotSelectionRevision !== selectionRevision) return;
     invalidateRequest("diff");
     clearDiffResults();
     setDiffControlsEnabled(false);

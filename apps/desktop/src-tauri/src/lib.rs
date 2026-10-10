@@ -108,6 +108,9 @@ fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
     }
     match handle.handshake() {
         Ok(Some(instance)) => {
+            if let Err(err) = navigate_target_url(instance.port, instance.frontend_revision.as_deref(), None) {
+                return retry_error_json(&err, None, &runtime);
+            }
             if handle.reused.load(std::sync::atomic::Ordering::SeqCst) {
                 serde_json::json!({
                     "state": "reused",
@@ -115,6 +118,7 @@ fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
                     "service": instance.service,
                     "protocol_version": instance.protocol_version,
                     "version": instance.version,
+                    "frontend_revision": instance.frontend_revision,
                 })
             } else {
                 serde_json::json!({
@@ -125,6 +129,7 @@ fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
                     "version": instance.version,
                     "instance_id": instance.instance_id,
                     "runtime_mode": instance.runtime_mode,
+                    "frontend_revision": instance.frontend_revision,
                 })
             }
         }
@@ -206,36 +211,40 @@ fn helper_retry(app: AppHandle, state: State<'_, HelperState>) -> serde_json::Va
 /// ISS-110：计算主窗口导航目标。返回 ``(目标 URL, 同源跳过)``：
 /// - 保留当前页面的 hash 片段（如 ``#/settings``）——升级失败回滚后用户
 ///   留在原页面，不因导航丢 hash「跳到主界面」；
-/// - 当前页面已是同一 ``127.0.0.1:<port>`` 源时 ``same_origin=true``：
+/// - 当前页面已是同一 ``127.0.0.1:<port>`` 源且 revision 一致时跳过：
 ///   调用方跳过导航——升级失败回滚重启 helper 后端口通常未变，跳过可避免
 ///   文档重载，设置页的升级失败呈现（前端内存态）与 hash 一并原样保留。
-///   首次启动（当前为 tauri 内置页，host 非 127.0.0.1）与端口变化不受影响。
-fn navigate_target_url(port: u16, current: Option<&Url>) -> (String, bool) {
-    let (fragment, same_origin) = match current {
+///   首次启动、端口或资源内容变化均直接进入对应 revision 空间。
+fn navigate_target_url(port: u16, revision: Option<&str>, current: Option<&Url>) -> Result<(String, bool), String> {
+    let revision = revision.filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        .ok_or_else(|| "helper 未提供有效前端资源身份，请退出旧版后台服务后重试握手".to_string())?;
+    let entry_path = format!("/_fathom/resources/{revision}/");
+    let (fragment, same_resources) = match current {
         Some(url) => {
-            let same_origin = url.host_str() == Some("127.0.0.1")
-                && url.port_or_known_default() == Some(port);
-            (url.fragment().unwrap_or("").to_string(), same_origin)
+            let same_resources = url.scheme() == "http" && url.host_str() == Some("127.0.0.1")
+                && url.port_or_known_default() == Some(port)
+                && (url.path() == entry_path || url.path() == format!("{entry_path}index.html"));
+            (url.fragment().unwrap_or("").to_string(), same_resources)
         }
         None => (String::new(), false),
     };
-    let mut url_str = format!("http://127.0.0.1:{port}/");
+    let mut url_str = format!("http://127.0.0.1:{port}{entry_path}");
     if !fragment.is_empty() {
         url_str.push('#');
         url_str.push_str(&fragment);
     }
-    (url_str, same_origin)
+    Ok((url_str, same_resources))
 }
 
 /// 导航主窗口到 ``http://127.0.0.1:<port>/``；仅在握手成功时调用。
 /// ISS-110：同源跳过 + hash 保留（见 ``navigate_target_url``）——升级失败
 /// 回滚后停留在设置页且失败原因可见，不导航到根 URL 丢上下文。
-fn navigate_main_to(window: &WebviewWindow, port: u16) -> Result<(), String> {
+fn navigate_main_to(window: &WebviewWindow, port: u16, revision: Option<&str>) -> Result<(), String> {
     let current = window.url().ok();
-    let (url_str, same_origin) = navigate_target_url(port, current.as_ref());
+    let (url_str, same_origin) = navigate_target_url(port, revision, current.as_ref())?;
     if same_origin {
         println!(
-            "[helper] 目标 127.0.0.1:{port} 与当前页面同源；跳过导航（保留当前页面与 hash 上下文，ISS-110）"
+            "[helper] 目标 127.0.0.1:{port} 与当前页面同源且资源身份相同；跳过导航（保留当前页面与 hash 上下文，ISS-110）"
         );
         return Ok(());
     }
@@ -291,7 +300,7 @@ fn start_helper_internal(app: &AppHandle, state: &State<'_, HelperState>) -> Res
                 })
                 .unwrap_or(false);
             if let Some(win) = app.get_webview_window("main") {
-                let _ = navigate_main_to(&win, instance.port);
+                navigate_main_to(&win, instance.port, instance.frontend_revision.as_deref())?;
             } else {
                 eprintln!("[helper] 主窗口不存在，跳过 navigate");
             }
@@ -308,13 +317,7 @@ fn start_helper_internal(app: &AppHandle, state: &State<'_, HelperState>) -> Res
             }
             Ok(())
         }
-        Ok(None) => {
-            // 复用路径但 instance 字段为空；不再拉起
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = navigate_main_to(&win, helper::DEFAULT_PORT);
-            }
-            Ok(())
-        }
+        Ok(None) => Err("helper 握手未返回资源身份，请重试握手".to_string()),
         Err(err) => {
             // 检查 helper 是否让位（same-service-discovered）或端口耗尽
             let event = {
@@ -326,8 +329,12 @@ fn start_helper_internal(app: &AppHandle, state: &State<'_, HelperState>) -> Res
             };
             match event {
                 Some(HelperEvent::SameServiceDiscovered { port, .. }) => {
+                    let revision = match HelperHandle::probe_health(port) {
+                        helper::ProbeKind::Ours { frontend_revision, .. } => frontend_revision,
+                        _ => return Err("复用 helper 未就绪，请重试握手".to_string()),
+                    };
                     if let Some(win) = app.get_webview_window("main") {
-                        let _ = navigate_main_to(&win, port);
+                        navigate_main_to(&win, port, revision.as_deref())?;
                     }
                     Ok(())
                 }
@@ -2855,39 +2862,40 @@ mod tests {
         assert_eq!(absent.last().map(String::as_str), Some("0"));
     }
 
-    /// ISS-110：导航目标计算——hash 保留 + 同源跳过。升级失败回滚重启
-    /// helper 后：端口未变 → 同源跳过（设置页失败呈现与 hash 原样保留）；
-    /// 端口变化或首次启动 → 导航到新端口并保留当前 hash，不丢页面上下文。
+    /// ISS-110 同内容 revision 回滚不重载：内存失败态及 hash 均保持。
     #[test]
     fn navigate_target_url_keeps_hash_and_skips_same_origin() {
-        // 首次启动：当前是 tauri 内置页（host 非 127.0.0.1）→ 导航根 URL。
-        let builtin: Url = "tauri://localhost/".parse().unwrap();
-        let (url, skip) = navigate_target_url(7952, Some(&builtin));
-        assert_eq!(url, "http://127.0.0.1:7952/");
-        assert!(!skip, "非本服务源必须真实导航");
-
-        // 无当前 URL（读取失败）→ 同上。
-        let (url, skip) = navigate_target_url(7952, None);
-        assert_eq!(url, "http://127.0.0.1:7952/");
+        let revision = "a".repeat(64);
+        let entry = format!("http://127.0.0.1:7952/_fathom/resources/{revision}/");
+        let settings: Url = format!("{entry}#/settings").parse().unwrap();
+        let (url, skip) = navigate_target_url(7952, Some(&revision), Some(&settings)).unwrap();
+        assert_eq!(url, format!("{entry}#/settings"));
+        assert!(skip, "同源且同revision必须保留内存上下文");
+        let moved: Url = format!("http://127.0.0.1:7953/_fathom/resources/{revision}/#/settings").parse().unwrap();
+        let (url, skip) = navigate_target_url(7952, Some(&revision), Some(&moved)).unwrap();
+        assert_eq!(url, format!("{entry}#/settings"));
         assert!(!skip);
+    }
 
-        // 同端口 + 设置页 hash → 同源跳过（页面不重载，上下文保留）。
-        let settings: Url = "http://127.0.0.1:7952/#/settings".parse().unwrap();
-        let (url, skip) = navigate_target_url(7952, Some(&settings));
-        assert_eq!(url, "http://127.0.0.1:7952/#/settings", "hash 必须保留");
-        assert!(skip, "同源必须跳过导航");
+    #[test]
+    fn navigation_enters_revision_directly_and_reloads_changed_or_bare_origin() {
+        let revision = "b".repeat(64);
+        let entry = format!("http://127.0.0.1:7952/_fathom/resources/{revision}/");
+        for current in [None, Some("tauri://localhost/"), Some("http://127.0.0.1:7952/#/settings"),
+                        Some("http://127.0.0.1:7952/_fathom/resources/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/#/settings")] {
+            let current = current.map(|s| s.parse::<Url>().unwrap());
+            let (url, skip) = navigate_target_url(7952, Some(&revision), current.as_ref()).unwrap();
+            assert!(!skip, "裸/旧revision/首次入口必须真实导航");
+            assert!(url.starts_with(&entry));
+            if current.as_ref().and_then(|u| u.fragment()).is_some() { assert!(url.ends_with("#/settings")); }
+        }
+    }
 
-        // 端口变化（helper 换端口）→ 导航新端口并保留 hash（不导航到根）。
-        let moved: Url = "http://127.0.0.1:7953/#/settings".parse().unwrap();
-        let (url, skip) = navigate_target_url(7952, Some(&moved));
-        assert_eq!(url, "http://127.0.0.1:7952/#/settings");
-        assert!(!skip);
-
-        // 同端口但无 hash → 同源跳过（拼不出 hash 就不附加）。
-        let plain: Url = "http://127.0.0.1:7952/".parse().unwrap();
-        let (url, skip) = navigate_target_url(7952, Some(&plain));
-        assert_eq!(url, "http://127.0.0.1:7952/");
-        assert!(skip);
+    #[test]
+    fn navigation_rejects_missing_or_invalid_revision_without_bare_fallback() {
+        for revision in [None, Some(""), Some("../old"), Some("0.4.1"), Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")] {
+            assert!(navigate_target_url(7952, revision, None).unwrap_err().contains("资源身份"));
+        }
     }
 
     /// ISS-040C：控制面阶段机——begin 复位/推进取消语义（下载中受理、安装

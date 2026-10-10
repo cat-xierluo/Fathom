@@ -96,7 +96,8 @@ expected="${EXPECTED_PYTEST_PASSED:-1407}"
 # （EXPLAIN QUERY PLAN 必走 idx_entries_path、缺索引必为全表扫描的反例
 # 自证、新建库/既有 v8 库打开/v0 迁移三条路径均补建、纯索引不改版本号
 # 语义与既有行、查询语义不变、重复打开幂等）（1455 → 1463）。
-expected="${EXPECTED_PYTEST_PASSED:-1463}"
+# ISS-187 +14：冻结完整前端图/版本命名空间边界/实际loader及manifest安全。
+expected="${EXPECTED_PYTEST_PASSED:-1575}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

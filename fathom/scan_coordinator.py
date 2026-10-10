@@ -248,6 +248,23 @@ def dedupe_scope_specs(
     return unique
 
 
+def _validate_scope_registrations(conn, specs: list[ScopeSpec]) -> None:
+    """首见身份不可覆写；旧错误登记必须明确停止，而非伪称已修复。"""
+    seen = {}
+    for spec in specs:
+        identity = (spec.kind, spec.container_id, spec.volume_group_id, spec.device_id)
+        if spec.scope_id in seen and seen[spec.scope_id] != identity:
+            raise ScanScopeError("同一范围 ID 的身份冲突，未开始采集。")
+        seen[spec.scope_id] = identity
+        row = conn.execute(
+            "SELECT kind, container_id, volume_group_id, device_id FROM scan_scopes WHERE scope_id=?",
+            (spec.scope_id,),
+        ).fetchone()
+        if row is not None and tuple(row) != identity:
+            raise ScanScopeError(
+                "范围首见身份与本次发现不一致，未开始采集；旧历史保留，需另行处理身份迁移。")
+
+
 def build_round_plan(
     conn, specs: list[ScopeSpec], *, pinned: scanner.PinnedScanConfig | None = None,
     round_id: int | None = None, started_at: str | None = None,
@@ -264,6 +281,7 @@ def build_round_plan(
     pinned = pinned or scanner.PinnedScanConfig.capture(
         metric_version=METRIC_VERSION
     )
+    _validate_scope_registrations(conn, specs)
     unique = dedupe_scope_specs(list(specs), pinned)
     stamp = started_at or _now()
     ordinal_of: dict[str, int] = {}
@@ -1292,6 +1310,8 @@ def start_scan(
     try:
         _refuse_writes_during_upgrade_txn()
         conn = db.connect()
+        if scopes:
+            _validate_scope_registrations(conn, scopes)
         now = _now()
         # 能取得 flock 即证明不存在仍活跃的 owner/继承锁 du。此时才收尾遗留行。
         conn.execute(

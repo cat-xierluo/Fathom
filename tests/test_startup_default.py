@@ -50,7 +50,21 @@ def isolated(tmp_path, monkeypatch):
                              "visible_path": str(system), "via": "snapshot_mount"}],
         "other_devices": [{"mount_point": str(root), "device_id": "external"}],
     }
-    monkeypatch.setattr(api, "_discovery_payload", lambda: {"ok": True, "discovery": discovered})
+    container_id = discovered["startup_container"]["container_id"]
+    container = storage.DiscoveredContainer(storage.CONTAINER_SCHEMA,
+        storage.DISCOVERY_VERSION, container_id, "disk9", 1024**3, 512*1024**2,
+        (), ("synthetic",))
+    volumes = tuple(storage.DiscoveredVolume(storage.VOLUME_SCHEMA,
+        storage.DISCOVERY_VERSION, v["volume_id"], v["container_id"], None,
+        "Synthetic", tuple(v["roles"]), "disk9s1", v["mount_point"], v["status"],
+        False, 128*1024**2, ("synthetic",)) for v in discovered["startup_volumes"])
+    entries = tuple(storage.VisibleEntry(storage.VISIBLE_ENTRY_SCHEMA,
+        storage.DISCOVERY_VERSION, e["visible_path"], e["volume_id"], container_id,
+        e["via"], None, ("synthetic",)) for e in discovered["visible_entries"])
+    discovery = storage.StorageDiscovery(storage.DISCOVERY_SCHEMA,
+        storage.DISCOVERY_VERSION, storage.DiscoveryStatus.OK, "2026-10-10", "darwin",
+        container, volumes, entries, (), (), ())
+    monkeypatch.setattr(storage, "discover_startup", lambda *a, **k: discovery)
     return cfg, system, data
 
 

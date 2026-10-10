@@ -46,7 +46,7 @@
   </div>
 <script>
   // 握手页：状态由 Rust 端 helper_status / helper_retry 决定
-  // - ready / reused：直接 navigate 到 http://127.0.0.1:<port>/
+  // - ready / reused：与 Rust 共用资源身份，直接导航内容版本空间。
   // - starting：每 1s 轮询一次
   // - exhausted（ISS-059）：展示恢复动作 + 端口占用表（recovery.ports /
   //   recovery.hint）
@@ -77,12 +77,17 @@
   }
 
   function renderReady(state) {
+    if (!Number.isInteger(state.port) || state.port < 1 || state.port > 65535 ||
+        !/^[0-9a-f]{64}$/.test(state.frontend_revision || "")) {
+      renderError({ error: "helper 未提供有效前端资源身份，请退出旧版后台服务后重试握手" });
+      return;
+    }
     $title.textContent = "Fathom";
-    $msg.textContent = state === "reused"
+    $msg.textContent = state.state === "reused"
       ? "已检测到本机服务正在运行，正在打开主界面……"
       : "后台服务已就绪，正在打开主界面……";
     $extra.innerHTML = "";
-    const url = "http://127.0.0.1:" + state.port + "/";
+    const url = "http://127.0.0.1:" + state.port + "/_fathom/resources/" + state.frontend_revision + "/" + location.hash;
     setTimeout(function () { location.replace(url); }, 300);
   }
 

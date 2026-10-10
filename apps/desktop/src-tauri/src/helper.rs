@@ -174,6 +174,7 @@ pub struct HelperInstance {
     pub version: Option<String>,
     pub instance_id: Option<String>,
     pub runtime_mode: Option<String>,
+    pub frontend_revision: Option<String>,
 }
 
 /// 解析 helper-instance.json（JSON object）。文件不存在/格式错误返回 ``Err``。
@@ -217,6 +218,7 @@ pub fn read_helper_instance(runtime_dir: &Path) -> Result<HelperInstance, String
         version,
         instance_id,
         runtime_mode,
+        frontend_revision: None, // 实时 health 提供资源身份，旧 instance 文件保持兼容。
     })
 }
 
@@ -490,6 +492,7 @@ impl HelperHandle {
                     .get("version")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                frontend_revision: value.get("frontend_revision").and_then(|v| v.as_str()).map(String::from),
                 instance_id: value
                     .get("instance_id")
                     .and_then(|v| v.as_str())
@@ -528,7 +531,7 @@ impl HelperHandle {
             for offset in 0..=DEFAULT_PORT_RANGE {
                 let port = port_base.saturating_add(u16::from(offset));
                 match Self::probe_health(port) {
-                    ProbeKind::Ours { pid, .. } => {
+                    ProbeKind::Ours { pid, version, instance_id, frontend_revision, .. } => {
                         // 让位路径：helper 让位退出 0，外部已是同服务。
                         // ISS-059：探测到的实例若是本壳刚拉起的子进程
                         // （instance 文件写于 uvicorn 监听就绪前、路径 1 探活
@@ -543,9 +546,10 @@ impl HelperHandle {
                             port,
                             service: SERVICE_IDENTITY.into(),
                             protocol_version: PROTOCOL_VERSION,
-                            version: None,
-                            instance_id: None,
+                            version,
+                            instance_id,
                             runtime_mode: None,
+                            frontend_revision,
                         }));
                     }
                     ProbeKind::Refused => {}
@@ -568,7 +572,7 @@ impl HelperHandle {
     /// → ``/health`` 探活 → 处置。``Reuse`` 携带可复用实例；``Stale`` 时本
     /// 函数已删除陈旧文件；其余情形携带诊断信息供握手超时文案使用。
     fn instance_file_step(&self) -> InstanceStep {
-        let instance = match read_helper_instance(&self.runtime_dir) {
+        let mut instance = match read_helper_instance(&self.runtime_dir) {
             Ok(inst) => inst,
             Err(err) => return InstanceStep::Unavailable(err),
         };
@@ -581,7 +585,12 @@ impl HelperHandle {
         let probe = Self::probe_health(instance.port);
         let pid_alive = pid_is_alive(instance.pid);
         match instance_disposition(&probe, pid_alive) {
-            InstanceDisposition::Reuse => InstanceStep::Reuse(instance),
+            InstanceDisposition::Reuse => {
+                if let ProbeKind::Ours { frontend_revision, .. } = probe {
+                    instance.frontend_revision = frontend_revision;
+                }
+                InstanceStep::Reuse(instance)
+            },
             InstanceDisposition::StaleRemove => {
                 let stale_path = self.runtime_dir.join("helper-instance.json");
                 match std::fs::remove_file(&stale_path) {
@@ -799,6 +808,7 @@ pub enum ProbeKind {
         pid: Option<i64>,
         version: Option<String>,
         instance_id: Option<String>,
+        frontend_revision: Option<String>,
     },
 }
 
@@ -976,7 +986,7 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let _ = std::io::Read::read(&mut stream, &mut buf);
                 let body = format!(
-                    "{{\"service\":\"fathom\",\"protocol_version\":1,\"status\":\"ok\",\"pid\":{},\"version\":\"0.3.0\",\"instance_id\":\"t\"}}",
+                    "{{\"service\":\"fathom\",\"protocol_version\":1,\"status\":\"ok\",\"pid\":{},\"version\":\"0.3.0\",\"instance_id\":\"t\",\"frontend_revision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",
                     std::process::id()
                 );
                 let resp = format!(
@@ -1022,6 +1032,7 @@ mod tests {
         assert_eq!(instance.service, "fathom");
         assert_eq!(instance.protocol_version, 1);
         assert_eq!(instance.port, port);
+        assert_eq!(instance.frontend_revision.as_deref(), Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
     }
 
     #[test]
@@ -1115,7 +1126,7 @@ mod tests {
         // 顺带断言：instance_disposition 自身的「身份匹配→复用」与「身份不
         // 符 + pid 不在」两条核心契约（纯函数），补齐拒绝路径的最小单元。
         assert_eq!(
-            instance_disposition(&ProbeKind::Ours { port: 7952, pid: Some(1), version: None, instance_id: None }, true),
+            instance_disposition(&ProbeKind::Ours { port: 7952, pid: Some(1), version: None, instance_id: None, frontend_revision: None }, true),
             InstanceDisposition::Reuse,
             "身份匹配的 Ours 探活结果应一律复用"
         );
@@ -1145,6 +1156,7 @@ mod tests {
             pid: Some(42),
             version: None,
             instance_id: None,
+            frontend_revision: None,
         };
         assert_eq!(
             instance_disposition(&ours, true),

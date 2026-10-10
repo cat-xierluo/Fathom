@@ -28,6 +28,21 @@ EVIL_ORIGIN = "http://evil.example"
 TAURI_LOADER_ORIGIN = "tauri://localhost"
 
 
+def test_resource_manifest_and_version_graph_keep_existing_security_boundary():
+    with TestClient(api.app, base_url=f"http://127.0.0.1:{config.PORT}") as client:
+        manifest = client.get("/api/frontend-manifest")
+        assert manifest.status_code == 200
+        assert manifest.headers["Cache-Control"] == "no-store"
+        data = manifest.json()
+        assert set(data) == {"revision", "entry_path"}
+        assert data["revision"] == client.get("/health").json()["frontend_revision"]
+        for path in ["/api/frontend-manifest", data["entry_path"], data["entry_path"] + "app.js"]:
+            assert client.get(path).headers["Content-Security-Policy"] == api._CSP
+            assert client.get(path, headers={"host": "evil.example"}).status_code == 403
+            assert client.get(path, headers={"origin": EVIL_ORIGIN}).status_code == 403
+        assert client.post("/api/frontend-manifest").status_code == 403
+
+
 @pytest.fixture(autouse=True)
 def _isolated_env(tmp_path, monkeypatch):
     """全部可写路径与扫描根指到临时目录，避免触碰生产 data/reports/logs/HOME。"""

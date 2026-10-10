@@ -65,7 +65,6 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from . import SERVICE_IDENTITY, __version__, __protocol_version__
 from . import agent_runtime
@@ -225,7 +224,17 @@ def api_health():
         "pid": os.getpid(),
         "port": config.PORT,
         "runtime_mode": config.get_runtime_config().mode,
+        "frontend_revision": _frontend_resources.revision if _frontend_resources else None,
     }
+
+
+@app.get("/api/frontend-manifest")
+def api_frontend_manifest():
+    """只读资源身份；无本机路径，无扫描或设置副作用。"""
+    if _frontend_resources is None:
+        raise HTTPException(503, "前端资源不可用")
+    return JSONResponse(_frontend_resources.manifest(),
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/status")
@@ -2343,6 +2352,10 @@ async def api_reveal(request: Request):
     return {"ok": True, "path": str(resolved)}
 
 
-# 前端静态资源挂载在最后，避免覆盖 /api 路由
-if config.FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(config.FRONTEND_DIR), html=True), name="frontend")
+# 前端静态资源挂载在最后，避免覆盖 /api 路由。revision 与服务字节同一冻结对象。
+from .frontend_resources import FrontendResources
+
+_frontend_resources = (FrontendResources(config.FRONTEND_DIR)
+                       if (config.FRONTEND_DIR / "index.html").is_file() else None)
+if _frontend_resources is not None:
+    app.mount("/", _frontend_resources, name="frontend")

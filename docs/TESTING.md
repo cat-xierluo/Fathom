@@ -11,10 +11,10 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；**当前源码配置期望值（含未发布的默认启动盘改动；权威值见 `.github/workflows/ci.yml` 的 `EXPECTED_*`）为 pytest 1561、API/浏览器 39、前端 refresh 217、AI 解读前端 77、Agent 中心 54、Rust 单测 77、升级状态恢复 16**。另有六个前端真实入口回归家族同口径 fail-closed：树形变化 74（`EXPECTED_TREE_PASSED`）、目录限定大文件 36（`EXPECTED_DIR_BIGFILES_PASSED`）、分布页快照绑定 33（`EXPECTED_BROWSE_SNAPSHOT_PASSED`）、范围设置 62（`EXPECTED_SCOPE_SETTINGS_PASSED`）、整盘总览 52（`EXPECTED_STORAGE_OVERVIEW_PASSED`）、跨页排查 55（`EXPECTED_INVESTIGATION_PASSED`）。对应脚本：`scripts/verify_tree_changes_frontend.cjs`、`verify_directory_bigfiles_frontend.cjs`、`verify_browse_snapshot_frontend.cjs`、`verify_scope_settings_frontend.cjs`、`verify_storage_overview_frontend.cjs`、`verify_storage_investigation_frontend.cjs`；新增独立 Agent 页为 `scripts/verify_agent_frontend.cjs`，全部由 `scripts/ci_browser_checks.sh` 串联。**注意**：`ci_pytest.sh` 的默认 1463 低于 CI 配置的 1561，本地全量使用 `ci_local.sh` 或显式传 `EXPECTED_PYTEST_PASSED=1561`；`ci_cargo_locked.sh` 默认 77 与 CI 一致。漂移时以 CI env 为权威，修改通过数必须有对应测试变化。ISS-143 新增三个实际鼠标悬停断言（首点、后日期、同日不同时间），不调用 tooltip formatter 冒充真实曲线交互；ISS-147 新增 38 项同级差分 API 测试；ISS-152 新增 29 项启动盘容器与卷发现适配器测试（plist 结构化只读发现，不做 du/挂载/写盘）；ISS-150 新增 32 项限定目录 largest/recent 大文件查询测试；ISS-159 新增 21 项 browse 显式快照绑定测试与 33 项分布页真实入口回归（`scripts/verify_browse_snapshot_frontend.cjs`，真实 serve + Chromium，历史实点/结构节点/单时点详情/404 恢复/分页）。0.4.0 新增：schema v8 五表迁移与身份隔离、范围配置 fail-closed、多范围轮次协调与部分成功、整盘摘要口径（有符号未知差额/共享 free 只计一次/不可比为 null）、`entries(path)` 索引（EXPLAIN 必走索引的反例自证 + 写锁让步）、plan 身份两档 HTTP 回归（`tests/test_plan_identity_consumers.py` 14 例）、取消响应合同确定性交错。固定候选的实际通过数以对应 PR 的 Actions 日志为准；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
+仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；**当前源码配置期望值（含未发布的默认启动盘改动；权威值见 `.github/workflows/ci.yml` 的 `EXPECTED_*`）为 pytest 1578、API/浏览器 39、前端 refresh 217、AI 解读前端 77、Agent 中心 54、Rust 单测 79、升级状态恢复 16**。另有六个前端真实入口回归家族同口径 fail-closed：树形变化 74（`EXPECTED_TREE_PASSED`）、目录限定大文件 36（`EXPECTED_DIR_BIGFILES_PASSED`）、分布页快照绑定 33（`EXPECTED_BROWSE_SNAPSHOT_PASSED`）、范围设置 62（`EXPECTED_SCOPE_SETTINGS_PASSED`）、整盘总览 52（`EXPECTED_STORAGE_OVERVIEW_PASSED`）、跨页排查 55（`EXPECTED_INVESTIGATION_PASSED`）。对应脚本：`scripts/verify_tree_changes_frontend.cjs`、`verify_directory_bigfiles_frontend.cjs`、`verify_browse_snapshot_frontend.cjs`、`verify_scope_settings_frontend.cjs`、`verify_storage_overview_frontend.cjs`、`verify_storage_investigation_frontend.cjs`；新增独立 Agent 页为 `scripts/verify_agent_frontend.cjs`，全部由 `scripts/ci_browser_checks.sh` 串联。`ci_pytest.sh` 默认 1578、`ci_cargo_locked.sh` 默认 79 均与当前 CI 一致；本地完整入口为 `ci_local.sh`。漂移时以 CI env 为权威，修改通过数必须有对应测试变化。ISS-143 新增三个实际鼠标悬停断言（首点、后日期、同日不同时间），不调用 tooltip formatter 冒充真实曲线交互；ISS-147 新增 38 项同级差分 API 测试；ISS-152 新增 29 项启动盘容器与卷发现适配器测试（plist 结构化只读发现，不做 du/挂载/写盘）；ISS-150 新增 32 项限定目录 largest/recent 大文件查询测试；ISS-159 新增 21 项 browse 显式快照绑定测试与 33 项分布页真实入口回归（`scripts/verify_browse_snapshot_frontend.cjs`，真实 serve + Chromium，历史实点/结构节点/单时点详情/404 恢复/分页）。0.4.0 新增：schema v8 五表迁移与身份隔离、范围配置 fail-closed、多范围轮次协调与部分成功、整盘摘要口径（有符号未知差额/共享 free 只计一次/不可比为 null）、`entries(path)` 索引（EXPLAIN 必走索引的反例自证 + 写锁让步）、plan 身份两档 HTTP 回归（`tests/test_plan_identity_consumers.py` 14 例）、取消响应合同确定性交错。固定候选的实际通过数以对应 PR 的 Actions 日志为准；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
-EXPECTED_PYTEST_PASSED=1561 /bin/bash scripts/ci_pytest.sh
+EXPECTED_PYTEST_PASSED=1578 /bin/bash scripts/ci_pytest.sh
 /bin/bash scripts/ci_cargo_locked.sh
 npm install --prefix .runtime/playwright playwright@1.61.1
 FATHOM_PYTHON="$PWD/.venv/bin/python" \
@@ -23,7 +23,7 @@ PLAYWRIGHT_BIN="$PWD/.runtime/playwright/node_modules/.bin/playwright" \
 PW_INSTALL=1 /bin/bash scripts/ci_browser_checks.sh
 ```
 
-GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1561）和 Rust 1.88 locked build+单测（77）；浏览器/API 检查（39）与前端 refresh 功能回归（217）在 Apple Silicon 上运行，树形/大文件/分布/范围/整盘/跨页六个前端家族、Agent 中心54项及升级状态恢复16项同 job fail-closed。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
+GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1578）和 Rust 1.88 locked build+单测（79）；浏览器/API 检查（39）与前端 refresh 功能回归（217）在 Apple Silicon 上运行，树形/大文件/分布/范围/整盘/跨页六个前端家族、Agent 中心54项及升级状态恢复16项同 job fail-closed。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
 
 本地/API/CLI 验收必须显式设置完整隔离边界：`FATHOM_RUNTIME_DIR` 派生 data/reports/logs，`FATHOM_SCAN_ROOT` 指定合成根，`FATHOM_RESOURCE_DIR` 指定只读资源，`FATHOM_PORT` 使用已核对的测试端口；CLI 也提供等价覆盖。旧 `FATHOM_DB` 仅作兼容，未指定运行根时其父目录成为完整运行根。`FATHOM_DU_TIMEOUT_S`（ISS-061，默认 14400 秒）设置单次 `du` 采集的安全时限：超时后本次扫描记为 `interrupted` 并保留上次有效快照；值必须是正的有限数，`0`、负数、非数字、`nan`、`inf` 一律在启动时被拒绝（不存在"无限超时"）；夹具里可用极小值（如 `0.001`）构造超时反例。端口占用须非零退出，不停止未知进程；install/uninstall/权限与真实 Finder 动作另属实机验证。驱动真实 serve/HTTP 链路时，必须先断言目标 `/health` 返回的 pid 等于自 spawn 进程且 `runtime_mode=="development"` 再继续（ISS-035B 实录：生产 helper 与开发实例同身份、`/health` 面不可区分，曾误打生产 helper，因 analysis 默认关闭两层 403 挡住而零触碰；此断言后已固化）。
 
@@ -43,9 +43,9 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1561
 **2026-09-15 至 09-26 历史状态**：`CI` workflow 曾因额度停用（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发），当时 push/PR 不创建 run，`gh pr checks` 为空属预期。现已恢复实跑；下列本地替代链用于额度故障时按主干同一计数复跑，与云端作业对应：
 
 ```bash
-EXPECTED_PYTEST_PASSED=1561 /bin/bash scripts/ci_pytest.sh # ↔ pytest (arm64)，与CI计数一致
+EXPECTED_PYTEST_PASSED=1578 /bin/bash scripts/ci_pytest.sh # ↔ pytest (arm64)，与CI计数一致
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 217 + AI 解读 77 + Agent 中心 54 + 六个前端家族（74/36/33/62/52/55）+ 升级恢复16
-/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 77
+/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 79
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
   rustup run stable cargo check --target x86_64-apple-darwin --locked --offline \
   --manifest-path apps/desktop/src-tauri/Cargo.toml  # ≈ cargo locked offline (x86_64)：交叉 check，非原生 build
@@ -230,7 +230,7 @@ helper 构建需已有 pinned PyInstaller 环境，按 `scripts/build_helper.sh`
 
 `.github/workflows/frozen-analysis.yml` 在原生 `macos-15-intel` 上断言 `uname -m=x86_64`，用既有锁定 Python/PyInstaller 依赖和 `scripts/build_helper.sh` 构建冻结 helper，再由 `scripts/ci_frozen_analysis.py run` 绑定源提交、真实文件 SHA256、Mach-O 架构与版本，显式传 build-ready manifest 给 `scripts/verify_frozen_analysis.py` 跑 33 项接线及生命周期检查。默认可执行路径按真实 onedir 输出为 `apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper/fathom-helper`；目录本身不能作为 helper。构建或身份验证失败时写失败 manifest、保留原退出码，不调用后续回归；回归失败也传回真实退出码。manifest/report/日志由 job 输出留存，不发布产物。
 
-合并前由目标 `main`、限定相关文件路径的 PR 触发，并显式检出 PR head SHA；合并后可用 `workflow_dispatch` 复跑指定 ref。工作流仅 `contents: read`，无发行秘密、tag、签名或 Release 写入。入口的 30 项定向测试用 `python -m pytest tests/test_ci_frozen_analysis.py -q --maxfail=1` 执行，普通 CI 总数在该次变更时同步为 1219（**历史数值，当前 pytest 门禁为 1561，见 §1**）。离线夹具或本机 arm64 检查不能证明 Intel 冻结路径通过；原生 Intel job 的固定源/产物指纹与真实 33 项结果才是该路径证据。33 项使用合成 shim，仅验证接线与生命周期，不证明真实模型质量或 Tauri GUI。
+合并前由目标 `main`、限定相关文件路径的 PR 触发，并显式检出 PR head SHA；合并后可用 `workflow_dispatch` 复跑指定 ref。工作流仅 `contents: read`，无发行秘密、tag、签名或 Release 写入。入口的 30 项定向测试用 `python -m pytest tests/test_ci_frozen_analysis.py -q --maxfail=1` 执行，普通 CI 总数在该次变更时同步为 1219（**历史数值，当前 pytest 门禁为 1578，见 §1**）。离线夹具或本机 arm64 检查不能证明 Intel 冻结路径通过；原生 Intel job 的固定源/产物指纹与真实 33 项结果才是该路径证据。33 项使用合成 shim，仅验证接线与生命周期，不证明真实模型质量或 Tauri GUI。
 
 ### 升级准备的父进程回收回归
 
@@ -248,7 +248,7 @@ FATHOM_UPGRADE_TEST_HELPER=/Applications/Fathom.app/Contents/Resources/helper/fa
 
 ### 升级终态跨后台重启恢复
 
-`node scripts/verify_updater_recovery.cjs` 的16项真实 Chromium 回归使用两个回环 HTTP origin 与显式 Tauri IPC 桥夹具，加载生产 settings/router 模块，验证 `#settings/about` 初始化、失败 kind/error/hint 与重试入口恢复、已安装后的重启入口、迟到回读/旧事件拒绝及忙碌响应不覆盖新操作；普通手动检查保留待重启终态，明确重试下载才开始新的失败重试。`ci_browser_checks.sh` 与 CI/本地入口以 `EXPECTED_UPDATER_RECOVERY_PASSED=16` 收口；默认 Rust 77项包含3项 presentation 状态机回归。
+`node scripts/verify_updater_recovery.cjs` 的16项真实 Chromium 回归使用两个回环 HTTP origin 与显式 Tauri IPC 桥夹具，加载生产 settings/router 模块，验证 `#settings/about` 初始化、失败 kind/error/hint 与重试入口恢复、已安装后的重启入口、迟到回读/旧事件拒绝及忙碌响应不覆盖新操作；普通手动检查保留待重启终态，明确重试下载才开始新的失败重试。`ci_browser_checks.sh` 与 CI/本地入口以 `EXPECTED_UPDATER_RECOVERY_PASSED=16` 收口；默认 Rust 79项包含3项 presentation 状态机回归。
 
 桥夹具只能证明前端与约定 IPC 形态兼容，不能证明冻结 helper 包含新前端、真实桌面 invoke 或应用替换可用。打包验收须在自有安装目录、合成历史与显式隔离运行根中，执行签名正确但损坏的更新包：确认真实 prepare/备份/rollback 后 helper 换端口，关于页仍显示失败原因且可重试；再使用正确包完成安装、确认重启，核对新版 app/helper、历史和数据库完整性。测试 endpoint/test key 仅用于隔离注入；正式资产仍须用已安装旧客户端的生产公钥标准验签。不得扫描 HOME 或修改生产调度。
 
@@ -257,3 +257,9 @@ FATHOM_UPGRADE_TEST_HELPER=/Applications/Fathom.app/Contents/Resources/helper/fa
 ### Agent 独立页面验收边界
 
 `verify_agent_frontend.cjs` 使用真实 Chromium 与生产前端、隔离 Node HTTP 夹具，覆盖侧栏、直达刷新、设置 AI 分区跳转、选择与迟到响应、预览取消/一次确认、跨区间任务与分页历史、过期/撤销及三视口。它的模拟后端不能证明实际 helper 接线；`tests/test_agent_history.py` 经生产 API/manager 与真实 SQLite 另验只读全局历史、数据淘汰与关闭引擎后的原记录、撤销及分页边界。桌面验收还须启动候选冻结 helper，在合成运行根执行原生入口与历史读取；不得据此声称真实模型解读质量、生产升级缓存或整盘性能已验证。
+
+## 桌面资源版本与缓存升级验证
+
+`/health` 的 `frontend_revision`、只读 `/api/frontend-manifest` 与 `/_fathom/resources/<revision>/` 必须绑定同一完整前端内容图。执行 `pytest tests/test_frontend_resources.py tests/test_helper_identity.py tests/test_api_security.py -q`，覆盖实际 loader、相对模块/CSS/图片、旧 revision 拒绝、冻结后磁盘更替、路径/符号链接及根目录替换边界。HTML、裸兼容入口与 manifest 返回 no-store；版本空间内非 HTML 资源可 immutable。
+
+原生升级验收使用独立 bundle ID、合成运行根与固定端口：先加载旧资源并保留其 WebKit 缓存，退出自有应用后替换自有壳/helper，在同源重开并核对实际 WebView URL revision 与 HTTP 内容、范围/AI/Agent 入口、设置与历史。另验新端口重开。不得清生产缓存或用新 origin 通过代替同源升级证据。Rust 同 revision 跳过导航及保 hash 的单测不能替代真实更新失败恢复；未实跑的更新事务明确为 NOT_VERIFIED。退出后仅用进程与监听端口确认回收，避免原生观察工具自动重启已退出应用。

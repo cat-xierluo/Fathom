@@ -40,6 +40,80 @@ def test_revision_binds_complete_graph_and_ignores_mtime(graph):
         first = updated
 
 
+@pytest.mark.parametrize("window", ["after_symlink_check", "after_root_stat", "after_parent_open"])
+def test_root_directory_swap_cannot_redirect_resource_read(graph, tmp_path, monkeypatch, window):
+    """独审根替换反例：固定父fd，最终组件不经resolve重定向。"""
+    import os
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "index.html").write_bytes(b"SYNTHETIC OUTSIDE")
+    (outside / "private-fixture.txt").write_bytes(b"SYNTHETIC PRIVATE")
+    swapped = False
+    old = tmp_path / "original-frontend"
+    original_check = Path.is_symlink
+    original_stat = os.stat
+    original_open = os.open
+
+    def swap_root():
+        nonlocal swapped
+        swapped = True
+        graph.rename(old)
+        graph.symlink_to(outside, target_is_directory=True)
+
+    def check(path):
+        answer = original_check(path)
+        if path == graph and not swapped:
+            swap_root()
+        return answer
+
+    def stat_then_swap(path, *args, **kwargs):
+        nonlocal swapped
+        result = original_stat(path, *args, **kwargs)
+        if path == graph.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            graph.rename(old)
+            graph.mkdir()
+            (graph / "index.html").write_bytes(b"SYNTHETIC OUTSIDE")
+            (graph / "private-fixture.txt").write_bytes(b"SYNTHETIC PRIVATE")
+        return result
+
+    parent_old = tmp_path.with_name(tmp_path.name + "-original")
+
+    def open_then_swap(path, *args, **kwargs):
+        nonlocal swapped
+        fd = original_open(path, *args, **kwargs)
+        if Path(path) == graph.parent and not swapped:
+            swapped = True
+            tmp_path.rename(parent_old)
+            tmp_path.mkdir()
+            (tmp_path / "frontend").mkdir()
+            (tmp_path / "frontend/index.html").write_bytes(b"SYNTHETIC OUTSIDE")
+            (tmp_path / "frontend/private-fixture.txt").write_bytes(b"SYNTHETIC PRIVATE")
+        return fd
+
+    if window == "after_symlink_check":
+        monkeypatch.setattr(Path, "is_symlink", check)
+    elif window == "after_root_stat":
+        monkeypatch.setattr(os, "stat", stat_then_swap)
+    else:
+        monkeypatch.setattr(os, "open", open_then_swap)
+    if window == "after_parent_open":
+        try:
+            resources = FrontendResources(graph)
+            assert resources._files["index.html"] != b"SYNTHETIC OUTSIDE"
+            assert "private-fixture.txt" not in resources._files
+        finally:
+            if parent_old.exists():
+                # pytest仍管理原tmp_path，将自有旧父目录放回便于正常fixture回收。
+                import shutil
+                shutil.rmtree(tmp_path)
+                parent_old.rename(tmp_path)
+    else:
+        with pytest.raises((OSError, ValueError)):
+            FrontendResources(graph)
+    assert swapped, "必须实际触发指定替换窗口"
+
+
 def test_namespace_keeps_html_modules_images_and_bare_compatibility(graph):
     resources = FrontendResources(graph)
     client = client_for(resources)

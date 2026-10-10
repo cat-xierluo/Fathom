@@ -20,16 +20,27 @@ RESOURCE_PREFIX = "/_fathom/resources/"
 class FrontendResources:
     def __init__(self, directory: Path):
         root = Path(directory)
-        if root.is_symlink():
-            raise ValueError("前端资源根不能是符号链接")
-        root = root.resolve(strict=True)
+        if not root.name or root.name in (".", ".."):
+            raise ValueError("前端资源根必须是具名目录")
         self._files: dict[str, bytes] = {}
-        # dir_fd + O_NOFOLLOW 钉住目录链，检查后替换符号链接也不能越界读取。
-        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        # 先固定父目录，再按原配置最终组件检查/打开。不能在根检查后resolve：
+        # 根若被换成symlink，resolve会把原本授权路径重新定向到链接目标。
+        parent_fd = os.open(root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            self._read_directory(root_fd, "")
+            expected = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(expected.st_mode) or root.is_symlink():
+                raise ValueError("前端资源根必须是非符号链接目录")
+            root_fd = os.open(root.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=parent_fd)
+            try:
+                opened = os.fstat(root_fd)
+                if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+                    raise ValueError("前端资源根读取时发生替换")
+                self._read_directory(root_fd, "")
+            finally:
+                os.close(root_fd)
         finally:
-            os.close(root_fd)
+            os.close(parent_fd)
         if "index.html" not in self._files:
             raise ValueError("前端资源缺少 index.html")
         digest = hashlib.sha256()

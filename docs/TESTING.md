@@ -23,7 +23,7 @@ PLAYWRIGHT_BIN="$PWD/.runtime/playwright/node_modules/.bin/playwright" \
 PW_INSTALL=1 /bin/bash scripts/ci_browser_checks.sh
 ```
 
-GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1561）和 Rust 1.88 locked build+单测（77）；浏览器/API 检查（39）与前端 refresh 功能回归（217）在 Apple Silicon 上运行，树形/大文件/分布/范围/整盘/跨页六个前端家族、Agent 中心54项及升级状态恢复16项同 job fail-closed。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
+GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1578）和 Rust 1.88 locked build+单测（79）；浏览器/API 检查（39）与前端 refresh 功能回归（217）在 Apple Silicon 上运行，树形/大文件/分布/范围/整盘/跨页六个前端家族、Agent 中心54项及升级状态恢复16项同 job fail-closed。脚本不安装 launchd、不扫描 HOME、不读取发行秘密，也不创建或上传产物；它们不能替代 Tauri GUI、系统权限或签名包实测。
 
 本地/API/CLI 验收必须显式设置完整隔离边界：`FATHOM_RUNTIME_DIR` 派生 data/reports/logs，`FATHOM_SCAN_ROOT` 指定合成根，`FATHOM_RESOURCE_DIR` 指定只读资源，`FATHOM_PORT` 使用已核对的测试端口；CLI 也提供等价覆盖。旧 `FATHOM_DB` 仅作兼容，未指定运行根时其父目录成为完整运行根。`FATHOM_DU_TIMEOUT_S`（ISS-061，默认 14400 秒）设置单次 `du` 采集的安全时限：超时后本次扫描记为 `interrupted` 并保留上次有效快照；值必须是正的有限数，`0`、负数、非数字、`nan`、`inf` 一律在启动时被拒绝（不存在"无限超时"）；夹具里可用极小值（如 `0.001`）构造超时反例。端口占用须非零退出，不停止未知进程；install/uninstall/权限与真实 Finder 动作另属实机验证。驱动真实 serve/HTTP 链路时，必须先断言目标 `/health` 返回的 pid 等于自 spawn 进程且 `runtime_mode=="development"` 再继续（ISS-035B 实录：生产 helper 与开发实例同身份、`/health` 面不可区分，曾误打生产 helper，因 analysis 默认关闭两层 403 挡住而零触碰；此断言后已固化）。
 
@@ -45,7 +45,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1561
 ```bash
 EXPECTED_PYTEST_PASSED=1578 /bin/bash scripts/ci_pytest.sh # ↔ pytest (arm64)，与CI计数一致
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 217 + AI 解读 77 + Agent 中心 54 + 六个前端家族（74/36/33/62/52/55）+ 升级恢复16
-/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 77
+/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 79
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
   rustup run stable cargo check --target x86_64-apple-darwin --locked --offline \
   --manifest-path apps/desktop/src-tauri/Cargo.toml  # ≈ cargo locked offline (x86_64)：交叉 check，非原生 build
@@ -230,7 +230,7 @@ helper 构建需已有 pinned PyInstaller 环境，按 `scripts/build_helper.sh`
 
 `.github/workflows/frozen-analysis.yml` 在原生 `macos-15-intel` 上断言 `uname -m=x86_64`，用既有锁定 Python/PyInstaller 依赖和 `scripts/build_helper.sh` 构建冻结 helper，再由 `scripts/ci_frozen_analysis.py run` 绑定源提交、真实文件 SHA256、Mach-O 架构与版本，显式传 build-ready manifest 给 `scripts/verify_frozen_analysis.py` 跑 33 项接线及生命周期检查。默认可执行路径按真实 onedir 输出为 `apps/desktop/src-tauri/resources/helper/fathom-helper/fathom-helper/fathom-helper`；目录本身不能作为 helper。构建或身份验证失败时写失败 manifest、保留原退出码，不调用后续回归；回归失败也传回真实退出码。manifest/report/日志由 job 输出留存，不发布产物。
 
-合并前由目标 `main`、限定相关文件路径的 PR 触发，并显式检出 PR head SHA；合并后可用 `workflow_dispatch` 复跑指定 ref。工作流仅 `contents: read`，无发行秘密、tag、签名或 Release 写入。入口的 30 项定向测试用 `python -m pytest tests/test_ci_frozen_analysis.py -q --maxfail=1` 执行，普通 CI 总数在该次变更时同步为 1219（**历史数值，当前 pytest 门禁为 1561，见 §1**）。离线夹具或本机 arm64 检查不能证明 Intel 冻结路径通过；原生 Intel job 的固定源/产物指纹与真实 33 项结果才是该路径证据。33 项使用合成 shim，仅验证接线与生命周期，不证明真实模型质量或 Tauri GUI。
+合并前由目标 `main`、限定相关文件路径的 PR 触发，并显式检出 PR head SHA；合并后可用 `workflow_dispatch` 复跑指定 ref。工作流仅 `contents: read`，无发行秘密、tag、签名或 Release 写入。入口的 30 项定向测试用 `python -m pytest tests/test_ci_frozen_analysis.py -q --maxfail=1` 执行，普通 CI 总数在该次变更时同步为 1219（**历史数值，当前 pytest 门禁为 1578，见 §1**）。离线夹具或本机 arm64 检查不能证明 Intel 冻结路径通过；原生 Intel job 的固定源/产物指纹与真实 33 项结果才是该路径证据。33 项使用合成 shim，仅验证接线与生命周期，不证明真实模型质量或 Tauri GUI。
 
 ### 升级准备的父进程回收回归
 
@@ -248,7 +248,7 @@ FATHOM_UPGRADE_TEST_HELPER=/Applications/Fathom.app/Contents/Resources/helper/fa
 
 ### 升级终态跨后台重启恢复
 
-`node scripts/verify_updater_recovery.cjs` 的16项真实 Chromium 回归使用两个回环 HTTP origin 与显式 Tauri IPC 桥夹具，加载生产 settings/router 模块，验证 `#settings/about` 初始化、失败 kind/error/hint 与重试入口恢复、已安装后的重启入口、迟到回读/旧事件拒绝及忙碌响应不覆盖新操作；普通手动检查保留待重启终态，明确重试下载才开始新的失败重试。`ci_browser_checks.sh` 与 CI/本地入口以 `EXPECTED_UPDATER_RECOVERY_PASSED=16` 收口；默认 Rust 77项包含3项 presentation 状态机回归。
+`node scripts/verify_updater_recovery.cjs` 的16项真实 Chromium 回归使用两个回环 HTTP origin 与显式 Tauri IPC 桥夹具，加载生产 settings/router 模块，验证 `#settings/about` 初始化、失败 kind/error/hint 与重试入口恢复、已安装后的重启入口、迟到回读/旧事件拒绝及忙碌响应不覆盖新操作；普通手动检查保留待重启终态，明确重试下载才开始新的失败重试。`ci_browser_checks.sh` 与 CI/本地入口以 `EXPECTED_UPDATER_RECOVERY_PASSED=16` 收口；默认 Rust 79项包含3项 presentation 状态机回归。
 
 桥夹具只能证明前端与约定 IPC 形态兼容，不能证明冻结 helper 包含新前端、真实桌面 invoke 或应用替换可用。打包验收须在自有安装目录、合成历史与显式隔离运行根中，执行签名正确但损坏的更新包：确认真实 prepare/备份/rollback 后 helper 换端口，关于页仍显示失败原因且可重试；再使用正确包完成安装、确认重启，核对新版 app/helper、历史和数据库完整性。测试 endpoint/test key 仅用于隔离注入；正式资产仍须用已安装旧客户端的生产公钥标准验签。不得扫描 HOME 或修改生产调度。
 

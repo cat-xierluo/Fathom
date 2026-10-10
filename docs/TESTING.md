@@ -14,7 +14,7 @@
 仓库的三个 fail-closed 入口会建立/核对各自环境和精确通过数；**当前源码配置期望值（含未发布的默认启动盘改动；权威值见 `.github/workflows/ci.yml` 的 `EXPECTED_*`）为 pytest 1578、API/浏览器 39、前端 refresh 217、AI 解读前端 77、Agent 中心 54、Rust 单测 79、升级状态恢复 16**。另有六个前端真实入口回归家族同口径 fail-closed：树形变化 74（`EXPECTED_TREE_PASSED`）、目录限定大文件 36（`EXPECTED_DIR_BIGFILES_PASSED`）、分布页快照绑定 33（`EXPECTED_BROWSE_SNAPSHOT_PASSED`）、范围设置 62（`EXPECTED_SCOPE_SETTINGS_PASSED`）、整盘总览 52（`EXPECTED_STORAGE_OVERVIEW_PASSED`）、跨页排查 55（`EXPECTED_INVESTIGATION_PASSED`）。对应脚本：`scripts/verify_tree_changes_frontend.cjs`、`verify_directory_bigfiles_frontend.cjs`、`verify_browse_snapshot_frontend.cjs`、`verify_scope_settings_frontend.cjs`、`verify_storage_overview_frontend.cjs`、`verify_storage_investigation_frontend.cjs`；新增独立 Agent 页为 `scripts/verify_agent_frontend.cjs`，全部由 `scripts/ci_browser_checks.sh` 串联。`ci_pytest.sh` 默认 1578、`ci_cargo_locked.sh` 默认 79 均与当前 CI 一致；本地完整入口为 `ci_local.sh`。漂移时以 CI env 为权威，修改通过数必须有对应测试变化。ISS-143 新增三个实际鼠标悬停断言（首点、后日期、同日不同时间），不调用 tooltip formatter 冒充真实曲线交互；ISS-147 新增 38 项同级差分 API 测试；ISS-152 新增 29 项启动盘容器与卷发现适配器测试（plist 结构化只读发现，不做 du/挂载/写盘）；ISS-150 新增 32 项限定目录 largest/recent 大文件查询测试；ISS-159 新增 21 项 browse 显式快照绑定测试与 33 项分布页真实入口回归（`scripts/verify_browse_snapshot_frontend.cjs`，真实 serve + Chromium，历史实点/结构节点/单时点详情/404 恢复/分页）。0.4.0 新增：schema v8 五表迁移与身份隔离、范围配置 fail-closed、多范围轮次协调与部分成功、整盘摘要口径（有符号未知差额/共享 free 只计一次/不可比为 null）、`entries(path)` 索引（EXPLAIN 必走索引的反例自证 + 写锁让步）、plan 身份两档 HTTP 回归（`tests/test_plan_identity_consumers.py` 14 例）、取消响应合同确定性交错。固定候选的实际通过数以对应 PR 的 Actions 日志为准；变更测试数量必须用任务和反例显式同步。本地复跑使用 macOS 系统 Bash：
 
 ```bash
-EXPECTED_PYTEST_PASSED=1561 /bin/bash scripts/ci_pytest.sh
+EXPECTED_PYTEST_PASSED=1578 /bin/bash scripts/ci_pytest.sh
 /bin/bash scripts/ci_cargo_locked.sh
 npm install --prefix .runtime/playwright playwright@1.61.1
 FATHOM_PYTHON="$PWD/.venv/bin/python" \
@@ -43,7 +43,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest（1561
 **2026-09-15 至 09-26 历史状态**：`CI` workflow 曾因额度停用（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发），当时 push/PR 不创建 run，`gh pr checks` 为空属预期。现已恢复实跑；下列本地替代链用于额度故障时按主干同一计数复跑，与云端作业对应：
 
 ```bash
-EXPECTED_PYTEST_PASSED=1561 /bin/bash scripts/ci_pytest.sh # ↔ pytest (arm64)，与CI计数一致
+EXPECTED_PYTEST_PASSED=1578 /bin/bash scripts/ci_pytest.sh # ↔ pytest (arm64)，与CI计数一致
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 217 + AI 解读 77 + Agent 中心 54 + 六个前端家族（74/36/33/62/52/55）+ 升级恢复16
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 77
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \

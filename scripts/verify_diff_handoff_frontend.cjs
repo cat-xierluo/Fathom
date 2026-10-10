@@ -35,18 +35,19 @@ async function helper(){
  const resource={pid:child.pid,port,runtime,scanRoot};resources.push(resource);
  return{base:`http://127.0.0.1:${port}`,info,port,env,async close(){child.kill('SIGTERM');await closed;resource.pidExited=true;resource.listenClosed=await new Promise(resolve=>{const s=net.connect({host:'127.0.0.1',port});s.once('connect',()=>{s.destroy();resolve(false);});s.once('error',e=>resolve(e.code==='ECONNREFUSED'));});fs.writeFileSync(path.join(evidence,'serve.log'),log);record('helper.cleanup',resource.pidExited&&resource.listenClosed,JSON.stringify(resource));}};
 }
-async function catalogGate(page,trace){
+async function catalogGate(page,trace,{ older = false } = {}){
  const entered=deferred(),release=deferred(),token=String(++gateSequence);let gated=false;
  const handler=async route=>{
   if(gated){await route.continue();return;}gated=true;
   const response=await route.fetch(),json=await response.json();
   trace.push({event:'catalog-captured',url:route.request().url(),ids:json.map(s=>s.id)});entered.resolve();
-  await release.promise;trace.push({event:'catalog-released',token});await route.fulfill({response,headers:{...response.headers(),'x-iss188-gate':token}});
+  const delivered = older ? json.filter(s=>s.id<=2) : json;
+  await release.promise;trace.push({event:'catalog-released',token,deliveredIds:delivered.map(s=>s.id)});await route.fulfill({response,json:delivered,headers:{...response.headers(),'x-iss188-gate':token}});
  };
  await page.route('**/api/snapshots',handler);
  return{entered:entered.promise,release:()=>release.resolve(),async settled(){await page.waitForFunction(t=>window.__completedCatalogGates.includes(t),token);},async close(){release.resolve();await page.unrouteAll({behavior:'wait'});}};
 }
-async function read(page){return page.evaluate(()=>({a:document.querySelector('#sel-a').value,b:document.querySelector('#sel-b').value,aOptions:Array.from(document.querySelector('#sel-a').options,o=>o.value),hash:location.hash,mutations:window.__handoffMutations||0}));}
+async function read(page){return page.evaluate(()=>({a:document.querySelector('#sel-a').value,b:document.querySelector('#sel-b').value,aOptions:Array.from(document.querySelector('#sel-a').options,o=>o.value),bOptions:Array.from(document.querySelector('#sel-b').options,o=>o.value),hash:location.hash,mutations:window.__handoffMutations||0}));}
 async function watch(page){await page.evaluate(()=>{window.__handoffMutations=0;new MutationObserver(()=>window.__handoffMutations++).observe(document.querySelector('#sel-b'),{childList:true});window.__diag=[];});}
 async function overview(page){const response=page.waitForResponse(r=>r.url().endsWith('/api/storage/summary'));await page.click('.nav-item[data-page="overview"]');await response;await page.waitForFunction(()=>!!document.querySelector('[data-test="storage-cta"]'));}
 async function warm(page,base){
@@ -169,6 +170,43 @@ async function verifyManualDuringWait(page,fixture,width,trace){
   record(`${width}.manual-before-ready-keeps-group`,settled.aOptions.every(id=>['2','4'].includes(id)),JSON.stringify(settled));
  }finally{await gate.close();}
 }
+async function verifyMissingCurrentPoint(page,fixture,width,trace){
+ await warm(page,fixture.base);
+ const gate=await catalogGate(page,trace,{older:true});
+ try{
+  trace.push({event:'missing-point-legal-b1-prewarm',...await read(page)});
+  await page.click('[data-test="storage-cta"]');await gate.entered;
+  await page.waitForFunction(()=>document.querySelector('#sel-b').value==='3');
+  trace.push({event:'missing-point-cta3',...await read(page)});
+  gate.release();await gate.settled();const settled=await read(page);
+  record(`${width}.missing-point-keeps-catalog-and-cta`,settled.a==='1'&&settled.b==='3'&&settled.bOptions.join(',')==='4,3,2,1',JSON.stringify(settled));
+  await gate.close();
+  // #4 is offered by the accepted full catalog. A stale subset cannot remove
+  // its identity while leaving it selectable, or rewrite this manual intent.
+  await page.selectOption('#sel-b','4');const manual=await read(page);
+  trace.push({event:'missing-point-manual4-after-old-catalog',...manual});
+  record(`${width}.missing-point-manual4-keeps-range`,manual.a==='2'&&manual.b==='4',JSON.stringify(manual));
+  record(`${width}.missing-point-manual4-same-dataset`,manual.aOptions.join(',')==='4,2',JSON.stringify(manual));
+  // Exercise every offered b through the real change handler: each must retain
+  // its ID, derive a real same-dataset predecessor and keep a usable b control.
+  const expected={1:{a:'3',ids:'3,1'},2:{a:'4',ids:'4,2'},3:{a:'1',ids:'3,1'},4:{a:'2',ids:'4,2'}};
+  const candidates=[];
+  for(const b of settled.bOptions){
+   const offered=(await read(page)).bOptions.includes(b);
+   if(offered)await page.selectOption('#sel-b',b);
+   const selected=await read(page);
+   candidates.push({requested:b,offered,...selected,disabled:await page.locator('#sel-b').isDisabled()});
+  }
+  trace.push({event:'missing-point-offered-candidates',candidates});
+  record(`${width}.missing-point-visible-candidates-have-identity`,candidates.length===4&&candidates.every(c=>c.offered&&c.b===c.requested&&c.a===expected[c.requested].a&&c.aOptions.join(',')===expected[c.requested].ids&&!c.disabled),JSON.stringify(candidates));
+  // A new normal catalog request may refresh the accepted facts. The next CTA
+  // must still reach #1→#3 after manual switching through another dataset.
+  await overview(page);await page.click('[data-test="storage-cta"]');
+  await page.waitForFunction(()=>document.querySelector('#sel-b').value==='3'&&document.querySelector('#sel-a').value==='1');
+  const repeated=await read(page);trace.push({event:'missing-point-repeat-cta3',...repeated});
+  record(`${width}.missing-point-repeated-cta-keeps-range`,repeated.a==='1'&&repeated.b==='3'&&repeated.aOptions.join(',')==='3,1'&&repeated.bOptions.join(',')==='4,3,2,1',JSON.stringify(repeated));
+ }finally{await gate.close();}
+}
 async function verify(browser,fixture,width,height){
  const page=await browser.newPage({viewport:{width,height}}),trace=[];traces.push({viewport:`${width}x${height}`,events:trace});let gate;
  await installResponseBarrier(page);
@@ -177,10 +215,11 @@ async function verify(browser,fixture,width,height){
   await warm(page,fixture.base);trace.push({event:'prewarm-before-cta',...await read(page)});
   gate=await catalogGate(page,trace);await page.click('[data-test="storage-cta"]');await gate.entered;
   await page.waitForFunction(()=>document.querySelector('#sel-b').value==='3');const applied=await read(page);trace.push({event:'cta-applied',...applied});
-  gate.release();await gate.settled();await page.waitForFunction(n=>window.__handoffMutations>n,applied.mutations);const settled=await read(page);trace.push({event:'catalog-settled',...settled});trace.push({event:'production-diagnostics',events:await page.evaluate(()=>window.__diag)});
+  gate.release();await gate.settled();const settled=await read(page);trace.push({event:'catalog-settled',...settled});trace.push({event:'production-diagnostics',events:await page.evaluate(()=>window.__diag)});
   record(`${width}.late-catalog-keeps-cta`,applied.b==='3'&&settled.b==='3',JSON.stringify({applied,settled}));
   record(`${width}.cta-baseline-same-dataset`,settled.a==='1'&&settled.aOptions.every(id=>['1','3'].includes(id)),JSON.stringify(settled));
   await gate.close();gate=null;
+  await verifyMissingCurrentPoint(page,fixture,width,trace);
   await verifyNewerManual(page,fixture,width,trace);
   await verifySecondCta(page,fixture,width,trace);
   await verifyRouteReturn(page,fixture,width,trace);

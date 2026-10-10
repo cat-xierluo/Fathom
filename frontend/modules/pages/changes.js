@@ -263,22 +263,16 @@ async function loadSnapshotsForDiff({ notice = "", restore = false } = {}) {
     current: request.current(), a: selA.value, b: selB.value });
   if (!request.current()) return;
 
-  // ISS-170：缓存原始列表（收敛与守卫共用），再按当前生效数据集收敛两侧选项
-  snapshotCatalog = snaps;
-  // 请求发起后有较新的用户/CTA 意图：只更新目录事实，不重新选择或补发 diff。
-  // replaceChildren 会把 select 重置为首项，因此重建 b 时须保留当前取值。
-  // 旧目录未包含较新选中的点时保留现有选项，交给该意图自己的请求校验，
-  // 不把缺失当成替用户选择其他区间的授权。
+  // 请求发起后有较新的用户/CTA 意图，整个旧响应已作废：目录事实与可见
+  // 选项一起保留上一有效版本。否则旧子集可能丢失仍可选点的身份，使下一次
+  // 手动选择被收敛逻辑改写。缺失不证明删除，也不授权替用户选择其他区间。
   if (snapshotSelectionRevision !== selectionRevision) {
-    const currentB = selB.value;
-    if (!currentB || snaps.some((s) => String(s.id) === currentB)) {
-      replaceSnapshotOptions(selB, snaps);
-      selB.value = currentB;
-    }
     _diag("catalog-superseded", { selectionRevision, currentRevision: snapshotSelectionRevision,
       a: selA.value, b: selB.value });
     return;
   }
+  // ISS-170：接受当前请求的原始列表（收敛与守卫共用），再收敛两侧选项。
+  snapshotCatalog = snaps;
   const selectedA = previousA;
   const selectedB = previousB;
   const anchor = anchorSnapshot(snaps, selectedB);

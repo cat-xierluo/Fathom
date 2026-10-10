@@ -236,7 +236,7 @@ assert_result_json "$tree_out" "$expected_storage_overview" "storage overview fr
 # ISS-188：合法 b1 预热后的 CTA 与迟到目录响应、较新改选/第二 CTA、
 # 快速离页重入与旧等待器取消。真实 serve/生产前端，受控合法响应，三视口。
 FATHOM_PYTHON="$tree_python" node scripts/verify_diff_handoff_frontend.cjs | tee "$tree_out"
-expected_diff_handoff="${EXPECTED_DIFF_HANDOFF_PASSED:-40}"
+expected_diff_handoff="${EXPECTED_DIFF_HANDOFF_PASSED:-55}"
 assert_result_json "$tree_out" "$expected_diff_handoff" "diff handoff frontend"
 
 # ISS-160：跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI 隔离入口 + 生产页面实点）。

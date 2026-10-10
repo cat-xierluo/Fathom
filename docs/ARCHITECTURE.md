@@ -22,6 +22,8 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 
 ## 模块与实际行为
 
+总览到变化页的交接由 `overview.js` 的单次入口对象和 `changes.js` 的选择意图世代共同约束。目录请求绑定发起时的世代；较新入口或手动选择出现后，迟到响应可更新快照目录，但不能回填旧区间。入口等待器只消费自己的对象，离开变化页会撤销待交接对象。启用既有 `window.__diag` 探针时记录请求、响应与过时落定，诊断不参与控制流，也不新增生产日志。
+
 | 模块 | 实现 | 已确认局限 |
 |---|---|---|
 | config.py | 单一 `RuntimeConfig`；development/release 模式；运行根派生 data/reports/logs；扫描根、只读资源根、回环端口与兼容 `FATHOM_DB` 入口；运行根下 `settings.json` 用户设置持久化（ISS-016A：原子写、校验 fail-closed、优先级 CLI > `FATHOM_*` 环境变量 > settings.json > 默认，覆盖项经 `/api/config` 读写并发布回 `MIN_DIR_KB`/`FREE_ALERT_GB`/`SCAN_HOUR`/`SCAN_MINUTE` 常量） | 分钟级 plist 写入与经确认重装已有 ISS-010B/016B 接线；发行账户中的真实计划/运行根一致性仍待 ISS-016 验收。ISS-155 新增 `storage_scope` 范围选择（`config.py:454` 未落盘即 `None`＝尚未选择；读取不迁移，release 主动采集默认解析启动盘）：`ScopeSelection`（`config.py:507`）校验 fail-closed（未知 mode/相对路径/不存在目录/重复根/超过 16 项/NUL 字节/scope_ids 错位/身份版本不匹配一律 `ConfigurationError`，见 `config.py:553-572` 与 `_validated_storage_scope` `config.py:577`）、`save_scope_selection` 乐观版本冲突保护、`_SETTINGS_LOCK` 改可重入 RLock（`config.py:391`）、排除集被环境变量覆盖时原样透传；落盘为 wire 形态（`config.py:476`）。**能力边界（ISS-174 核实结论，0.4.0 未变）**：范围经 Web 设置页 / `/api/config` / CLI 生效，桌面壳**不读取范围配置来驱动扫描**；lib.rs 侧只有形态容忍的只读接缝（`storage_scope_setting`，容忍未知键、畸形结构降级 `None`），不是行为接线 |

@@ -1227,6 +1227,10 @@ code {
 .analysis-finding { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
 .analysis-finding-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .analysis-finding-evidence { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+/* 证据编号不在表行内：保持可发现，并按编号文字适配宽度。 */
+.analysis-finding-evidence .btn-mini, .analysis-inspect .btn-mini {
+  opacity: 1; width: auto; min-width: 44px; padding: 0 6px; white-space: nowrap;
+}
 .analysis-limitations li, .analysis-inspect li { overflow-wrap: anywhere; line-height: 1.5; }
 .analysis-prompt {
   max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word;
@@ -1242,7 +1246,7 @@ code {
   padding: 10px 12px; margin-top: 8px; display: grid; gap: 4px;
 }
 .analysis-evidence-head { display: flex; align-items: center; gap: 8px; }
-.analysis-evidence-head .btn-mini { margin-left: auto; }
+.analysis-evidence-head .btn-mini { margin-left: auto; opacity: 1; }
 .analysis-evidence-path {
   margin: 0; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   overflow-wrap: anywhere; color: var(--used);
@@ -1338,3 +1342,15 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Agent 中心：长范围与历史在桌面最小视口内保持可读。 */
+.agent-range-controls { flex-wrap: wrap; }
+.agent-range-controls label { display:flex; align-items:center; gap:8px; min-width:0; }
+.agent-range-controls select { max-width:280px; min-width:120px; }
+.agent-history-scroll { overflow-x:auto; }
+#page-agent .tbl td { overflow-wrap:anywhere; }
+#page-agent .panel-head { flex-wrap:wrap; gap:8px; }
+/* .btn 的 display 覆盖 UA hidden；分页结束后必须确实收起加载更多。 */
+#agent-history-more[hidden] { display:none; }
+/* 查看原任务是历史列表主动作，不沿用悬停才显现的辅助按钮。 */
+#page-agent [data-agent-job] { opacity:1; white-space:nowrap; }

@@ -3036,6 +3036,15 @@ async function startFirstScan() {
 
 export const settingsPage = {
   id: "settings",
+  enter() {
+    // 常驻页面初始化后，跨页的 AI 配置入口仍须在每次进入时消费深链。
+    const pending = window.__fathomSettingsSectionPending;
+    window.__fathomSettingsSectionPending = null;
+    const section = pending || _readHashSection();
+    if (SETTINGS_SECTIONS.includes(section)) {
+      activateSettingsSection(section, { persistHash: Boolean(pending) });
+    }
+  },
   load() {
     loadSettings();
     // 关于区版本：loadUpdater 完成后回填（异步），这里先设一次占位

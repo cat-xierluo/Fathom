@@ -25,6 +25,9 @@
     <a href="#/changes" data-page="changes" class="nav-item">
       <span class="nav-icon" data-icon="activity"></span><span class="nav-label">变化</span>
     </a>
+    <a href="#/agent" data-page="agent" class="nav-item">
+      <span data-icon="sparkles"></span> Agent
+    </a>
     <a href="#/browse" data-page="browse" class="nav-item">
       <span class="nav-icon" data-icon="pie"></span><span class="nav-label">分布</span>
     </a>
@@ -353,6 +356,29 @@
             <tbody></tbody>
           </table>
         </div>
+        </div>
+      </section>
+
+      <section class="page hidden" id="page-agent">
+        <div class="surface">
+          <div class="panel">
+            <div class="panel-head"><h2>变化解读</h2><button type="button" class="btn" id="agent-settings">去设置配置</button></div>
+            <p class="hint" id="agent-engine-summary" data-test="agent-engine-summary">引擎状态读取中…</p>
+            <div class="controls agent-range-controls">
+              <label>基线 <select id="agent-a" aria-label="Agent 基线快照"></select></label>
+              <label>对比 <select id="agent-b" aria-label="Agent 对比快照"></select></label>
+              <button type="button" class="btn" id="agent-refresh">刷新</button>
+            </div>
+            <p class="hint" id="agent-range-status" role="status" aria-live="polite"></p>
+            <p class="hint" id="agent-opened-task" data-test="agent-opened-task"></p>
+          </div>
+          <div class="panel panel-divided" id="agent-analysis-panel"><div id="agent-analysis-body"></div></div>
+          <div class="panel panel-divided">
+            <div class="panel-head"><h2>任务与历史</h2><button type="button" class="btn" id="agent-history-refresh">刷新任务历史</button></div>
+            <p class="hint" id="agent-history-count"></p><p class="hint cfg-error" id="agent-history-error" role="status"></p>
+            <div class="agent-history-scroll"><table class="tbl" data-test="agent-history"><thead><tr><th>原区间</th><th>状态</th><th>引擎</th><th>创建时间</th></tr></thead><tbody id="agent-history-body"></tbody></table></div>
+            <button type="button" class="btn" id="agent-history-more" hidden>加载更多任务</button>
+          </div>
         </div>
       </section>
 

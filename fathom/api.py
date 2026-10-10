@@ -1173,6 +1173,19 @@ async def api_analysis_jobs(request: Request):
     return JSONResponse({"job": job, "replayed": replayed}, status_code=202)
 
 
+@app.get("/api/analysis/history")
+def api_analysis_history(limit: int = Query(20, ge=1, le=100),
+                         offset: int = Query(0, ge=0)):
+    """Agent 中心纯读分页：跨区间在途与生命周期历史，关闭引擎仍可读。"""
+    return _get_analysis_manager().list_history(limit=limit, offset=offset)
+
+
+@app.get("/api/analyses/{analysis_id}")
+def api_analysis_record(analysis_id: int):
+    """按记录 ID 读取原区间正文与证据，不要求快照仍在，也不触发分析。"""
+    return {"analysis": _get_analysis_manager().get_analysis(analysis_id)}
+
+
 @app.get("/api/analysis/jobs/{job_id}")
 def api_analysis_job(job_id: str):
     """查询 job 状态（纯读，无派发/探测/外传副作用）。"""

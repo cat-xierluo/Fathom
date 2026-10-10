@@ -11,11 +11,12 @@ import { overviewPage } from "./pages/overview.js";
 import { changesPage } from "./pages/changes.js";
 import { browsePage } from "./pages/browse.js";
 import { bigfilesPage } from "./pages/bigfiles.js";
+import { agentPage } from "./pages/agent.js";
 import { settingsPage } from "./pages/settings.js";
 
 export const PAGE_TITLES = {
   overview: "总览", changes: "变化", browse: "分布",
-  bigfiles: "大文件", settings: "设置",
+  bigfiles: "大文件", agent: "Agent", settings: "设置",
 };
 
 const PAGES = {
@@ -24,6 +25,7 @@ const PAGES = {
   browse: browsePage,
   bigfiles: bigfilesPage,
   settings: settingsPage,
+  agent: agentPage,
 };
 
 /* 单一刷新入口：只加载当前激活页的数据。 */

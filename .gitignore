@@ -22,6 +22,9 @@ apps/desktop/src-tauri/verify-results/
 # ISS-078：发行候选登记记录（release_candidate_record.sh 输出到仓库根 verify-results/release-candidates/，不入库——防首次登记产出把下次登记的干净工作区检查自锁）
 verify-results/
 
+# worker 交付回执应落会话回执目录，不落仓库根；防再被 git add -A 扫进库（2026-10-10 根目录清理，ISS-178 回执归档 verify-results/iss178-delivery-20261008/）
+/RESULT.md
+
 # ISS-009 切片 1：生产 helper 冻结产物（PyInstaller onedir）
 # ISS-055：resources map 源目录改到 fathom-helper/，README.txt 占位保留入库
 apps/desktop/src-tauri/resources/helper/fathom-helper/**

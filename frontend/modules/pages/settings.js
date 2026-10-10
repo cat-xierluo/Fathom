@@ -2654,6 +2654,8 @@ let scopeState = {
   previewError: null,
   feedback: null,    // {text, kind}
   firstRun: null,    // 保存成功后的首扫引导
+  draftMode: null,
+  draftRoots: null,
 };
 
 function _scopeRootsInput() {
@@ -2669,7 +2671,7 @@ function _scopeMode() {
 function _scopeCandidate() {
   const mode = _scopeMode();
   if (!mode) return null;
-  const roots = (_scopeRootsInput()?.value || "")
+  const roots = mode === "startup_storage" ? [] : (_scopeRootsInput()?.value || "")
     .split("\n").map((s) => s.trim()).filter(Boolean);
   return { mode, roots };
 }
@@ -2678,15 +2680,13 @@ function _scopeVolumeRow(v) {
   const status = SCOPE_STATUS_LABELS[v.status] || v.status || "状态未知";
   const name = escapeHtml(v.name || v.mount_point || v.device_identifier || v.volume_id || "未命名卷");
   const role = (v.roles || []).map((r) => escapeHtml(r)).join(" / ");
-  // 不可选态（未挂载/锁定）仍展示但不可勾选：不把「发现到」说成「可选可读」。
+  // 卷信息只读展示；未挂载/锁定不因「发现到」而成为可采集入口。
   const disabled = v.status && v.status !== "accessible";
   return `<li class="scope-volume" data-test="scope-volume" data-volume-id="${escapeHtml(v.volume_id || "")}"
         data-status="${escapeHtml(v.status || "unknown")}"${disabled ? " data-disabled=\"1\"" : ""}>
-        <label class="scope-volume-label">
-          <input type="checkbox" class="scope-volume-check" value="${escapeHtml(v.mount_point || "")}"
-                 data-test="scope-volume-check"${disabled ? " disabled" : ""}>
+        <span class="scope-volume-label">
           <span class="scope-volume-name">${name}</span>
-        </label>
+        </span>
         <span class="scope-volume-meta">${status}${role ? ` · ${role}` : ""}
           ${v.mount_point ? ` · <code>${escapeHtml(v.mount_point)}</code>` : ""}</span>
         ${v.filevault ? `<span class="scope-volume-meta">FileVault：${escapeHtml(v.filevault)}</span>` : ""}
@@ -2710,7 +2710,9 @@ function _scopeCurrentRow() {
   if (!view.enabled || !view.selection) {
     return `<p class="hint" data-test="scope-current" data-enabled="0">
       当前生效范围：<strong>尚未启用范围能力</strong>（来源：${escapeHtml(view.source || "default")}）
-      ——扫描仍按旧单根口径运行，保存后仅下一轮改用新范围。</p>`;
+      ——${lastConfig?.next_scan_default === "startup_storage"
+        ? "下一次点击扫描将默认采集内置启动盘整体；旧用户目录历史保留。"
+        : "扫描仍按旧单根口径运行，保存后仅下一轮改用新范围。"}</p>`;
   }
   const s = view.selection;
   return `<p class="hint" data-test="scope-current" data-enabled="1"
@@ -2782,6 +2784,8 @@ function renderScopePanel() {
   if (!panel) return;
   const view = scopeState.view;
   const sel = view?.selection;
+  const mode = scopeState.draftMode || sel?.mode || "startup_storage";
+  const roots = scopeState.draftRoots ?? sel?.roots ?? [];
   const discovery = scopeState.discovery;
   const fb = scopeState.feedback;
 
@@ -2816,17 +2820,17 @@ function renderScopePanel() {
       <div class="cfg-field">
         <label class="scope-mode">
           <input type="radio" name="scope-mode" value="startup_storage" data-test="scope-mode-startup"
-                 ${sel?.mode === "startup_storage" || !sel ? "checked" : ""}>
-          启动盘整体（推荐：覆盖系统所在容器，容量口径一致）</label><br>
+                 ${mode === "startup_storage" ? "checked" : ""}>
+          内置启动盘整体（默认）</label><br>
         <label class="scope-mode">
           <input type="radio" name="scope-mode" value="custom_directory" data-test="scope-mode-custom"
-                 ${sel?.mode === "custom_directory" ? "checked" : ""}>
+                 ${mode === "custom_directory" ? "checked" : ""}>
           自定义目录（只监控列出的目录）</label>
         <textarea class="ctl-input cfg-wide" id="scope-roots" rows="3" data-test="scope-roots"
-                  spellcheck="false"
-                  placeholder="每行一个绝对路径">${escapeHtml((sel?.roots || []).join("\n"))}</textarea>
+                  spellcheck="false"${mode === "startup_storage" ? " hidden disabled" : ""}
+                  placeholder="自定义模式每行一个绝对路径">${escapeHtml(roots.join("\n"))}</textarea>
         <p class="cfg-desc" data-test="scope-mode-desc">
-          启动容器内的其它卷需要单独勾选（不会随「启动盘整体」顺带纳入）。
+          启动盘模式无需填写路径，自动从真实挂载入口生成计划；未挂载或锁定的卷不能采集，外接磁盘不自动纳入。
           换范围会形成新数据集与新基线。</p>
       </div>
     </div>
@@ -2849,6 +2853,16 @@ function renderScopePanel() {
   panel.querySelector("#btn-scope-save")?.addEventListener("click", () => saveScope());
   panel.querySelector("#btn-scope-reload")?.addEventListener("click", () => loadScopeSettings());
   panel.querySelector("#btn-scope-firstscan")?.addEventListener("click", startFirstScan);
+  panel.querySelectorAll('input[name="scope-mode"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      scopeState.draftMode = radio.value;
+      const input = _scopeRootsInput();
+      if (input) {
+        input.hidden = radio.value === "startup_storage";
+        input.disabled = input.hidden;
+      }
+    });
+  });
 }
 
 async function loadScopeSettings() {
@@ -2888,6 +2902,8 @@ async function previewScope() {
     renderScopePanel();
     return;
   }
+  scopeState.draftMode = candidate.mode;
+  scopeState.draftRoots = candidate.roots;
   const request = beginRequest("settingsScope");
   const qs = new URLSearchParams({ mode: candidate.mode, roots: candidate.roots.join(";") });
   try {
@@ -2918,6 +2934,8 @@ async function saveScope() {
   }
   const request = beginRequest("settingsScope");
   const body = { mode: candidate.mode, roots: candidate.roots };
+  // 初次保存同样带版本 0，预览后若其他窗口保存过则明确冲突。
+  body.expected_revision = 0;
   const current = scopeState.view?.selection;
   if (current && typeof current.revision === "number") {
     body.expected_revision = current.revision;   // 乐观并发：预览后被改动 → 409
@@ -2936,6 +2954,8 @@ async function saveScope() {
     scopeState.preview = data.plan || null;
     scopeState.previewError = null;
     scopeState.firstRun = { savedAt: data.scope?.selection?.revision ?? null };
+    scopeState.draftMode = null;
+    scopeState.draftRoots = null;
     scopeState.feedback = {
       kind: "ok",
       text: data.hint || "已保存：只影响下一轮计划，不触发扫描。",

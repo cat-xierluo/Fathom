@@ -157,11 +157,11 @@ def scope_specs_from_paths(
     ]
 
 
-def scope_specs_from_effective_selection() -> list[scan_coordinator.ScopeSpec]:
+def scope_specs_from_effective_selection(*, apply_default: bool = False) -> list[scan_coordinator.ScopeSpec]:
     """由**当前生效的范围选择**构造本轮范围规格（ISS-178 UI 采集入口）。
 
-    ``config.effective_scope_selection()`` 为 ``None``（用户从未选择范围）时
-    返回空列表——调用方据此走旧单根口径，行为与 ISS-150 逐字节一致。
+    只读调用不生成配置。实际采集入口用 ``apply_default=True``：未选择
+    范围的 release 用户默认采集内置启动盘；显式根及开发隔离仍用旧单根。
 
     已启用范围能力时返回与 CLI ``scan --scope`` 等价的规格列表：同样按选择
     顺序采集、同样按位置配对 ``scope_ids``。这正是 D1 缺失的一环：UI 触发必须
@@ -169,6 +169,16 @@ def scope_specs_from_effective_selection() -> list[scan_coordinator.ScopeSpec]:
     ``scan_plans``/``scan_rounds``/``scan_round_members`` 全空。
     """
     selection = config.effective_scope_selection()
+    if selection is None and apply_default and config.default_startup_scope_requested():
+        # 桌面默认改为内置启动盘。发现失败须停止，不能继续扫 HOME
+        # 并让用户误以为已经执行了全盘采集。读取配置本身不触发此写入。
+        from . import api
+        try:
+            selection = config.save_scope_selection(
+                api._default_startup_selection(), expected_revision=0)
+        except Exception as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            raise scan_coordinator.ScanScopeError(str(detail)) from exc
     if selection is None:
         return []
     return scope_specs_from_paths(
@@ -184,13 +194,13 @@ def _scan_scopes(args: argparse.Namespace) -> list[scan_coordinator.ScopeSpec]:
     发现结果**的范围稳定 ID 带进来；缺省时按规范根派生 path 型 ID——CLI
     绝不就地伪造 ``apfs-volume:<uuid>``（ISS-153 身份合同）。
 
-    ISS-178：构造逻辑公共化到 ``scope_specs_from_paths``，与设置页 UI 采集
-    入口共用同一段实现，CLI 行为与出口码零变化。
+    显式参数优先；无显式参数时，与设置页采集入口共用当前选择及桌面默认计划。
     """
-    return scope_specs_from_paths(
-        list(getattr(args, "scope", None) or []),
-        list(getattr(args, "scope_id", None) or []),
-    )
+    paths = list(getattr(args, "scope", None) or [])
+    ids = list(getattr(args, "scope_id", None) or [])
+    if paths or ids or getattr(args, "root", None):
+        return scope_specs_from_paths(paths, ids)
+    return scope_specs_from_effective_selection(apply_default=True)
 
 
 def cmd_scan(args: argparse.Namespace) -> int:

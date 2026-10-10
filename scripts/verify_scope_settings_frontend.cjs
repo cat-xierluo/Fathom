@@ -423,7 +423,7 @@ async function main() {
       (await page.$$("[data-test='scope-volume']")).length === 3, 10000, "合成卷渲染");
     const vols = await page.evaluate(() => [...document.querySelectorAll("[data-test='scope-volume']")].map((li) => ({
       id: li.dataset.volumeId, status: li.dataset.status,
-      checkDisabled: Boolean(li.querySelector("[data-test='scope-volume-check']")?.disabled),
+      checkDisabled: li.dataset.disabled === "1",
       text: li.textContent.replace(/\s+/g, " ").trim(),
     })));
     record("page-locked-unmounted-not-selectable",
@@ -442,10 +442,29 @@ async function main() {
       (await page.textContent("[data-test='scope-mode-desc']")).replace(/\s+/g, " ").trim().slice(0, 200));
     await page.unroute("**/api/storage/discovery");
     await page.click("[data-test='scope-reload-btn']");
-    await waitUntil(async () => !(await page.$("[data-test='scope-volume']")), 10000, "恢复真实发现");
+    await waitUntil(async () => !(await page.$("[data-volume-id^='apfs-volume:SYNTH-']")),
+      15000, "合成卷已被真实发现替换");
     // 故障注入阶段（409/500 合成桩）故意产生失败资源响应；「无资源错误」只对
     // 其后的真实端点阶段计数，否则会把受控故障反例读成页面缺陷。
     resourceErrors.length = 0;
+
+    // 默认启动盘候选无需手填路径；只预览，不保存或触发真实卷采集。
+    const defaultPreview = await httpJson("GET", "/api/storage/plan/preview?mode=startup_storage", port);
+    const defaultPlans = defaultPreview.json?.plan?.plans || [];
+    await page.check("[data-test='scope-mode-startup']");
+    await page.click("[data-test='scope-preview-btn']");
+    await waitUntil(async () => {
+      const text = await page.textContent(".scope-plan-table").catch(() => "");
+      return defaultPlans.length > 0 && defaultPlans.every((p) => text.includes(p.scope_id));
+    }, 20000, "不手填路径的启动盘默认预览");
+    record("page-default-startup-needs-no-manual-roots",
+      defaultPreview.status === 200 && defaultPlans.length > 0 &&
+      defaultPlans.every((p) => p.scope_id.startsWith("apfs-volume:")),
+      `identified roots=${defaultPlans.length}`);
+    const afterDefaultPreview = await httpJson("GET", "/api/storage/plan/preview", port);
+    record("page-default-preview-preserves-current-and-never-scans",
+      afterDefaultPreview.json.selection?.revision === 2 && apiCalls.scopeScan === 0,
+      `revision=${afterDefaultPreview.json.selection?.revision} scan=${apiCalls.scopeScan}`);
 
     /* ---- J. 排除编辑器无退化（既有 settings 断言不破） ---- */
     await page.click("[data-test='settings-nav-monitoring']");

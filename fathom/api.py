@@ -1362,7 +1362,9 @@ def _discovery_payload() -> dict:
     """
     from . import storage  # 延迟导入：发现适配器只在被请求时才载入
     try:
-        discovery = storage.discover_startup(config.DEFAULT_ROOT)
+        # diskutil info 接受设备或挂载点，不接受任意用户目录；启动盘发现
+        # 与旧单根扫描设置无关，必须从真正的启动挂载点开始。
+        discovery = storage.discover_startup("/")
     except Exception as exc:  # noqa: BLE001 - 发现失败必须可观测，不 5xx 崩服务
         logger.exception("存储发现失败（范围预览不可用）")
         return {"ok": False, "error": "discovery-failed",
@@ -1618,10 +1620,9 @@ def api_storage_plan_preview(mode: Optional[str] = Query(None),
                               roots: Optional[str] = Query(None)):
     """范围计划预览（只读）：校验给定选择并回显下一轮计划，不保存任何东西。
 
-    - 未显式启用范围能力（``enabled=False``）时只回显当前生效选择与「旧口径
-      单根」提示，不猜测、不替用户选择启动盘。
+    - 无候选参数时只回显当前选择和下一轮默认方式，不发现磁盘或保存计划。
     - 给定 ``mode``/``roots``（分号分隔）时按候选预览，供 UI「预览→保存」；
-      校验失败 400 且不落盘。
+      启动盘无根候选解析真实挂载入口；校验失败 400、发现失败 503，均不落盘。
     """
     view = config.scope_settings_view()
     if not mode and not roots:
@@ -1630,7 +1631,9 @@ def api_storage_plan_preview(mode: Optional[str] = Query(None),
                 view["identity_version"],
                 "selection": view["selection"],
                 "plan": None if current is None else _plan_preview(current),
-                "hint": ("未启用范围能力：扫描仍按旧单根口径运行；"
+                "hint": ("尚未选择范围：下一次主动扫描默认采集内置启动盘整体；旧历史保留。"
+                         if config.default_startup_scope_requested() else
+                         "扫描使用当前选择；尚未启用范围能力时按旧单根口径运行。"
                          "选择范围只改下一轮计划。")}
     candidate = _scope_candidate_from_query(mode, roots)
     return {"enabled": view["enabled"],
@@ -1640,12 +1643,58 @@ def api_storage_plan_preview(mode: Optional[str] = Query(None),
             "hint": "预览不改任何配置；保存只影响下一轮计划，不触发扫描。"}
 
 
+def _default_startup_selection() -> config.ScopeSelection:
+    """从本机启动容器的可见挂载入口生成默认候选（不保存、不扫描）。"""
+    payload = _discovery_payload()
+    discovery = payload.get("discovery") or {}
+    container = discovery.get("startup_container") or {}
+    if not payload.get("ok") or not container.get("container_id"):
+        raise HTTPException(503, "无法发现内置启动盘；当前范围未改动，请重新读取后重试。")
+    roots: list[str] = []
+    ids: list[str] = []
+    entries = discovery.get("visible_entries") or []
+    volumes = discovery.get("startup_volumes") or []
+    for volume in volumes:
+        volume_id = volume.get("volume_id")
+        if not volume_id or volume.get("container_id") != container["container_id"]:
+            continue
+        if volume.get("status") != "accessible" and not (
+                "system" in (volume.get("roles") or [])
+                and any(e.get("volume_id") == volume_id
+                        and e.get("via") == "snapshot_mount" for e in entries)):
+            continue
+        visible = [e.get("visible_path") for e in entries
+                   if e.get("volume_id") == volume_id]
+        mount = volume.get("mount_point")
+        # System 原卷通常未挂载，真正可读的是归属已确认的启动快照 /。
+        # 未挂载/锁定/归属未知的卷不猜测路径，不自动纳入外接设备。
+        candidates = visible or ([mount] if mount and volume.get("status") == "accessible" else [])
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not Path(candidate).is_dir():
+                continue
+            root = str(Path(candidate).resolve())
+            if root in roots:
+                if ids[roots.index(root)] != volume_id:
+                    raise HTTPException(503, "启动盘挂载身份冲突；当前范围未改动。")
+                continue
+            roots.append(root)
+            ids.append(volume_id)
+            break  # 同卷别名只采一次
+    if not roots:
+        raise HTTPException(503, "未发现可采集的启动盘挂载入口；当前范围未改动。")
+    return config.ScopeSelection(
+        mode=config.SCOPE_MODE_STARTUP, roots=tuple(roots), scope_ids=tuple(ids),
+        container_id=container["container_id"])
+
+
 def _scope_candidate_from_query(mode: Optional[str],
                                 roots: Optional[str]) -> config.ScopeSelection:
     """把查询参数装配成候选范围选择（fail-closed 校验）。"""
     if not mode:
         raise HTTPException(400, "预览候选必须显式给出 mode")
     raw_roots = [item for item in (roots or "").split(";") if item]
+    if mode == config.SCOPE_MODE_STARTUP and not raw_roots:
+        return _default_startup_selection()
     try:
         fields = config._validated_storage_scope(  # noqa: SLF001 - 同包内共用校验层
             {"mode": mode, "roots": raw_roots}, partial=False)
@@ -1687,6 +1736,13 @@ async def api_storage_scope_put(request: Request):
         raise HTTPException(400, f"expected_revision 必须是非负整数：{expected!r}")
     payload = {key: value for key, value in body.items()
                if key != "expected_revision"}
+    if (payload.get("mode") == config.SCOPE_MODE_STARTUP
+            and ("roots" not in payload or payload["roots"] == [])):
+        # 选择「启动盘整体」就能保存完整候选，无需手填 macOS 卷路径。
+        # 不使用客户端传来的容器/卷身份替代本次真实发现。
+        resolved = _default_startup_selection()
+        payload.update(roots=list(resolved.roots), scope_ids=list(resolved.scope_ids),
+                       container_id=resolved.container_id)
     try:
         saved = config.save_scope_selection(
             config._validated_storage_scope_whole(payload),  # noqa: SLF001
@@ -1717,18 +1773,18 @@ def api_scan():
     ``scan_rounds`` / ``scan_round_members`` 正常落库；D1 之前这里恒传
     ``scopes=None``，UI 静默走单根旧路径，三张表全空。
 
-    未启用范围能力（``effective_scope_selection()`` 为 ``None``）→ ``scopes``
-    为空列表，仍走原单根口径，行为逐字节不变。
+    未选择范围的 release 用户首次主动扫描解析并保存内置启动盘计划。
+    显式配置根/环境根/CLI 隔离仍保留原单根行为；读取接口不做该写入。
 
-    语义不变：「保存只影响下一轮计划」「立即扫描＝旧单根口径的手动扫描入口」
-    均不因本改动而变形——范围计划由**已保存的生效选择**构造，不是临时猜测。
+    保存只影响下一轮计划；立即扫描使用已保存选择，未配置的桌面用户
+    先解析真实启动盘身份。显式目录与隔离入口不会被静默扩展。
     """
     global _active_scan, _active_scan_thread
     if not _scan_lock.acquire(blocking=False):
         return JSONResponse({"ok": False, "message": "已有扫描在进行中"}, status_code=409)
     try:
         from . import cli as _cli  # 延迟导入：复用 CLI 公共化的范围构造段
-        scopes = _cli.scope_specs_from_effective_selection()
+        scopes = _cli.scope_specs_from_effective_selection(apply_default=True)
         session = scan_coordinator.start_scan(source="api", scopes=scopes)
         _active_scan = session
         run_id = session.run_id

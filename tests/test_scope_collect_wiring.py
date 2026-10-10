@@ -428,3 +428,117 @@ class TestStartupIdentityPreserved:
             assert conn.execute("SELECT COUNT(*) FROM scan_rounds").fetchone()[0] == 0
             assert conn.execute("SELECT plan_id FROM snapshots").fetchone()[0] is None
         finally: conn.close()
+
+
+def _duplicate_mount_from_real_adapter(root):
+    """合成 plist 经生产 adapter，保留其 ok + duplicate-mount-point 反例。"""
+    from fathom import storage
+    from tests.test_storage_discovery import (
+        build_main_runner, load_plist, FakeStat, default_stat_map, FIXED_NOW,
+    )
+    runner = build_main_runner()
+    original = load_plist("info_vol_data.plist")
+    original["MountPoint"] = str(root)
+    runner.add_plist(("diskutil", "info", "-plist", "disk3s1"), original)
+    impostor = dict(original, DeviceIdentifier="disk3s7",
+                    DiskUUID="20000000-0000-4000-8000-000000000037",
+                    VolumeUUID="20000000-0000-4000-8000-000000000037")
+    runner.add_plist(("diskutil", "info", "-plist", "disk3s7"), impostor)
+    listing = load_plist("apfs_list.plist")
+    for container in listing["Containers"]:
+        if container["ContainerReference"] == "disk3":
+            container["Volumes"].append({
+                "APFSVolumeUUID": impostor["DiskUUID"], "CapacityInUse": 1024,
+                "CryptoMigrationOn": False, "DeviceIdentifier": "disk3s7",
+                "Encryption": False, "FileVault": False, "Locked": False,
+                "Name": "Synthetic Impostor", "Roles": ["Data"],
+            })
+    runner.add_plist(("diskutil", "apfs", "list", "-plist"), listing)
+    return storage.discover_startup(runner=runner, now=lambda: FIXED_NOW,
+        platform="darwin", stat=FakeStat(default_stat_map()))
+
+
+class TestStartupEntryOwnership:
+    def test_real_adapter_duplicate_mount_is_refused_by_api(self, client, tmp_path, monkeypatch):
+        from fathom import storage, notify
+        root = tmp_path / "shared-mount"
+        root.mkdir()
+        discovery = _duplicate_mount_from_real_adapter(root)
+        assert discovery.status == storage.DiscoveryStatus.OK
+        assert any("duplicate-mount-point" in e and str(root) in e for e in discovery.errors)
+        owners = [v for v in discovery.startup_volumes if v.mount_point == str(root)]
+        assert len({v.volume_id for v in owners}) == 2
+        selection = config.ScopeSelection(mode=config.SCOPE_MODE_STARTUP,
+            roots=(str(root),), scope_ids=(owners[0].volume_id,),
+            container_id=discovery.startup_container.container_id)
+        config.save_scope_selection(selection, expected_revision=0)
+        monkeypatch.setattr(storage, "discover_startup", lambda *a, **k: discovery)
+        monkeypatch.setattr(notify, "send_notification", lambda *a, **k: True)
+        response = client.post("/api/scan")
+        assert response.status_code == 400, response.text
+        assert "入口" in response.json()["message"]
+        conn = db.connect()
+        try:
+            for table in ("scan_runs", "scan_scopes", "scan_rounds", "snapshots"):
+                assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize("mapping", ["mount", "visible", "snapshot", "canonical_alias", "unknown_entry", "other_device"])
+    def test_all_entry_mappings_require_unique_owner(self, client, tmp_path, monkeypatch, mapping):
+        from dataclasses import replace
+        from fathom import storage
+        roots, selection, state = _startup_identity(tmp_path, monkeypatch)
+        discovery = state["discovery"]
+        target = roots[0] if mapping == "snapshot" else roots[1]
+        if mapping in {"mount", "canonical_alias"}:
+            mount = target
+            if mapping == "canonical_alias":
+                mount = tmp_path / "alias"
+                mount.symlink_to(target, target_is_directory=True)
+            foreign = replace(discovery.startup_volumes[1], volume_id="other-volume", mount_point=str(mount))
+            discovery = replace(discovery, startup_volumes=discovery.startup_volumes + (foreign,))
+        elif mapping == "other_device":
+            device = storage.OtherDevice(storage.OTHER_DEVICE_SCHEMA,
+                storage.DISCOVERY_VERSION, "partition:other", "Synthetic", "disk8s1",
+                str(target), "Apple_HFS", False, 1024, ("synthetic",))
+            discovery = replace(discovery, other_devices=(device,))
+        else:
+            entry = replace(discovery.visible_entries[0], visible_path=str(target),
+                volume_id=None if mapping == "unknown_entry" else "other-volume",
+                via="snapshot_mount" if mapping == "snapshot" else "mount")
+            discovery = replace(discovery, visible_entries=discovery.visible_entries + (entry,))
+        state["discovery"] = discovery
+        config.save_scope_selection(selection, expected_revision=0)
+        response = client.post("/api/scan")
+        assert response.status_code == 400, response.text
+        assert not api._scan_lock.locked()
+        assert _table_counts() == {"snapshots": 0, "scan_plans": 0, "scan_rounds": 0, "scan_round_members": 0}
+
+    @pytest.mark.parametrize("index", [0, 1])
+    def test_same_volume_repeated_entry_is_not_ambiguous(self, tmp_path, monkeypatch, index):
+        from dataclasses import replace
+        from fathom import storage
+        roots, selection, state = _startup_identity(tmp_path, monkeypatch)
+        discovery = state["discovery"]
+        repeated = storage.VisibleEntry(storage.VISIBLE_ENTRY_SCHEMA,
+            storage.DISCOVERY_VERSION, str(roots[index]), selection.scope_ids[index],
+            selection.container_id, "snapshot_mount" if index == 0 else "mount",
+            None, ("synthetic",))
+        state["discovery"] = replace(discovery, visible_entries=discovery.visible_entries + (repeated, repeated))
+        monkeypatch.setattr(config, "_USER_SETTINGS", config.UserSettings(storage_scope=selection))
+        assert [s.scope_id for s in cli.scope_specs_from_effective_selection()] == list(selection.scope_ids)
+
+    def test_unrelated_mount_conflict_and_discovery_errors_do_not_block(self, tmp_path, monkeypatch):
+        from dataclasses import replace
+        roots, selection, state = _startup_identity(tmp_path, monkeypatch)
+        elsewhere = tmp_path / "unselected"
+        elsewhere.mkdir()
+        old = state["discovery"]
+        foreign = tuple(replace(old.startup_volumes[1], volume_id=f"other-{i}", mount_point=str(elsewhere)) for i in range(2))
+        state["discovery"] = replace(old, startup_volumes=old.startup_volumes + foreign,
+            errors=(f"duplicate-mount-point: {elsewhere}", "volume-info-failed: unrelated-device"))
+        monkeypatch.setattr(config, "_USER_SETTINGS", config.UserSettings(storage_scope=selection))
+        specs = cli.scope_specs_from_effective_selection()
+        assert [s.scope_id for s in specs] == list(selection.scope_ids)
+        assert [s.container_id for s in specs] == [selection.container_id] * 2

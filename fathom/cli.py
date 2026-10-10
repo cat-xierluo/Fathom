@@ -172,6 +172,19 @@ def _startup_scope_specs(selection: config.ScopeSelection) -> list[scan_coordina
         raise scan_coordinator.ScanScopeError("启动盘容器身份未知或已改变，未开始采集；请重新读取范围。")
     if not selection.scope_ids or len(selection.scope_ids) != len(selection.roots):
         raise scan_coordinator.ScanScopeError("启动盘范围缺少逐根卷身份，未开始采集。")
+    # 核对完整入口映射，不只查所选 UUID 自己声称的挂载点。
+    # 同卷 mount/snapshot 别名自然去重；未知归属也不能当成唯一卷证据。
+    entry_owners: dict[str, set[tuple]] = {}
+    def claim(path, owner):
+        if path and Path(path).is_absolute():
+            canonical = str(Path(os.path.realpath(path)))
+            entry_owners.setdefault(canonical, set()).add(owner)
+    for volume in discovery.startup_volumes:
+        claim(volume.mount_point, ("volume", volume.container_id, volume.volume_id))
+    for entry in discovery.visible_entries:
+        claim(entry.visible_path, ("volume", entry.container_id, entry.volume_id))
+    for device in discovery.other_devices:
+        claim(device.mount_point, ("device", None, device.device_id))
     specs = []
     for root, scope_id in zip(selection.roots, selection.scope_ids):
         matches = [v for v in discovery.startup_volumes if v.volume_id == scope_id]
@@ -193,9 +206,11 @@ def _startup_scope_specs(selection: config.ScopeSelection) -> list[scan_coordina
             root, scope_id=volume.volume_id, kind="apfs_volume",
             container_id=container.container_id,
             volume_group_id=volume.volume_group_id, display_name=volume.name)
-        known_roots = {str(Path(p).resolve()) for p in candidates}
+        known_roots = {str(Path(os.path.realpath(p))) for p in candidates}
         if str(spec.root) not in known_roots or not spec.root.is_dir():
             raise scan_coordinator.ScanScopeError("启动盘扫描根与已发现卷入口不匹配，未开始采集。")
+        if entry_owners.get(str(spec.root)) != {("volume", container.container_id, volume.volume_id)}:
+            raise scan_coordinator.ScanScopeError("启动盘规范入口的卷归属不唯一或未知，未开始采集。")
         specs.append(spec)
     return specs
 

@@ -396,16 +396,20 @@ def test_actual_http_normal_patch_preserves_other_process_updates(roots, live_se
     assert disk["auto_download_updates"] is False
 
 
-def test_actual_cli_scan_default_stale_cas_stops_before_scan(roots, live_service):
+def test_actual_cli_fixed_default_does_not_write_or_cas_saved_selection(roots, live_service):
     runtime, a, b = roots
     request, _, _ = live_service
-    # 仅替换磁盘发现和扫描执行边界；命令解析/默认计划/CAS/失败退出走实际 CLI。
+    # 默认不再写范围/CAS；截取合成规格执行边界，稳定专用CAS门由其他实际双writer测试覆盖。
     setup = f"""
 from fathom import cli,api,scan_coordinator
 os.environ.pop('FATHOM_SCAN_ROOT')
 config.configure(mode='release',runtime_dir=config.get_runtime_config().runtime_dir)
 api._default_startup_selection=lambda: config.ScopeSelection(mode=config.SCOPE_MODE_STARTUP,roots=({str(a)!r},),scope_ids=('apfs-volume:synthetic-a',),container_id='apfs-container:synthetic')
-scan_coordinator.run_scan=scan_coordinator.start_scan=lambda *a,**k: (_ for _ in ()).throw(AssertionError('scan must not start'))
+cli._startup_scope_specs=lambda selected: cli.scope_specs_from_paths(list(selected.roots),list(selected.scope_ids))
+def capture(*args,**kwargs):
+ print(json.dumps({{'captured_roots':[str(s.root) for s in kwargs['scopes']]}}),file=sys.stderr)
+ raise scan_coordinator.ScanCancelledError('synthetic execution boundary')
+scan_coordinator.run_scan=capture
 """
     operation = "exit_code=cli.main(['scan']); print(json.dumps({'cli_exit':exit_code,'revision':config.effective_scope_selection().revision}),file=sys.stderr)"
     # main.configure 默认会重读磁盘，因此在命令参数配置完成后等另一 writer。
@@ -420,12 +424,12 @@ scan_coordinator.run_scan=scan_coordinator.start_scan=lambda *a,**k: (_ for _ in
         old = (runtime / "settings.json").read_bytes()
         release(proc)
         out, err = proc.communicate(timeout=15)
-        assert proc.returncode == 0 and '"cli_exit": 1' in err and '版本冲突' in err, (out, err)
-        assert '"revision": 1' in err
+        assert proc.returncode == 0 and '"cli_exit": 130' in err and 'captured_roots' in err, (out, err)
+        assert '"revision": 0' in err and str(a) in err
         assert (runtime / "settings.json").read_bytes() == old
-        assert not (runtime / "data" / "fathom.db").exists(), "conflict must precede opening scan DB"
-        print(json.dumps({"evidence": "cli-cas", "pid": proc.pid, "cli_exit": 1,
-                          "revision": 1, "disk_unchanged": True, "db_created": False}))
+        assert not (runtime / "data" / "fathom.db").exists(), "synthetic execution boundary must precede opening scan DB"
+        print(json.dumps({"evidence": "cli-fixed-default", "pid": proc.pid, "cli_exit": 130,
+                          "revision": 0, "disk_unchanged": True, "db_created": False}))
     finally:
         if proc.poll() is None:
             stop(proc)

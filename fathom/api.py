@@ -1272,7 +1272,7 @@ def api_bootstrap():
     return {"token": _WRITE_TOKEN}
 
 
-def _config_view_with_reload_state() -> dict:
+def _config_view_with_reload_state(*, discovered_startup: config.ScopeSelection | None = None) -> dict:
     """effective_settings_view + 只读漂移检测（ISS-016B）。
 
     解析已注册 scan plist 的计划时间并与生效 scan_time 比对，结果挂在
@@ -1280,7 +1280,7 @@ def _config_view_with_reload_state() -> dict:
     （绝不猜、绝不让 /api/config 因漂移检测而 5xx）；全程零写入零命令
     执行。
     """
-    view = config.effective_settings_view()
+    view = config.effective_settings_view(discovered_startup=discovered_startup)
     try:
         registered = launchd.read_registered_scan_time()
     except Exception:  # noqa: BLE001 - 漂移检测失败只降级，不影响配置读取
@@ -1341,6 +1341,9 @@ async def api_config_put(request: Request):
         raise HTTPException(400, "请求体必须是合法 JSON 对象")
     if not isinstance(body, dict):
         raise HTTPException(400, "请求体必须是 JSON 对象")
+    # 发现失败在落盘之前停止；generic scope guard 仍优先返回既有 400。
+    discovered_startup = (config.effective_scope_selection()
+                          if "storage_scope" not in body and config.default_startup_scope_requested() else None)
     try:
         config.update_user_settings(body)
     except config.ConfigurationError as exc:
@@ -1354,7 +1357,7 @@ async def api_config_put(request: Request):
             _get_analysis_manager().refresh_policy()
         except Exception:  # noqa: BLE001 - 撤销失败不阻塞设置保存的成功反馈
             logger.exception("analysis 策略刷新失败（设置已保存）")
-    config_view = _config_view_with_reload_state()
+    config_view = _config_view_with_reload_state(discovered_startup=discovered_startup)
     return {
         "applied": True,
         "service_reload": "requires_user_action",
@@ -1429,14 +1432,10 @@ def api_storage_summary(limit: int = Query(120, ge=2, le=2000)):
 
 
 def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
-    """组装摘要负载（纯读库；不调用任何采集/发现入口）。"""
+    """读取摘要事实，并只读发现一次当前默认主体；不发起采集或保存。"""
     from . import storage
 
-    selection = None
-    try:
-        selection = config.effective_scope_selection()
-    except Exception:  # noqa: BLE001 - 配置不可读不应让摘要 500
-        selection = None
+    selection = config.effective_scope_selection()
     container_id = getattr(selection, "container_id", None) if selection else None
 
     samples = _capacity_sample_rows(conn, limit=limit,
@@ -1656,23 +1655,31 @@ def api_storage_plan_preview(mode: Optional[str] = Query(None),
     view = config.scope_settings_view()
     override = view["scan_override"]
     if not mode and not roots:
-        current = config.effective_scope_selection()
+        effective = view["effective_selection"]
+        current = config._validated_storage_scope_whole(effective) if effective else None
         return {"enabled": view["enabled"], "identity_version":
                 view["identity_version"],
                 "selection": view["selection"],
+                "effective_selection": effective,
+                "source": view["source"],
+                "saved_active": view["saved_active"],
                 "scan_override": override,
                 "plan_source": ("process_override" if override else
+                                "startup_discovery" if config.default_startup_scope_requested() else
                                 "saved_selection" if current is not None else "default"),
                 "plan": None if override or current is None else _plan_preview(current),
                 "hint": (_process_scan_override_hint(override) if override else
-                         "尚未选择范围：下一次主动扫描默认采集内置启动盘整体；旧历史保留。"
+                         "当前扫描对象：内置启动盘整体，无需选择或保存范围；旧保存值与历史保留，不作为当前默认。"
                          if config.default_startup_scope_requested() else
                          "扫描使用当前选择；尚未启用范围能力时按旧单根口径运行。"
                          "选择范围只改下一轮计划。")}
-    candidate = _scope_candidate_from_query(mode, roots)
+    candidate = (config._validated_storage_scope_whole(view["effective_selection"])
+                 if config.default_startup_scope_requested() and mode == config.SCOPE_MODE_STARTUP
+                 and not roots else _scope_candidate_from_query(mode, roots))
     return {"enabled": view["enabled"],
             "identity_version": view["identity_version"],
             "selection": view["selection"],
+            "effective_selection": view["effective_selection"],
             "scan_override": override,
             "plan_source": "candidate",
             "plan": _plan_preview(candidate),
@@ -1772,13 +1779,15 @@ async def api_storage_scope_put(request: Request):
                                  or not isinstance(expected, int)
                                  or expected < 0):
         raise HTTPException(400, f"expected_revision 必须是非负整数：{expected!r}")
+    discovered_startup = (config.effective_scope_selection()
+                          if config.default_startup_scope_requested() else None)
     payload = {key: value for key, value in body.items()
                if key != "expected_revision"}
     if (payload.get("mode") == config.SCOPE_MODE_STARTUP
             and ("roots" not in payload or payload["roots"] == [])):
         # 选择「启动盘整体」就能保存完整候选，无需手填 macOS 卷路径。
         # 不使用客户端传来的容器/卷身份替代本次真实发现。
-        resolved = _default_startup_selection()
+        resolved = discovered_startup or _default_startup_selection()
         payload.update(roots=list(resolved.roots), scope_ids=list(resolved.scope_ids),
                        container_id=resolved.container_id)
     try:
@@ -1791,15 +1800,17 @@ async def api_storage_scope_put(request: Request):
         raise HTTPException(400, str(exc))
     except OSError as exc:
         raise HTTPException(500, f"settings.json 写入失败（旧文件未改动）：{exc}")
-    view = config.scope_settings_view()
+    view = config.scope_settings_view(discovered_startup=discovered_startup)
     override = view["scan_override"]
     return {
         "applied": True,
         "triggers_scan": False,
         "scope": view,
         "plan": _plan_preview(saved),
-        "plan_source": "saved_selection",
+        "plan_source": "saved_compatibility" if config.default_startup_scope_requested() else "saved_selection",
         "hint": ("范围选择已保存。" + _process_scan_override_hint(override) if override else
+                 "旧范围已保存为兼容资料，不作为当前默认；普通扫描仍固定内置启动盘整体。"
+                 if config.default_startup_scope_requested() else
                  "范围选择已保存，仅影响下一轮计划；扫描需另行显式触发"
                  "（旧 HOME 历史快照保留为 legacy 口径，不与新基线混比）。"),
     }
@@ -1815,11 +1826,9 @@ def api_scan():
     ``scan_rounds`` / ``scan_round_members`` 正常落库；D1 之前这里恒传
     ``scopes=None``，UI 静默走单根旧路径，三张表全空。
 
-    未选择范围的 release 用户首次主动扫描解析并保存内置启动盘计划。
-    显式配置根/环境根/CLI 隔离仍保留原单根行为；读取接口不做该写入。
-
-    保存只影响下一轮计划；立即扫描使用已保存选择，未配置的桌面用户
-    先解析真实启动盘身份。显式目录与隔离入口不会被静默扩展。
+    普通 release 直接消费当前只读发现的启动盘意图，不保存或改写旧范围。
+    显式环境根/CLI 隔离仍保留原单根行为，开发保存范围仍兼容。
+    发现或身份验证失败停止，不回退 HOME；旧历史不改写。
     """
     global _active_scan, _active_scan_thread
     if not _scan_lock.acquire(blocking=False):

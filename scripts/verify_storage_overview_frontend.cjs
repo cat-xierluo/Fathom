@@ -295,7 +295,9 @@ async function runPhase(withStale) {
   record("fixture-seed-ok", Boolean(s2) && s2.length === 2,
     `phase=${PHASE} r1=${info.r1} r2=${info.r2} s1=${JSON.stringify(s1)} s2=${JSON.stringify(s2)}`);
 
-  const child = spawn(PY, ["-m", "fathom", "serve"], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
+  const serveEnv = { ...env, HOME: scanRoot, FATHOM_RUNTIME_MODE: "development" };
+  delete serveEnv.FATHOM_SCAN_ROOT;
+  const child = spawn(PY, ["-m", "fathom", "--runtime-mode", "development", "serve"], { cwd: REPO, env: serveEnv, stdio: ["ignore", "pipe", "pipe"] });
   const childState = observeClose(child);
   let serveLog = "";
   child.stdout.on("data", (c) => (serveLog += String(c)));
@@ -328,9 +330,15 @@ async function runPhase(withStale) {
   const unexp = S.unexplained || {};
   const attr = S.attribution || {};
   record("http-summary-200", sum.status === 200 && S.scope && S.capacity, `status=${sum.status}`);
+  const actualConfig = (await get("/api/config")).json;
+  const expectedRoots = [ROOT, KID].map(p => fs.realpathSync(p));
   record("http-scope-whole-disk",
-    S.scope && S.scope.container_id === CONTAINER && S.scope.mode === "custom_directory",
-    `container=${S.scope && S.scope.container_id} mode=${S.scope && S.scope.mode}`);
+    S.scope && S.scope.container_id === CONTAINER && S.scope.mode === "custom_directory"
+    && actualConfig.scan_root === fs.realpathSync(scanRoot) && actualConfig.storage_scope?.saved_active === true
+    && actualConfig.storage_scope.effective_selection?.container_id === CONTAINER
+    && JSON.stringify(actualConfig.storage_scope.effective_selection?.roots) === JSON.stringify(expectedRoots)
+    && JSON.stringify(S.scope.roots) === JSON.stringify(expectedRoots),
+    JSON.stringify({ configScope: actualConfig.storage_scope, summaryScope: S.scope, scanRoot, pid: child.pid, port }));
   record("http-shared-free-not-doubled", cap.free_bytes === 74 * 1024 * 1024,
     `free=${cap.free_bytes}（两卷样本同容器，不得翻倍为 148MB）`);
   // 测量根归因：clean 相为**兄弟根**（无重叠 ⇒ 两根都保留、无吸收，故两侧
@@ -707,6 +715,37 @@ const d2 = await (async () => {
       legacyHead.includes("尚未启用整盘范围") && legacySub.includes("不把目录结果冒充整盘") && !legacyCta,
       `head=${legacyHead.trim()}`);
     record("ui-legacy-settings-entry", Boolean(await page.$("[data-test='storage-settings-entry']")), "给设置入口");
+
+    // ISS-191：legacy与整盘零/单轮状态均只导航查看对象，不提示选择、不触发扫描。
+    let scanPosts = 0;
+    const countScan = (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/scan") scanPosts++;
+    };
+    page.on("request", countScan);
+    const checkObjectEntry = async (kind) => {
+      const entry = await page.$eval("[data-test='storage-settings-entry']", (el) => ({
+        text: el.textContent.trim(), href: el.getAttribute("href"),
+      }));
+      record(`ui-${kind}-view-scan-object`,
+        entry.text === "查看扫描对象" && entry.href === "#/settings" && scanPosts === 0,
+        JSON.stringify({ ...entry, scanPosts }));
+    };
+    await checkObjectEntry("legacy");
+    for (const kind of ["empty", "single"]) {
+      await page.unroute("**/api/storage/summary");
+      await page.route("**/api/storage/summary", (route) => route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ scope: { container_id: null, mode: "startup_storage", roots: [tmp] },
+          capacity: null, round: kind === "single" ? { id: 1 } : null,
+          previous_round: null, attribution: null, unexplained: null }),
+      }));
+      await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector("[data-test='storage-state']", { timeout: 20000 });
+      await checkObjectEntry(kind);
+    }
+    page.off("request", countScan);
+    await page.unroute("**/api/storage/summary");
 
     /* ISS-171 容量文案：负差额不得表述为「容器占用减少」。反例口径——
      * 容器占用其实**增加**了（free 100MB→90MB 即占用 +10MB），只是目录测量

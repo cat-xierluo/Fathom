@@ -216,30 +216,18 @@ def _startup_scope_specs(selection: config.ScopeSelection) -> list[scan_coordina
 
 
 def scope_specs_from_effective_selection(*, apply_default: bool = False) -> list[scan_coordinator.ScopeSpec]:
-    """由**当前生效的范围选择**构造本轮范围规格（ISS-178 UI 采集入口）。
+    """从只读有效意图构造本轮规格；普通 release 固定当下启动盘。
 
-    只读调用不生成配置。进程级 CLI/环境扫描根优先于已保存选择，保持
-    隔离单根。实际采集入口用 ``apply_default=True``：未选择范围的
-    release 用户默认采集内置启动盘；开发隔离仍用旧单根。
-
-    已启用范围能力时返回与 CLI ``scan --scope`` 等价的规格列表：同样按选择
-    顺序采集、同样按位置配对 ``scope_ids``。这正是 D1 缺失的一环：UI 触发必须
-    复用 ``scan_coordinator`` 的多范围路径，否则快照不带 ``plan_id``、
-    ``scan_plans``/``scan_rounds``/``scan_round_members`` 全空。
+    显式 CLI/env 根保持单根隔离。apply_default 保留调用兼容，不再保存范围
+    或比较旧配置版本；范围保存的专用 CAS 事务独立保留。发现失败停止。
     """
     if config.process_scan_root_override():
         return []
-    selection = config.effective_scope_selection()
-    if selection is None and apply_default and config.default_startup_scope_requested():
-        # 桌面默认改为内置启动盘。发现失败须停止，不能继续扫 HOME
-        # 并让用户误以为已经执行了全盘采集。读取配置本身不触发此写入。
-        from . import api
-        try:
-            selection = config.save_scope_selection(
-                api._default_startup_selection(), expected_revision=0)
-        except Exception as exc:
-            detail = getattr(exc, "detail", None) or str(exc)
-            raise scan_coordinator.ScanScopeError(str(detail)) from exc
+    try:
+        selection = config.effective_scope_selection()
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc)
+        raise scan_coordinator.ScanScopeError(str(detail)) from exc
     if selection is None:
         return []
     if selection.mode == config.SCOPE_MODE_STARTUP:

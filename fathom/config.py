@@ -883,14 +883,16 @@ def _validated_analysis(raw: object, *, validate_resources: bool = True) -> Anal
     )
 
 
-def parse_user_settings(data: Mapping[str, object], *, validate_resources: bool = True) -> UserSettings:
-    """把（部分）设置字典校验为 UserSettings；未知键或坏值 fail-closed。"""
+def parse_user_settings(data: Mapping[str, object], *, validate_resources: bool = True,
+                        validate_scan_resources: bool | None = None) -> UserSettings:
+    """解析设置；旧扫描资源可单独跳过 availability，analysis 与形状仍严格。"""
     unknown = sorted(set(data) - set(_SETTING_KEYS))
     if unknown:
         raise ConfigurationError(f"未知的配置项：{', '.join(unknown)}")
     values: dict[str, object] = {}
+    scan_resources = validate_resources if validate_scan_resources is None else validate_scan_resources
     validators = {
-        "scan_root": lambda raw: _validated_scan_root(raw, validate_resources=validate_resources),
+        "scan_root": lambda raw: _validated_scan_root(raw, validate_resources=scan_resources),
         "scan_time": _validated_scan_time,
         "min_kb": lambda raw: _validated_positive_number(raw, "min_kb"),
         "free_alert_gb": lambda raw: _validated_positive_number(raw, "free_alert_gb"),
@@ -898,7 +900,7 @@ def parse_user_settings(data: Mapping[str, object], *, validate_resources: bool 
         "auto_download_updates": lambda raw: _validated_bool(
             raw, "auto_download_updates"),
         "analysis": lambda raw: _validated_analysis(raw, validate_resources=validate_resources),
-        "storage_scope": lambda raw: _validated_storage_scope_whole(raw, validate_resources=validate_resources),
+        "storage_scope": lambda raw: _validated_storage_scope_whole(raw, validate_resources=scan_resources),
     }
     for key, validate in validators.items():
         raw = data.get(key)
@@ -943,14 +945,15 @@ def merge_user_settings(
     return UserSettings(**merged)  # type: ignore[arg-type]
 
 
-def load_user_settings(path: Path, *, validate_resources: bool = True) -> UserSettings:
+def load_user_settings(path: Path, *, validate_resources: bool = True,
+                       validate_scan_resources: bool | None = None) -> UserSettings:
     """读取 settings.json；文件不存在 → 全部默认。
 
     旧运行根没有该文件时零迁移零报错；文件存在但损坏/含坏值则
     fail-closed（ConfigurationError）——静默回落默认值会把扫描根换掉并
     静默形成新数据集，比拒绝启动更糟。
 
-    validate_resources=False 仅供锁内事务回读已有设置：保留路径身份，
+    validate_resources=False 供锁内事务回读已有设置：保留路径身份，
     暂时失效的旧引擎/挂载不阻断无关 patch，数据形状与数值仍 fail-closed。
     正常启动和新 patch 保持默认的资源可用性校验。
     """
@@ -967,7 +970,8 @@ def load_user_settings(path: Path, *, validate_resources: bool = True) -> UserSe
     if not isinstance(data, dict):
         raise ConfigurationError(f"settings.json 必须是 JSON 对象：{path}")
     try:
-        return parse_user_settings(data, validate_resources=validate_resources)
+        return parse_user_settings(data, validate_resources=validate_resources,
+                                   validate_scan_resources=validate_scan_resources)
     except ConfigurationError as exc:
         raise ConfigurationError(f"settings.json 内容无效（{path}）：{exc}") from exc
 
@@ -1048,7 +1052,8 @@ def refresh_user_settings(
     """
     with _SETTINGS_LOCK:
         if settings is None:
-            settings = load_user_settings(settings_path())
+            settings = load_user_settings(
+                settings_path(), validate_scan_resources=not default_startup_scope_requested())
         prepared = _prepare_user_settings(settings, environ=environ)
         return _publish_user_settings(*prepared)
 
@@ -1063,7 +1068,7 @@ def _prepare_user_settings(
         settings = replace(settings, exclude_names=_canonicalize_exclude_names(env_items))
     active = _ACTIVE
     if (not _CLI_SCAN_ROOT_PINNED and not env.get("FATHOM_SCAN_ROOT", "").strip()
-            and settings.scan_root is not None):
+            and settings.scan_root is not None and active.mode != "release"):
         active = active.with_overrides(scan_root=settings.scan_root)
     return settings, active
 
@@ -1145,7 +1150,12 @@ def effective_analysis_settings() -> AnalysisSettings:
 
 
 def effective_scope_selection() -> ScopeSelection | None:
-    """当前持久化范围选择；``None`` = 尚未选择，读取本身不生成默认计划。"""
+    """本进程实际范围；普通 release 只读发现当前启动盘，旧保存值另行保留。"""
+    if process_scan_root_override():
+        return None
+    if default_startup_scope_requested():
+        from . import api
+        return api._default_startup_selection()
     return _USER_SETTINGS.storage_scope
 
 
@@ -1161,35 +1171,40 @@ def process_scan_root_override() -> dict[str, str] | None:
 
 
 def default_startup_scope_requested() -> bool:
-    """未选择范围的桌面用户默认采集内置启动盘；显式根和开发隔离优先。
+    """普通桌面固定采集当前内置启动盘；旧保存值不作决定，显式隔离优先。
 
     本函数只判断下一轮默认方式，不发现磁盘、不保存或触发扫描。
     新基线在用户实际发起采集时生成，既有 HOME 历史仍保留。
     """
     return (
         _ACTIVE.mode == "release"
-        and _USER_SETTINGS.storage_scope is None
-        and _USER_SETTINGS.scan_root is None
         and not _CLI_SCAN_ROOT_PINNED
         and not os.environ.get("FATHOM_SCAN_ROOT", "").strip()
     )
 
 
 def scope_enabled() -> bool:
-    """范围计划是否已保存（发现/预览本身不启用；主动扫描可保存默认计划）。"""
-    return _USER_SETTINGS.storage_scope is not None
+    """当前进程实际采用范围计划；读取不保存选择或发起采集。"""
+    return effective_scope_selection() is not None
 
 
-def scope_settings_view() -> dict[str, object]:
-    """范围配置读取面：保存选择、来源/版本及本进程扫描根覆盖。"""
-    selection = effective_scope_selection()
+def scope_settings_view(*, discovered_startup: ScopeSelection | None = None) -> dict[str, object]:
+    """一次只读发现绑定有效意图；selection 保留旧 wire 兼容，不能冒称实际生效。"""
+    saved = _USER_SETTINGS.storage_scope
+    effective = (discovered_startup if discovered_startup is not None
+                 and default_startup_scope_requested() else effective_scope_selection())
+    override = process_scan_root_override()
     return {
         "schema": SCOPE_SCHEMA,
-        "enabled": selection is not None,
-        "source": "settings" if selection is not None else "default",
+        "enabled": effective is not None,
+        "source": ("process_override" if override else
+                   "startup_discovery" if default_startup_scope_requested() else
+                   "settings" if saved is not None else "default"),
         "identity_version": SCOPE_IDENTITY_VERSION,
-        "selection": None if selection is None else selection.as_dict(),
-        "scan_override": process_scan_root_override(),
+        "selection": None if saved is None else saved.as_dict(),
+        "effective_selection": None if effective is None else effective.as_dict(),
+        "saved_active": saved is not None and not override and not default_startup_scope_requested(),
+        "scan_override": override,
     }
 
 
@@ -1225,13 +1240,15 @@ def save_scope_selection(
 
 
 
-def effective_settings_view() -> dict[str, object]:
+def effective_settings_view(*, discovered_startup: ScopeSelection | None = None) -> dict[str, object]:
     """GET /api/config 数据源：生效值 + 每项来源 + 默认值与只读策略。"""
     env_exclude_names = os.environ.get("FATHOM_EXCLUDE_NAMES", "").strip()
     settings = _USER_SETTINGS
     override = process_scan_root_override()
     if override:
         scan_root_source = override["source"]
+    elif default_startup_scope_requested():
+        scan_root_source = "startup_discovery"
     elif settings.scan_root is not None:
         scan_root_source = "settings"
     else:
@@ -1253,7 +1270,8 @@ def effective_settings_view() -> dict[str, object]:
     }
     analysis = effective_analysis_settings()
     return {
-        "scan_root": str(_ACTIVE.scan_root),
+        "scan_root": None if default_startup_scope_requested() else str(_ACTIVE.scan_root),
+        "saved_scan_root": settings.scan_root,
         "scan_time": settings.scan_time or DEFAULT_SCAN_TIME,
         "min_kb": MIN_DIR_KB,
         "free_alert_gb": FREE_ALERT_GB,
@@ -1270,9 +1288,8 @@ def effective_settings_view() -> dict[str, object]:
             "source": "settings" if settings.analysis is not None else "default",
             "defaults": {"enabled": False},
         },
-        # ISS-155：范围选择读取面。旧前端不认识该键也不受影响；未显式
-        # 选择时 enabled=False；next_scan_default 单独说明下一轮默认方式。
-        "storage_scope": scope_settings_view(),
+        # selection 为保存兼容值；effective_selection 才是当前实际意图。
+        "storage_scope": scope_settings_view(discovered_startup=discovered_startup),
         "next_scan_default": (
             SCOPE_MODE_STARTUP if default_startup_scope_requested() else None),
         "sources": sources,

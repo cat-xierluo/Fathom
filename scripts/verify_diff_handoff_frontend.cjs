@@ -27,11 +27,14 @@ async function helper(){
  delete env.ISS158_STALE;
  const seed=spawn(PY,['-c',SEED_PY,tmp],{cwd:REPO,env});let seedOut='';seed.stdout.on('data',c=>seedOut+=c);seed.stderr.on('data',c=>seedOut+=c);const [code]=await once(seed,'exit');if(code!==0)throw Error(`seed ${code}: ${seedOut}`);
  const info=JSON.parse(seedOut.trim().split('\n').pop());
- const child=spawn(PY,['-m','fathom','serve'],{cwd:REPO,env});let log='';child.stdout.on('data',c=>log+=c);child.stderr.on('data',c=>log+=c);
+ const serveEnv={...env,HOME:scanRoot,FATHOM_RUNTIME_MODE:'development'};delete serveEnv.FATHOM_SCAN_ROOT;
+ const child=spawn(PY,['-m','fathom','--runtime-mode','development','serve'],{cwd:REPO,env:serveEnv});let log='';child.stdout.on('data',c=>log+=c);child.stderr.on('data',c=>log+=c);
  const closed=once(child,'close');let health;
  // Readiness is an actual HTTP barrier; the bounded loop is not a race-test retry.
  for(let attempt=0;attempt<300;attempt++){try{health=(await get(port,'/health')).json;if(health.pid===child.pid)break;}catch{}await new Promise(r=>setTimeout(r,100));}
- record('helper.production-identity',health?.pid===child.pid&&health.runtime_mode==='development'&&health.port===port,JSON.stringify({pid:child.pid,port,runtime,scanRoot}));
+ const current=(await get(port,'/api/config')).json,summary=(await get(port,'/api/storage/summary')).json,expectedRoots=[info.root,info.kid].map(p=>fs.realpathSync(p));
+ const savedMatches=current.storage_scope?.saved_active===true&&current.storage_scope.effective_selection?.container_id===info.container&&JSON.stringify(current.storage_scope.effective_selection?.roots)===JSON.stringify(expectedRoots)&&JSON.stringify(summary.scope?.roots)===JSON.stringify(expectedRoots)&&summary.scope?.container_id===info.container;
+ record('helper.production-identity',health?.pid===child.pid&&health.runtime_mode==='development'&&health.port===port&&current.scan_root===fs.realpathSync(scanRoot)&&savedMatches,JSON.stringify({pid:child.pid,port,runtime,scanRoot,configScope:current.storage_scope,summaryScope:summary.scope}));
  const resource={pid:child.pid,port,runtime,scanRoot};resources.push(resource);
  return{base:`http://127.0.0.1:${port}`,info,port,env,async close(){child.kill('SIGTERM');await closed;resource.pidExited=true;resource.listenClosed=await new Promise(resolve=>{const s=net.connect({host:'127.0.0.1',port});s.once('connect',()=>{s.destroy();resolve(false);});s.once('error',e=>resolve(e.code==='ECONNREFUSED'));});fs.writeFileSync(path.join(evidence,'serve.log'),log);record('helper.cleanup',resource.pidExited&&resource.listenClosed,JSON.stringify(resource));}};
 }

@@ -82,7 +82,7 @@ def test_startup_candidate_needs_no_hand_entered_roots(client, isolated):
     assert [p["scope_id"] for p in body["plan"]["plans"]] == ["apfs-volume:system", "apfs-volume:data"]
     assert body["plan"]["container_id"] == "apfs-container:boot"
     assert not config.settings_path().exists()
-    assert config.effective_scope_selection() is None
+    assert config.get_user_settings().storage_scope is None
 
 
 def test_startup_save_resolves_and_persists_real_identity(client, isolated):
@@ -96,10 +96,10 @@ def test_startup_save_resolves_and_persists_real_identity(client, isolated):
 
 def test_reading_default_does_not_enable_or_write(client, isolated):
     assert client.get("/api/config").json()["next_scan_default"] == "startup_storage"
-    assert "默认采集内置启动盘" in client.get("/api/storage/plan/preview").json()["hint"]
-    assert config.effective_scope_selection() is None
+    assert "内置启动盘整体" in client.get("/api/storage/plan/preview").json()["hint"]
+    assert config.get_user_settings().storage_scope is None
     assert not config.settings_path().exists()
-    assert cli.scope_specs_from_effective_selection() == []
+    assert [str(s.root) for s in cli.scope_specs_from_effective_selection()] == [str(isolated[1]), str(isolated[2])]
 
 
 def test_first_manual_scan_uses_startup_and_retains_legacy_root(isolated):
@@ -107,7 +107,8 @@ def test_first_manual_scan_uses_startup_and_retains_legacy_root(isolated):
     specs = cli.scope_specs_from_effective_selection(apply_default=True)
     assert [str(s.root) for s in specs] == [str(system), str(data)]
     assert config.DEFAULT_ROOT == cfg.scan_root  # 不改旧历史的根/身份
-    assert config.load_user_settings(config.settings_path()).storage_scope.roots == (str(system), str(data))
+    assert config.load_user_settings(config.settings_path()).storage_scope is None
+    assert not config.settings_path().exists()
 
 
 def test_manual_api_scan_creates_new_plans_and_keeps_old_history(client, isolated, monkeypatch):
@@ -133,11 +134,21 @@ def test_manual_api_scan_creates_new_plans_and_keeps_old_history(client, isolate
         plans = conn.execute("SELECT s.root,p.scope_id FROM snapshots s JOIN scan_plans p ON s.plan_id=p.plan_id").fetchall()
         assert {(p["root"], p["scope_id"]) for p in plans} == {
             (str(system), "apfs-volume:system"), (str(data), "apfs-volume:data")}
+        from fathom import analysis_contract
+        new_ids=[row[0] for row in conn.execute("SELECT id FROM snapshots WHERE plan_id IS NOT NULL")]
+        with pytest.raises(analysis_contract.AnalysisContractError) as error:
+            analysis_contract.build_facts_package(conn,*new_ids)
+        assert error.value.reason_code == 'plan_identity_unsupported'
+        summary=client.get('/api/storage/summary').json()
+        assert summary['scope']['roots']==[str(system),str(data)]
+        assert summary['scope']['container_id']=='apfs-container:boot'
+        assert summary['round'] is not None
+        assert not config.settings_path().exists()
     finally:
         conn.close()
 
 
-@pytest.mark.parametrize("override", ["env", "cli", "settings", "development"])
+@pytest.mark.parametrize("override", ["env", "cli", "development"])
 def test_explicit_root_or_development_keeps_legacy(isolated, monkeypatch, override):
     cfg, _, _ = isolated
     if override == "env": monkeypatch.setenv("FATHOM_SCAN_ROOT", str(cfg.scan_root))
@@ -153,7 +164,7 @@ def test_discovery_failure_never_silently_scans_home(isolated, monkeypatch):
     monkeypatch.setattr(api, "_discovery_payload", lambda: {"ok": True, "discovery": {"startup_container": None}})
     with pytest.raises(scan_coordinator.ScanScopeError, match="无法发现内置启动盘"):
         cli.scope_specs_from_effective_selection(apply_default=True)
-    assert config.effective_scope_selection() is None
+    assert config.get_user_settings().storage_scope is None
     assert not config.settings_path().exists()
 
 
@@ -161,7 +172,7 @@ def test_no_readable_mount_fails_closed(client, monkeypatch):
     monkeypatch.setattr(api, "_discovery_payload", lambda: {"ok": True, "discovery": {
         "startup_container": {"container_id": "boot"}, "startup_volumes": []}})
     assert client.get("/api/storage/plan/preview?mode=startup_storage").status_code == 503
-    assert config.effective_scope_selection() is None
+    assert config.get_user_settings().storage_scope is None
 
 
 def test_discovery_uses_boot_mount_not_scan_root(isolated, monkeypatch):
@@ -194,7 +205,7 @@ def test_saved_selection_yields_to_process_scan_root(saved_selection, monkeypatc
     settings_before = config.settings_path().read_bytes()
     assert cli.scope_specs_from_effective_selection() == []
     assert cli.scope_specs_from_effective_selection(apply_default=True) == []
-    assert config.effective_scope_selection() == selection
+    assert config.get_user_settings().storage_scope == selection
     assert config.settings_path().read_bytes() == settings_before
 
 
@@ -235,8 +246,8 @@ def test_cli_saved_selection_priority(saved_selection, monkeypatch, override):
     else:
         assert called["root"] is None
         assert [(str(s.root), s.scope_id) for s in called["scopes"]] == list(
-            zip(selection.roots, selection.scope_ids))
-    assert config.effective_scope_selection() == selection
+            zip((str(cfg.runtime_dir.parent / "system"), str(cfg.runtime_dir.parent / "data")), ("apfs-volume:system", "apfs-volume:data")))
+    assert config.get_user_settings().storage_scope == selection
     assert config.settings_path().read_bytes() == settings_before
 
 
@@ -260,11 +271,11 @@ def test_api_saved_selection_priority(client, saved_selection, monkeypatch, over
     assert observed[0]["source"] == "api"
     if override == "none":
         assert [(str(s.root), s.scope_id) for s in observed[0]["scopes"]] == list(
-            zip(selection.roots, selection.scope_ids))
+            zip((str(cfg.runtime_dir.parent / "system"), str(cfg.runtime_dir.parent / "data")), ("apfs-volume:system", "apfs-volume:data")))
     else:
         assert observed[0]["scopes"] == []
         assert config.DEFAULT_ROOT == cfg.scan_root
-    assert config.effective_scope_selection() == selection
+    assert config.get_user_settings().storage_scope == selection
     assert config.settings_path().read_bytes() == settings_before
 
 
@@ -327,8 +338,8 @@ def test_scope_presentation_matches_actual_process_scan(client, saved_selection,
         assert client.get("/api/config").json()["sources"]["scan_root"] == source
         assert cli.scope_specs_from_effective_selection() == []
     else:
-        assert current["plan_source"] == "saved_selection"
-        assert [p["root"] for p in current["plan"]["plans"]] == list(selection.roots)
+        assert current["plan_source"] == "startup_discovery"
+        assert [p["root"] for p in current["plan"]["plans"]] == [str(isolated[1]), str(isolated[2])]
     candidate = client.get("/api/storage/plan/preview", params={
         "mode": "custom_directory", "roots": str(other)}).json()
     assert candidate["plan_source"] == "candidate"
@@ -344,3 +355,150 @@ def test_scope_presentation_matches_actual_process_scan(client, saved_selection,
     if expected:
         assert "不使用已保存范围" in response.json()["hint"]
     assert not config.DB_PATH.exists()
+
+
+@pytest.mark.parametrize("old_kind", ["none", "custom", "missing_custom", "scan_root", "missing_scan_root"])
+def test_fixed_release_reads_current_startup_without_rewriting_legacy(client, isolated, old_kind):
+    cfg, system, data = isolated
+    old_root = cfg.runtime_dir.parent / "obsolete" if "missing" in old_kind else cfg.scan_root
+    wire = {"min_kb": 321}
+    if "custom" in old_kind:
+        wire["storage_scope"] = config.ScopeSelection(mode=config.SCOPE_MODE_CUSTOM,
+            roots=(str(old_root),), scope_ids=("path:old",), revision=7).as_dict()
+    elif "scan_root" in old_kind:
+        wire["scan_root"] = str(old_root)
+    import json
+    cfg.runtime_dir.mkdir(parents=True, exist_ok=True)
+    path = config.settings_path()
+    path.write_text(json.dumps(wire))
+    before = path.read_bytes()
+    config.refresh_user_settings()
+    view = client.get("/api/config")
+    assert view.status_code == 200, view.text
+    scope = view.json()["storage_scope"]
+    assert scope["source"] == "startup_discovery"
+    assert scope["effective_selection"]["roots"] == [str(system), str(data)]
+    assert scope["selection"] == wire.get("storage_scope")
+    preview = client.get("/api/storage/plan/preview")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["plan_source"] == "startup_discovery"
+    assert [p["root"] for p in preview.json()["plan"]["plans"]] == [str(system), str(data)]
+    specs = cli.scope_specs_from_effective_selection(apply_default=True)
+    assert [str(s.root) for s in specs] == [str(system), str(data)]
+    assert path.read_bytes() == before
+    assert not cfg.db_path.exists()
+    assert not (cfg.runtime_dir / config.SETTINGS_LOCK_FILENAME).exists()
+
+
+def test_fixed_startup_without_saved_selection_does_not_create_settings(isolated):
+    cfg, system, data = isolated
+    assert config.scope_enabled()
+    selected = config.effective_scope_selection()
+    assert selected.roots == (str(system), str(data))
+    assert [str(s.root) for s in cli.scope_specs_from_effective_selection(apply_default=True)] == [str(system), str(data)]
+    assert not config.settings_path().exists()
+    assert not cfg.db_path.exists()
+
+
+@pytest.mark.parametrize('wire', [
+    {'scan_root': '/synthetic\x00broken'}, {'storage_scope': 'broken'},
+    {'storage_scope': {'mode': 'unknown', 'roots': ['/missing']}},
+    {'storage_scope': {'mode': 'custom_directory', 'roots': ['/missing'], 'identity_version': 999}},
+    {'storage_scope': {'mode': 'custom_directory', 'roots': ['/bad\x00root']}},
+])
+def test_fixed_default_still_rejects_invalid_legacy_shape(isolated, wire):
+    import json
+    path = config.settings_path();path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(wire));before = path.read_bytes()
+    with pytest.raises(config.ConfigurationError): config.refresh_user_settings()
+    assert path.read_bytes() == before
+    assert config.get_user_settings() == config.UserSettings()
+
+
+def test_only_old_scan_resource_availability_is_ignored(isolated):
+    import json
+    path = config.settings_path();path.parent.mkdir(parents=True, exist_ok=True)
+    wire = {'scan_root': str(path.parent / 'missing'), 'analysis': {
+        'enabled': True, 'runtime_id': 'codex', 'runtime_executable': str(path.parent / 'missing-engine')}}
+    path.write_text(json.dumps(wire));before = path.read_bytes()
+    with pytest.raises(config.ConfigurationError, match='runtime_executable'): config.refresh_user_settings()
+    assert path.read_bytes() == before
+    assert config.get_user_settings() == config.UserSettings()
+
+
+@pytest.mark.parametrize('entry', ['config', 'preview', 'summary'])
+def test_single_read_response_binds_one_discovery(client, isolated, monkeypatch, entry):
+    original = storage.discover_startup;calls=[]
+    def discover(*a, **kw):
+        calls.append((a, kw))
+        assert len(calls) == 1, 'one response must not rediscover an inconsistent effective object'
+        return original(*a, **kw)
+    monkeypatch.setattr(storage, 'discover_startup', discover)
+    response=client.get({'config':'/api/config','preview':'/api/storage/plan/preview','summary':'/api/storage/summary'}[entry])
+    assert response.status_code==200,response.text
+    assert len(calls)==1
+    assert not config.settings_path().exists()
+
+
+@pytest.mark.parametrize('override', ['env', 'cli', 'development'])
+def test_invalid_saved_scan_resource_is_not_exempt_in_explicit_isolation(isolated, monkeypatch, override):
+    import json
+    cfg, _, _=isolated
+    if override=='env': monkeypatch.setenv('FATHOM_SCAN_ROOT',str(cfg.scan_root))
+    elif override=='cli': monkeypatch.setattr(config,'_CLI_SCAN_ROOT_PINNED',True)
+    else: monkeypatch.setattr(config,'_ACTIVE',replace(cfg,mode='development'))
+    path=config.settings_path();path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text(json.dumps({'scan_root':str(path.parent/'missing')}))
+    with pytest.raises(config.ConfigurationError,match='不存在'):config.refresh_user_settings()
+
+
+def test_new_scan_root_patch_remains_strict_and_preserves_current_default(client, isolated):
+    response=client.put('/api/config',json={'scan_root':str(config.settings_path().parent/'missing'),'min_kb':999})
+    assert response.status_code==400 and '不存在' in response.text
+    assert config.get_user_settings()==config.UserSettings()
+    assert not config.settings_path().exists()
+    assert config.default_startup_scope_requested()
+
+
+def test_fixed_default_rejects_ambiguous_mount_without_writes_or_scans(client, isolated, monkeypatch):
+    cfg, system, _ = isolated
+    original = storage.discover_startup()
+    volumes = tuple(replace(v,mount_point=str(system)) if 'data' in v.roles else v for v in original.startup_volumes)
+    monkeypatch.setattr(storage,'discover_startup',lambda *a,**k:replace(original,startup_volumes=volumes))
+    assert client.get('/api/config').status_code==503
+    assert client.get('/api/storage/plan/preview').status_code==503
+    response=client.post('/api/scan')
+    assert response.status_code==400 and '身份冲突' in response.text
+    assert not config.settings_path().exists()
+    assert not cfg.db_path.exists()
+
+
+@pytest.mark.parametrize('entry', ['config', 'scope'])
+def test_discovery_failure_precedes_compatibility_write(client, isolated, monkeypatch, entry):
+    monkeypatch.setattr(api,'_discovery_payload',lambda:{'ok':False,'discovery':{}})
+    response=client.put('/api/config' if entry=='config' else '/api/storage/scope',json=(
+        {'min_kb':777} if entry=='config' else {'mode':'custom_directory','roots':[str(isolated[1])],'expected_revision':0}))
+    assert response.status_code==503,response.text
+    assert not config.settings_path().exists()
+    assert not (config.get_runtime_config().runtime_dir/config.SETTINGS_LOCK_FILENAME).exists()
+    assert config.get_user_settings()==config.UserSettings()
+
+
+@pytest.mark.parametrize('entry', ['config', 'scope', 'candidate'])
+def test_write_or_candidate_response_reuses_current_discovery(client, isolated, monkeypatch, entry):
+    original=storage.discover_startup;calls=[]
+    def discover(*a,**kw):
+        calls.append(1);assert len(calls)==1
+        return original(*a,**kw)
+    monkeypatch.setattr(storage,'discover_startup',discover)
+    if entry=='candidate':response=client.get('/api/storage/plan/preview?mode=startup_storage')
+    elif entry=='config':response=client.put('/api/config',json={'min_kb':777})
+    else:response=client.put('/api/storage/scope',json={'mode':'startup_storage','roots':[],'expected_revision':0})
+    assert response.status_code==200,response.text
+    assert len(calls)==1
+    if entry=='scope':
+        assert response.json()['plan_source']=='saved_compatibility'
+        assert response.json()['scope']['saved_active'] is False
+        assert response.json()['scope']['selection']['revision']==1
+        assert response.json()['scope']['effective_selection']['revision']==0
+        assert '不作为当前默认' in response.json()['hint']

@@ -18,13 +18,22 @@ ISS-160 的整盘数据集夹具没写 plan 身份，其通过不能证明生产
 既有 legacy 行为零回归：三方 legacy 快照组三个读端点全 200，
 同根异阈值仍按 ISS-021/ISS-066 既有 400 语义拒绝（闸门断言不许消失）。
 
-隔离合同沿用 test_diff_children.py：FATHOM_RUNTIME_DIR / FATHOM_SCAN_ROOT
-指向 tmp_path 合成根，绝不触碰真实 HOME 或生产库。
+隔离合同：development + 自身合成 HOME/_ACTIVE，无显式根覆盖时保存范围生效；
+显式 FATHOM_SCAN_ROOT 独立反例用真实服务与 find 核验，绝不触碰真实 HOME 或生产库。
 """
 
 from __future__ import annotations
 
+import json
+import os
+import socket
 import sqlite3
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -40,7 +49,12 @@ def _isolated_runtime(tmp_path, monkeypatch):
     scan_root.mkdir(parents=True)
     monkeypatch.delenv("FATHOM_DB", raising=False)
     monkeypatch.setenv("FATHOM_RUNTIME_DIR", str(runtime_dir))
-    monkeypatch.setenv("FATHOM_SCAN_ROOT", str(scan_root))
+    monkeypatch.delenv("FATHOM_SCAN_ROOT", raising=False)
+    monkeypatch.setenv("FATHOM_RUNTIME_MODE", "development")
+    monkeypatch.setenv("HOME", str(scan_root))
+    active = config.RuntimeConfig.from_env(home=scan_root)
+    monkeypatch.setattr(config, "_ACTIVE", active)
+    monkeypatch.setattr(config, "_CLI_SCAN_ROOT_PINNED", False)
     monkeypatch.setattr(config, "DATA_DIR", runtime_dir / "data")
     monkeypatch.setattr(config, "DB_PATH", runtime_dir / "data" / "fathom.db")
     monkeypatch.setattr(config, "REPORTS_DIR", runtime_dir / "reports")
@@ -192,7 +206,7 @@ class TestSamePlanConsumers:
         vol = tmp_path / "vol-a"
         (vol / "inside").mkdir(parents=True)
         (vol / "inside" / "vol_a_only.bin").write_bytes(b"a" * (3 * 1024 * 1024))
-        # 旧根（fixture 的 FATHOM_SCAN_ROOT）里放一个不该被查到的大文件。
+        # 旧根（fixture 的合成 HOME）里放一个不该被查到的大文件。
         old_root = Path(config.DEFAULT_ROOT)
         (old_root / "old_root_only.bin").write_bytes(b"b" * (9 * 1024 * 1024))
         save = client.put("/api/storage/scope", json={
@@ -315,3 +329,100 @@ class TestSnapshotsCarriesPlanId:
         # 既有字段零变化
         assert {"id", "created_at", "root", "total_kb", "min_kb",
                 "exclude_names", "vanished_count"} <= set(rows[same_a])
+
+
+def test_explicit_env_override_queries_actual_root_and_rejects_saved_root(
+        client, tmp_path):
+    """OS服务+真实find：显式覆盖决定当前根，不能误读旧saved范围。"""
+    root = Path(config.DEFAULT_ROOT).resolve()
+    (root / "override_only.bin").write_bytes(b"e" * (2 * 1024 * 1024))
+    saved_root = tmp_path / "saved-volume"
+    saved_root.mkdir()
+    (saved_root / "saved_only.bin").write_bytes(b"s" * (3 * 1024 * 1024))
+    save = client.put("/api/storage/scope", json={
+        "mode": "custom_directory", "roots": [str(saved_root)],
+        "expected_revision": 0,
+    })
+    assert save.status_code == 200, save.text
+    settings = config.settings_path()
+    before = settings.read_bytes()
+    # 只读查询不创建库：先在自身运行根初始化空schema，再证明服务没有扫描。
+    conn = db.connect()
+    conn.close()
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    repo = Path(__file__).resolve().parents[1]
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("FATHOM_")}
+    env.update(HOME=str(root), FATHOM_RUNTIME_MODE="development",
+               FATHOM_RUNTIME_DIR=str(settings.parent),
+               FATHOM_SCAN_ROOT=str(root), FATHOM_RESOURCE_DIR=str(repo),
+               FATHOM_PORT=str(port), FATHOM_PORT_RANGE="0", PYTHONPATH=str(repo))
+    log_path = settings.parent / f"override-service-{port}.log"
+    log = log_path.open("w")
+    proc = subprocess.Popen([sys.executable, "-m", "fathom", "--port-range", "0", "serve"],
+                            cwd=repo, env=env, stdout=log, stderr=subprocess.STDOUT)
+
+    def request(path, params=None):
+        query = "?" + urllib.parse.urlencode(params) if params else ""
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}{path}{query}", timeout=5) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.load(exc)
+
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            assert proc.poll() is None, log_path.read_text()
+            try:
+                status, health = request("/health")
+                if status == 200:
+                    assert health["pid"] == proc.pid and health["port"] == port
+                    break
+            except OSError:
+                time.sleep(0.02)
+        else:
+            pytest.fail("isolated override service did not become ready")
+        status, cfg = request("/api/config")
+        assert status == 200
+        assert cfg["scan_root"] == str(root)
+        assert cfg["storage_scope"]["selection"]["roots"] == [str(saved_root.resolve())]
+        assert cfg["storage_scope"]["effective_selection"] is None
+        assert cfg["storage_scope"]["scan_override"] == {"source": "env", "root": str(root)}
+        for params in [{"mode": "largest", "min_mb": 1, "topn": 10},
+                       {"mode": "largest", "min_mb": 1, "topn": 10, "path": str(root)}]:
+            status, result = request("/api/bigfiles", params)
+            assert status == 200, result
+            assert result["scope"]["resolved_root"] == str(root)
+            assert result["scope"]["scope_roots"] is None
+            assert result["stats"]["find_exit_code"] == 0
+            assert {Path(row["path"]).name for row in result["files"]} == {"override_only.bin"}
+        status, denied = request("/api/bigfiles", {
+            "mode": "largest", "min_mb": 1, "path": str(saved_root)})
+        assert status == 400, denied
+        assert settings.read_bytes() == before
+        conn = sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True)
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM scan_runs").fetchone()[0] == 0
+        finally:
+            conn.close()
+        print(json.dumps({"evidence": "actual-env-override-query", "pid": proc.pid,
+                          "port": port, "root": str(root), "saved_root": str(saved_root),
+                          "file_names": ["override_only.bin"], "saved_query_status": status,
+                          "settings_unchanged": True, "scan_runs": 0}))
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        log.close()
+        with socket.socket() as sock:
+            assert sock.connect_ex(("127.0.0.1", port)) != 0
+        print(json.dumps({"evidence": "actual-env-override-cleanup", "pid": proc.pid,
+                          "port": port, "returncode": proc.returncode, "port_closed": True}))

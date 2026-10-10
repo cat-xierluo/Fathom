@@ -197,16 +197,9 @@ function renderEffective(cfg) {
     const input = document.getElementById(id);
     if (input) input.value = value == null ? "" : String(value);
   };
-  fill("cfg-scan-root", cfg.scan_root);
   fill("cfg-min-kb", cfg.min_kb);
   fill("cfg-scan-time", cfg.scan_time);
   fill("cfg-free-alert-gb", cfg.free_alert_gb);
-  const override = SOURCE_LABELS[cfg.sources?.scan_root];
-  const note = document.querySelector('[data-test="cfg-scan-root-override"]');
-  if (note) {
-    note.textContent = override || "";
-    note.hidden = !override;
-  }
   // 入库阈值可展开说明里的等效读数（5120 KB → 5.0 MB）：帮助不用 KB 思考的用户
   const equiv = document.querySelector('[data-test="cfg-min-kb-equiv"]');
   if (equiv) {
@@ -455,17 +448,10 @@ function showFeedback(text, kind) {
 /* ISS-108：预填模式下不再清空输入框——保存成功后 renderEffective 已用服务端
  * 返回的生效值重填（清空会制造「输入框为空但当前值存在」的反查负担）。
  * 留空字段仍按「不修改该项」跳过（防御路径，与既有 PUT 合同一致）。 */
-function rootForComparison(value) {
-  const root = String(value ?? "").trim();
-  // 只消除路径书写格式；不在前端猜测符号链接或 .. 的实际目标。
-  return root.startsWith("/") ? root.replace(/\/+/g, "/").replace(/\/$/, "") || "/" : root;
-}
-
 async function saveConfig(event) {
   event.preventDefault();
   const body = {};
   const values = {
-    scan_root: document.getElementById("cfg-scan-root")?.value.trim(),
     scan_time: document.getElementById("cfg-scan-time")?.value.trim(),
     min_kb: document.getElementById("cfg-min-kb")?.value.trim(),
     free_alert_gb: document.getElementById("cfg-free-alert-gb")?.value.trim(),
@@ -474,10 +460,6 @@ async function saveConfig(event) {
   // 由服务端拒绝（校验以服务端为单一权威：正数/有限/格式都在后端钉住）
   for (const [key, value] of Object.entries(values)) {
     if (!value) continue;
-    // 预填旧 HOME 只是当前历史根，不代表用户要求改下一轮默认范围。
-    // 只有实际改根才写 scan_root；失败回填后仍与当前生效值比较。
-    if (key === "scan_root" && lastConfig &&
-        rootForComparison(value) === rootForComparison(lastConfig.scan_root)) continue;
     if (key === "min_kb" || key === "free_alert_gb") {
       const numeric = Number(value);
       body[key] = Number.isFinite(numeric) ? numeric : value;
@@ -521,7 +503,6 @@ function resetToDefaults() {
     const input = document.getElementById(id);
     if (input) input.value = value;
   };
-  fill("cfg-scan-root", defaults.scan_root || "");
   fill("cfg-scan-time", defaults.scan_time || "");
   fill("cfg-min-kb", defaults.min_kb == null ? "" : String(defaults.min_kb));
   fill("cfg-free-alert-gb", defaults.free_alert_gb == null ? "" : String(defaults.free_alert_gb));
@@ -529,7 +510,7 @@ function resetToDefaults() {
 }
 
 /* ISS-087：计划与通知 section 独立表单（#schedule-form）只覆盖
- * scan_time + free_alert_gb；与 #config-form（监控：scan_root + min_kb）
+ * scan_time + free_alert_gb；与 #config-form（监控：min_kb）
  * 共用 showFeedback / renderEffective / lastConfig。scan_time 与
  * free_alert_gb 通过 document.getElementById 读取（与 saveConfig 同口径），
  * 故分两个 form 仍能由各自的 submit handler 各自 PUT。 */
@@ -624,7 +605,9 @@ async function loadSettings() {
   const dbMb = s.db_bytes ? (s.db_bytes / 1024 / 1024).toFixed(1) : "0.0";
   // ISS-083：第三列标记技术行——打包态收进折叠区，浏览器态全量按原序渲染
   const rows = [
-    ["监控根目录", `<code>${escapeHtml(s.root)}</code>`, false],
+    ["当前扫描对象", c ? (c.storage_scope?.scan_override ? `<code>${escapeHtml(c.storage_scope.scan_override.root)}</code>`
+      : c.storage_scope?.effective_selection ? c.storage_scope.effective_selection.roots.map((root) => `<code>${escapeHtml(root)}</code>`).join("、")
+      : c.scan_root ? `<code>${escapeHtml(c.scan_root)}</code>` : "当前不可用") : "读取失败，当前对象未知", false],
     ["服务地址", `<code>http://127.0.0.1:${escapeHtml(String(s.port))}</code>（本地回环）`, true],
     ["运行根", `<code>${escapeHtml(s.runtime?.runtime_dir || "")}</code>`, true],
     ["数据库", `<code>${escapeHtml(s.runtime?.db_path || "")}</code> · ${dbMb} MB`, true],
@@ -2631,22 +2614,8 @@ function renderAboutVersion() {
   }
 }
 
-/* ---------- ISS-156：范围与覆盖分区（容器/卷发现 + 范围选择 + 计划预览 + 保存） ----------
- *
- * 合同要点（任务卡）：
- * - **发现 ≠ 已监控**：发现列表只回答「有哪些可选项」，当前生效范围单独一行
- *   （来源 + 版本 + 修订号），不由发现结果推断；
- * - 明确推荐「启动盘整体」或「自定义目录」；启动容器内的其它卷**独立勾选**，
- *   不随启动盘整体被顺带纳入；
- * - 计划预览回显真实身份（scope_id/plan_id）、读取限制（每根 du 时限）、
- *   资源预算（min_kb/排除）与 identity 版本；预览**不落盘**；
- * - 新口径要新基线：保存成功才变更 UI（旧 revision 保持可辨），并提示旧 HOME
- *   历史保留为 legacy 口径、不与新基线混比；
- * - 保存**只影响下一轮计划**，运行中改设置不打断本轮；
- * - 首次启用引导：首次配置后首扫是**独立且明确**的动作（不由保存隐式触发）；
- *   单快照可看分布，变化需等第二个可比日期。
- *
- * 失败不谎报：预览失败/发现失败/409 冲突各自有可辨文案，旧值一律保持可辨。
+/* ISS-191：当前扫描对象与覆盖只读呈现；不选择/保存范围。
+ * 发现不是采集事实，失效/权限受限不得伪装成零；主动采集保持独立动作。
  */
 const SCOPE_PANEL_ID = "scope-panel";
 const SCOPE_STATUS_LABELS = {
@@ -2663,28 +2632,7 @@ let scopeState = {
   preview: null,     // 最近一次「候选」预览（只读预览结果）
   previewError: null,
   feedback: null,    // {text, kind}
-  firstRun: null,    // 保存成功后的首扫引导
-  draftMode: null,
-  draftRoots: null,
 };
-
-function _scopeRootsInput() {
-  return document.getElementById("scope-roots");
-}
-
-function _scopeMode() {
-  const checked = document.querySelector('input[name="scope-mode"]:checked');
-  return checked ? checked.value : null;
-}
-
-/** 当前编辑中的候选选择（表单事实，不预设已保存）。 */
-function _scopeCandidate() {
-  const mode = _scopeMode();
-  if (!mode) return null;
-  const roots = mode === "startup_storage" ? [] : (_scopeRootsInput()?.value || "")
-    .split("\n").map((s) => s.trim()).filter(Boolean);
-  return { mode, roots };
-}
 
 function _scopeVolumeRow(v) {
   const status = SCOPE_STATUS_LABELS[v.status] || v.status || "状态未知";
@@ -2708,59 +2656,35 @@ function _scopeDeviceRow(d) {
   return `<li class="scope-volume" data-test="scope-device" data-device-id="${escapeHtml(d.device_id || "")}">
       <span class="scope-volume-name">${escapeHtml(d.name || d.device_id || "未命名设备")}</span>
       <span class="scope-volume-meta">非启动容器 ${mounted
-        ? `· 可选 <code>${escapeHtml(d.mount_point)}</code>` : "· 未挂载（不提供监控入口）"}</span>
+        ? `· 已挂载 <code>${escapeHtml(d.mount_point)}</code>` : "· 未挂载（不提供监控入口）"}</span>
     </li>`;
 }
 
 function _scopeCurrentRow() {
   const view = scopeState.view;
-  if (!view) {
-    return `<p class="hint" data-test="scope-current">当前生效范围读取中…</p>`;
-  }
+  if (!view) return `<p class="hint" data-test="scope-current">当前扫描对象不可用；请重新读取，不能回退用户目录。</p>`;
   const override = view.scan_override;
-  if (override) {
-    const source = override.source === "cli" ? "启动参数 --scan-root" : "环境变量 FATHOM_SCAN_ROOT";
-    const saved = view.selection;
-    return `<p class="hint" data-test="scope-current" data-enabled="${view.enabled ? "1" : "0"}"
-        data-revision="${escapeHtml(String(saved?.revision ?? 0))}">
-      已保存范围（本进程未使用）：${saved
-        ? `模式 <code>${escapeHtml(saved.mode)}</code> · 修订 <code>${escapeHtml(String(saved.revision))}</code>
-           · 根：${(saved.roots || []).map((r) => `<code>${escapeHtml(r)}</code>`).join("、")}`
-        : "尚未保存范围选择"}</p>
-      <p class="hint" data-test="scope-scan-override" data-source="${escapeHtml(override.source)}">
-        本进程实际扫描范围：<code>${escapeHtml(override.root)}</code> · 来源：${escapeHtml(source)}。
-        使用单目录扫描，不使用上方保存范围；保存或预览不会解除该覆盖。
-        如需采集保存范围，请从未指定扫描根覆盖的入口启动。</p>`;
-  }
-  if (!view.enabled || !view.selection) {
-    return `<p class="hint" data-test="scope-current" data-enabled="0">
-      当前生效范围：<strong>尚未启用范围能力</strong>（来源：${escapeHtml(view.source || "default")}）
-      ——${lastConfig?.next_scan_default === "startup_storage"
-        ? "下一次点击扫描将默认采集内置启动盘整体；旧用户目录历史保留。"
-        : "扫描仍按旧单根口径运行，保存后仅下一轮改用新范围。"}</p>`;
-  }
-  const s = view.selection;
-  return `<p class="hint" data-test="scope-current" data-enabled="1"
-      data-revision="${escapeHtml(String(s.revision))}"
-      data-identity-version="${escapeHtml(String(view.identity_version))}">
-    当前生效范围：模式 <code>${escapeHtml(s.mode)}</code>
-    · 修订 <code>${escapeHtml(String(s.revision))}</code>
-    · 身份版本 <code>${escapeHtml(String(view.identity_version))}</code>
-    · 来源 settings.json
-    ${s.roots && s.roots.length
-      ? `· 根：${s.roots.map((r) => `<code>${escapeHtml(r)}</code>`).join("、")}`
-      : "· 根：启动盘整体（由计划解析）"}
-  </p>`;
+  const current = view.effective_selection;
+  const saved = view.selection;
+  const roots = override ? [override.root] : (current?.roots || []);
+  return `<p class="hint" data-test="scope-current" data-enabled="${view.enabled ? "1" : "0"}"
+      data-revision="${escapeHtml(String(saved?.revision ?? 0))}" data-source="${escapeHtml(view.source || "default")}">
+      当前扫描对象：<strong>${view.source === "startup_discovery" ? "内置启动盘整体" : override ? "本进程隔离目录" : "开发运行对象"}</strong>
+      · 根：${roots.map((r) => `<code>${escapeHtml(r)}</code>`).join("、") || "当前不可用"}。</p>
+    ${override ? `<p class="hint" data-test="scope-scan-override" data-source="${escapeHtml(override.source)}">
+      本进程由${override.source === "cli" ? "启动参数 --scan-root" : "环境变量 FATHOM_SCAN_ROOT"}隔离，实际根 <code>${escapeHtml(override.root)}</code>，不使用已保存范围。</p>` : ""}
+    ${saved && !view.saved_active ? `<p class="hint" data-test="scope-saved-compatibility">
+      旧保存范围仅保留兼容资料（修订 ${escapeHtml(String(saved.revision))}），不作为当前扫描决定；旧历史保持独立基线。</p>` : ""}`;
 }
 
 function _scopePlanBlock() {
   const plan = scopeState.preview;
   if (scopeState.previewError) {
     return `<div class="hint cfg-error" data-test="scope-preview-error">
-      计划预览失败：${escapeHtml(scopeState.previewError)}（当前生效范围未改动）</div>`;
+      当前计划读取失败：${escapeHtml(scopeState.previewError)}（当前生效范围未改动）</div>`;
   }
   if (!plan) {
-    return `<p class="hint" data-test="scope-preview-empty">尚未预览候选计划。</p>`;
+    return `<p class="hint" data-test="scope-preview-empty">当前使用显式隔离目录或尚无可用计划。</p>`;
   }
   const rows = (plan.plans || []).map((p) => `<tr>
       <td><code>${escapeHtml(p.root)}</code></td>
@@ -2771,7 +2695,7 @@ function _scopePlanBlock() {
   const rl = plan.read_limits || {};
   const bg = plan.budget || {};
   return `<div data-test="scope-preview">
-    <p class="hint" data-test="scope-preview-kind">范围候选计划；是否用于扫描以上方实际范围为准。</p>
+    <p class="hint" data-test="scope-preview-kind">当前计划：只读发现，不保存设置，也不代表已完成采集。</p>
     <table class="scope-plan-table">
       <thead><tr><th>根目录</th><th>名称</th><th>范围身份</th><th>计划身份</th></tr></thead>
       <tbody>${rows}</tbody>
@@ -2789,29 +2713,15 @@ function _scopePlanBlock() {
 }
 
 function _scopeFirstRunBlock() {
-  const fr = scopeState.firstRun;
-  if (!fr) return "";
-  const override = scopeState.view?.scan_override;
-  if (override) {
-    return `<div class="panel scope-firstrun" data-test="scope-firstrun">
-      <h3>范围已保存，等待解除启动覆盖</h3>
-      <p class="hint">本进程仍采集 <code>${escapeHtml(override.root)}</code>（旧单目录口径），
-        不使用已保存范围。保存范围不会自动扫描，其新基线尚未采集。</p>
-      <button type="button" class="btn" data-test="scope-firstscan-btn" disabled>采集已保存范围（当前被覆盖）</button>
-      <p class="hint" data-test="scope-snapshot-expect">如需采集保存范围，请从未指定扫描根覆盖的入口启动。</p>
-    </div>`;
-  }
+  if (!scopeState.view) return "";
   return `<div class="panel scope-firstrun" data-test="scope-firstrun">
-      <h3>首次采集已就绪（独立动作）</h3>
-      <p class="hint">保存范围**不会**自动扫描。首轮采集是下面这个独立动作，完成后才形成新基线。</p>
+      <h3>采集当前扫描对象（独立动作）</h3>
+      <p class="hint">无需选择或保存范围。读取本页不会扫描；主动采集完成后才形成新基线。</p>
       <button type="button" class="btn" id="btn-scope-firstscan" data-test="scope-firstscan-btn">
-        ${icon("activity")}开始首次采集</button>
+        ${icon("activity")}开始采集当前对象</button>
       <span id="scope-firstscan-status" class="hint" data-test="scope-firstscan-status" hidden></span>
-      <p class="hint" data-test="scope-snapshot-expect">
-        一次扫描只得到单个快照：可看容量分布，<strong>变化要等第二个可比日期</strong>。
-        同日再次扫描会替换当天快照（不产生第二个跨日基线）。</p>
-      <p class="hint" data-test="scope-legacy-note">
-        旧 HOME 历史快照保留为 legacy 口径，不与新基线混比。</p>
+      <p class="hint" data-test="scope-snapshot-expect">一次采集可看分布；变化需两个可比日期，同日采集不产生跨日基线。</p>
+      <p class="hint" data-test="scope-legacy-note">旧用户目录历史保留为 legacy 口径，不与新基线混比。</p>
     </div>`;
 }
 
@@ -2819,9 +2729,6 @@ function renderScopePanel() {
   const panel = document.getElementById(SCOPE_PANEL_ID);
   if (!panel) return;
   const view = scopeState.view;
-  const sel = view?.selection;
-  const mode = scopeState.draftMode || sel?.mode || "startup_storage";
-  const roots = scopeState.draftRoots ?? sel?.roots ?? [];
   const discovery = scopeState.discovery;
   const fb = scopeState.feedback;
 
@@ -2837,12 +2744,12 @@ function renderScopePanel() {
     const others = d.other_devices || [];
     discoveryBlock = `<div data-test="scope-discovery">
       <p class="hint" data-test="scope-discovery-note">
-        以下是<b>发现结果</b>（有哪些可选项），<b>不代表已在监控</b>；当前生效范围见下方一行。</p>
+        以下是<b>只读发现结果</b>，<b>不代表已完成采集</b>；当前扫描对象见下方。</p>
       ${container ? `<p class="hint" data-test="scope-container">
         启动容器：<code>${escapeHtml(container.container_reference || container.container_id || "")}</code>
         · 共享剩余空间（不按卷相加）</p>` : ""}
       <ul class="scope-volume-list">${volumes.map(_scopeVolumeRow).join("")}</ul>
-      ${others.length ? `<p class="hint">其它设备（非启动容器，独立入口）：</p>
+      ${others.length ? `<p class="hint">其它设备（非启动容器，不自动纳入）：</p>
         <ul class="scope-volume-list">${others.map(_scopeDeviceRow).join("")}</ul>` : ""}
     </div>`;
   } else {
@@ -2851,30 +2758,7 @@ function renderScopePanel() {
 
   panel.innerHTML = `
     ${discoveryBlock}
-    <div class="cfg-row">
-      <label class="cfg-label" for="scope-roots">监控范围</label>
-      <div class="cfg-field">
-        <label class="scope-mode">
-          <input type="radio" name="scope-mode" value="startup_storage" data-test="scope-mode-startup"
-                 ${mode === "startup_storage" ? "checked" : ""}>
-          内置启动盘整体（默认）</label><br>
-        <label class="scope-mode">
-          <input type="radio" name="scope-mode" value="custom_directory" data-test="scope-mode-custom"
-                 ${mode === "custom_directory" ? "checked" : ""}>
-          自定义目录（只监控列出的目录）</label>
-        <textarea class="ctl-input cfg-wide" id="scope-roots" rows="3" data-test="scope-roots"
-                  spellcheck="false"${mode === "startup_storage" ? " hidden disabled" : ""}
-                  placeholder="自定义模式每行一个绝对路径">${escapeHtml(roots.join("\n"))}</textarea>
-        <p class="cfg-desc" data-test="scope-mode-desc">
-          启动盘模式无需填写路径，自动从真实挂载入口生成计划；未挂载或锁定的卷不能采集，外接磁盘不自动纳入。
-          换范围会形成新数据集与新基线。</p>
-      </div>
-    </div>
     <div class="cfg-actions">
-      <button type="button" class="btn" id="btn-scope-preview" data-test="scope-preview-btn">
-        ${icon("stethoscope")}预览计划</button>
-      <button type="button" class="btn" id="btn-scope-save" data-test="scope-save-btn">
-        ${icon("scope")}保存范围</button>
       <button type="button" class="btn" id="btn-scope-reload" data-test="scope-reload-btn">
         ${icon("activity")}重新读取</button>
     </div>
@@ -2885,20 +2769,9 @@ function renderScopePanel() {
     ${_scopeFirstRunBlock()}
   `;
 
-  panel.querySelector("#btn-scope-preview")?.addEventListener("click", () => previewScope());
-  panel.querySelector("#btn-scope-save")?.addEventListener("click", () => saveScope());
   panel.querySelector("#btn-scope-reload")?.addEventListener("click", () => loadScopeSettings());
   panel.querySelector("#btn-scope-firstscan")?.addEventListener("click", startFirstScan);
-  panel.querySelectorAll('input[name="scope-mode"]').forEach((radio) => {
-    radio.addEventListener("change", () => {
-      scopeState.draftMode = radio.value;
-      const input = _scopeRootsInput();
-      if (input) {
-        input.hidden = radio.value === "startup_storage";
-        input.disabled = input.hidden;
-      }
-    });
-  });
+
 }
 
 async function loadScopeSettings() {
@@ -2919,94 +2792,15 @@ async function loadScopeSettings() {
   try {
     scopeState.view = await fetchJSON("/api/storage/plan/preview");
     if (!request.current()) return;
+    scopeState.preview = scopeState.view.plan || null;
+    scopeState.feedback = null;
   } catch (e) {
     if (!request.current()) return;
     scopeState.view = null;
+    scopeState.preview = null;
     scopeState.feedback = {
       kind: "error",
       text: `范围配置读取失败：${e.status === 0 ? "无法连接本地服务" : e.message}`,
-    };
-  }
-  if (!request.current()) return;
-  renderScopePanel();
-}
-
-async function previewScope() {
-  const candidate = _scopeCandidate();
-  if (!candidate) {
-    scopeState.feedback = { kind: "error", text: "请先选择范围模式。" };
-    renderScopePanel();
-    return;
-  }
-  scopeState.draftMode = candidate.mode;
-  scopeState.draftRoots = candidate.roots;
-  const request = beginRequest("settingsScope");
-  const qs = new URLSearchParams({ mode: candidate.mode, roots: candidate.roots.join(";") });
-  try {
-    const data = await fetchJSON(`/api/storage/plan/preview?${qs.toString()}`);
-    if (!request.current()) return;
-    scopeState.preview = data.plan || null;
-    scopeState.previewError = null;
-    scopeState.feedback = {
-      kind: "",
-      text: data.hint || "候选预览不改任何配置；保存后只影响下一轮计划，不触发扫描。",
-    };
-  } catch (e) {
-    if (!request.current()) return;
-    scopeState.preview = null;
-    scopeState.previewError = e.status === 0 ? "无法连接本地服务" : (e.message || `HTTP ${e.status}`);
-    scopeState.feedback = null;
-  }
-  if (!request.current()) return;
-  renderScopePanel();
-}
-
-async function saveScope() {
-  const candidate = _scopeCandidate();
-  if (!candidate) {
-    scopeState.feedback = { kind: "error", text: "请先选择范围模式。" };
-    renderScopePanel();
-    return;
-  }
-  const request = beginRequest("settingsScope");
-  const body = { mode: candidate.mode, roots: candidate.roots };
-  // 初次保存同样带版本 0，预览后若其他窗口保存过则明确冲突。
-  body.expected_revision = 0;
-  const current = scopeState.view?.selection;
-  if (current && typeof current.revision === "number") {
-    body.expected_revision = current.revision;   // 乐观并发：预览后被改动 → 409
-  }
-  try {
-    const res = await apiPut("/api/storage/scope", body);
-    const data = await res.json();
-    if (!request.current()) return;
-    // 只有保存成功才变更 UI（服务端返回的生效视图为准）
-    scopeState.view = {
-      enabled: data.scope?.enabled,
-      identity_version: data.scope?.identity_version,
-      source: data.scope?.source,
-      selection: data.scope?.selection,
-      scan_override: data.scope?.scan_override,
-    };
-    scopeState.preview = data.plan || null;
-    scopeState.previewError = null;
-    scopeState.firstRun = { savedAt: data.scope?.selection?.revision ?? null };
-    scopeState.draftMode = null;
-    scopeState.draftRoots = null;
-    scopeState.feedback = {
-      kind: "ok",
-      text: data.hint || "已保存：只影响下一轮计划，不触发扫描。",
-    };
-  } catch (e) {
-    if (!request.current()) return;
-    // 失败/409：旧值保持可辨——不乐观改写 view，feedback 明确冲突与旧修订号。
-    const currentRev = scopeState.view?.selection?.revision;
-    const isConflict = e.status === 409;
-    scopeState.feedback = {
-      kind: "error",
-      text: isConflict
-        ? `保存冲突：${e.message}（旧值未改动，当前生效修订 ${currentRev ?? "—"}；请重新读取后再预览保存）`
-        : `保存失败：${e.status === 0 ? "无法连接本地服务" : e.message}。当前生效范围保持不变。`,
     };
   }
   if (!request.current()) return;
@@ -3017,17 +2811,17 @@ async function startFirstScan() {
   const status = document.getElementById("scope-firstscan-status");
   const btn = document.getElementById("btn-scope-firstscan");
   if (btn) btn.disabled = true;
-  if (status) { status.hidden = false; status.textContent = "正在请求首次采集…"; }
+  if (status) { status.hidden = false; status.textContent = "正在请求采集当前对象…"; }
   try {
     const res = await apiPost("/api/scan", {});
     if (status) {
       status.textContent = res.status === 409
-        ? "已有扫描在进行中；本次设置将在下一轮生效。"
-        : "已开始首次采集：完成后形成新基线。";
+        ? "已有扫描在进行中；不会启动重复采集。"
+        : "已开始采集当前对象：完成后形成新基线。";
     }
   } catch (e) {
     if (status) {
-      status.textContent = `无法开始首次采集：${e.status === 0 ? "无法连接本地服务" : e.message}`;
+      status.textContent = `无法开始采集：${e.status === 0 ? "无法连接本地服务" : e.message}`;
     }
   } finally {
     if (btn) btn.disabled = false;

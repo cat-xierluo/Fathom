@@ -644,16 +644,7 @@ function _ovCta(summary) {
  * `applyConvergedOptions` 会把 a 侧重填为 b 数据集并按「a 取其前驱」取到
  * 同 plan 的真实前驱（D2）。本文件不再自建前驱挑选（原 `_pickPredecessorId`
  * 读的是收敛**之前**的旧选项集，正是 D2 留空的根因），以免两处判定漂移。 */
-/* ISS-178 R3 D2 实机根因：交接写入的 change 是**合成事件**（非 isTrusted），
- * 但变化页此前把它与「用户改选」同等对待——`onSelectionChange` 收到
- * changedId 非空即按 userChanged 处理：
- * 1) `applyConvergedOptions` 的 `userEmptyA = userChanged && keepA === ""`
- *    误判为「用户显式清空基线」，把 a 侧钉死成空串；
- * 2) 它推高 `snapshotSelectionRevision`，让在途的 `loadSnapshotsForDiff`
- *    走「用户在 fetch 期间改选 → 整体放弃收敛」分支（changes.js:269），
- *    该分支只重建 b 侧全列、**既不收敛也不落定 a、也不补发 diff**。
- * 两条叠加即实机形态：b 侧正确带入、a 侧 value 空且选项状态未知。
- * 合成事件打上标记，交接与用户改选从此分流（D2 修复本体）。 */
+/* 交接事件与用户改选分流：变化页将它记为新意图，但入口空 a 仍可取真实前驱。 */
 function _handoffEvent() {
   const ev = new Event("change", { bubbles: true });
   ev.__fathomHandoff = true;
@@ -668,9 +659,12 @@ function _diag(kind, detail) {
 }
 
 function _handOffChangeEntry(a, b) {
-  state.pendingChangeEntry = { a: a || null, b: String(b) };
+  const entry = { a: a || null, b: String(b) };
+  state.pendingChangeEntry = entry;
+  // 新 CTA 可覆盖上一次页面访问里的改选；本次等待期间的较新改选仍优先。
+  window.__changesUserTouched = false;
   window.addEventListener("hashchange", function once() {
-    if (!state.pendingChangeEntry) {
+    if (state.pendingChangeEntry !== entry) {
       window.removeEventListener("hashchange", once);
       return;
     }
@@ -684,9 +678,8 @@ function _handOffChangeEntry(a, b) {
      * 基线、a 为空即放弃、用户已改选（__changesUserTouched）立即放弃。 */
     const deadline = Date.now() + 30000;
     const tick = () => {
-      const entry = state.pendingChangeEntry;
-      if (!entry) return;
-      /* ISS-170 R2：用户已在变化页真实改选过（isTrusted change 置标志）时，
+      if (state.pendingChangeEntry !== entry || state.page !== "changes") return;
+      /* ISS-170 R2：用户已在变化页改选过（非交接 change 置标志）时，
        * 入口交接立即放弃——迟到 tick 不得把用户刚选的区间覆盖回入口旧值
        * （实测三连发 (1,4)/(1,2)/(1,4) 的最后一发即本 tick 所写）。 */
       if (window.__changesUserTouched) {

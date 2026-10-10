@@ -39,7 +39,7 @@ const shotsIdx = args.indexOf("--shots");
 const SHOTS = shotsIdx >= 0 && args[shotsIdx + 1]
   ? path.resolve(args[shotsIdx + 1])
   : path.join(REPO, "verify-results", "iss158-storage-overview", "shots");
-fs.mkdirSync(SHOTS, { recursive: true });
+if (require.main === module) fs.mkdirSync(SHOTS, { recursive: true });
 
 const checks = [];
 function record(name, ok, detail = "") {
@@ -789,4 +789,5 @@ async function main() {
 }
 
 let PHASE = "clean";
-main().catch((e) => { console.error(e); process.exitCode = 1; });
+module.exports = { SEED_PY };
+if (require.main === module) main().catch((e) => { console.error(e); process.exitCode = 1; });

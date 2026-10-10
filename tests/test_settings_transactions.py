@@ -295,8 +295,7 @@ def test_env_exclude_override_preserves_latest_analysis_identity(roots):
     assert "exclude_names" not in disk and disk["analysis"]["enabled"] is True
 
 
-@pytest.fixture
-def live_service(roots):
+def _running_service(roots):
     """实际 CLI serve/HTTP，固定自有 PID；退出后核端口释放，不读生产 HOME。"""
     import socket
     import time
@@ -310,7 +309,8 @@ def live_service(roots):
     env["HOME"] = str(runtime / "home")
     env["FATHOM_PORT"] = str(port)
     env["FATHOM_PORT_RANGE"] = "0"
-    log = (runtime / "service.log").open("w")
+    log_path = runtime / f"service-{port}.log"
+    log = log_path.open("w")
     proc = subprocess.Popen([sys.executable, "-m", "fathom", "--port-range", "0", "serve"],
                             cwd=REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
     token = None
@@ -330,7 +330,7 @@ def live_service(roots):
     try:
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
-            assert proc.poll() is None, (runtime / "service.log").read_text()
+            assert proc.poll() is None, log_path.read_text()
             try:
                 status, health = request("/health")
                 if status == 200:
@@ -355,6 +355,16 @@ def live_service(roots):
         with socket.socket() as sock:
             assert sock.connect_ex(("127.0.0.1", port)) != 0, "owned service port remains open"
         print(json.dumps({"evidence": "owned-http-closed", "pid": proc.pid, "port": port, "returncode": proc.returncode}))
+
+
+@pytest.fixture
+def live_service(roots):
+    yield from _running_service(roots)
+
+
+@pytest.fixture
+def second_live_service(roots):
+    yield from _running_service(roots)
 
 
 def test_actual_http_stale_cas_refreshes_get_and_preview_without_failed_patch(roots, live_service):
@@ -441,3 +451,96 @@ def test_stale_analysis_patch_uses_latest_identity_and_revision(roots):
     finally:
         if stale.poll() is None:
             stop(stale)
+
+
+def test_two_http_helpers_reject_generic_scope_reset_and_keep_cas(roots, live_service, second_live_service):
+    import hashlib
+    import sqlite3
+    runtime, a, b = roots
+    request_a, pid_a, _ = live_service
+    request_b, pid_b, _ = second_live_service
+    assert pid_a != pid_b
+    assert request_b("/api/storage/scope", {"mode": config.SCOPE_MODE_CUSTOM, "roots": [str(b)], "expected_revision": 0})[0] == 200
+    assert request_a("/api/storage/scope", {"mode": config.SCOPE_MODE_CUSTOM, "roots": [str(a)], "expected_revision": 0})[0] == 409
+    old = (runtime / "settings.json").read_bytes()
+    status, response = request_a("/api/config", {"storage_scope": {
+        "mode": config.SCOPE_MODE_CUSTOM, "roots": [str(a)], "revision": 0}})
+    assert request_b("/api/snapshots") == (200, [])
+    db_path = runtime / "data" / "fathom.db"
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        counts = {table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                  for table in ("snapshots", "scan_runs")}
+    assert counts == {"snapshots": 0, "scan_runs": 0}
+    after = (runtime / "settings.json").read_bytes()
+    print(json.dumps({"evidence": "two-http-generic-scope", "pids": [pid_a, pid_b],
+                      "status": status, "before_sha256": hashlib.sha256(old).hexdigest(),
+                      "after_sha256": hashlib.sha256(after).hexdigest(), "scan_counts": counts,
+                      "before_scope": json.loads(old)["storage_scope"],
+                      "after_scope": json.loads(after)["storage_scope"]}))
+    assert status == 400, response
+    assert "expected_revision" in response["detail"] and "/api/storage/scope" in response["detail"]
+    assert after == old
+    for request in (request_a, request_b):
+        view = request("/api/config")[1]["storage_scope"]["selection"]
+        assert view["revision"] == 1 and view["roots"] == [str(b)]
+        preview = request("/api/storage/plan/preview")[1]["selection"]
+        assert preview == view
+    for payload in (
+        {"storage_scope": None}, {"storage_scope": {}}, {"storage_scope": "bad"},
+        {"storage_scope": None, "min_kb": 999},
+        {"storage_scope": {"mode": config.SCOPE_MODE_CUSTOM, "roots": [str(a)], "revision": 1}},
+        {"storage_scope": {"mode": config.SCOPE_MODE_CUSTOM, "roots": [str(a)], "revision": 999}},
+    ):
+        rejected, detail = request_a("/api/config", payload)
+        assert rejected == 400 and "expected_revision" in detail["detail"]
+        assert (runtime / "settings.json").read_bytes() == old
+        assert request_a("/api/config")[1]["storage_scope"]["selection"]["roots"] == [str(b)]
+    print(json.dumps({"evidence": "generic-scope-variants", "pid": pid_a,
+                      "rejected_status": 400, "variants": 7, "revision": 1,
+                      "disk_unchanged": True}))
+    assert request_a("/api/storage/scope", {"mode": config.SCOPE_MODE_CUSTOM, "roots": [str(a)], "expected_revision": 0})[0] == 409
+    assert (runtime / "settings.json").read_bytes() == old
+    status, result = request_a("/api/storage/scope", {"mode": config.SCOPE_MODE_CUSTOM, "roots": [str(a)], "expected_revision": 1})
+    assert status == 200 and result["scope"]["selection"]["revision"] == 2
+    assert request_b("/api/config", {"min_kb": 777})[0] == 200
+    disk = json.loads((runtime / "settings.json").read_text())
+    assert disk["storage_scope"]["revision"] == 2 and disk["storage_scope"]["roots"] == [str(a)]
+    assert disk["min_kb"] == 777
+
+
+@pytest.mark.parametrize("variant", ["null", "empty", "malformed", "mixed", "reset", "same", "high"])
+def test_direct_generic_scope_patch_rejected_without_partial_update(isolated, tmp_path, variant):
+    a = tmp_path / "next-root"
+    a.mkdir()
+    b = isolated["scanroot"]
+    config.save_scope_selection(config.ScopeSelection(mode=config.SCOPE_MODE_CUSTOM, roots=(str(b),)), expected_revision=0)
+    old = config.settings_path().read_bytes()
+    previous = config.get_user_settings()
+    payload = {"mode": config.SCOPE_MODE_CUSTOM, "roots": [str(a)], "revision": {"reset": 0, "same": 1, "high": 999}.get(variant, 0)}
+    if variant in {"null", "mixed"}:
+        payload = None
+    elif variant == "empty":
+        payload = {}
+    elif variant == "malformed":
+        payload = "bad"
+    changes = {"storage_scope": payload}
+    if variant == "mixed":
+        changes["min_kb"] = 777
+    with pytest.raises(config.ConfigurationError, match="expected_revision"):
+        config.update_user_settings(changes)
+    assert config.settings_path().read_bytes() == old
+    assert config.get_user_settings() == previous
+    assert config.load_user_settings(config.settings_path()).storage_scope == previous.storage_scope
+    result = config.update_user_settings({"scan_time": "06:45"})
+    assert result.storage_scope == previous.storage_scope and result.scan_time == "06:45"
+
+
+def test_generic_scope_rejection_precedes_creating_settings_or_lock(isolated):
+    path = config.settings_path()
+    lock = path.parent / config.SETTINGS_LOCK_FILENAME
+    previous = config.get_user_settings()
+    assert not path.exists() and not lock.exists()
+    with pytest.raises(config.ConfigurationError, match="/api/storage/scope"):
+        config.update_user_settings({"storage_scope": None, "min_kb": 777})
+    assert not path.exists() and not lock.exists()
+    assert config.get_user_settings() == previous

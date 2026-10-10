@@ -1118,6 +1118,10 @@ def _write_settings_patch(path: Path, previous: UserSettings,
 def update_user_settings(changes: Mapping[str, object]) -> UserSettings:
     """跨进程锁内读磁盘最新值、合并、原子写入并刷新（PUT /api/config）。
 
+    storage_scope 不接受通用 patch（含 null/混合字段）：范围只能通过
+    save_scope_selection / 专用范围接口和 expected_revision 保存，不能绕过
+    CAS 或回退 revision。拒绝在任何锁/写入/其他字段发布前发生。
+
     任一步失败：旧文件不动、进程内生效值不变（校验失败抛
     ConfigurationError，写失败抛 OSError，两者都不产生半更新状态）。
 
@@ -1126,6 +1130,10 @@ def update_user_settings(changes: Mapping[str, object]) -> UserSettings:
     ``consent_revision`` 优先保留（用户重新确认授权的入口），否则维持
     现值。identity 未变时 revision 不动，避免无谓的预览失效。
     """
+    if "storage_scope" in changes:
+        raise ConfigurationError(
+            "storage_scope 必须通过专用范围接口 /api/storage/scope，"
+            "使用 expected_revision 保存；通用配置接口不接受范围更新。")
     with _settings_transaction() as (path, previous):
         return _write_settings_patch(path, previous, changes)
 

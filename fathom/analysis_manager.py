@@ -1195,6 +1195,40 @@ class AnalysisManager:
         finally:
             conn.close()
 
+    def list_history(self, *, limit: int = 20, offset: int = 0) -> dict:
+        """跨区间生命周期分页；在途优先，读取不派发、不清理或隐藏过期记录。"""
+        conn = db.connect(self._db_path)
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM analysis_runs").fetchone()[0]
+            rows = conn.execute(
+                "SELECT job_id, revoked_at FROM analysis_runs "
+                f"ORDER BY CASE WHEN status IN ({_ACTIVE_STATUSES_SQL}) "
+                "THEN 0 ELSE 1 END, created_at DESC, job_id DESC LIMIT ? OFFSET ?",
+                (*LEFTOVER_ACTIVE_STATUSES, limit, offset),
+            ).fetchall()
+            jobs = []
+            for row in rows:
+                view = self.job_view(row["job_id"])
+                view["revoked_at"] = row["revoked_at"]
+                saved = conn.execute("SELECT * FROM agent_analyses WHERE job_id=?",
+                                     (row["job_id"],)).fetchone()
+                view["analysis"] = None
+                if saved is not None:
+                    saved = dict(saved)
+                    expired, reason = self._evaluate_expiry(conn, saved)
+                    view["analysis"] = {
+                        "id": saved["id"], "created_at": saved["created_at"],
+                        "a_created_at": saved["a_created_at"],
+                        "b_created_at": saved["b_created_at"],
+                        "expired": expired, "expired_reason": reason,
+                    }
+                jobs.append(view)
+            more = offset + len(jobs) < total
+            return {"jobs": jobs, "total": total, "limit": limit, "offset": offset,
+                    "has_more": more, "next_offset": offset + len(jobs) if more else None}
+        finally:
+            conn.close()
+
     def get_analysis(self, analysis_id: int) -> dict:
         conn = db.connect(self._db_path)
         try:

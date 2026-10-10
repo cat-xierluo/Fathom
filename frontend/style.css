@@ -1338,3 +1338,15 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Agent 中心：长范围与历史在桌面最小视口内保持可读。 */
+.agent-range-controls { flex-wrap: wrap; }
+.agent-range-controls label { display:flex; align-items:center; gap:8px; min-width:0; }
+.agent-range-controls select { max-width:280px; min-width:120px; }
+.agent-history-scroll { overflow-x:auto; }
+#page-agent .tbl td { overflow-wrap:anywhere; }
+#page-agent .panel-head { flex-wrap:wrap; gap:8px; }
+/* .btn 的 display 覆盖 UA hidden；分页结束后必须确实收起加载更多。 */
+#agent-history-more[hidden] { display:none; }
+/* 查看原任务是历史列表主动作，不沿用悬停才显现的辅助按钮。 */
+#page-agent [data-agent-job] { opacity:1; white-space:nowrap; }

@@ -12,7 +12,7 @@ launchd scan / CLI / HTTP POST /api/scan
        scan_coordinator → 跨进程 flock → 分阶段 scan_run_details
                  ↓
  scanner → SQLite snapshot → reports → Markdown → notify（尝试系统通知）→ prune
-launchd web → python -m fathom serve → FastAPI :7952 → frontend/ 五页
+launchd web → python -m fathom serve → FastAPI :7952 → frontend/ 六页（含 Agent）
                                                ↑
 Tauri loader → 开发态外部服务；打包态 /health 身份握手 → 本地 HTTP ─┘
 前端定期 invoke → Rust tray 标题；tray-action → 前端 → /api/scan
@@ -139,3 +139,9 @@ DB 文件尺寸只统计主 `.db`，没包括 WAL/SHM。历史“几十 MB 长�
 范围已启用时，普通设置合并保留 `ScopeSelection` 与分析配置的内部对象类型，线协议字典仅用于序列化；显式 CLI/环境扫描根先于持久化范围生效。当前范围版本冲突比较仍是进程内保护，跨进程竞争尚未解决；启动盘范围采集规格的容器身份传递也仍有缺口，身份不足时整盘摘要保持不可比。
 
 `process_scan_root_override` 为 CLI/API/设置范围呈现共用的只读覆盖判定，CLI 优先于环境；范围读接口附带 `scan_override`。无参数计划预览在覆盖时返回 `plan=null`、`plan_source=process_override` 并说明真实 legacy 单根，显式候选预览标为 candidate。保存仍持久化选择，不解除本进程覆盖；前端范围卡分开呈现保存选择和实际根。
+
+## Agent 变化解读与历史中心（独立入口）
+
+`#/agent` 由 router 统一进入、刷新和离页；Agent页按同一 `datasetKey` 校验真实历史区间，查询跨区间任务列表，选择原任务后按记录ID读取保存原文。`components/analysis-panel.js` 供变化页与Agent页使用，隔离DOM挂载点、区间获取及请求域，共用既有预览、确认、幂等、轮询、取消、结果/证据和撤销流程。离页不取消后台授权任务，不隐式发送；改选/离页作废各自请求域。
+
+新增纯读 `GET /api/analysis/history?limit=20&offset=0`（limit 1–100、offset非负）提供跨区间生命周期分页，在途优先；列表只含任务及过期元数据，不展开事实包和正文。`GET /api/analyses/{analysis_id}` 按ID读取仍保留的原文与证据，沿用过期评估及撤销404语义。旧带a/b的查询保持兼容；启用状态不限制历史读取，新plan身份依旧不能生成AI预览。底层保留与删除规则未改变，历史仅代表本机仍保留的记录。

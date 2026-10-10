@@ -227,7 +227,7 @@ function analysisRecord(aId, bId, { expired = false, expiredReason = null } = {}
 
 /* ---------- 夹具 server ---------- */
 
-function createFixture() {
+function createFixture({ intercept, configRuntimeObject = false } = {}) {
   const state = {
     scenario: "disabled",           // disabled | enabled | put-fail | expired | fail-job
     analysisEnabled: false,
@@ -261,7 +261,7 @@ function createFixture() {
       auto_download_updates: true,
       analysis: {
         enabled: state.analysisEnabled,
-        runtime: state.savedRuntime,
+        runtime: configRuntimeObject && state.savedRuntime ? {id:state.savedRuntime,executable:"/fixture/bin/claude",version:"2.1.237"} : state.savedRuntime,
         settings_revision: 2, consent_revision: 1,
         source: state.savedRuntime ? "settings" : "default",
         defaults: { enabled: false },
@@ -288,6 +288,7 @@ function createFixture() {
     const url = new URL(req.url, "http://127.0.0.1");
     const p = url.pathname;
     const body = await readBody(req);
+    if (intercept && await intercept(req, res, url, body, state)) return;
 
     if (p === "/__set") {
       const q = url.searchParams;
@@ -328,6 +329,9 @@ function createFixture() {
         root: "/fixture/root", port: url.port, db_bytes: 1024 * 1024,
         runtime: { runtime_dir: "/fixture/runtime", db_path: "/fixture/runtime/db.sqlite" },
         latest_snapshot: SNAPSHOTS[SNAPSHOTS.length - 1],
+        snapshot_count: SNAPSHOTS.length,
+        disk: {free_bytes: 80000000000, total_bytes: 256000000000},
+        scan: {running: false, finished_at: null},
       });
     }
 
@@ -1411,7 +1415,8 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+module.exports = { createFixture, analysisRecord, previewFor, SNAPSHOTS, json };
+if (require.main === module) main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

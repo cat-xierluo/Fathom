@@ -26,13 +26,16 @@ helper 都靠它钉住扫描根），若落盘设置能反超环境变量，一�
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
+import fcntl
 import fnmatch
 import json
 import math
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 import threading
 from typing import Mapping
@@ -271,18 +274,19 @@ def configure(
     settings.json，见模块 docstring）；运行根变化后按新根重读 settings.json。
     """
     global _ACTIVE, _CLI_SCAN_ROOT_PINNED
-    _ACTIVE = _ACTIVE.with_overrides(
-        runtime_dir=runtime_dir,
-        scan_root=scan_root,
-        port=port,
-        resource_dir=resource_dir,
-        mode=mode,
-    )
-    if scan_root is not None:
-        _CLI_SCAN_ROOT_PINNED = True
-    _publish_compatibility_values(_ACTIVE)
-    refresh_user_settings()
-    return _ACTIVE
+    with _SETTINGS_LOCK:
+        _ACTIVE = _ACTIVE.with_overrides(
+            runtime_dir=runtime_dir,
+            scan_root=scan_root,
+            port=port,
+            resource_dir=resource_dir,
+            mode=mode,
+        )
+        if scan_root is not None:
+            _CLI_SCAN_ROOT_PINNED = True
+        _publish_compatibility_values(_ACTIVE)
+        refresh_user_settings()
+        return _ACTIVE
 
 
 def ensure_runtime_dirs(value: RuntimeConfig | None = None) -> None:
@@ -368,6 +372,7 @@ HELPER_INSTANCE_FILENAME = "helper-instance.json"
 # ---------- 用户设置持久化（ISS-016A：运行根下 settings.json） ----------
 
 SETTINGS_FILENAME = "settings.json"
+SETTINGS_LOCK_FILENAME = ".settings.lock"
 DEFAULT_SCAN_TIME = "12:00"
 # ISS-113：应用更新无感化——检查发现新版本后是否自动开始后台下载。
 # 默认开启；仅显式 false 关闭（settings.json 落 false 才算关闭，缺省键
@@ -542,7 +547,7 @@ class ScopeSelection:
             return None
 
 
-def _validated_scope_roots(raw: object) -> tuple[str, ...]:
+def _validated_scope_roots(raw: object, *, validate_resources: bool = True) -> tuple[str, ...]:
     """校验范围根列表：绝对、存在、是目录、无重复，顺序即采集顺序。
 
     刻意**不**在此处解析符号链接/realpath 之外的语义：规范根由扫描计划
@@ -562,10 +567,10 @@ def _validated_scope_roots(raw: object) -> tuple[str, ...]:
         path = Path(item).expanduser()
         if not path.is_absolute():
             raise ConfigurationError(f"storage_scope.roots 必须是绝对路径：{item}")
-        resolved = path.resolve()
-        if not resolved.exists():
+        resolved = path.resolve() if validate_resources else path
+        if validate_resources and not resolved.exists():
             raise ConfigurationError(f"storage_scope.roots 路径不存在：{resolved}")
-        if not resolved.is_dir():
+        if validate_resources and not resolved.is_dir():
             raise ConfigurationError(f"storage_scope.roots 必须是目录：{resolved}")
         text = str(resolved)
         if text in roots:
@@ -574,7 +579,8 @@ def _validated_scope_roots(raw: object) -> tuple[str, ...]:
     return tuple(roots)
 
 
-def _validated_storage_scope(raw: object, *, partial: bool) -> dict[str, object]:
+def _validated_storage_scope(raw: object, *, partial: bool,
+                             validate_resources: bool = True) -> dict[str, object]:
     """校验 ``storage_scope`` 对象，返回已校验字段（wire 形态，ISS-155）。"""
     if not isinstance(raw, dict):
         raise ConfigurationError(f"storage_scope 必须是 JSON 对象：{raw!r}")
@@ -603,7 +609,7 @@ def _validated_storage_scope(raw: object, *, partial: bool) -> dict[str, object]
                 f"{version!r} != {SCOPE_IDENTITY_VERSION}")
         fields["identity_version"] = version
     if "roots" in raw:
-        fields["roots"] = _validated_scope_roots(raw["roots"])
+        fields["roots"] = _validated_scope_roots(raw["roots"], validate_resources=validate_resources)
     if "scope_ids" in raw:
         ids = raw["scope_ids"]
         if not isinstance(ids, list):
@@ -638,8 +644,8 @@ def _validated_storage_scope(raw: object, *, partial: bool) -> dict[str, object]
     return fields
 
 
-def _validated_storage_scope_whole(raw: object) -> ScopeSelection:
-    fields = _validated_storage_scope(raw, partial=False)
+def _validated_storage_scope_whole(raw: object, *, validate_resources: bool = True) -> ScopeSelection:
+    fields = _validated_storage_scope(raw, partial=False, validate_resources=validate_resources)
     roots = fields.get("roots", ())
     scope_ids = fields.get("scope_ids", ())
     if scope_ids and len(scope_ids) != len(roots):
@@ -692,16 +698,18 @@ def _validated_bool(raw: object, name: str) -> bool:
     return raw
 
 
-def _validated_scan_root(raw: object) -> str:
+def _validated_scan_root(raw: object, *, validate_resources: bool = True) -> str:
     if not isinstance(raw, str) or not raw.strip():
         raise ConfigurationError(f"scan_root 必须是非空字符串：{raw!r}")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         raise ConfigurationError(f"scan_root 必须是绝对路径：{raw}")
-    resolved = path.resolve()
-    if not resolved.exists():
+    if "\x00" in raw:
+        raise ConfigurationError("scan_root 不得含 NUL 字节")
+    resolved = path.resolve() if validate_resources else path
+    if validate_resources and not resolved.exists():
         raise ConfigurationError(f"scan_root 路径不存在：{resolved}")
-    if not resolved.is_dir():
+    if validate_resources and not resolved.is_dir():
         raise ConfigurationError(f"scan_root 必须是目录：{resolved}")
     return str(resolved)
 
@@ -770,7 +778,8 @@ def _validated_exclude_names(raw: object) -> str:
     )
 
 
-def _validated_analysis_fields(raw: object, *, partial: bool) -> dict[str, object]:
+def _validated_analysis_fields(raw: object, *, partial: bool,
+                               validate_resources: bool = True) -> dict[str, object]:
     """校验 analysis 设置对象，返回已校验字段的字典（ISS-035B）。
 
     wire 形态（settings.json / PUT body）::
@@ -835,8 +844,10 @@ def _validated_analysis_fields(raw: object, *, partial: bool) -> dict[str, objec
             if not path.is_absolute():
                 raise ConfigurationError(
                     f"analysis.runtime.executable 必须是绝对路径：{exe}")
-            resolved = path.resolve(strict=False)
-            if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            if "\x00" in exe:
+                raise ConfigurationError("analysis.runtime.executable 不得含 NUL 字节")
+            resolved = path.resolve(strict=False) if validate_resources else path
+            if validate_resources and (not resolved.is_file() or not os.access(resolved, os.X_OK)):
                 raise ConfigurationError(
                     "analysis.runtime.executable 必须是已存在的可执行文件："
                     f"{resolved}")
@@ -859,9 +870,9 @@ def _validated_analysis_fields(raw: object, *, partial: bool) -> dict[str, objec
     return fields
 
 
-def _validated_analysis(raw: object) -> AnalysisSettings:
+def _validated_analysis(raw: object, *, validate_resources: bool = True) -> AnalysisSettings:
     """整体形态校验（settings.json 回读 / 显式整体写入）。"""
-    fields = _validated_analysis_fields(raw, partial=False)
+    fields = _validated_analysis_fields(raw, partial=False, validate_resources=validate_resources)
     return AnalysisSettings(
         enabled=fields.get("enabled", False),
         runtime_id=fields.get("runtime_id"),
@@ -872,22 +883,22 @@ def _validated_analysis(raw: object) -> AnalysisSettings:
     )
 
 
-def parse_user_settings(data: Mapping[str, object]) -> UserSettings:
+def parse_user_settings(data: Mapping[str, object], *, validate_resources: bool = True) -> UserSettings:
     """把（部分）设置字典校验为 UserSettings；未知键或坏值 fail-closed。"""
     unknown = sorted(set(data) - set(_SETTING_KEYS))
     if unknown:
         raise ConfigurationError(f"未知的配置项：{', '.join(unknown)}")
     values: dict[str, object] = {}
     validators = {
-        "scan_root": _validated_scan_root,
+        "scan_root": lambda raw: _validated_scan_root(raw, validate_resources=validate_resources),
         "scan_time": _validated_scan_time,
         "min_kb": lambda raw: _validated_positive_number(raw, "min_kb"),
         "free_alert_gb": lambda raw: _validated_positive_number(raw, "free_alert_gb"),
         "exclude_names": _validated_exclude_names,
         "auto_download_updates": lambda raw: _validated_bool(
             raw, "auto_download_updates"),
-        "analysis": _validated_analysis,
-        "storage_scope": _validated_storage_scope_whole,
+        "analysis": lambda raw: _validated_analysis(raw, validate_resources=validate_resources),
+        "storage_scope": lambda raw: _validated_storage_scope_whole(raw, validate_resources=validate_resources),
     }
     for key, validate in validators.items():
         raw = data.get(key)
@@ -932,18 +943,22 @@ def merge_user_settings(
     return UserSettings(**merged)  # type: ignore[arg-type]
 
 
-def load_user_settings(path: Path) -> UserSettings:
+def load_user_settings(path: Path, *, validate_resources: bool = True) -> UserSettings:
     """读取 settings.json；文件不存在 → 全部默认。
 
     旧运行根没有该文件时零迁移零报错；文件存在但损坏/含坏值则
     fail-closed（ConfigurationError）——静默回落默认值会把扫描根换掉并
     静默形成新数据集，比拒绝启动更糟。
+
+    validate_resources=False 仅供锁内事务回读已有设置：保留路径身份，
+    暂时失效的旧引擎/挂载不阻断无关 patch，数据形状与数值仍 fail-closed。
+    正常启动和新 patch 保持默认的资源可用性校验。
     """
     try:
         raw_text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return UserSettings()
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise ConfigurationError(f"settings.json 无法读取（{path}）：{exc}") from exc
     try:
         data = json.loads(raw_text)
@@ -952,7 +967,7 @@ def load_user_settings(path: Path) -> UserSettings:
     if not isinstance(data, dict):
         raise ConfigurationError(f"settings.json 必须是 JSON 对象：{path}")
     try:
-        return parse_user_settings(data)
+        return parse_user_settings(data, validate_resources=validate_resources)
     except ConfigurationError as exc:
         raise ConfigurationError(f"settings.json 内容无效（{path}）：{exc}") from exc
 
@@ -1031,40 +1046,77 @@ def refresh_user_settings(
     - 排除集：``FATHOM_EXCLUDE_NAMES`` > settings.json > 默认（与既有链一致）；
     - 计划时间/入库阈值/低空间阈值：settings.json > 默认（无环境变量入口）。
     """
-    global _ACTIVE, _USER_SETTINGS
+    with _SETTINGS_LOCK:
+        if settings is None:
+            settings = load_user_settings(settings_path())
+        prepared = _prepare_user_settings(settings, environ=environ)
+        return _publish_user_settings(*prepared)
+
+
+def _prepare_user_settings(
+    settings: UserSettings, *, environ: Mapping[str, str] | None = None,
+) -> tuple[UserSettings, RuntimeConfig]:
+    """先验证生效值；写入成功后发布不再执行可能失败的校验。"""
     env = os.environ if environ is None else environ
-    if settings is None:
-        settings = load_user_settings(_ACTIVE.runtime_dir / SETTINGS_FILENAME)
-    # 排除集的环境变量优先级在 settings.json 之上：复用同一 fail-closed
-    # 校验链（_canonicalize_exclude_names）拒绝任何非合法项，与持久化层
-    # 行为一致——CLI/运维/服务都共用同一规则。
     env_items = _exclude_names_from_env(env)
     if env_items is not None:
-        settings = UserSettings(
-            scan_root=settings.scan_root,
-            scan_time=settings.scan_time,
-            min_kb=settings.min_kb,
-            free_alert_gb=settings.free_alert_gb,
-            exclude_names=_canonicalize_exclude_names(env_items),
-            # ISS-113：排除集被环境变量覆盖只影响 exclude_names，其余已
-            # 持久化项（含 auto_download_updates）原样透传，不得静默回落默认。
-            auto_download_updates=settings.auto_download_updates,
-            # ISS-155：范围选择同样必须原样透传，环境变量覆盖只影响
-            # exclude_names，不得静默把已选范围清空（那等于换回旧口径）。
-            storage_scope=settings.storage_scope,
-        )
-    _USER_SETTINGS = settings
-    env_scan_root = env.get("FATHOM_SCAN_ROOT", "").strip()
-    if (not _CLI_SCAN_ROOT_PINNED and not env_scan_root
+        settings = replace(settings, exclude_names=_canonicalize_exclude_names(env_items))
+    active = _ACTIVE
+    if (not _CLI_SCAN_ROOT_PINNED and not env.get("FATHOM_SCAN_ROOT", "").strip()
             and settings.scan_root is not None):
-        _ACTIVE = _ACTIVE.with_overrides(scan_root=settings.scan_root)
-        _publish_compatibility_values(_ACTIVE)
+        active = active.with_overrides(scan_root=settings.scan_root)
+    return settings, active
+
+
+def _publish_user_settings(settings: UserSettings, active: RuntimeConfig) -> UserSettings:
+    global _ACTIVE, _USER_SETTINGS
+    _ACTIVE, _USER_SETTINGS = active, settings
+    _publish_compatibility_values(active)
     _publish_policy_values(settings)
     return settings
 
 
+@contextmanager
+def _settings_transaction():
+    """锁序固定为进程 RLock → 稳定 flock；不删除锁文件以免分裂 inode。
+
+    锁内读取磁盘最新配置。仅不重新探测旧路径可用性，仍校验全部形状、
+    身份和数值；新 patch 继续严格校验资源，旧引擎/挂载暂时失效也能关闭
+    或修改无关设置。本函数不发布内存，不接受嵌套事务。
+    """
+    with _SETTINGS_LOCK:
+        path = settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path.parent / SETTINGS_LOCK_FILENAME,
+                     os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise OSError("配置锁文件必须是普通文件")
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield path, load_user_settings(path, validate_resources=False)
+        finally:
+            # close 同时释放 flock；获取锁失败同样关闭，不刷新内存。
+            os.close(fd)
+
+
+def _write_settings_patch(path: Path, previous: UserSettings,
+                          changes: Mapping[str, object]) -> UserSettings:
+    """已持有事务锁的唯一合并/落盘/发布链，范围入口不再次获取 flock。"""
+    merged_settings = merge_user_settings(previous, changes)
+    if "analysis" in changes:
+        old = previous.analysis if previous.analysis is not None else AnalysisSettings()
+        new: AnalysisSettings = merged_settings.analysis  # type: ignore[assignment]
+        settings_revision = old.settings_revision + (new.identity() != old.identity())
+        merged_settings = replace(merged_settings, analysis=replace(
+            new, settings_revision=max(settings_revision, new.settings_revision),
+            consent_revision=max(old.consent_revision, new.consent_revision)))
+    prepared = _prepare_user_settings(merged_settings)
+    save_user_settings(path, merged_settings)
+    return _publish_user_settings(*prepared)
+
+
 def update_user_settings(changes: Mapping[str, object]) -> UserSettings:
-    """校验 + 原子写入 + 刷新进程内生效值（PUT /api/config 的入口）。
+    """跨进程锁内读磁盘最新值、合并、原子写入并刷新（PUT /api/config）。
 
     任一步失败：旧文件不动、进程内生效值不变（校验失败抛
     ConfigurationError，写失败抛 OSError，两者都不产生半更新状态）。
@@ -1074,27 +1126,8 @@ def update_user_settings(changes: Mapping[str, object]) -> UserSettings:
     ``consent_revision`` 优先保留（用户重新确认授权的入口），否则维持
     现值。identity 未变时 revision 不动，避免无谓的预览失效。
     """
-    with _SETTINGS_LOCK:
-        previous = _USER_SETTINGS
-        merged_settings = merge_user_settings(_USER_SETTINGS, changes)
-        if "analysis" in changes:
-            old = previous.analysis if previous.analysis is not None else AnalysisSettings()
-            new: AnalysisSettings = merged_settings.analysis  # type: ignore[assignment]
-            bump = new.identity() != old.identity()
-            consent = new.consent_revision if new.consent_revision != old.consent_revision \
-                else old.consent_revision
-            settings_revision = (
-                old.settings_revision + 1 if bump else old.settings_revision)
-            new = AnalysisSettings(
-                enabled=new.enabled, runtime_id=new.runtime_id,
-                runtime_executable=new.runtime_executable,
-                runtime_version=new.runtime_version,
-                settings_revision=max(settings_revision, new.settings_revision),
-                consent_revision=max(consent, new.consent_revision),
-            )
-            merged_settings = replace(merged_settings, analysis=new)
-        save_user_settings(settings_path(), merged_settings)
-        return refresh_user_settings(merged_settings)
+    with _settings_transaction() as (path, previous):
+        return _write_settings_patch(path, previous, changes)
 
 
 def effective_analysis_settings() -> AnalysisSettings:
@@ -1159,25 +1192,28 @@ def save_scope_selection(
 
     语义（任务卡合同）：
 
-    - **只改下一轮计划**，不触发任何扫描、不注册/重载调度；
-    - ``expected_revision`` 与当前生效版本不匹配（含「预览后已被他人改动」）
-      即抛 ``ScopeVersionConflict``，**旧文件与进程内生效值都不动**；
-    - 落盘走既有 ``update_user_settings`` 原子写链：任一步失败无半更新状态。
+    - 只改下一轮计划，不触发扫描、不注册/重载调度；
+    - 锁内读取磁盘最新版本后比较 expected_revision。冲突不写磁盘，
+      拒绝本次 patch；刷新本进程为已验证的磁盘当前视图再抛
+      ScopeVersionConflict，供调用方返回 409 并重新预览；
+    - 坏数据、校验、锁或写入失败均保持旧文件与旧内存；
+    - 锁内复用同一原子写链，不嵌套获取 flock。
 
     revision 语义：首次保存 revision=1；此后每次成功保存 +1。
     """
     validated = _validated_storage_scope_whole(selection.as_dict())
-    with _SETTINGS_LOCK:
-        current = _USER_SETTINGS.storage_scope
+    with _settings_transaction() as (path, previous):
+        current = previous.storage_scope
         current_revision = 0 if current is None else current.revision
         if expected_revision is not None and expected_revision != current_revision:
+            prepared = _prepare_user_settings(previous)
+            _publish_user_settings(*prepared)
             raise ScopeVersionConflict(
                 f"范围配置版本冲突：提交的是 {expected_revision}，当前为 "
-                f"{current_revision}；请重新预览后再保存（旧值未改动）")
+                f"{current_revision}；请重新预览后再保存（磁盘值未改动）")
         new = replace(validated, revision=current_revision + 1)
-        update_user_settings({"storage_scope": new.as_dict()})
-        stored = _USER_SETTINGS.storage_scope
-        return new if stored is None else stored
+        stored = _write_settings_patch(path, previous, {"storage_scope": new.as_dict()})
+        return new if stored.storage_scope is None else stored.storage_scope
 
 
 

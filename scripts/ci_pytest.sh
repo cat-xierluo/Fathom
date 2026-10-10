@@ -97,7 +97,7 @@ expected="${EXPECTED_PYTEST_PASSED:-1407}"
 # 自证、新建库/既有 v8 库打开/v0 迁移三条路径均补建、纯索引不改版本号
 # 语义与既有行、查询语义不变、重复打开幂等）（1455 → 1463）。
 # ISS-187 +17（含episode1根/父fd替换3项）：冻结完整前端图/版本命名空间边界/实际loader及manifest安全。
-expected="${EXPECTED_PYTEST_PASSED:-1602}"
+expected="${EXPECTED_PYTEST_PASSED:-1622}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

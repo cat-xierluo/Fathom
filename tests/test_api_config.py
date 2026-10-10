@@ -303,7 +303,7 @@ def test_put_config_write_failure_returns_500_and_keeps_old_file(client, monkeyp
     # 进程内生效值也保持旧值
     assert client.get("/api/config").json()["scan_time"] == "10:15"
     leftovers = [p.name for p in _settings_file().parent.iterdir()
-                 if p.name != "settings.json"]
+                 if p.name not in {"settings.json", config.SETTINGS_LOCK_FILENAME}]
     assert leftovers == [], f"临时文件残留：{leftovers}"
 
 

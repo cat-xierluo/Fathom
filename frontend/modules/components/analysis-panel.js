@@ -279,10 +279,12 @@ async function confirmAnalysisSend(preview) {
     });
     if (!request.current()) return;
     const data = await r.json();
+    if (!request.current()) return;
     // 记录原 job 供刷新/离页后重入恢复（GET jobs/{id} 纯读）。
     saveAnalysisAttempt(sel, { key, digest, job: data.job, replayed: data.replayed });
     analysisPreview = null;
     analysisJob = data.job;
+    options.started?.(data.job);
     // 重放（replayed=true）不等于「正在运行」（ISS-128）：后端可能返回的是
     // 一个**已终态**的旧 job——此前这里无条件渲染 running 且不轮询，页面会
     // 永远停在运行中。现在按 job 自身的终态标记分流。
@@ -550,7 +552,7 @@ function showAnalysisEvidence(evidenceId, record) {
   const deltaText = entry.delta_kb == null ? "—" : fmtDelta(entry.delta_kb);
   const oldText = entry.old_kb == null ? "—" : fmtKB(entry.old_kb);
   const newText = entry.new_kb == null ? "—" : fmtKB(entry.new_kb);
-  const tablePath = analysisEvidenceTablePath(entry);
+  const tablePath = typeof options.locate === 'function' ? analysisEvidenceTablePath(entry) : null;
   host.innerHTML = `
     <div class="analysis-evidence-card" data-test="analysis-evidence-card">
       <div class="analysis-evidence-head">

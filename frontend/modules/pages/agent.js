@@ -4,6 +4,8 @@ import { escapeHtml } from '../format.js';
 import { datasetKey } from '../dataset.js';
 import { createAnalysisPanel } from '../components/analysis-panel.js';
 let snapshots = [], jobs = [], nextOffset = null, openedJob = null;
+// 自动恢复不能覆盖更晚的选点、历史点击或已确认的新尝试。
+let viewRevision = 0;
 const el = (id) => document.getElementById(id);
 const selection = () => openedJob
   ? { a: String(openedJob.a_snapshot_id), b: String(openedJob.b_snapshot_id) }
@@ -22,6 +24,12 @@ const panel = createAnalysisPanel({
   selection, readWhenDisabled:true, previewBlock:rangeReason,
   root:() => openedJob ? null : snapshot(selection().a)?.root,
   changed:() => loadHistory(),
+  started(job) {
+    viewRevision++; openedJob = job;
+    try { sessionStorage.setItem('fathom-agent-job', job.job_id); } catch (_) {}
+    renderOpenedTask();
+    loadHistory();
+  },
 });
 function option(s) {
   return `<option value="${escapeHtml(String(s.id))}">#${escapeHtml(String(s.id))} · ${escapeHtml(s.created_at.replace('T',' '))} · ${escapeHtml(s.root || '未知根')}${s.plan_id ? '（新范围）' : ''}</option>`;
@@ -37,11 +45,14 @@ function fillSelectors({changedB=false} = {}) {
   a.disabled = group.length === 0; b.disabled = snapshots.length === 0;
   try { sessionStorage.setItem('fathom-agent-range', JSON.stringify({a:a.value,b:b.value})); } catch (_) {}
 }
+function renderOpenedTask() {
+  el('agent-opened-task').textContent = openedJob ? `正在查看任务 ${openedJob.job_id} · 区间 #${openedJob.a_snapshot_id} → #${openedJob.b_snapshot_id}（与上方新任务选点独立）` : '';
+}
 function updateRange() {
   const reason = !snapshots.length ? '尚无快照。解读需要同一数据集内两个有效历史点；采集完成后可在这里选择。'
     : !el('agent-a').value ? '该数据集内不足两个按时间排序的快照。请切换对比快照；任务历史仍可查看。' : rangeReason();
   el('agent-range-status').textContent = reason || `当前区间 #${selection().a} → #${selection().b}；预览只整理本机事实，确认后才发送。`;
-  el('agent-opened-task').textContent = openedJob ? `正在查看原任务 ${openedJob.job_id} · 区间 #${openedJob.a_snapshot_id} → #${openedJob.b_snapshot_id}（与上方新任务选点独立）` : '';
+  renderOpenedTask();
   if (openedJob) { panel.showJob(openedJob); return; }
   if (reason) {
     panel.leave(); el('agent-analysis-panel').hidden = false;
@@ -61,21 +72,22 @@ function renderHistory(total) {
 }
 async function loadHistory({more=false, restore=false} = {}) {
   const request = beginRequest('agentHistory');
+  const restoreRevision = viewRevision;
   el('agent-history-error').textContent = '';
   try {
     const data = await fetchJSON(`/api/analysis/history?limit=20&offset=${more ? nextOffset || 0 : 0}`);
     if (!request.current()) return;
     jobs = more ? [...new Map([...jobs,...data.jobs].map(j=>[j.job_id,j])).values()] : data.jobs;
     nextOffset = data.next_offset;
-    if (restore && !openedJob) {
+    if (restore && restoreRevision === viewRevision && !openedJob) {
       let saved; try { saved = sessionStorage.getItem('fathom-agent-job'); } catch (_) {}
       const active = jobs.find(j=>!j.terminal);
       if (saved) {
-        try { const original = await fetchJSON(`/api/analysis/jobs/${encodeURIComponent(saved)}`); if (!request.current()) return; openedJob = original.job; } catch (_) { /* 清理后不猜旧任务状态 */ }
+        try { const original = await fetchJSON(`/api/analysis/jobs/${encodeURIComponent(saved)}`); if (!request.current()) return; if (restoreRevision === viewRevision) openedJob = original.job; } catch (_) { /* 清理后不猜旧任务状态 */ }
       } else if (active) openedJob = active;
     }
     renderHistory(data.total);
-    if (restore) updateRange();
+    if (restore && restoreRevision === viewRevision) updateRange();
   } catch (e) {
     if (request.current()) el('agent-history-error').textContent = `任务历史读取失败：${e.message}；可点击刷新任务历史重试。`;
   }
@@ -110,12 +122,13 @@ export const agentPage = {
     el('agent-history-refresh').addEventListener('click',()=>loadHistory());
     el('agent-history-more').addEventListener('click',()=>loadHistory({more:true}));
     ['agent-a','agent-b'].forEach(id=>el(id).addEventListener('change',()=>{
-      openedJob=null; try {sessionStorage.removeItem('fathom-agent-job');} catch (_) {}
+      viewRevision++; openedJob=null; try {sessionStorage.removeItem('fathom-agent-job');} catch (_) {}
       panel.leave(); if(id==='agent-b') fillSelectors({changedB:true}); else fillSelectors(); updateRange();
     }));
     el('agent-history-body').addEventListener('click',event=>{
       const btn=event.target.closest('[data-agent-job]'); if(!btn)return;
-      openedJob=jobs.find(j=>j.job_id===btn.dataset.agentJob); if(!openedJob)return;
+      const chosen=jobs.find(j=>j.job_id===btn.dataset.agentJob); if(!chosen)return;
+      viewRevision++; openedJob=chosen;
       try {sessionStorage.setItem('fathom-agent-job',openedJob.job_id);} catch (_) {}
       updateRange(); renderHistory(Number(el('agent-history-count').textContent.match(/\d+/)?.[0] || jobs.length));
     });

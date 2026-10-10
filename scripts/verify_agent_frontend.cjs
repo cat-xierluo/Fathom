@@ -7,6 +7,109 @@ const { once } = require('events');
 const fs=require('fs'),os=require('os'),path=require('path');
 const evidence=fs.mkdtempSync(path.join(os.tmpdir(),'fathom-iss189-'));
 const checks=[];const record=(name,ok,detail='')=>{checks.push({name,ok:!!ok,detail});console.error(`${ok?'PASS':'FAIL'} ${name} ${detail}`);};
+async function verifyLateRestore(browser) {
+ for (const intent of ['selection','history']) {
+  let release, entered;
+  const enteredPromise=new Promise(r=>entered=r), releasePromise=new Promise(r=>release=r);
+  const original={job_id:'original-delayed',status:'failed',reason_code:'runner_nonzero_exit',terminal:true,a_snapshot_id:1,b_snapshot_id:2,created_at:'2026-09-10T10:00:00',runtime:{id:'claude-code'},revoked:false,analysis_id:null};
+  const manual={...original,job_id:'manual-latest',a_snapshot_id:2,b_snapshot_id:3};
+  const fixture=createFixture({configRuntimeObject:true,async intercept(req,res,url){
+   if(url.pathname==='/api/snapshots'){json(res,200,SNAPSHOTS);return true;}
+   if(url.pathname==='/api/analysis/history'){json(res,200,{jobs:[original,manual],total:2,next_offset:null});return true;}
+   if(url.pathname==='/api/analysis/jobs/original-delayed'){entered();await releasePromise;json(res,200,{job:original});return true;}
+   return false;
+  }});
+  fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='enabled';
+  fixture.server.listen(0,'127.0.0.1');await once(fixture.server,'listening');
+  const page=await browser.newPage();const base=`http://127.0.0.1:${fixture.server.address().port}`;
+  try {
+   // 先真实进入并留下可点击的历史，再重入构造保存任务恢复 GET 在途。
+   await page.goto(base+'/#/agent');await page.waitForSelector('[data-agent-job="manual-latest"]');
+   await page.click('.nav-item[data-page="settings"]');
+   await page.evaluate(()=>sessionStorage.setItem('fathom-agent-job','original-delayed'));
+   await page.click('.nav-item[data-page="agent"]');await enteredPromise;
+   if(intent==='selection') {
+    await page.selectOption('#agent-a','1');
+    await page.waitForSelector('#agent-analysis-body [data-test="analysis-state-idle"]');
+   } else {
+    await page.click('[data-agent-job="manual-latest"]');
+    await page.waitForSelector('#agent-analysis-body [data-test="analysis-state-failure"]');
+   }
+   release();await page.waitForTimeout(350);
+   const view=await page.evaluate(()=>({a:document.querySelector('#agent-a').value,b:document.querySelector('#agent-b').value,range:document.querySelector('#agent-range-status').textContent,opened:document.querySelector('#agent-opened-task').textContent,body:document.querySelector('#agent-analysis-body').textContent}));
+   if(intent==='selection') {
+    record('agent.late-restore-selection-wins',view.a==='1'&&view.b==='3'&&view.range.includes('#1 → #3')&&view.opened===''&&view.body.includes('区间 #1 → #3 还没有')&&fixture.state.jobsPosted===0,JSON.stringify(view));
+    await page.click('[data-agent-job="original-delayed"]');
+    record('agent.late-restore-keeps-history-readable',(await page.locator('#agent-opened-task').textContent()).includes('original-delayed')&&(await page.locator('#agent-analysis-body').textContent()).includes('#1 → #2')&&fixture.state.jobsPosted===0);
+   } else {
+    record('agent.late-restore-explicit-history-wins',view.opened.includes('manual-latest')&&view.body.includes('#2 → #3')&&!view.opened.includes('original-delayed')&&fixture.state.jobsPosted===0,JSON.stringify(view));
+    await page.click('#agent-history-refresh');await page.waitForTimeout(150);
+    record('agent.late-restore-history-refresh-normal',await page.locator('#agent-history-body tr').count()===2&&(await page.locator('#agent-opened-task').textContent()).includes('manual-latest')&&fixture.state.jobsPosted===0);
+   }
+  } finally {release();await page.close();fixture.server.close();await once(fixture.server,'close');}
+ }
+}
+async function verifyHistoricalRerunRestore(browser) {
+ const original={job_id:'original-failed',status:'failed',reason_code:'runner_nonzero_exit',terminal:true,a_snapshot_id:1,b_snapshot_id:2,created_at:'2026-09-10T10:00:00',runtime:{id:'claude-code'},revoked:false,analysis_id:null};
+ const fixture=createFixture({configRuntimeObject:true,intercept(req,res,url,body,state){
+  if(url.pathname==='/api/snapshots'){json(res,200,SNAPSHOTS);return true;}
+  if(url.pathname==='/api/analysis/history'){const jobs=[...state.jobs.values()].map(j=>({...j,terminal:!['starting','running','cancelling'].includes(j.status)}));jobs.push(original);json(res,200,{jobs,total:jobs.length,next_offset:null});return true;}
+  if(url.pathname==='/api/analysis/jobs/original-failed'){json(res,200,{job:original});return true;}
+  return false;
+ }});
+ fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='enabled';fixture.state.holdRunning=true;
+ fixture.server.listen(0,'127.0.0.1');await once(fixture.server,'listening');const page=await browser.newPage();
+ try {
+  await page.goto(`http://127.0.0.1:${fixture.server.address().port}/#/agent`);
+  await page.waitForSelector('[data-agent-job="original-failed"]');await page.click('[data-agent-job="original-failed"]');
+  await page.click('#agent-analysis-body [data-test="analysis-retry-btn"]');await page.waitForSelector('#agent-analysis-body [data-test="analysis-state-preview"]');await page.click('#agent-analysis-body [data-test="analysis-confirm-btn"]');
+  await page.waitForSelector('#agent-analysis-body [data-test="analysis-state-running"]');
+  const newJob=[...fixture.state.jobs.values()][0];
+  const before=await page.evaluate(()=>({opened:document.querySelector('#agent-opened-task').textContent,saved:sessionStorage.getItem('fathom-agent-job')}));
+  record('agent.historical-rerun-tracks-new-attempt',before.opened.includes(newJob.job_id)&&before.saved===newJob.job_id&&!before.opened.includes('original-failed'),JSON.stringify(before));
+  await page.reload();await page.waitForTimeout(400);
+  const cancel=page.locator('#agent-analysis-body [data-test="analysis-cancel-btn"]');
+  record('agent.historical-rerun-reload-active-not-old',await cancel.isVisible()&&(await page.locator('#agent-opened-task').textContent()).includes(newJob.job_id)&&fixture.state.jobsPosted===1);
+  if(await cancel.isVisible()){await cancel.click();await page.waitForSelector('#agent-analysis-body [data-test="analysis-state-failure"]');}
+  record('agent.historical-rerun-restored-cancellable',newJob.status==='cancelled'&&original.status==='failed'&&fixture.state.jobsPosted===1);
+  await page.click('#agent-history-refresh');await page.waitForSelector('[data-agent-job="original-failed"]');await page.click('[data-agent-job="original-failed"]');
+  record('agent.historical-rerun-original-task-preserved',(await page.locator('#agent-opened-task').textContent()).includes('original-failed')&&(await page.locator('#agent-analysis-body').textContent()).includes('引擎命令行异常退出')&&fixture.state.jobsPosted===1);
+ } finally {await page.close();fixture.server.close();await once(fixture.server,'close');}
+}
+async function verifyEvidenceControls(browser) {
+ const fixture=createFixture({configRuntimeObject:true,intercept(req,res,url){
+  if(url.pathname==='/api/analysis/history'){json(res,200,{jobs:[],total:0,next_offset:null});return true;}
+  return false;
+ }});
+ fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='expired';
+ fixture.server.listen(0,'127.0.0.1');await once(fixture.server,'listening');const page=await browser.newPage();
+ try {
+  await page.goto(`http://127.0.0.1:${fixture.server.address().port}/#/agent`);
+  await page.waitForSelector('#agent-analysis-body [data-test="analysis-state-expired"]');
+  const buttons=page.locator('#agent-analysis-body [data-test="analysis-evidence-btn"]');
+  const measure=()=>buttons.evaluateAll(nodes=>nodes.map(n=>{const s=getComputedStyle(n),r=n.getBoundingClientRect();return {text:n.textContent,opacity:s.opacity,visibility:s.visibility,width:r.width,height:r.height,fits:n.scrollWidth<=n.clientWidth};}));
+  const close=page.locator('#agent-analysis-body [data-test="analysis-evidence-close"]');
+  const visibleClose=()=>close.evaluate(n=>getComputedStyle(n).opacity==='1'&&getComputedStyle(n).visibility==='visible'&&n.getBoundingClientRect().width>=24);
+  const closeChecks=[];
+  for(const [width,height] of [[980,640],[1220,820],[1440,900]]) {
+   await page.setViewportSize({width,height});const before=await measure();await buttons.first().hover();const after=await measure();
+   const usable=list=>list.length>0&&list.every(b=>b.opacity==='1'&&b.visibility==='visible'&&b.width>=44&&b.height>=24&&b.fits);
+   record(`agent.evidence-controls-visible-${width}`,usable(before)&&usable(after),JSON.stringify({before,after}));
+   await buttons.first().click();await page.waitForSelector('#agent-analysis-body [data-test="analysis-evidence-card"]');
+   const beforeClose=await visibleClose();await close.hover();closeChecks.push({width,before:beforeClose,after:await visibleClose()});
+   await page.screenshot({path:path.join(evidence,`agent-evidence-${width}.png`),fullPage:true});
+   await close.click();await page.waitForSelector('#agent-analysis-body [data-test="analysis-evidence-card"]',{state:'detached'});
+  }
+  await buttons.first().click();await page.waitForSelector('#agent-analysis-body [data-test="analysis-evidence-card"]');
+  record('agent.evidence-close-visible',closeChecks.length===3&&closeChecks.every(c=>c.before&&c.after),JSON.stringify(closeChecks));
+  record('agent.evidence-no-unavailable-locate',await page.locator('#agent-analysis-body [data-test="analysis-evidence-locate"]').count()===0&&fixture.state.jobsPosted===0);
+  await close.click();await page.waitForSelector('#agent-analysis-body [data-test="analysis-evidence-card"]',{state:'detached'});
+  await page.click('.nav-item[data-page="changes"]');await page.waitForSelector('#analysis-body [data-test="analysis-state-expired"]');
+  await page.locator('#analysis-body [data-test="analysis-evidence-btn"]').first().click();
+  await page.click('#analysis-body [data-test="analysis-evidence-locate"]');await page.waitForSelector('#changes-body tr.analysis-locate-flash');
+  record('agent.shared-changes-locate-still-works',await page.locator('#changes-body tr.analysis-locate-flash').getAttribute('data-path')==='/fixture/root/Library/Caches'&&fixture.state.jobsPosted===0);
+ }finally{await page.close();fixture.server.close();await once(fixture.server,'close');}
+}
 async function main(){
  let snaps=[], historyFailure=false;
  const original=analysisRecord(1,2,{expired:true,expiredReason:'snapshot_pruned'});original.id=88;original.job_id='old-result';
@@ -98,6 +201,9 @@ async function main(){
   await page.click('#agent-history-more');await page.waitForTimeout(200);record('agent.history-more-complete',await page.locator('#agent-history-body tr').count()===fixture.state.jobs.size+extra.length&&!await visible('#agent-history-more'), 'rows='+await page.locator('#agent-history-body tr').count()+' expected='+(fixture.state.jobs.size+extra.length)+' hidden='+await page.locator('#agent-history-more').getAttribute('hidden'));
   for(const [width,height] of [[980,640],[1220,820],[1440,900]]){await page.setViewportSize({width,height});await page.evaluate(()=>{document.querySelector('.page-container').scrollTop=0;});await page.screenshot({path:path.join(evidence,`agent-${width}.png`),fullPage:true});record(`agent.viewport-${width}`,await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth && [...document.querySelectorAll('[data-agent-job]')].every(btn=>getComputedStyle(btn).opacity==='1' && btn.getBoundingClientRect().height<45)));}
   await page.click('.nav-item[data-page="changes"]');await wait('#analysis-panel');record('agent.changes-local-entry-retained',await visible('#analysis-panel'));
+  await verifyLateRestore(browser);
+  await verifyHistoricalRerunRestore(browser);
+  await verifyEvidenceControls(browser);
   record('agent.no-unhandled-page-errors',errors.length===0,errors.join(';'));
  }finally{await browser.close();fixture.server.close();await once(fixture.server,'close');}
  const failed=checks.filter(c=>!c.ok).length;console.log(JSON.stringify({ok:!failed,passed:checks.length-failed,failed,evidence,checks},null,2));if(failed)process.exitCode=1;

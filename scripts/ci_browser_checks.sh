@@ -180,7 +180,7 @@ assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
 # ISS-189：Agent 常驻入口、同口径选点、共享生命周期与跨区间有界历史。
 # 真实 Chromium + 模拟 HTTP backend；真实 helper/原生入口另行验收。
 node scripts/verify_agent_frontend.cjs | tee "$analysis_out"
-assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-40}" "agent frontend"
+assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-54}" "agent frontend"
 
 # ISS-148：树形同级变化回归（真实 FastAPI 隔离入口 + 生产页面实点）。
 # 53 项——三层展开/聚焦/返回、父 0 子抵消、缺父结构节点、单侧未记录、

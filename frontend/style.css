@@ -1227,6 +1227,10 @@ code {
 .analysis-finding { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
 .analysis-finding-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .analysis-finding-evidence { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+/* 证据编号不在表行内：保持可发现，并按编号文字适配宽度。 */
+.analysis-finding-evidence .btn-mini, .analysis-inspect .btn-mini {
+  opacity: 1; width: auto; min-width: 44px; padding: 0 6px; white-space: nowrap;
+}
 .analysis-limitations li, .analysis-inspect li { overflow-wrap: anywhere; line-height: 1.5; }
 .analysis-prompt {
   max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word;
@@ -1242,7 +1246,7 @@ code {
   padding: 10px 12px; margin-top: 8px; display: grid; gap: 4px;
 }
 .analysis-evidence-head { display: flex; align-items: center; gap: 8px; }
-.analysis-evidence-head .btn-mini { margin-left: auto; }
+.analysis-evidence-head .btn-mini { margin-left: auto; opacity: 1; }
 .analysis-evidence-path {
   margin: 0; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   overflow-wrap: anywhere; color: var(--used);

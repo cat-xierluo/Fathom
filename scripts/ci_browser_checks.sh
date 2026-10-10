@@ -233,6 +233,11 @@ FATHOM_PYTHON="$tree_python" node scripts/verify_diff_handoff_frontend.cjs | tee
 expected_diff_handoff="${EXPECTED_DIFF_HANDOFF_PASSED:-55}"
 assert_result_json "$tree_out" "$expected_diff_handoff" "diff handoff frontend"
 
+# 同页较新意图的旧目录失败：完整生产 JS 模块与请求层，合成 DOM/网络。
+# 不能替代上面的 Chromium 回归；独立门禁防空跑、失败与计数漂移。
+node --experimental-vm-modules scripts/verify_stale_catalog_error.cjs | tee "$tree_out"
+assert_result_json "$tree_out" "7" "stale catalog error module"
+
 # ISS-160：跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI 隔离入口 + 生产页面实点）。
 # 真实 serve 入口全流程（总览→树展开→绑定历史详情→largest→返回→分布→设置→重扫）
 # + net0 内部变化/历史非 latest/分页/旧 HOME·新整盘切换 + 快速切页/改范围/重复

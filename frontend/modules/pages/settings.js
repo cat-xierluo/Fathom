@@ -2656,7 +2656,7 @@ function _scopeDeviceRow(d) {
   return `<li class="scope-volume" data-test="scope-device" data-device-id="${escapeHtml(d.device_id || "")}">
       <span class="scope-volume-name">${escapeHtml(d.name || d.device_id || "未命名设备")}</span>
       <span class="scope-volume-meta">非启动容器 ${mounted
-        ? `· 可选 <code>${escapeHtml(d.mount_point)}</code>` : "· 未挂载（不提供监控入口）"}</span>
+        ? `· 已挂载 <code>${escapeHtml(d.mount_point)}</code>` : "· 未挂载（不提供监控入口）"}</span>
     </li>`;
 }
 

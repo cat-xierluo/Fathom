@@ -7,7 +7,7 @@ const {spawn}=require('child_process');
  const {chromium}=require('playwright');
 const REPO=path.resolve(__dirname,'..');
 const PY=process.env.FATHOM_PYTHON || (fs.existsSync(path.join(REPO,'.venv/bin/python'))?path.join(REPO,'.venv/bin/python'):path.join(REPO,'.runtime/bin/python'));
-const evidence=path.join(REPO,'verify-results/iss191/browser');
+const evidence=process.env.FATHOM_SCOPE_EVIDENCE_DIR ? path.resolve(process.env.FATHOM_SCOPE_EVIDENCE_DIR) : path.join(REPO,'verify-results/iss191/browser');
 fs.mkdirSync(evidence,{recursive:true});
 const checks=[],services=[];
 let browser;
@@ -39,8 +39,12 @@ resolve(false);
 }
 const bootstrap=String.raw`import sys,os,runpy,pytest
 from pathlib import Path
-from fathom import cli,config,api,scan_coordinator,notify
+from fathom import cli,config,api,scan_coordinator,notify,storage
+from dataclasses import replace
 m=pytest.MonkeyPatch();cfg,system,data=runpy.run_path('tests/test_startup_default.py')['isolated'].__wrapped__(Path(sys.argv[1]),m)
+discovery=storage.discover_startup('/')
+external=storage.OtherDevice(storage.OTHER_DEVICE_SCHEMA,storage.DISCOVERY_VERSION,'partition:synthetic-external','Synthetic external','disk10s1',str(Path(sys.argv[1])/'legacy'),'Apple_HFS',False,1024,('synthetic',))
+m.setattr(storage,'discover_startup',lambda *a,**k:replace(discovery,other_devices=(external,)))
 (system/'fixture').write_bytes(b's'*8192);(data/'fixture').write_bytes(b'd'*12288)
 scan_coordinator.read_capacity_readings=lambda:[]
 notify.notify_scan_round=lambda *a,**k:False
@@ -96,7 +100,7 @@ page.on('pageerror',e=>errors.push(e.message));
 await page.waitForFunction(()=>document.querySelector('[data-test="scope-current"]')?.textContent.includes('当前扫描对象：'));
   record(`${kind}-no-choices-all-dom`,await page.locator('input[name="scope-mode"],#scope-roots,#cfg-scan-root,[data-test="scope-preview-btn"],[data-test="scope-save-btn"]').count()===0);
   const text=await page.locator('[data-test="scope-current"]').innerText();
-record(`${kind}-object-visible`,roots.every(r=>text.includes(r))&&(mode!=='release'||override||text.includes('内置启动盘整体')));
+record(`${kind}-object-visible`,roots.every(r=>text.includes(r))&&(mode!=='release'||override||text.includes('内置启动盘整体'))&&await page.locator('[data-test="scope-device"]').innerText().then(t=>t.includes('已挂载')&&!t.includes('可选')));
   if(kind!=='none'&&mode==='release'&&!override)record(`${kind}-old-value-not-active`,await page.locator('[data-test="scope-saved-compatibility"]').innerText().then(t=>t.includes('不作为当前扫描决定')));
   if(override)record(`${kind}-override-honest`,await page.locator('[data-test="scope-scan-override"]').innerText().then(t=>t.includes('不使用已保存范围')&&t.includes(kind==='cli'?'--scan-root':'FATHOM_SCAN_ROOT')));
   await page.click('[data-test="scope-reload-btn"]');

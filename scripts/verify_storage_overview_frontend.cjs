@@ -295,7 +295,9 @@ async function runPhase(withStale) {
   record("fixture-seed-ok", Boolean(s2) && s2.length === 2,
     `phase=${PHASE} r1=${info.r1} r2=${info.r2} s1=${JSON.stringify(s1)} s2=${JSON.stringify(s2)}`);
 
-  const child = spawn(PY, ["-m", "fathom", "serve"], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
+  const serveEnv = { ...env, HOME: scanRoot, FATHOM_RUNTIME_MODE: "development" };
+  delete serveEnv.FATHOM_SCAN_ROOT;
+  const child = spawn(PY, ["-m", "fathom", "--runtime-mode", "development", "serve"], { cwd: REPO, env: serveEnv, stdio: ["ignore", "pipe", "pipe"] });
   const childState = observeClose(child);
   let serveLog = "";
   child.stdout.on("data", (c) => (serveLog += String(c)));
@@ -328,9 +330,15 @@ async function runPhase(withStale) {
   const unexp = S.unexplained || {};
   const attr = S.attribution || {};
   record("http-summary-200", sum.status === 200 && S.scope && S.capacity, `status=${sum.status}`);
+  const actualConfig = (await get("/api/config")).json;
+  const expectedRoots = [ROOT, KID].map(p => fs.realpathSync(p));
   record("http-scope-whole-disk",
-    S.scope && S.scope.container_id === CONTAINER && S.scope.mode === "custom_directory",
-    `container=${S.scope && S.scope.container_id} mode=${S.scope && S.scope.mode}`);
+    S.scope && S.scope.container_id === CONTAINER && S.scope.mode === "custom_directory"
+    && actualConfig.scan_root === fs.realpathSync(scanRoot) && actualConfig.storage_scope?.saved_active === true
+    && actualConfig.storage_scope.effective_selection?.container_id === CONTAINER
+    && JSON.stringify(actualConfig.storage_scope.effective_selection?.roots) === JSON.stringify(expectedRoots)
+    && JSON.stringify(S.scope.roots) === JSON.stringify(expectedRoots),
+    JSON.stringify({ configScope: actualConfig.storage_scope, summaryScope: S.scope, scanRoot, pid: child.pid, port }));
   record("http-shared-free-not-doubled", cap.free_bytes === 74 * 1024 * 1024,
     `free=${cap.free_bytes}（两卷样本同容器，不得翻倍为 148MB）`);
   // 测量根归因：clean 相为**兄弟根**（无重叠 ⇒ 两根都保留、无吸收，故两侧

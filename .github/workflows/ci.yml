@@ -233,7 +233,7 @@ jobs:
           cargo --version
           [ "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION" ]
 
-      - name: Cargo.lock 锁定离线构建与单测（断言 77 项通过）
+      - name: Cargo.lock 锁定离线构建与单测（断言 79 项通过）
         env:
           CARGO_PREFETCH: '1'
         run: bash scripts/ci_cargo_locked.sh

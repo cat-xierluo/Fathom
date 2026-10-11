@@ -259,6 +259,131 @@ print(json.dumps({"r1": r1, "r2": r2, "s1": s1, "s2": s2,
                   "root": ROOT, "kid": KID, "container": CONTAINER}), flush=True)
 `;
 
+/* ------------------------------------------------------------------
+ * ISS-194 容量趋势空态判别（方向甲：前端区分「无快照」与「有快照无容量记录」）
+ *
+ * 反例来源：旧实现按 /api/volume-trend 的**返回行数**判空，四种成因（真无
+ * 快照 / 有快照但无 volume_stats 行 / 快照全为 plan 身份 / 采样被
+ * legacy-only 窗口排除）一律说「尚无快照」；而同屏「快照 N」来自
+ * /api/status 的 COUNT（不 join 容量表），二者自相矛盾，用户误以为数据丢了。
+ *
+ * 本组只改前端判空，不动后端：端点形状用路由拦截按 /api/snapshots 与
+ * /api/volume-trend 的真实响应形状构造（列清单与 api.py:303-311 / 348-355
+ * 对齐，含 ISS-176 起的 plan_id）。B″ 的快照全部带 plan_id —— 这**正是**
+ * 生产里「采样存在但被 legacy-only 窗口排除」的形状，不是凭空捏造的第三态。
+ *
+ * 判别力自证：B 组的「文案不含『尚无快照』」在旧实现上为红、在新实现上为绿
+ * （旧实现在任何空序列下都写「尚无快照」）。无数字读数断言锁住「不补 0、
+ * 不用 live 磁盘值冒充历史采样」这条红线。
+ * ------------------------------------------------------------------ */
+const ISS194_SNAPSHOT = (id, day, planId) => ({
+  id, created_at: `${day}T01:00:00`, root: "/fixture/root", total_kb: 2048,
+  dir_count: 3, denied_count: 0, min_kb: 512, collection_status: "full",
+  vanished_count: 0, exclude_names: "", confirmed_missing_count: 0,
+  path_unverified_count: 0, plan_id: planId, total_bytes: null, free_bytes: null,
+});
+
+/* 容量读数单位（GB/MB/KB/B）；「已有 2 个快照」这类计数不算读数。 */
+const ISS194_READOUT = /(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b/i;
+
+async function verifyCapacityEmptyStates(page, base) {
+  /* 真实生产前端 + 路由拦截：/api/volume-trend 决定序列，/api/snapshots
+   * 决定判空分支（后者 LEFT JOIN，不会因缺容量行而丢快照——真实形状）。 */
+  const applyScenario = async (snapshots, trend) => {
+    await page.unroute("**/api/snapshots").catch(() => {});
+    await page.unroute("**/api/volume-trend").catch(() => {});
+    const fulfill = (body) => (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(body),
+    });
+    await page.route("**/api/volume-trend", fulfill(trend));
+    await page.route("**/api/snapshots", fulfill(snapshots));
+    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    // 落位判据：空态是 <p class="hint">，有数据是 echarts 容器——任一子元素
+    // 出现即说明 loadVolumeTrend 已经判完空/非空（不是加载中的空容器）。
+    await page.waitForFunction(() => {
+      const el = document.getElementById("chart-volume");
+      return Boolean(el && el.firstElementChild);
+    }, null, { timeout: 20000 });
+    return page.evaluate(() => {
+      const chart = document.getElementById("chart-volume");
+      const table = document.getElementById("overview-volume-table");
+      return {
+        chartText: ((chart && chart.textContent) || "").replace(/\s+/g, " ").trim(),
+        hasCanvas: Boolean(chart && chart.querySelector("canvas")),
+        tableText: ((table && table.textContent) || "").replace(/\s+/g, " ").trim(),
+        tableRows: table ? table.querySelectorAll("tbody tr").length : 0,
+      };
+    });
+  };
+
+  // A：真的一个快照都没有 —— 原文案必须逐字保留，不得被改写
+  const a = await applyScenario([], []);
+  record("iss194-a-no-snapshot-copy-preserved",
+    a.chartText === "尚无快照；完成首次扫描后显示容量趋势。" && !a.hasCanvas,
+    `chart="${a.chartText}"`);
+  record("iss194-a-table-placeholder-preserved",
+    a.tableText === "尚无足够快照绘制走势。", `table="${a.tableText}"`);
+
+  // B：2 个 legacy 快照但零采样 —— 应说「有快照、无容量记录」
+  const legacy = [ISS194_SNAPSHOT(1, "2026-10-01", null),
+    ISS194_SNAPSHOT(2, "2026-10-02", null)];
+  const b = await applyScenario(legacy, []);
+  record("iss194-b-acknowledges-existing-snapshots",
+    b.chartText.includes("已有 2 个快照") && !b.chartText.includes("尚无快照"),
+    `chart="${b.chartText}"`);
+  record("iss194-b-points-to-next-scan",
+    b.chartText.includes("容量") && b.chartText.includes("扫描"),
+    `chart="${b.chartText}"`);
+  record("iss194-b-no-numeric-capacity-placeholder",
+    !ISS194_READOUT.test(b.chartText) && !b.hasCanvas,
+    `无读数占位（chart="${b.chartText}"）`);
+  record("iss194-b-table-aligned-with-chart",
+    b.tableText.includes("已有 2 个快照") && b.tableText.includes("容量")
+      && !b.tableText.includes("尚无快照"),
+    `table="${b.tableText}"`);
+
+  // B″：快照全为 plan 新身份，采样真实存在却被 legacy-only 窗口排除
+  const planned = [ISS194_SNAPSHOT(11, "2026-10-01", "p-root"),
+    ISS194_SNAPSHOT(12, "2026-10-02", "p-kid")];
+  const bp = await applyScenario(planned, []);
+  record("iss194-bpp-plan-excluded-acknowledges-snapshots",
+    bp.chartText.includes("已有 2 个快照") && !bp.chartText.includes("尚无快照"),
+    `chart="${bp.chartText}"（快照全为 plan 身份，采样被 legacy-only 窗口排除）`);
+  record("iss194-bpp-points-to-next-scan",
+    bp.chartText.includes("容量") && bp.chartText.includes("扫描"),
+    `chart="${bp.chartText}"`);
+  record("iss194-bpp-no-numeric-capacity-placeholder",
+    !ISS194_READOUT.test(bp.chartText) && !bp.hasCanvas,
+    `无读数占位（chart="${bp.chartText}"）`);
+  // B″ 与 legacy 零采样在文案上必须**同型**：都是「有快照、无容量序列」，
+  // 不因成因不同而暗示数据丢失或暗示某一方更严重。
+  record("iss194-bpp-same-copy-as-legacy-missing",
+    bp.chartText === b.chartText && bp.tableText === b.tableText,
+    `B="${b.chartText}" / B″="${bp.chartText}"`);
+
+  // C：有容量点 —— 折线渲染不变，既有行为不得被空态修复带歪
+  const GB = 1024 ** 3;
+  const trend = [
+    { created_at: "2026-10-01T01:00:00", total_bytes: 100 * GB, free_bytes: 80 * GB },
+    { created_at: "2026-10-02T01:00:00", total_bytes: 100 * GB, free_bytes: 74 * GB },
+    { created_at: "2026-10-03T01:00:00", total_bytes: 100 * GB, free_bytes: 71 * GB },
+  ];
+  const c = await applyScenario(legacy, trend);
+  // 折线渲染不变：canvas 在、空态文案不在、表格三个点。不锁死 chartText 为空串
+  // ——echarts 容器自身的说明文字属于图表实现，不在本断言范围。
+  record("iss194-c-line-chart-renders-unchanged",
+    c.hasCanvas && c.tableRows === 3
+      && !c.chartText.includes("尚无快照") && !c.chartText.includes("容量序列为空"),
+    `canvas=${c.hasCanvas} chartText="${c.chartText}" rows=${c.tableRows}`);
+  record("iss194-c-table-reads-non-zero-values",
+    ISS194_READOUT.test(c.tableText) && !c.tableText.includes("尚无"),
+    `table="${c.tableText.slice(0, 80)}"`);
+
+  await page.unroute("**/api/volume-trend").catch(() => {});
+  await page.unroute("**/api/snapshots").catch(() => {});
+}
+
 async function runPhase(withStale) {
   PHASE = withStale ? "stale" : "clean";
   const envExtra = withStale ? { ISS158_STALE: "1" } : {};
@@ -774,6 +899,10 @@ await page.waitForSelector("[data-test='storage-unexplained']", { timeout: 20000
       `bytes=${negBytes}（数值未变），文案=${negFlat.slice(0, 110)}`);
 
     await page.unroute("**/api/storage/summary");
+
+    // ISS-194：容量趋势空态判别。只在 clean 相跑一次——该组断言与 clean/stale
+    // 的整盘口径无关，跑一次即可让新增计数确定（fail-closed 计数要求确定性）。
+    if (PHASE === "clean") await verifyCapacityEmptyStates(page, base);
 
     record("ui-console-clean", consoleErrors.length === 0,
       consoleErrors.slice(0, 3).join(" ; ") || "无页面错误");

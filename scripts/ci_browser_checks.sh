@@ -215,7 +215,7 @@ assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot fron
 # 读取/重读不写配置不扫描，主动合成启动盘首扫与summary一致，发现失败恢复；
 # AI/关于导航、身份/限制、键盘焦点及各自PID/port回收均验证。
 FATHOM_PYTHON="$tree_python" node scripts/verify_scope_settings_frontend.cjs | tee "$tree_out"
-expected_scope_settings="${EXPECTED_SCOPE_SETTINGS_PASSED:-93}"
+expected_scope_settings="${EXPECTED_SCOPE_SETTINGS_PASSED:-177}"
 assert_result_json "$tree_out" "$expected_scope_settings" "scope settings frontend"
 
 # ISS-158：整盘总览与变化入口回归（真实 FastAPI 隔离入口 + 生产总览页实点）。

@@ -37,6 +37,93 @@ resolve(false);
 });
 });
 }
+/* ISS-193：普通层/技术层分层断言（14 项）。
+ * 普通层只讲人话（当前对象、卷状态计数、共享空间口径、隔离说明、旧范围兼容、采集动作）；
+ * 容器引用、卷标识、计划身份、读取限制、耗时说明只出现在默认收起的 details 里。
+ * 两层取自同一份已加载载荷：展开折叠区不得产生任何新请求。 */
+const TECH_LITERALS = ['plan_id', 'scope_id', 'identity_version', 'min_kb', 'du_timeout_s', 'apfs-volume:', 'apfs-container:'];
+
+async function scopeLayeringChecks(kind, page, reads, meta) {
+  const q = (s) => page.locator(s);
+  const vis = async (s) => await q(s).count() > 0 && await q(s).first().isVisible();
+  const txt = async (s) => await q(s).count() ? await q(s).first().innerText() : '';
+
+  await wait(async () => await q('[data-test="scope-tech"]').count() === 1);
+  record(`${kind}-layer-tech-toggle-exists`, await q('[data-test="scope-tech"]').count() === 1);
+  record(`${kind}-layer-tech-collapsed-by-default`,
+    await q('[data-test="scope-tech"]').evaluate((el) => !el.hasAttribute('open')) && !(await vis('[data-test="scope-tech-body"]')));
+  record(`${kind}-layer-tech-summary-accessible`,
+    await vis('[data-test="scope-tech"] > summary')
+    && await q('[data-test="scope-tech"] > summary').evaluate((el) => el.tagName === 'SUMMARY' && (el.textContent || '').includes('技术诊断信息')));
+  record(`${kind}-layer-normal-current-object-first`, await page.evaluate(() => {
+    const p = document.getElementById('scope-panel');
+    const cur = p && p.querySelector('[data-test="scope-current"]');
+    const after = p && p.querySelector('[data-test="scope-discovery-note"],[data-test="scope-discovery-pending"],[data-test="scope-discovery-error"],[data-test="scope-volume-summary"],[data-test="scope-shared-free"],[data-test="scope-tech"]');
+    return Boolean(cur && after && (cur.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING));
+  }));
+  record(`${kind}-layer-normal-volume-summary`, meta.volumes === 0
+    ? !(await vis('[data-test="scope-volume-summary"]'))
+    : await vis('[data-test="scope-volume-summary"]')
+      && await txt('[data-test="scope-volume-summary"]').then((t) => t.includes('个卷') && t.includes('可访问') && t.includes(`启动容器内 ${meta.volumes} 个卷`)));
+  record(`${kind}-layer-normal-shared-free`, !meta.containerRef
+    ? !(await vis('[data-test="scope-shared-free"]'))
+    : await vis('[data-test="scope-shared-free"]') && await txt('[data-test="scope-shared-free"]').then((t) => t.includes('共享')));
+
+  // 普通层文本 = 面板去掉技术折叠区后的全部文本（不依赖视觉位置）。
+  const normalText = await page.evaluate(() => {
+    const p = document.getElementById('scope-panel');
+    const clone = p.cloneNode(true);
+    clone.querySelectorAll('[data-test="scope-tech"]').forEach((n) => n.remove());
+    return clone.textContent || '';
+  });
+  const leaked = TECH_LITERALS.filter((k) => normalText.includes(k));
+  if (/\bdisk\d/.test(normalText)) leaked.push('disk 容器引用');
+  if (meta.containerRef && normalText.includes(meta.containerRef)) leaked.push(`容器引用 ${meta.containerRef}`);
+  record(`${kind}-layer-normal-no-tech-literals`, leaked.length === 0, leaked.join(','));
+
+  record(`${kind}-layer-normal-legacy-compat`, meta.hasSaved
+    ? await vis('[data-test="scope-saved-compatibility"]')
+      && await txt('[data-test="scope-saved-compatibility"]').then((t) => t.includes('不作为当前扫描决定') && t.includes('旧历史保持独立基线'))
+    : !(await vis('[data-test="scope-saved-compatibility"]')));
+  record(`${kind}-layer-normal-no-editable-scope`, await page.evaluate(() => document.querySelectorAll(
+    '#scope-panel input,#scope-panel select,#scope-panel textarea,#scope-panel [contenteditable="true"],'
+    + '[data-test="scope-preview-btn"],[data-test="scope-save-btn"],#scope-roots,#cfg-scan-root,input[name="scope-mode"]').length) === 0);
+  record(`${kind}-layer-normal-collect-affordance`, await vis('[data-test="scope-firstscan-btn"]') && await page.evaluate(() => {
+    const p = document.getElementById('scope-panel');
+    const c = p && p.querySelector('[data-test="scope-firstrun"]');
+    return Boolean(c && (c.textContent || '').includes('无需选择或保存范围') && !c.closest('[data-test="scope-tech"]'));
+  }));
+
+  const before = reads;
+  await q('[data-test="scope-tech"] > summary').click();
+  await wait(async () => await q('[data-test="scope-tech"][open]').count() === 1);
+  const required = [];
+  if (meta.containerRef) required.push('[data-test="scope-container"]');
+  if (meta.volumes > 0) required.push('[data-test="scope-volume"]');
+  if (meta.others > 0) required.push('[data-test="scope-device"]');
+  if (meta.hasPlan) required.push('[data-test="scope-preview"]', '[data-test="scope-preview-limits"]', '[data-test="scope-preview-uncertainty"]');
+  const missing = await page.evaluate((sels) => {
+    const b = document.querySelector('[data-test="scope-tech-body"]');
+    return b ? sels.filter((s) => !b.querySelector(s)) : sels;
+  }, required);
+  record(`${kind}-layer-tech-anchors-complete`, missing.length === 0 && await vis('[data-test="scope-tech-body"]'), missing.join(','));
+
+  const techText = await txt('[data-test="scope-tech-body"]');
+  const want = meta.hasPlan ? ['min_kb', 'du', '身份版本', meta.scopeId, meta.planId].filter(Boolean) : [];
+  const absent = want.filter((k) => !techText.includes(k));
+  record(`${kind}-layer-tech-fields-visible`, absent.length === 0, absent.join(','));
+
+  // 展开态承载旧实现的信息量，按规格在 980×640 下同样不得横向溢出。
+  await page.setViewportSize({ width: 980, height: 640 });
+  await delay(80);
+  const openLayout = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth }));
+  record(`${kind}-layer-980-open-no-overflow`, openLayout.scroll <= openLayout.width + 1, JSON.stringify(openLayout));
+  await q('[data-test="scope-tech"] > summary').click();
+  await page.setViewportSize({ width: 1220, height: 820 });
+  await delay(80);
+  record(`${kind}-layer-no-second-data-fetch`, reads === before, `reads=${reads} before=${before}`);
+}
+
 const bootstrap=String.raw`import sys,os,runpy,pytest
 from pathlib import Path
 from fathom import cli,config,api,scan_coordinator,notify,storage
@@ -86,23 +173,34 @@ const health=(await request('/health')).body;
 service.token=(await request('/api/bootstrap')).body.token;
   record(`${kind}-health-bound`,health.pid===child.pid&&health.port===port&&health.runtime_mode===mode,`pid=${child.pid} port=${port}`);
   const current=(await request('/api/storage/plan/preview')).body;
+const discovery=(await request('/api/storage/discovery')).body.discovery||{};
+const plan0=current.plan||null,planRows=plan0&&plan0.plans||[];
+// hasSaved 与渲染条件一致：旧范围存在且未生效才出兼容结论句（不靠 kind 猜）。
+const layering={volumes:(discovery.startup_volumes||[]).length,others:(discovery.other_devices||[]).length,
+ containerRef:(discovery.startup_container||{}).container_reference||'',hasPlan:planRows.length>0,
+ scopeId:planRows[0]?planRows[0].scope_id:'',planId:planRows[0]?planRows[0].plan_id:'',
+ hasSaved:Boolean(current.selection)&&!current.saved_active};
   const roots=override?[explicit]:mode==='release'?[path.join(tmp,'system'),path.join(tmp,'data')]:[old];
   record(`${kind}-effective-object`,override?current.scan_override.root===explicit:JSON.stringify(current.effective_selection.roots)===JSON.stringify(roots),current.plan_source);
   record(`${kind}-saved-preserved-read`,(fs.existsSync(settings)?fs.readFileSync(settings,'utf8'):null)===before);
   page=await browser.newPage({viewport:{width:1220,height:820}});
-let writes=0,scans=0;
+let writes=0,scans=0,reads=0;
 const errors=[];
-  page.on('request',r=>{if(r.method()==='PUT')writes++;
-if(r.method()==='POST'&&new URL(r.url()).pathname==='/api/scan')scans++;
+  page.on('request',r=>{const pn=new URL(r.url()).pathname;
+if(r.method()==='PUT')writes++;
+if(r.method()==='POST'&&pn==='/api/scan')scans++;
+if(r.method()==='GET'&&(pn==='/api/storage/discovery'||pn==='/api/storage/plan/preview'))reads++;
 });
 page.on('pageerror',e=>errors.push(e.message));
   await page.goto(`http://127.0.0.1:${port}/#settings/monitoring`);
 await page.waitForFunction(()=>document.querySelector('[data-test="scope-current"]')?.textContent.includes('当前扫描对象：'));
   record(`${kind}-no-choices-all-dom`,await page.locator('input[name="scope-mode"],#scope-roots,#cfg-scan-root,[data-test="scope-preview-btn"],[data-test="scope-save-btn"]').count()===0);
   const text=await page.locator('[data-test="scope-current"]').innerText();
-record(`${kind}-object-visible`,roots.every(r=>text.includes(r))&&(mode!=='release'||override||text.includes('内置启动盘整体'))&&await page.locator('[data-test="scope-device"]').innerText().then(t=>t.includes('已挂载')&&!t.includes('可选')));
+// scope-device 已在技术折叠区内：按锚点读 textContent，不依赖可见性。
+record(`${kind}-object-visible`,roots.every(r=>text.includes(r))&&(mode!=='release'||override||text.includes('内置启动盘整体'))&&await page.locator('[data-test="scope-device"]').textContent().then(t=>t.includes('已挂载')&&!t.includes('可选')));
   if(kind!=='none'&&mode==='release'&&!override)record(`${kind}-old-value-not-active`,await page.locator('[data-test="scope-saved-compatibility"]').innerText().then(t=>t.includes('不作为当前扫描决定')));
   if(override)record(`${kind}-override-honest`,await page.locator('[data-test="scope-scan-override"]').innerText().then(t=>t.includes('不使用已保存范围')&&t.includes(kind==='cli'?'--scan-root':'FATHOM_SCAN_ROOT')));
+  await scopeLayeringChecks(kind,page,reads,layering);
   await page.click('[data-test="scope-reload-btn"]');
 await page.waitForFunction(()=>document.querySelector('[data-test="scope-current"]')?.textContent.includes('当前扫描对象：'));
   record(`${kind}-readonly-reload-no-write-scan`,writes===0&&scans===0&&(fs.existsSync(settings)?fs.readFileSync(settings,'utf8'):null)===before);
@@ -120,6 +218,8 @@ await page.click('[data-section="about"]');
 record(`${kind}-about-still-visible`,await page.locator('#settings-section-about').isVisible());
 await page.click('[data-section="monitoring"]');
   if(kind==='custom'){
+   await page.click('[data-test="scope-tech"] > summary');
+await page.waitForFunction(()=>!!document.querySelector('[data-test="scope-tech"][open]'));
    record('current-plan-identity-limits',await page.locator('[data-test="scope-preview"]').innerText().then(t=>t.includes('apfs-volume:system')&&t.includes('plan:')&&t.includes('du')&&t.includes('min_kb')));
    await page.click('[data-test="scope-firstscan-btn"]');
 await wait(()=>scans===1);

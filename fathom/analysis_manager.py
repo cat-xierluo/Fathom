@@ -946,17 +946,26 @@ class AnalysisManager:
         payload = preview.facts.payload
         # dataset_root 存**真实根**（本地审计字段，不进模型输入——事实包
         # 内是脱敏别名）：历史过期评估要靠它与 snapshots 行对口径。
-        root_row = conn.execute("SELECT root FROM snapshots WHERE id=?",
-                                (preview.a_snapshot_id,)).fetchone()
+        root_row = conn.execute(
+            "SELECT root, plan_id, round_id, metric_version FROM snapshots WHERE id=?",
+            (preview.a_snapshot_id,)).fetchone()
         real_root = root_row["root"] if root_row is not None else ""
+        # 身份三列（ISS-190A）：取自 a 快照行（两侧 plan 身份此时必然一致，
+        # 否则构造事实包阶段已被闸门拒绝）。按快照行取值而非写死 NULL——
+        # 190B 放开闸门后即插即用；当前闸门下这三列恒为 NULL。
+        plan_values = (
+            (root_row["plan_id"], root_row["round_id"], root_row["metric_version"])
+            if root_row is not None else (None, None, None)
+        )
         cur = conn.execute(
             "INSERT INTO agent_analyses("
             " job_id, a_snapshot_id, b_snapshot_id, a_created_at, b_created_at,"
             " dataset_root, dataset_min_kb, dataset_exclude_names,"
             " request_digest, facts_digest, prompt_version,"
             " adapter_contract_version, runtime_id, runtime_version, model,"
-            " result_json, facts_json, manifest_json, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " result_json, facts_json, manifest_json, created_at,"
+            " plan_id, round_id, metric_version)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (rec.job_id, preview.a_snapshot_id, preview.b_snapshot_id,
              payload["a"]["created_at"], payload["b"]["created_at"],
              real_root, payload["dataset"]["min_kb"],
@@ -969,7 +978,8 @@ class AnalysisManager:
              json.dumps(result, ensure_ascii=False),
              preview.facts.canonical_json.decode("utf-8"),
              json.dumps(preview.bundle.manifest, ensure_ascii=False),
-             _now()),
+             _now(),
+             *plan_values),
         )
         return int(cur.lastrowid)
 
@@ -1327,6 +1337,11 @@ class AnalysisManager:
         是本数据集的替换证据。缺这一条就会把另一个数据集的快照说成是本报告
         区间被替换，跨身份混读。
 
+        ISS-190A 起本行自带身份三列（plan_id/round_id/metric_version）：
+        legacy 行为 NULL，plan 档为真实值。plan 档行的同日后继按
+        **同一 plan_id** 匹配；legacy 行仍按上面的 (plan_id IS NULL)
+        口径逐字不变。**不得放宽为「同根同阈值即同身份」**。
+
         无同身份后继时按 ``snapshot_pruned`` 如实落：快照确已消失，只是
         无法归因为同日替换——既有枚举里这是唯一不撒谎的形态（新增枚举值会
         让前端 changes.js 的原因映射落到兜底文案）。"""
@@ -1336,18 +1351,30 @@ class AnalysisManager:
             snap = conn.execute("SELECT * FROM snapshots WHERE id=?",
                                 (sid,)).fetchone()
             if snap is None:
-                # 同日**后继**（created_at 晚于被删快照、同数据集、同为
-                # legacy 身份）存在 → 该位置被同日替换（create_snapshot 同日
+                # 同日**后继**存在 → 该位置被同日替换（create_snapshot 同日
                 # 落盘行为）；无后继 → 按保留策略淘汰。基线早于被删快照，
-                # 不算替换；**其他 plan 的快照不是本数据集的后继**。
+                # 不算替换。
+                #
+                # 身份分档（ISS-190A）：证据行自身带 plan_id 时，同日后继
+                # 按**同一 plan**（plan_id 相等）匹配；legacy 行（plan_id
+                # 为 NULL）走下面逐字不变的 legacy 口径——别的 plan 即便同根
+                # 同阈值同排除同一天，也不是本数据集的替换证据。
+                # 绝不放宽成「同根同阈值即同身份」。
+                if row.get("plan_id") is not None:
+                    successor_plan_sql = "AND plan_id = ?"
+                    successor_plan_args: tuple = (str(row["plan_id"]),)
+                else:
+                    successor_plan_sql = "AND plan_id IS NULL"
+                    successor_plan_args = ()
                 same_day = conn.execute(
                     "SELECT COUNT(*) c FROM snapshots WHERE root IS ? "
                     "AND min_kb IS ? AND exclude_names IS ? "
-                    "AND plan_id IS NULL "
+                    f"{successor_plan_sql} "
                     "AND substr(created_at,1,10) = substr(?,1,10) "
                     "AND (created_at > ? OR (created_at = ? AND id > ?))",
                     (row["dataset_root"], row["dataset_min_kb"],
                      str(row["dataset_exclude_names"] or ""),
+                     *successor_plan_args,
                      str(row[created_column]),
                      str(row[created_column]), str(row[created_column]),
                      sid),

@@ -922,8 +922,10 @@ class TestFactsRowCoreIdentityGate:
         assert pkg.payload["b"]["snapshot_id"] == row_b["id"]
         assert len(pkg.payload["entries"]) == 1
         assert pkg.payload["entries"][0]["delta_kb"] == 2048  # 2048→4096
-        # 事实包身份块仍只有 legacy 三元组：无 plan 身份列（本期不支持）。
-        assert "plan_id" not in pkg.payload["dataset"]
+        # ISS-190A 起 dataset 块显式携带身份三列，legacy 档为 None（NULL 即 legacy）。
+        assert pkg.payload["dataset"]["plan_id"] is None
+        assert pkg.payload["dataset"]["round_id"] is None
+        assert pkg.payload["dataset"]["metric_version"] is None
         assert pkg.payload["net_delta_kb"] == 0
 
     # ------------------------------------------------------------ 两入口一致

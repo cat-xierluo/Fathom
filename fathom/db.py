@@ -17,7 +17,7 @@ from . import config
 
 _LOG = logging.getLogger("fathom.db")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # v8 之后的纯性能增量（ISS-168）：entries 的主键是
 # (snapshot_id, path) WITHOUT ROWID，path 不是主键前缀，因此 trend 的
@@ -393,6 +393,32 @@ _EXPECTED_TABLE_INFO_V8 = dict(
     _EXPECTED_TABLE_INFO, **_ANALYSIS_TABLE_INFO, **_IDENTITY_TABLE_INFO
 )
 
+# v9（ISS-190A）：agent_analyses 追加三个**可空**身份列，承载「已保存证据
+# 属于哪个 plan/轮次/计量版本」——这正是 ISS-153 身份闸门当初挡下的缺口
+# （agent_analyses 无处证明证据身份）。语义与 _SNAPSHOT_ALTER_V8 逐条同源：
+# 全部可空、旧行**不回填**（NULL 即 legacy 档，不补造真实卷 UUID）；不加
+# scope_id（可由 plan_id 经 scan_plans 推导，用户裁决不冗余）；无外键、无
+# 级联删除通道——v7 起的保留不变量（证据不随快照/轮次淘汰消失）不变。
+_AGENT_ANALYSES_ALTER_V9 = (
+    "plan_id TEXT",          # 所属规范根计划（scan_plans.plan_id）
+    "round_id INTEGER",      # 所属扫描轮次（scan_rounds.id；无外键）
+    "metric_version INTEGER",  # 计量版本（参与计划身份的显式列）
+)
+# v9 的 agent_analyses 列结构 = v7/v8 形态 + 三个可空身份列。
+# ALTER ADD COLUMN 只能追加到表尾，故期望结构同样在尾部登记。
+_AGENT_ANALYSES_IDENTITY_V9 = (
+    ("plan_id", "TEXT", 0, 0),
+    ("round_id", "INTEGER", 0, 0),
+    ("metric_version", "INTEGER", 0, 0),
+)
+_ANALYSIS_TABLE_INFO_V9 = dict(_ANALYSIS_TABLE_INFO)
+_ANALYSIS_TABLE_INFO_V9["agent_analyses"] = (
+    _ANALYSIS_TABLE_INFO["agent_analyses"] + _AGENT_ANALYSES_IDENTITY_V9
+)
+_EXPECTED_TABLE_INFO_V9 = dict(
+    _EXPECTED_TABLE_INFO, **_ANALYSIS_TABLE_INFO_V9, **_IDENTITY_TABLE_INFO
+)
+
 
 def _expected_table_info(
     version: int,
@@ -400,10 +426,13 @@ def _expected_table_info(
     """指定版本下每张表的期望列结构。
 
     v7 增加分析两表（由 6→7 步骤创建）；v8 增加身份/轮次五表与快照三个
-    身份列（由 7→8 步骤创建）。v4/v5 保留各自结构，用于迁移链中间状态
+    身份列（由 7→8 步骤创建）；v9 只为 agent_analyses 增加三个可空身份列
+    （由 8→9 步骤追加）。v4/v5 保留各自结构，用于迁移链中间状态
     校验；v3 及更早同理。v6/v7 共享同一快照列集。
     """
-    if version >= SCHEMA_VERSION:
+    if version >= 9:
+        return _EXPECTED_TABLE_INFO_V9
+    if version >= 8:
         return _EXPECTED_TABLE_INFO_V8
     if version >= 7:
         return _EXPECTED_TABLE_INFO_V7
@@ -680,9 +709,13 @@ def _migrate_v1(conn: sqlite3.Connection) -> None:
 
 
 def _snapshot_column_names(conn: sqlite3.Connection) -> set[str]:
+    return _table_column_names(conn, "snapshots")
+
+
+def _table_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {
         str(row[1])
-        for row in conn.execute('PRAGMA table_info("snapshots")')
+        for row in conn.execute(f'PRAGMA table_info({_quote_identifier(table)})')
     }
 
 
@@ -690,9 +723,10 @@ def _detect_schema_version(conn: sqlite3.Connection) -> int:
     """根据实际结构推断 schema 版本。
 
     旧启发式「scan_run_details 存在即 v2」在后续版本引入新列后失效——
-    snapshots 才是版本演化的承载列；v8 的承载结构是身份/轮次五表，
-    v7 的承载结构是分析两表。判定顺序：
-    身份五表齐全 → 8；analysis_runs+agent_analyses → 7；两分类列 → 6；
+    snapshots 才是版本演化的承载列；v9 的承载结构是 agent_analyses 的
+    三个身份列（v8 的承载结构是身份/轮次五表），v7 的承载结构是分析两表。
+    判定顺序：身份五表齐全且 agent_analyses 已带三身份列 → 9；身份五表齐全
+    → 8；analysis_runs+agent_analyses → 7；两分类列 → 6；
     exclude_names → 5；vanished_count → 4；min_kb+collection_status → 3；
     scan_run_details 表存在 → 2；只有 v1 表 → 1；空库 → 0。
     """
@@ -700,6 +734,9 @@ def _detect_schema_version(conn: sqlite3.Connection) -> int:
     if not tables:
         return 0
     if _IDENTITY_TABLES <= tables:
+        if _AGENT_ANALYSES_IDENTITY_V9_COLUMNS <= _table_column_names(
+                conn, "agent_analyses"):
+            return 9
         return 8
     if {"analysis_runs", "agent_analyses"} <= tables:
         return 7
@@ -832,6 +869,43 @@ def _migrate_v7(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+_AGENT_ANALYSES_IDENTITY_V9_COLUMNS = frozenset(
+    name for name, _type, _notnull, _pk in _AGENT_ANALYSES_IDENTITY_V9
+)
+
+
+def _migrate_v8(conn: sqlite3.Connection) -> None:
+    """v8→v9（ISS-190A）：为 agent_analyses 追加三个可空身份列。
+
+    ISS-153 的身份闸门当初挡住了 plan 档解读，理由正是「已保存证据的
+    dataset 身份只有 (root, min_kb, exclude_names) 三元组，
+    ``agent_analyses`` 表无身份列，落库证据无法证明它属于哪个计划」。
+    本步只补承载位置，**不放开闸门**：解读侧三处拒绝原样保留，plan 档
+    仍不会落库，因此既有行三列恒为 NULL。
+
+    与既有迁移同口径：幂等——列已齐全（如 user_version 被手动回退）时只
+    做结构校验，不重复追加；全部 DDL 在迁移事务内执行，任何失败随事务
+    回滚，既有数据不受影响。旧行三列保持 NULL——**legacy 证据不补造
+    身份**（不猜计划、不猜卷 UUID）。无外键、无级联删除通道，
+    ``agent_analyses → analysis_runs`` 的 NO ACTION 不变。
+    """
+    tables = _user_tables(conn)
+    if "agent_analyses" not in tables:
+        # v8 结构必须已有分析两表（v6→v7 创建）；缺失时按 v8 校验暴露，
+        # 不在 v9 步骤里补建 v7 的表——保持每步只做本步的加法。
+        _validate_schema(conn, allow_missing=False, version=8)
+        return
+    columns = _table_column_names(conn, "agent_analyses")
+    if _AGENT_ANALYSES_IDENTITY_V9_COLUMNS <= columns:
+        _validate_schema(conn, allow_missing=False,
+                         version=_detect_schema_version(conn))
+        return
+    _validate_schema(conn, allow_missing=False, version=8)
+    for ddl in _AGENT_ANALYSES_ALTER_V9:
+        if ddl.split()[0] not in columns:
+            conn.execute(f"ALTER TABLE agent_analyses ADD COLUMN {ddl}")
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     0: _migrate_v0,
     1: _migrate_v1,
@@ -841,6 +915,7 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     5: _migrate_v5,
     6: _migrate_v6,
     7: _migrate_v7,
+    8: _migrate_v8,
 }
 
 

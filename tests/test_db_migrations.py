@@ -295,7 +295,7 @@ def test_v3_database_migrates_vanished_count_with_default_zero(tmp_path):
 
     conn = db.connect(path)
     try:
-        assert db.schema_version(conn) == db.SCHEMA_VERSION == 8
+        assert db.schema_version(conn) == db.SCHEMA_VERSION == 9
         rows = conn.execute(
             "SELECT id, vanished_count, exclude_names FROM snapshots ORDER BY id"
         ).fetchall()
@@ -420,7 +420,7 @@ class TestISS066ExcludeNamesMigration:
 
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == db.SCHEMA_VERSION == 8
+            assert db.schema_version(conn) == db.SCHEMA_VERSION == 9
             cols = {row[1] for row in conn.execute(
                 "PRAGMA table_info(snapshots)")}
             assert "exclude_names" in cols
@@ -492,7 +492,7 @@ class TestISS066ExcludeNamesMigration:
             cols = [row[1] for row in second.execute(
                 "PRAGMA table_info(snapshots)")]
             assert cols.count("exclude_names") == 1
-            assert db.schema_version(second) == db.SCHEMA_VERSION == 8
+            assert db.schema_version(second) == db.SCHEMA_VERSION == 9
         finally:
             second.close()
 
@@ -523,11 +523,11 @@ class TestISS116V6Migration:
         self._v5(path)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
             row = conn.execute("SELECT vanished_count, confirmed_missing_count, "
                                "path_unverified_count FROM snapshots").fetchone()
             assert tuple(row) == (4, None, None)
-            assert db._detect_schema_version(conn) == 8
+            assert db._detect_schema_version(conn) == 9
         finally:
             conn.close()
         backups = list(tmp_path.glob("v5.db.backup-v5-*.sqlite3"))
@@ -565,7 +565,7 @@ class TestISS116V6Migration:
         self._v5(path, user_version=0)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
             row = conn.execute("SELECT confirmed_missing_count, path_unverified_count "
                                "FROM snapshots").fetchone()
             assert tuple(row) == (None, None)
@@ -584,7 +584,7 @@ class TestISS116V6Migration:
             raw.close()
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
             names = [r[1] for r in conn.execute("PRAGMA table_info(snapshots)")]
             assert names.count("confirmed_missing_count") == 1
             assert names.count("path_unverified_count") == 1
@@ -621,8 +621,8 @@ class TestISS035BV7Migration:
         self._v6(path)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
-            assert db._detect_schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
+            assert db._detect_schema_version(conn) == 9
             tables = {r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name NOT LIKE 'sqlite_%'")}
@@ -673,7 +673,7 @@ class TestISS035BV7Migration:
         monkeypatch.setitem(db._MIGRATIONS, 6, real)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
         finally:
             conn.close()
 
@@ -689,7 +689,7 @@ class TestISS035BV7Migration:
             raw.close()
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
             names = [r[1] for r in conn.execute("PRAGMA table_info(analysis_runs)")]
             assert names.count("job_id") == 1
         finally:
@@ -707,7 +707,7 @@ class TestISS035BV7Migration:
             raw.close()
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
             assert conn.execute("SELECT total_kb FROM snapshots").fetchone()[0] == 42
         finally:
             conn.close()
@@ -834,8 +834,8 @@ class TestISS153V8Migration:
         path = tmp_path / "fresh.db"
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == db.SCHEMA_VERSION == 8
-            assert db._detect_schema_version(conn) == 8
+            assert db.schema_version(conn) == db.SCHEMA_VERSION == 9
+            assert db._detect_schema_version(conn) == 9
             tables = {r[0] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name NOT LIKE 'sqlite_%'")}
@@ -859,7 +859,7 @@ class TestISS153V8Migration:
 
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
             # 快照逐行逐列保留（含时间原值与 v3–v6 各口径列）。
             snaps = conn.execute(
                 "SELECT * FROM snapshots ORDER BY id").fetchall()
@@ -951,7 +951,7 @@ class TestISS153V8Migration:
         monkeypatch.setitem(db._MIGRATIONS, 7, db._migrate_v7)
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
         finally:
             conn.close()
 
@@ -1015,7 +1015,7 @@ class TestISS153V8Migration:
             raw.close()
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
             cols = [r[1] for r in conn.execute("PRAGMA table_info(snapshots)")]
             assert cols.count("plan_id") == 1
             names = [r[0] for r in conn.execute(
@@ -1041,7 +1041,7 @@ class TestISS153V8Migration:
             raw.close()
         conn = db.connect(path)
         try:
-            assert db.schema_version(conn) == 8
+            assert db.schema_version(conn) == 9
             assert conn.execute(
                 "SELECT total_kb FROM snapshots WHERE id=2").fetchone()[0] == 8192
         finally:

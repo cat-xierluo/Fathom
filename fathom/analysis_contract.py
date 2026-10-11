@@ -49,7 +49,10 @@ from . import reports# ---------------------------------------------------------
 # --------------------------------------------------------------------------
 
 #: 事实包 schema 版本；结构变化时递增。
-FACTS_SCHEMA_VERSION = 1
+#: v2（ISS-190A）：dataset 块新增三个可空身份列（plan_id/round_id/
+#: metric_version），让已保存证据能证明自己属于哪个计划。legacy 行三字段
+#: 为 null（不补造身份）。解码方按值判定，null 与旧版等价。
+FACTS_SCHEMA_VERSION = 2
 
 #: 结构化解读结果的 schema 版本；与 prompt 中声明一致。
 RESULT_SCHEMA_VERSION = 1
@@ -184,6 +187,12 @@ class FactsPackage:
                 "root_display": p["dataset"]["root_display"],
                 "min_kb": p["dataset"]["min_kb"],
                 "exclude_names": p["dataset"]["exclude_names"],
+                # 身份三字段（ISS-190A）：legacy 证据为 None（不补造身份），
+                # plan 档证据带真实 plan_id/round_id/metric_version。
+                # 只认 plan_id 这一个维度，不做容错归一。
+                "plan_id": p["dataset"].get("plan_id"),
+                "round_id": p["dataset"].get("round_id"),
+                "metric_version": p["dataset"].get("metric_version"),
             },
             "snapshots": {
                 "a": {"snapshot_id": self.snapshot_ids[0],
@@ -576,6 +585,12 @@ def build_facts_from_rows(
             "exclude_names": [
                 s for s in str(_row_get(row_a, "exclude_names", "")).split(";") if s
             ],
+            # 身份三字段（ISS-190A）：从 a 快照行读出，legacy 行读作 None。
+            # 闸门保证 plan 档走不到这里，故当前恒为 None；字段随包落库，
+            # 190B 放开闸门后即自动携带真实身份。
+            "plan_id": _row_get(row_a, "plan_id"),
+            "round_id": _row_get(row_a, "round_id"),
+            "metric_version": _row_get(row_a, "metric_version"),
             "units": "KiB",
         },
         "a": {

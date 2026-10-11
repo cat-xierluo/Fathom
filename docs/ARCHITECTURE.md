@@ -51,7 +51,7 @@ API、CLI 与 launchd 定时入口统一调用 `scan_coordinator`；全生命周
 
 | 表 | 字段概要 | 含义 |
 |---|---|---|
-| schema | `PRAGMA user_version=9`（`db.py:SCHEMA_VERSION=9`） | v0–v7 开发库经完整性/结构校验和一致备份后逐级事务迁移；未来版本、损坏或不兼容结构拒绝打开；v8 新增身份/轮次表外键（`scan_plans.scope_id`→scan_scopes、scan_round_members.round_id→scan_rounds 级联） |
+| schema | `PRAGMA user_version=9`（`db.py:SCHEMA_VERSION=9`） | v0–v7 开发库经完整性/结构校验和一致备份后逐级事务迁移；未来版本、损坏或不兼容结构拒绝打开；v8 新增身份/轮次表外键（`scan_plans.scope_id`→scan_scopes、scan_round_members.round_id→scan_rounds 级联）；v9 给 `agent_analyses` 加三可空身份列（无外键，旧行 NULL 不回填） |
 | snapshots | id, created_at, root, dir_count, denied_count, du_seconds, total_kb, min_kb, collection_status, vanished_count, exclude_names, confirmed_missing_count, path_unverified_count, plan_id, round_id, metric_version | 时间为本地无时区 ISO 字符串；目录总数包含未持久化小目录；min_kb/collection_status 自 v3 起持久化，旧行 NULL 不补造；v4 新增 vanished_count 默认 0，v5 新增 exclude_names 默认空串（规范掩码串）；v6 两个细分计数对旧行保持 NULL，新扫描显式写入且和等于兼容汇总；v8 三身份列对 legacy 行保持 NULL 不补造 |
 | scan_scopes | scope_id, … | 范围/卷/容器稳定 ID；数据集身份在新口径下等于计划 |
 | scan_plans | plan_id, scope_id, canonical_root, metric_version, min_kb, exclude_names | 规范根计划；身份五元组载体，`plan_id` 即数据集身份 |

@@ -189,10 +189,30 @@ async function main(){
   await page.click('#agent-history-refresh');await wait('[data-agent-job="foreign-job"]');record('agent.cross-interval-active-first',await page.locator('#agent-history-body [data-agent-job]').first().getAttribute('data-agent-job')==='foreign-job');
   await page.click('[data-agent-job="foreign-job"]');await wait('#agent-analysis-body [data-test="analysis-state-running"]');record('agent.foreign-task-original-range',(await page.locator('#agent-opened-task').textContent()).includes('#1 → #2')&&(await page.locator('#agent-analysis-body').textContent()).includes('#1 → #2'));
   await choose('agent-a',1);await page.waitForTimeout(2200);record('agent.old-task-poll-does-not-overwrite-new-range',!(await page.locator('#agent-opened-task').textContent()).includes('foreign-job')&&!(await page.locator('#agent-analysis-body').textContent()).includes('foreign-'));
-  snaps=[...SNAPSHOTS,{...SNAPSHOTS[0],id:4,plan_id:'p',created_at:'2026-09-15T10:00:00'},{...SNAPSHOTS[0],id:5,plan_id:'p',created_at:'2026-09-16T10:00:00'},{...SNAPSHOTS[0],id:6,root:'/fixture/other',created_at:'2026-09-17T10:00:00'}];
+  // 扩展快照须进 SNAPSHOTS 原数组（同一引用）：预览 mock 的 previewFor 按
+  // SNAPSHOTS 查 created_at，只加进下拉数组会让同 plan 预览查 undefined。
+  for (const extra of [
+    {...SNAPSHOTS[0],id:4,plan_id:'p',created_at:'2026-09-15T10:00:00'},
+    {...SNAPSHOTS[0],id:5,plan_id:'p',created_at:'2026-09-16T10:00:00'},
+    {...SNAPSHOTS[0],id:6,root:'/fixture/other',created_at:'2026-09-17T10:00:00'},
+    {...SNAPSHOTS[0],id:7,plan_id:'q',created_at:'2026-09-18T10:00:00'},
+  ]) SNAPSHOTS.push(extra);
+  snaps=SNAPSHOTS.slice();
   await page.click('#agent-refresh');await wait('#agent-b option[value="5"]');await choose('agent-b',5);
   record('agent.plan-dataset-converges',await page.locator('#agent-a option').count()===1&&await page.inputValue('#agent-a')==='4');
-  record('agent.plan-ai-refusal',await visible('[data-test="agent-no-range"]')&&(await page.locator('#agent-analysis-body').textContent()).includes('新范围身份暂不支持'));
+  record('agent.same-plan-range-selectable',!await visible('[data-test="agent-no-range"]')&&(await page.locator('#agent-range-status').textContent()).includes('#4 → #5'), 'status='+await page.locator('#agent-range-status').textContent());
+  await page.click('#agent-analysis-body [data-test="analysis-preview-btn"]');await wait('#agent-analysis-body [data-test="analysis-confirm-btn"]');
+  record('agent.same-plan-preview-constructible',await visible('#agent-analysis-body [data-test="analysis-confirm-btn"]'));
+  // 跨 plan/跨档组合在 UI 上由 b 侧收敛保护隔离（正常操作构造不出跨档区间，
+  // 这正是闸门前置形态）；跨 plan 的后端拒绝由 pytest 合同测试钉住。此处断言：
+  // 选 q 档快照后 a 侧不再提供 p 档选项，且提示如实（不足两个或不同计划）。
+  await page.evaluate(()=>{const b=document.getElementById('agent-b');b.value='7';b.dispatchEvent(new Event('change'));});
+  await page.waitForTimeout(300);
+  record('agent.cross-plan-unselectable-in-ui',await visible('[data-test="agent-no-range"]')&&!(await page.locator('#agent-a option[value="4"]').count()>0)&&((await page.locator('#agent-analysis-body').textContent()).includes('不足两个')||(await page.locator('#agent-analysis-body').textContent()).includes('不同计划')), 'body='+await page.locator('#agent-analysis-body').textContent());
+  // 跨 plan 断言后恢复同 plan 干净态（a=4/b=5）：残留混搭选择会让后续
+  // single-snapshot/restore 类断言的 a 侧下拉处于禁用态。
+  await page.evaluate(()=>{const b=document.getElementById('agent-b');b.value='5';b.dispatchEvent(new Event('change'));const a=document.getElementById('agent-a');a.value='4';a.dispatchEvent(new Event('change'));});
+  await page.waitForTimeout(200);
   await choose('agent-b',6);record('agent.single-snapshot-has-dataset-exit',await page.locator('#agent-a').isDisabled()&&!await page.locator('#agent-b').isDisabled()&&(await page.locator('#agent-range-status').textContent()).includes('不足两个'));
   historyFailure=true;await page.click('#agent-history-refresh');await page.waitForTimeout(150);record('agent.history-failure-visible',(await page.locator('#agent-history-error').textContent()).includes('合成历史故障'));
   historyFailure=false;await page.click('#agent-history-refresh');await page.waitForTimeout(150);record('agent.history-failure-retry',await page.locator('#agent-history-error').textContent()==='');
@@ -201,6 +221,9 @@ async function main(){
   await page.click('#agent-history-more');await page.waitForTimeout(200);record('agent.history-more-complete',await page.locator('#agent-history-body tr').count()===fixture.state.jobs.size+extra.length&&!await visible('#agent-history-more'), 'rows='+await page.locator('#agent-history-body tr').count()+' expected='+(fixture.state.jobs.size+extra.length)+' hidden='+await page.locator('#agent-history-more').getAttribute('hidden'));
   for(const [width,height] of [[980,640],[1220,820],[1440,900]]){await page.setViewportSize({width,height});await page.evaluate(()=>{document.querySelector('.page-container').scrollTop=0;});await page.screenshot({path:path.join(evidence,`agent-${width}.png`),fullPage:true});record(`agent.viewport-${width}`,await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth && [...document.querySelectorAll('[data-agent-job]')].every(btn=>getComputedStyle(btn).opacity==='1' && btn.getBoundingClientRect().height<45)));}
   await page.click('.nav-item[data-page="changes"]');await wait('#analysis-panel');record('agent.changes-local-entry-retained',await visible('#analysis-panel'));
+  // 尾部 verify 函数各自 createFixture 独立场景，/api/snapshots 直接返回
+  // SNAPSHOTS——移除 plan 扩展快照（id 4-7），恢复它们对 1-3 数据集的假设。
+  SNAPSHOTS.splice(3, 5);
   await verifyLateRestore(browser);
   await verifyHistoricalRerunRestore(browser);
   await verifyEvidenceControls(browser);

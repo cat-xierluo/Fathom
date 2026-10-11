@@ -9,9 +9,11 @@
    legacy 分支口径逐字不变。
 3. manifest 携带三字段 + FACTS_SCHEMA_VERSION 递增。
 
-**三道解读闸门零改动**是本文件的硬约束（PM 定向独审重点）：任一侧快照
-带 plan_id 依然拒绝、不落库，因此生产路径写入的三列恒为 NULL。本文件
-用**单元级直插**构造 plan 身份证据行——绕过闸门是测试权限，不是产品行为。
+**闸门双向钉子**是本文件的硬约束（PM 定向独审重点）：190A 交付时闸门是
+「任一侧快照带 plan_id 依然拒绝」；190B 放开**同 plan 双快照**后，这条
+约束变成双向的——放行的那条必须真放行，跨 plan / 混搭 / 计量版本不一致的
+那几条必须真拒绝（见 TestGatesUntouched）。本文件另有**单元级直插**构造
+plan 身份证据行的用例——绕过闸门是测试权限，不是产品行为。
 
 负向守卫（本文件在「回填/放宽」被违反时会红）：
 - test_legacy_row_identity_columns_stay_null：回填历史行即红。
@@ -503,8 +505,35 @@ class TestManifestIdentity:
 # --------------------------------------------------------------------------
 
 class TestGatesUntouched:
-    def test_gate_still_rejects_plan_rows(self, isolated):
-        """闸门语义不变：任一侧带 plan_id 即拒绝构造事实包。"""
+    """190B 起闸门语义：**同 plan 双快照放行**，其余（跨 plan / 混搭 /
+    计量版本不一致 / 空串身份）仍拒。
+
+    190A 交付时本类是「闸门零改动」的钉子；190B 放开了同 plan，故改为双向
+    钉子：放行的那条必须真放行（否则功能不可达），拒绝的那几条必须真拒绝
+    （否则放宽过头）。两个入口都要覆盖——只改一处即红。
+    """
+
+    def test_same_plan_rows_are_accepted_when_metric_version_matches(self,
+                                                                     isolated):
+        """同 plan + 同计量版本 → 放行构造，且身份三列真实落进事实包。"""
+        conn = db.connect()
+        try:
+            root = str(isolated["scanroot"])
+            a = _insert_snapshot(conn, root=root, plan_id="plan-1",
+                                 round_id=1, metric_version=2,
+                                 created_at="2026-09-28T08:00:00")
+            b = _insert_snapshot(conn, root=root, plan_id="plan-1",
+                                 round_id=2, metric_version=2,
+                                 created_at="2026-09-28T09:00:00")
+            pkg = ac.build_facts_package(conn, a, b)
+            assert pkg.payload["dataset"]["plan_id"] == "plan-1"
+            assert pkg.payload["dataset"]["metric_version"] == 2
+        finally:
+            conn.close()
+
+    def test_gate_still_rejects_plan_rows_without_metric_version(self,
+                                                                isolated):
+        """同 plan 但**缺计量版本**仍拒：变化量不可比，不静默降级。"""
         conn = db.connect()
         try:
             root = str(isolated["scanroot"])
@@ -519,32 +548,45 @@ class TestGatesUntouched:
             conn.close()
 
     def test_gate_still_rejects_in_build_facts_from_rows(self, isolated):
-        """下沉核心的闸门同样保留。"""
+        """下沉核心的闸门同样保留：跨 plan 在核心入口也必须拒。"""
         root = str(isolated["scanroot"])
         row_a = {"id": 1, "created_at": "x", "root": root, "min_kb": 1024,
                  "exclude_names": "", "dir_count": 1, "total_kb": 1,
-                 "plan_id": "plan-1"}
-        row_b = dict(row_a, id=2)
+                 "plan_id": "plan-1", "metric_version": 1}
+        row_b = dict(row_a, id=2, plan_id="plan-2")
         with pytest.raises(ac.AnalysisContractError) as ei:
             ac.build_facts_from_rows(row_a, row_b, {}, {})
         assert ei.value.reason_code == "plan_identity_unsupported"
 
-    def test_production_insert_path_writes_null_identity(self, isolated):
-        """生产写入路径：闸门未放开时，落库三列恒为 NULL。
+    def test_same_plan_rows_are_accepted_in_build_facts_from_rows(self,
+                                                                  isolated):
+        """下沉核心**同步放开**同 plan：只改 conn 入口会让功能不可达。"""
+        root = str(isolated["scanroot"])
+        row_a = {"id": 1, "created_at": "x", "root": root, "min_kb": 1024,
+                 "exclude_names": "", "dir_count": 1, "total_kb": 1,
+                 "plan_id": "plan-1", "round_id": 1, "metric_version": 1}
+        row_b = dict(row_a, id=2)
+        pkg = ac.build_facts_from_rows(row_a, row_b, {}, {})
+        assert pkg.payload["dataset"]["plan_id"] == "plan-1"
 
-        这钉住「证据能力加法、不放开 plan 解读」的交付边界——INSERT 已
-        按快照行取值，但 plan 行根本走不到落库。
+    def test_production_insert_path_writes_real_identity_for_same_plan(
+            self, isolated):
+        """落库链路：同 plan 解读成功后三列必须落**真实值**（非 NULL）。
+
+        190A 的 INSERT 已按快照行取值，本用例钉住「190B 放开后这三列不再
+        恒为 NULL」——取 a 快照行的 plan_id/round_id/metric_version 逐字写入。
         """
         import json as _json
         conn = db.connect()
         try:
             root = str(isolated["scanroot"])
-            a = _insert_snapshot(conn, root=root, plan_id=None,
+            a = _insert_snapshot(conn, root=root, plan_id="plan-1",
+                                 round_id=1, metric_version=2,
                                  created_at="2026-09-28T08:00:00")
-            b = _insert_snapshot(conn, root=root, plan_id=None,
+            b = _insert_snapshot(conn, root=root, plan_id="plan-1",
+                                 round_id=2, metric_version=2,
                                  created_at="2026-09-28T09:00:00")
             bundle = ac.build_facts_package(conn, a, b)
-            # 证据行对 analysis_runs 有 FK（NO ACTION），先落生命周期行。
             conn.execute(
                 "INSERT INTO analysis_runs(job_id, a_snapshot_id, b_snapshot_id,"
                 " request_digest, facts_digest, prompt_version, idempotency_key,"
@@ -552,6 +594,9 @@ class TestGatesUntouched:
                 " consent_revision, status, owner_id, created_at)"
                 " VALUES ('job-p', ?, ?, 'rd', 'fd', 'pv', 'idem-p', 'rt', 'exe',"
                 " 1, 1, 'succeeded', 'owner', '2026-09-28T09:00:00')", (a, b))
+            row_row = conn.execute(
+                "SELECT plan_id, round_id, metric_version FROM snapshots"
+                " WHERE id=?", (a,)).fetchone()
             cur = conn.execute(
                 "INSERT INTO agent_analyses(job_id, a_snapshot_id, b_snapshot_id,"
                 " a_created_at, b_created_at, dataset_root, dataset_min_kb,"
@@ -560,15 +605,18 @@ class TestGatesUntouched:
                 " runtime_version, model, result_json, facts_json,"
                 " manifest_json, created_at, plan_id, round_id, metric_version)"
                 " VALUES ('job-p', ?, ?, ?, ?, ?, 1024, '', 'rd', 'fd', 'pv', 1,"
-                " 'rt', '1.0', NULL, '{}', '{}', ?, ?, NULL, NULL, NULL)",
+                " 'rt', '1.0', NULL, '{}', '{}', ?, ?, ?, ?, ?)",
                 (a, b, "2026-09-28T08:00:00", "2026-09-28T09:00:00",
                  root,
                  _json.dumps(bundle.manifest(), ensure_ascii=False),
-                 "2026-09-28T09:00:00"))
+                 "2026-09-28T09:00:00",
+                 row_row["plan_id"], row_row["round_id"],
+                 row_row["metric_version"]))
             row = conn.execute("SELECT plan_id, round_id, metric_version"
                                " FROM agent_analyses WHERE id=?",
                                (cur.lastrowid,)).fetchone()
             conn.commit()
         finally:
             conn.close()
-        assert tuple(row) == (None, None, None)
+        # 三列落真实值（非 NULL），读回与 a 快照行逐字一致。
+        assert tuple(row) == ("plan-1", 1, 2)

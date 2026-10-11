@@ -16,7 +16,13 @@ function rangeReason() {
   if (!sa || !sb) return '该任务的原区间快照已不可用；仍可读取保存的原文与证据，请改选有效区间后生成新预览。';
   if (a === b || sa.created_at >= sb.created_at) return '请选择时间更早的基线与更晚的对比快照。';
   if (datasetKey(sa) !== datasetKey(sb)) return '所选快照属于不同数据集，不能生成变化解读。';
-  if (sa.plan_id || sb.plan_id) return '新范围身份暂不支持 AI 变化解读；不会降级为旧口径或发送数据。';
+  // plan 档闸门：datasetKey 对 plan 档按 plan_id 分档，故两侧 plan_id 非空
+  // 且相等即同一计划双快照 → 放行构造预览。跨计划或 plan↔legacy 混搭继续拒绝，
+  // 不降级为旧口径、不发送数据。（计量版本一致性由后端合同闸门兜底拒绝。）
+  if (sa.plan_id || sb.plan_id) {
+    if (sa.plan_id && sa.plan_id === sb.plan_id) return '';
+    return '所选快照属于不同计划或身份，不能生成变化解读；不会降级为旧口径或发送数据。';
+  }
   return '';
 }
 const panel = createAnalysisPanel({

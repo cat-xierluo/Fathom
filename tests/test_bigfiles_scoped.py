@@ -150,6 +150,32 @@ def _explicit_popen_factory(real_argv0: str):
     return factory
 
 
+def _measure_spawn_to_first_write(script: Path) -> float:
+    """ISS-196 校准探测：同工厂真实子进程 spawn→首写的时延（秒）。
+
+    用 perl 直起（$|=1 首条立即输出），read(1) 阻塞到首字节即返回；
+    kill 收尾不留进程。探测结果只用于放大本测试的默认预算，不进入
+    生产代码路径。
+    """
+    import select as _select
+    import subprocess
+    proc = subprocess.Popen(["/usr/bin/perl", str(script)],
+                            stdout=subprocess.PIPE)
+    try:
+        t0 = time.monotonic()
+        while True:
+            ready, _, _ = _select.select([proc.stdout], [], [], 10.0)
+            if ready:
+                proc.stdout.read(1)
+                return time.monotonic() - t0
+            # 首写 10s 未到（perl 异常/系统级冻结）：取保守上限作预算基数，
+            # 不无限阻塞测试。
+            return 10.0
+    finally:
+        proc.kill()
+        proc.wait()
+
+
 def _slow_find_script(tmp_path: Path, name: str, *, rounds: int = 0,
                       interval: float = 0.02) -> Path:
     """慢速假 find：周期性输出带 NUL 的路径；rounds=0 表示无限输出。
@@ -473,10 +499,20 @@ class TestModeKeySemantics:
 
 class TestLargestBudgetAndCancel:
     def test_timeout_returns_partial_disclosure(self, tmp_path):
-        """时间预算到点：回收进程、返回已检查部分并披露不完整。"""
+        """时间预算到点：回收进程、返回已检查部分并披露不完整。
+
+        ISS-196：固定 0.5s 预算隐含「spawn+perl 冷启动+首写 ≪ 0.5s」的
+        机器前提（x86 高负载尾部实测可达 ~0.43s，注入 ≥450ms 时 100%
+        复现 files=[]——那是 TRUNCATED 的合法形态，断言过强而非产品丢
+        部分结果）。改为校准式预算：先对同一脚本真实探测 spawn→首写
+        时延，预算 = max(0.5, 探测×3)，把前提变成本机构造性事实；
+        断言集合零改动（归因证据见 ISS-196 卡）。
+        """
         script = _slow_find_script(tmp_path, "slow_find.sh", interval=0.02)
+        calib = _measure_spawn_to_first_write(script)
         m = bigfiles.BigfilesManager(find_path=str(script),
-                                     default_timeout_s=0.5, cache_ttl_s=0.0,
+                                     default_timeout_s=max(0.5, calib * 3),
+                                     cache_ttl_s=0.0,
                                      popen_factory=_explicit_popen_factory("/usr/bin/perl"),
                                      stat_fn=lambda p: _FakeStat(3 * 1024 * 1024))
         f = m.submit(tmp_path / "r", days=90, min_mb=1, topn=50, mode="largest")

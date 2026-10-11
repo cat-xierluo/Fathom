@@ -130,13 +130,26 @@ function _renderCoverageClasses(coverage) {
   return `<ul class="cov-classes" data-test="coverage-classes">${items.join("")}</ul>`;
 }
 
+/* /api/snapshots 的单飞请求（ISS-194）：本模块多处消费同一端点（质量行、
+ * 扫描说明、主结论分流、容量空态判别），在途请求复用同一个 Promise，
+ * **不为容量空态再发一次冗余请求**。失败即作废并回落为 null，让重试按钮与
+ * 下次页面加载能重新发起；缺失不是 0，不得把失败缓存成「无快照」。 */
+let _snapshotsInFlight = null;
+function _fetchSnapshotList() {
+  if (_snapshotsInFlight) return _snapshotsInFlight;
+  const p = fetchJSON("/api/snapshots");
+  _snapshotsInFlight = p;
+  p.catch(() => { if (_snapshotsInFlight === p) _snapshotsInFlight = null; });
+  return p;
+}
+
 async function loadQualityLine() {
   const request = beginRequest("overviewQuality");
   const el = document.getElementById("overview-quality");
   if (!el) return;
   let snaps;
   try {
-    snaps = await fetchJSON("/api/snapshots");
+    snaps = await _fetchSnapshotList();
   } catch (e) {
     if (!request.current()) return;
     if (e.status === 0) {
@@ -264,14 +277,51 @@ function _renderCoverageNoteBlock(latest, cov) {
   container.innerHTML = markup;
 }
 
+/* ISS-194：卷容量序列为空 ≠ 无快照。
+ *
+ * /api/volume-trend 是 volume_stats 的 INNER JOIN 投影，且窗口与锚点都限定
+ * legacy（``plan_id IS NULL``，api.py:348-355），返回行数为空至少四种成因：
+ * 库里真无快照 / 有快照但该快照没有 volume_stats 行 / 快照全为 plan 新身份、
+ * 采样全被 legacy-only 窗口排除（ISS-155 B1）。同屏「快照 N」来自
+ * /api/status 的 COUNT（不 join 容量表），因此旧文案「尚无快照」会与它
+ * **自相矛盾**——用户以为数据丢了，其实快照都在。
+ *
+ * 判别办法：空序列时参考 /api/snapshots（LEFT JOIN，不丢快照；ISS-176 起下发
+ * plan_id），按快照数分文案。绝不用 live 磁盘用量占位历史点，也绝不补 0——
+ * 没有记录就是「不可知」，不是「0」。 */
+async function _renderVolumeEmptyState(request) {
+  let snapCount = null;
+  try {
+    const snaps = await _fetchSnapshotList();
+    if (!request.current()) return;
+    snapCount = Array.isArray(snaps) ? snaps.length : null;
+  } catch (_) {
+    // 快照列表不可知：既不谎称「尚无快照」，也不谎称「已有 N 个」。
+    if (!request.current()) return;
+  }
+  if (snapCount === 0) {
+    showChartMessage("chart-volume", "尚无快照；完成首次扫描后显示容量趋势。");
+    _renderEmptyVolumeTable("no-snapshot", 0);
+    return;
+  }
+  if (snapCount === null) {
+    showChartMessage("chart-volume",
+      "容量序列为空；无法确认是否已有快照，完成一次新的扫描后这里会显示容量趋势。");
+    _renderEmptyVolumeTable("unknown", null);
+    return;
+  }
+  showChartMessage("chart-volume",
+    `已有 ${snapCount} 个快照，但没有可绘制的卷容量记录；完成一次新的扫描后这里会显示容量趋势。`);
+  _renderEmptyVolumeTable("no-capacity", snapCount);
+}
+
 async function loadVolumeTrend() {
   const request = beginRequest("volumeTrend");
   try {
     const rows = await fetchJSON("/api/volume-trend");
     if (!request.current()) return;
     if (!rows.length) {
-      showChartMessage("chart-volume", "尚无快照；完成首次扫描后显示容量趋势。");
-      _renderEmptyVolumeTable();
+      await _renderVolumeEmptyState(request);
       return;
     }
     const chart = initChart("chart-volume");
@@ -299,10 +349,18 @@ async function loadVolumeTrend() {
   }
 }
 
-function _renderEmptyVolumeTable() {
+/* ISS-194：表格占位与图表空态**同源同措辞**。旧实现图表说「尚无快照」、
+ * 表格说「尚无足够快照绘制走势」，而实际成因可能是「有快照、无容量记录」，
+ * 两处说法不一致正是用户误以为数据丢失的来源之一。 */
+function _renderEmptyVolumeTable(kind, snapCount) {
   const el = document.getElementById("overview-volume-table");
   if (!el) return;
-  el.innerHTML = `<p class="hint">尚无足够快照绘制走势。</p>`;
+  const hint = kind === "no-snapshot"
+    ? "尚无足够快照绘制走势。"
+    : kind === "no-capacity"
+      ? `已有 ${snapCount} 个快照，但缺少卷容量记录，无法绘制走势。`
+      : "暂无法绘制走势；完成一次新的扫描后可显示。";
+  el.innerHTML = `<p class="hint">${escapeHtml(hint)}</p>`;
 }
 
 function _renderVolumeTable(rows) {
@@ -490,7 +548,7 @@ async function loadOverviewChanges() {
   const request = beginRequest("overviewSummary");
   let snaps;
   try {
-    snaps = await fetchJSON("/api/snapshots");
+    snaps = await _fetchSnapshotList();
   } catch (e) {
     if (!request.current()) return;
     _renderConclusionError(e, null);
@@ -521,6 +579,9 @@ async function loadOverviewChanges() {
 export const overviewPage = {
   id: "overview",
   load() {
+    // 每次页面加载重新起一次快照请求（ISS-194）：单飞缓存只在本次加载内
+    // 复用，离开再进入总览必须取新事实，不得拿上一次的快照数冒充当前。
+    _snapshotsInFlight = null;
     loadQualityLine();
     loadOverviewChanges();
     loadVolumeTrend();

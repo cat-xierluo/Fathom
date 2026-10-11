@@ -761,13 +761,41 @@ async function main() {
       `离页后新增 bigfiles 请求 ${bfAfterNav - bfBeforeNav} 次`);
 
     // ---------- J4-a：键盘与焦点返回 ----------
+    const snapsBefore = apiHits.filter((h) => h.includes("/api/snapshots")).length;
     await page.click(".nav-item[data-page='changes']");
+    // ISS-172：导航回 changes 触发 enter 流程（/api/snapshots fetch → restore
+    // 选择 → renderTree 全量重建 tbody）。路由只隐藏 .page，旧树行与旧完成态
+    // 文案都会立即使得朴素等待满足；键盘序列若落在重建窗口内即焦点丢失到
+    // BODY（登记形态①/②同根因不同落点）。三段同步：先等 enter 的真实
+    // snapshots 请求出现（node 侧计数，有上限降级），再等完成态文案，最后
+    // 等文案连续两帧稳定（末次重建已落定）。
+    for (let i = 0; i < 100 &&
+        apiHits.filter((h) => h.includes("/api/snapshots")).length <= snapsBefore; i++) {
+      await page.waitForTimeout(100);
+    }
+    await page.waitForFunction(() =>
+      (document.getElementById("diff-status")?.textContent || "").includes("已对比快照"),
+      null, { timeout: 20000 });
+    let stableText = "";
+    for (let i = 0; i < 20; i++) {
+      const cur = await page.$eval("#diff-status", (el) => el.textContent);
+      if (cur === stableText && cur.includes("已对比快照")) break;
+      stableText = cur;
+      await page.waitForTimeout(150);
+    }
     await page.waitForSelector("[data-test='tree-expand']", { timeout: 20000 });
     const keyboardDetail = await (async () => {
       const kSel = "#changes-body [data-detail]";
       if (!(await page.$(kSel))) return { ok: false, detail: "树内无可聚焦的行内详情按钮" };
       await page.focus(kSel);
-      const focusTag = await page.evaluate(() => document.activeElement.tagName);
+      // ISS-172：focus 是测试驱动动作，落在重建窗口会静默失败（BODY）。
+      // 校验并有限重试；断言语义（Enter 开详情→Esc→焦点回行）不变。
+      let focusTag = await page.evaluate(() => document.activeElement.tagName);
+      for (let r = 0; r < 3 && focusTag === "BODY"; r++) {
+        await page.waitForTimeout(200);
+        await page.focus(kSel);
+        focusTag = await page.evaluate(() => document.activeElement.tagName);
+      }
       await page.keyboard.press("Enter");
       await page.waitForFunction(() => {
         const d = document.getElementById("changes-detail");
@@ -781,6 +809,13 @@ async function main() {
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => document.getElementById("changes-detail").hidden,
         null, { timeout: 8000 });
+      // ISS-172：Esc 关闭后的回焦是异步的，立即读取会在回焦完成前读到
+      // BODY 造成假红；给回焦有界时间（等不到则如实读到 BODY，断言仍红，
+      // 判别力不变——产品真丢焦点时本测试必须继续失败）。
+      await page.waitForFunction(() => {
+        const a = document.activeElement;
+        return a && a !== document.body;
+      }, null, { timeout: 2000 }).catch(() => {});
       const afterEsc = await page.evaluate(() => {
         const a = document.activeElement;
         return a ? `${a.tagName}${a.className ? "." + String(a.className).split(" ")[0] : ""}` : "NONE";

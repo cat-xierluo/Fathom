@@ -952,7 +952,7 @@ class AnalysisManager:
         real_root = root_row["root"] if root_row is not None else ""
         # 身份三列（ISS-190A）：取自 a 快照行（两侧 plan 身份此时必然一致，
         # 否则构造事实包阶段已被闸门拒绝）。按快照行取值而非写死 NULL——
-        # 190B 放开闸门后即插即用；当前闸门下这三列恒为 NULL。
+        # 190B 放开闸门后即插即用：同 plan 双快照已能走到这里，三列落真实值。
         plan_values = (
             (root_row["plan_id"], root_row["round_id"], root_row["metric_version"])
             if root_row is not None else (None, None, None)

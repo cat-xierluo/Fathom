@@ -47,6 +47,7 @@ const ANALYSIS_JOB_REASON = {
   cancelled_before_start: "分析在开始前被取消",
   owner_exit: "服务中断：本次分析未完成，不会自动重试",
   startup_aborted: "分析在启动阶段中断，未产生任何解读",
+  plan_identity_unsupported: "所选区间跨计划、混搭或计量版本不一致，不能解读变化；请改选同一计划内的两个快照",
 };
 
 /* 事实条目 kind 的中文说明（与 facts 包 entry_legend 同口径）。 */

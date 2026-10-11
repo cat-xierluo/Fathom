@@ -708,31 +708,44 @@ class TestAiConsumerIdentityIsolation:
 
     # ---------------------------------------------------------------- 反例 ①
 
-    def test_facts_package_seam_rejects_new_plan_snapshots(self, conn):
-        """接缝级：新身份快照构造事实包 → 明确拒绝，纯读且零写入。"""
+    def test_facts_package_seam_accepts_same_plan_snapshots(self, conn):
+        """接缝级：同一 plan 的双快照构造事实包 → 放行，且身份三列真实。
+
+        ISS-190B 起「同 plan 双快照」是本期支持区间：190A 已让落库证据能逐字
+        证明属于哪个计划，证据侧的身份缺口不再存在（见
+        ``analysis_contract._reject_new_plan_identity``）。
+        """
         a = _insert_snapshot(conn, "2026-09-28T08:00:00", plan_id="plan:A",
                              round_id=1, metric_version=1,
                              entry=("/synthetic/root", 2048))
         b = _insert_snapshot(conn, "2026-09-28T09:00:00", plan_id="plan:A",
                              round_id=1, metric_version=1,
                              entry=("/synthetic/root", 4096))
-        before = conn.total_changes
-        with pytest.raises(ac.AnalysisContractError) as ei:
-            ac.build_facts_package(conn, a, b)
-        assert ei.value.reason_code == "plan_identity_unsupported"
-        msg = str(ei.value)
-        # 错误如实说明「本期不支持」，不谎称快照缺失或口径不一致。
-        assert "AI" in msg and "plan" in msg.lower()
-        assert "不支持" in msg
-        assert conn.total_changes == before  # 纯读拒绝：无任何写入
+        pkg = ac.build_facts_package(conn, a, b)
+        assert pkg.payload["a"]["snapshot_id"] == a
+        assert pkg.payload["b"]["snapshot_id"] == b
+        # 事实包 dataset 块携带**真实**身份三列（非 NULL），不是写死 NULL。
+        assert pkg.payload["dataset"]["plan_id"] == "plan:A"
+        assert pkg.payload["dataset"]["round_id"] == 1
+        assert pkg.payload["dataset"]["metric_version"] == 1
+        # manifest 同样带三字段（预览/派发/落库按它核对范围）。
+        ds = pkg.manifest()["dataset"]
+        assert (ds["plan_id"], ds["round_id"], ds["metric_version"]) == (
+            "plan:A", 1, 1)
 
-    def test_create_preview_rejects_new_plan_and_persists_nothing(
+    def test_create_preview_rejects_cross_plan_and_persists_nothing(
             self, isolated, conn):
-        """端到端：走通 create_preview 的前置门后，新身份被拒且零落库。"""
+        """端到端：走通 create_preview 的前置门后，跨 plan 被拒且零落库。
+
+        190B 放开了**同 plan**，但跨 plan / 混搭仍是明确拒绝（400、不落库、
+        不留可复用预览）——这条负向守卫防的是「放宽过头」。
+        """
         _enable_analysis_runtime(isolated["runtime"])
         a = _insert_snapshot(conn, "2026-09-28T08:00:00", plan_id="plan:A",
+                             round_id=1, metric_version=1,
                              entry=("/synthetic/root", 2048))
-        b = _insert_snapshot(conn, "2026-09-28T09:00:00", plan_id="plan:A",
+        b = _insert_snapshot(conn, "2026-09-28T09:00:00", plan_id="plan:B",
+                             round_id=1, metric_version=1,
                              entry=("/synthetic/root", 4096))
         manager = am.AnalysisManager(run_timeout_s=20.0)
         with pytest.raises(am.AnalysisError) as ei:
@@ -740,7 +753,6 @@ class TestAiConsumerIdentityIsolation:
         # 400 明确拒绝（不是 404 快照缺失、不是 403 授权问题）。
         assert ei.value.status_code == 400
         assert ei.value.reason_code == "plan_identity_unsupported"
-        assert "不支持" in str(ei.value)
         # 不落库：既无证据行，也无生命周期行。
         assert conn.execute("SELECT COUNT(*) c FROM agent_analyses"
                             ).fetchone()["c"] == 0
@@ -748,6 +760,24 @@ class TestAiConsumerIdentityIsolation:
                             ).fetchone()["c"] == 0
         # 失败不留可复用预览。
         assert manager._previews == {}
+
+    def test_create_preview_accepts_same_plan(self, isolated, conn):
+        """端到端：同 plan 双快照的预览构造不再 400（190B 放行的那条路）。"""
+        _enable_analysis_runtime(isolated["runtime"])
+        a = _insert_snapshot(conn, "2026-09-28T08:00:00", plan_id="plan:A",
+                             round_id=1, metric_version=1,
+                             entry=("/synthetic/root", 2048))
+        b = _insert_snapshot(conn, "2026-09-28T09:00:00", plan_id="plan:A",
+                             round_id=1, metric_version=1,
+                             entry=("/synthetic/root", 4096))
+        preview = am.AnalysisManager(run_timeout_s=20.0).create_preview(a, b)
+        assert preview is not None
+        ds = preview.facts.manifest()["dataset"]
+        assert (ds["plan_id"], ds["round_id"], ds["metric_version"]) == (
+            "plan:A", 1, 1)
+        # 预览构造仍不落库证据（证据在运行成功时才写）。
+        assert conn.execute("SELECT COUNT(*) c FROM agent_analyses"
+                            ).fetchone()["c"] == 0
 
     @pytest.mark.parametrize("plan_side", ["a", "b"])
     def test_either_side_with_new_plan_is_rejected(self, conn, plan_side):
@@ -871,16 +901,28 @@ class TestFactsRowCoreIdentityGate:
 
     # ------------------------------------------------------------ 四路拒绝
 
-    def test_from_rows_rejects_same_plan_on_both_sides(self, conn):
-        """① 同 plan 双侧：直调核心曾**照常出包**，核心自身必须拒绝。"""
+    def test_from_rows_accepts_same_plan_on_both_sides(self, conn):
+        """① 同 plan 双侧：190B 起直调核心**放行**构造，且身份三列真实落进事实包。
+
+        这是本期放行的核心入口——与 conn 入口同一函数，任一侧只改一个就红
+        （见 ``test_package_entry_and_row_core_agree_on_same_plan``）。
+        """
         _a, row_a, old_map, _b, row_b, new_map = self._pair(
             conn, "plan:A", "plan:A")
+        pkg = ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
+        assert pkg.payload["dataset"]["plan_id"] == "plan:A"
+        assert pkg.payload["dataset"]["metric_version"] == 1
+        assert pkg.payload["entries"]
+
+    def test_from_rows_rejects_cross_plan(self, conn):
+        """①' 跨 plan 双侧：直调核心必须明确拒绝（不放宽的那一半）。"""
+        _a, row_a, old_map, _b, row_b, new_map = self._pair(
+            conn, "plan:A", "plan:B")
         with pytest.raises(ac.AnalysisContractError) as ei:
             ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
         assert ei.value.reason_code == "plan_identity_unsupported"
-        msg = str(ei.value)
-        # 错误如实说明「本期不支持」新身份，不谎称口径不一致或快照缺失。
-        assert "AI" in msg and "plan" in msg.lower() and "不支持" in msg
+        # 错误如实说明跨计划，不谎称口径不一致或快照缺失。
+        assert "plan" in str(ei.value).lower()
 
     @pytest.mark.parametrize("plan_side", ["a", "b"])
     def test_from_rows_rejects_one_sided_plan(self, conn, plan_side):
@@ -930,17 +972,106 @@ class TestFactsRowCoreIdentityGate:
 
     # ------------------------------------------------------------ 两入口一致
 
-    def test_package_entry_and_row_core_agree_on_new_plan(self, conn):
-        """独立对照：同一对 plan 快照，conn 入口与行构造核心口径必须一致。
+    def test_package_entry_and_row_core_agree_on_same_plan(self, conn):
+        """独立对照：同一对同 plan 快照，两个入口都必须**放行**。
 
-        闸门挂在任一入口单侧都会留下旁路——本用例把两个入口钉在同一
-        reason_code 上，任一侧回退即红。
+        闸门挂在任一入口单侧都会留下旁路或误拒——只改 conn 入口则核心仍拒
+        同 plan（功能不可达）；只改核心则 conn 入口仍拒（预览 400）。
+        本用例把两个入口钉在同一行为上，任一侧回退即红。
         """
         a, row_a, old_map, b, row_b, new_map = self._pair(
             conn, "plan:A", "plan:A")
+        pkg_via_conn = ac.build_facts_package(conn, a, b)
+        pkg_via_rows = ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
+        assert pkg_via_conn.payload["dataset"]["plan_id"] == "plan:A"
+        assert pkg_via_rows.payload["dataset"]["plan_id"] == "plan:A"
+        # 两入口产出的事实包逐字一致（同一核心）。
+        assert pkg_via_conn.facts_digest == pkg_via_rows.facts_digest
+
+    def test_package_entry_and_row_core_agree_on_cross_plan(self, conn):
+        """独立对照：同一对跨 plan 快照，两个入口都必须**拒绝**且同码。
+
+        防「放宽过头」：任一入口被误改成放行，本用例即红。
+        """
+        a, row_a, old_map, b, row_b, new_map = self._pair(
+            conn, "plan:A", "plan:B")
         with pytest.raises(ac.AnalysisContractError) as via_conn:
             ac.build_facts_package(conn, a, b)
         with pytest.raises(ac.AnalysisContractError) as via_rows:
             ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
         assert via_conn.value.reason_code == "plan_identity_unsupported"
         assert via_rows.value.reason_code == via_conn.value.reason_code
+
+    def test_package_entry_and_row_core_agree_on_mixed_plan(self, conn):
+        """独立对照：plan↔legacy 混搭，两个入口都拒绝且同码（不放宽）。"""
+        a, row_a, old_map, b, row_b, new_map = self._pair(conn, "plan:A", None)
+        with pytest.raises(ac.AnalysisContractError) as via_conn:
+            ac.build_facts_package(conn, a, b)
+        with pytest.raises(ac.AnalysisContractError) as via_rows:
+            ac.build_facts_from_rows(row_a, row_b, old_map, new_map)
+        assert via_conn.value.reason_code == "plan_identity_unsupported"
+        assert via_rows.value.reason_code == via_conn.value.reason_code
+
+
+class TestSamePlanFullLink:
+    """ISS-190B 完整链路：同 plan 双快照 构造→预览→落库→读回→撤销。
+
+    单点用例（闸门/落库/读回）不足以证明链路通——任一环单独绿、中间接错
+    仍会坏。本类按真实顺序走完一遍，每一步都钉住「身份是 plan 证据而非
+    legacy」这条语义。
+    """
+
+    def test_same_plan_construct_preview_persist_read_revoke(self, isolated,
+                                                             conn):
+        import threading
+
+        _enable_analysis_runtime(isolated["runtime"])
+        a = _insert_snapshot(conn, "2026-09-28T08:00:00", plan_id="plan:A",
+                             round_id=1, metric_version=1,
+                             entry=("/synthetic/root", 2048))
+        b = _insert_snapshot(conn, "2026-09-28T09:00:00", plan_id="plan:A",
+                             round_id=2, metric_version=1,
+                             entry=("/synthetic/root", 4096))
+        manager = am.AnalysisManager(run_timeout_s=20.0)
+
+        # 1) 构造 + 预览：不再 400，manifest 带真实身份三列。
+        preview = manager.create_preview(a, b)
+        ds = preview.facts.manifest()["dataset"]
+        assert (ds["plan_id"], ds["round_id"], ds["metric_version"]) == (
+            "plan:A", 1, 1)
+
+        # 2) 落库：走生产 INSERT 路径（_insert_analysis）。
+        conn.execute(
+            "INSERT INTO analysis_runs(job_id, a_snapshot_id, b_snapshot_id,"
+            " request_digest, facts_digest, prompt_version, idempotency_key,"
+            " runtime_id, runtime_executable, settings_revision,"
+            " consent_revision, status, owner_id, created_at)"
+            " VALUES ('job-link', ?, ?, 'rd', 'fd', 'pv', 'idem-link', 'rt',"
+            " 'exe', 1, 1, 'running', 'owner', '2026-09-28T09:00:00')", (a, b))
+        rec = am.JobRecord(job_id="job-link", preview=preview,
+                           idempotency_key="idem-link",
+                           cancel_event=threading.Event())
+        evid = manager._insert_analysis(conn, rec, {"schema_version": 1,
+                                                    "summary": "s",
+                                                    "findings": [],
+                                                    "limitations": []})
+        conn.commit()
+
+        # 3) 读回：三列是真实值（非 NULL），且读回视图按 plan 档判定。
+        row = conn.execute(
+            "SELECT plan_id, round_id, metric_version FROM agent_analyses"
+            " WHERE id=?", (evid,)).fetchone()
+        assert tuple(row) == ("plan:A", 1, 1)
+
+        # 4) 读回视图：未过期（b 仍是该 plan 的后继）。
+        items = manager.list_analyses(a, b)
+        assert items and items[0]["expired"] is False
+
+        # 5) 撤销：生命周期行留 revoked_at 审计，证据行消失。
+        manager.revoke_analysis(evid)
+        after = conn.execute("SELECT COUNT(*) c FROM agent_analyses"
+                             " WHERE id=?", (evid,)).fetchone()["c"]
+        assert after == 0
+        run = conn.execute("SELECT revoked_at FROM analysis_runs"
+                           " WHERE job_id='job-link'").fetchone()
+        assert run["revoked_at"] is not None

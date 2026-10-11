@@ -1363,10 +1363,19 @@ mod tests {
         }
     }
 
+    // ISS-195：cargo test 默认多线程并行，旧实现用 PID + SystemTime 纳秒命名，
+    // 同一纳秒可被两个测试线程同时读到并拿到同一目录，交叠写各自的
+    // helper-instance.json 产生畸形 JSON（ISS-192 实测 8 跑 1 红）。
+    // 唯一性改为由同进程内单调计数器保证：fetch_add 对每个调用方返回不同值，
+    // 论证不依赖时钟精度。纳秒只留作人读前缀，回绕前的计数器亦不重复。
+    static TEMPDIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     fn tempdir() -> PathBuf {
+        let seq = TEMPDIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "fathom-helper-test-{}-{}",
+            "fathom-helper-test-{}-{}-{}",
             std::process::id(),
+            seq,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

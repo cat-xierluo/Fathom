@@ -2665,27 +2665,72 @@ function _scopeCurrentRow() {
   if (!view) return `<p class="hint" data-test="scope-current">当前扫描对象不可用；请重新读取，不能回退用户目录。</p>`;
   const override = view.scan_override;
   const current = view.effective_selection;
-  const saved = view.selection;
   const roots = override ? [override.root] : (current?.roots || []);
   return `<p class="hint" data-test="scope-current" data-enabled="${view.enabled ? "1" : "0"}"
-      data-revision="${escapeHtml(String(saved?.revision ?? 0))}" data-source="${escapeHtml(view.source || "default")}">
+      data-revision="${escapeHtml(String(view.selection?.revision ?? 0))}" data-source="${escapeHtml(view.source || "default")}">
       当前扫描对象：<strong>${view.source === "startup_discovery" ? "内置启动盘整体" : override ? "本进程隔离目录" : "开发运行对象"}</strong>
-      · 根：${roots.map((r) => `<code>${escapeHtml(r)}</code>`).join("、") || "当前不可用"}。</p>
-    ${override ? `<p class="hint" data-test="scope-scan-override" data-source="${escapeHtml(override.source)}">
-      本进程由${override.source === "cli" ? "启动参数 --scan-root" : "环境变量 FATHOM_SCAN_ROOT"}隔离，实际根 <code>${escapeHtml(override.root)}</code>，不使用已保存范围。</p>` : ""}
-    ${saved && !view.saved_active ? `<p class="hint" data-test="scope-saved-compatibility">
-      旧保存范围仅保留兼容资料（修订 ${escapeHtml(String(saved.revision))}），不作为当前扫描决定；旧历史保持独立基线。</p>` : ""}`;
+      · 根：${roots.map((r) => `<code>${escapeHtml(r)}</code>`).join("、") || "当前不可用"}。</p>`;
 }
 
-function _scopePlanBlock() {
-  const plan = scopeState.preview;
+/* ISS-193：普通层按「当前对象 → 卷状态摘要 → 共享空间口径 → 本进程隔离 →
+ * 旧保存范围兼容 → 采集动作」排列；容器/卷/计划等标识只进技术折叠区。 */
+
+function _scopeOverrideRow() {
+  const override = scopeState.view?.scan_override;
+  if (!override) return "";
+  return `<p class="hint" data-test="scope-scan-override" data-source="${escapeHtml(override.source)}">
+      本进程由${override.source === "cli" ? "启动参数 --scan-root" : "环境变量 FATHOM_SCAN_ROOT"}隔离，实际根 <code>${escapeHtml(override.root)}</code>，不使用已保存范围。</p>`;
+}
+
+/* 旧 custom/legacy 兼容结论句逐字保留：防误解信息不是技术噪音。 */
+function _scopeCompatRow() {
+  const view = scopeState.view;
+  const saved = view?.selection;
+  if (!saved || view.saved_active) return "";
+  return `<p class="hint" data-test="scope-saved-compatibility">
+      旧保存范围仅保留兼容资料（修订 ${escapeHtml(String(saved.revision))}），不作为当前扫描决定；旧历史保持独立基线。</p>`;
+}
+
+/* 卷状态摘要：一句计数 + 不可访问卷逐个点名状态短语（不逐根展开技术字段）。
+ * 只取显示名与挂载点，不回退设备/卷标识——标识属技术层。 */
+function _scopeVolumeSummary(discovery) {
+  const volumes = discovery?.discovery?.startup_volumes || [];
+  if (!volumes.length) return "";
+  const accessible = volumes.filter((v) => v.status === "accessible");
+  // 不可访问 = 一切非可访问（含状态未知）；不可静默漏计，保证 M + 点名数 = N。
+  const blocked = volumes.filter((v) => v.status !== "accessible");
+  const named = blocked.map((v) => {
+    const name = escapeHtml(v.name || v.mount_point || "未命名卷");
+    const status = escapeHtml(SCOPE_STATUS_LABELS[v.status] || v.status || "状态未知");
+    return `<b>${name}</b>「${status}」`;
+  });
+  return `<p class="hint" data-test="scope-volume-summary" data-total="${volumes.length}" data-accessible="${accessible.length}">
+      启动容器内 ${volumes.length} 个卷，其中 ${accessible.length} 个可访问。${named.length ? `不可访问的卷：${named.join("、")}。` : "全部可访问。"}</p>`;
+}
+
+/* 共享剩余空间口径：容器级共享，不能按卷逐个相加（解读前提，不是设备标识）。 */
+function _scopeSharedFreeNote(discovery) {
+  if (!discovery?.discovery?.startup_container) return "";
+  return `<p class="hint" data-test="scope-shared-free">
+      剩余空间按启动容器口径共享，不按卷逐个相加。</p>`;
+}
+
+/* 计划读取失败/尚无计划是可见状态，留在普通层：失败不得藏进默认收起的折叠区。 */
+function _scopePlanStatusBlock() {
   if (scopeState.previewError) {
     return `<div class="hint cfg-error" data-test="scope-preview-error">
       当前计划读取失败：${escapeHtml(scopeState.previewError)}（当前生效范围未改动）</div>`;
   }
-  if (!plan) {
+  if (!scopeState.preview) {
     return `<p class="hint" data-test="scope-preview-empty">当前使用显式隔离目录或尚无可用计划。</p>`;
   }
+  return "";
+}
+
+/* 计划身份表与读取限制属技术诊断，进折叠区（普通层不出 plan_id/scope_id 等字面量）。 */
+function _scopePlanTechBlock() {
+  const plan = scopeState.preview;
+  if (!plan || scopeState.previewError) return "";
   const rows = (plan.plans || []).map((p) => `<tr>
       <td><code>${escapeHtml(p.root)}</code></td>
       <td><code>${escapeHtml(p.display_name || "")}</code></td>
@@ -2712,6 +2757,24 @@ function _scopePlanBlock() {
   </div>`;
 }
 
+/* 发现清单全文（容器引用/挂载点/FileVault/标识/其它设备）进折叠区。 */
+function _scopeDiscoveryTechBlock(discovery) {
+  if (!discovery?.ok) return "";
+  const d = discovery.discovery || {};
+  const container = d.startup_container;
+  const volumes = d.startup_volumes || [];
+  const others = d.other_devices || [];
+  return `<div data-test="scope-discovery">
+    <p class="hint" data-test="scope-tech-note">下列卷/设备明细为只读发现结果；日常使用看上方摘要即可。</p>
+    ${container ? `<p class="hint" data-test="scope-container">
+      启动容器：<code>${escapeHtml(container.container_reference || container.container_id || "")}</code>
+      · 共享剩余空间（不按卷相加）</p>` : ""}
+    <ul class="scope-volume-list">${volumes.map(_scopeVolumeRow).join("")}</ul>
+    ${others.length ? `<p class="hint">其它设备（非启动容器，不自动纳入）：</p>
+      <ul class="scope-volume-list">${others.map(_scopeDeviceRow).join("")}</ul>` : ""}
+  </div>`;
+}
+
 function _scopeFirstRunBlock() {
   if (!scopeState.view) return "";
   return `<div class="panel scope-firstrun" data-test="scope-firstrun">
@@ -2728,45 +2791,45 @@ function _scopeFirstRunBlock() {
 function renderScopePanel() {
   const panel = document.getElementById(SCOPE_PANEL_ID);
   if (!panel) return;
-  const view = scopeState.view;
   const discovery = scopeState.discovery;
   const fb = scopeState.feedback;
 
-  let discoveryBlock;
+  let summaryBlock;
   if (scopeState.discoveryError) {
-    discoveryBlock = `<p class="hint cfg-error" data-test="scope-discovery-error">
+    summaryBlock = `<p class="hint cfg-error" data-test="scope-discovery-error">
       发现失败：${escapeHtml(scopeState.discoveryError)}。
       不代表「没有可监控的卷」，也无法据此断言可读目录为 0。</p>`;
   } else if (discovery?.ok) {
-    const d = discovery.discovery || {};
-    const container = d.startup_container;
-    const volumes = d.startup_volumes || [];
-    const others = d.other_devices || [];
-    discoveryBlock = `<div data-test="scope-discovery">
-      <p class="hint" data-test="scope-discovery-note">
-        以下是<b>只读发现结果</b>，<b>不代表已完成采集</b>；当前扫描对象见下方。</p>
-      ${container ? `<p class="hint" data-test="scope-container">
-        启动容器：<code>${escapeHtml(container.container_reference || container.container_id || "")}</code>
-        · 共享剩余空间（不按卷相加）</p>` : ""}
-      <ul class="scope-volume-list">${volumes.map(_scopeVolumeRow).join("")}</ul>
-      ${others.length ? `<p class="hint">其它设备（非启动容器，不自动纳入）：</p>
-        <ul class="scope-volume-list">${others.map(_scopeDeviceRow).join("")}</ul>` : ""}
-    </div>`;
+    summaryBlock = `<p class="hint" data-test="scope-discovery-note">
+      以下卷状态来自<b>只读发现</b>，<b>不代表已完成采集</b>；当前扫描对象见上方。</p>
+      ${_scopeVolumeSummary(discovery)}
+      ${_scopeSharedFreeNote(discovery)}`;
   } else {
-    discoveryBlock = `<p class="hint" data-test="scope-discovery-pending">容器与卷信息读取中…</p>`;
+    summaryBlock = `<p class="hint" data-test="scope-discovery-pending">容器与卷信息读取中…</p>`;
   }
 
+  const techBody = [
+    discovery?.ok ? _scopeDiscoveryTechBlock(discovery) : "",
+    _scopePlanTechBlock(),
+  ].filter(Boolean).join("");
+
   panel.innerHTML = `
-    ${discoveryBlock}
+    ${_scopeCurrentRow()}
     <div class="cfg-actions">
       <button type="button" class="btn" id="btn-scope-reload" data-test="scope-reload-btn">
         ${icon("activity")}重新读取</button>
     </div>
-    ${_scopeCurrentRow()}
-    ${_scopePlanBlock()}
+    ${summaryBlock}
+    ${_scopeOverrideRow()}
+    ${_scopeCompatRow()}
+    ${_scopePlanStatusBlock()}
     ${fb ? `<p class="hint cfg-${fb.kind}" data-test="scope-feedback" data-kind="${escapeHtml(fb.kind)}">
       ${escapeHtml(fb.text)}</p>` : ""}
     ${_scopeFirstRunBlock()}
+    <details class="adv-toggle" data-test="scope-tech">
+      <summary>${icon("settings", 12)} 技术诊断信息${icon("chevron", 14, "adv-chevron")}</summary>
+      <div class="adv-body" data-test="scope-tech-body">${techBody}</div>
+    </details>
   `;
 
   panel.querySelector("#btn-scope-reload")?.addEventListener("click", () => loadScopeSettings());

@@ -1179,6 +1179,11 @@ def run_verification(args: argparse.Namespace) -> int:
                 "product-evidence-collected", "pass",
                 f"暂停期内采集截图 {len(stage['shots'])} 张、"
                 f"API 观察 {len(stage['api_observations'])} 次 → product-stage.json")
+            # 收口文件仅结束采证；不证明真实 CLI 发送、终态或撤销。
+            recorder.record(
+                "product-send-revoke-not-verified", "blocked",
+                "已结束采证，但尚无经独立复核的真实 CLI 完整发送与撤销证据；"
+                "resume 文件与退出码均不能替代产品验收")
         else:
             recorder.record(
                 "product-stage-not-requested", "blocked",
@@ -1231,6 +1236,13 @@ def run_verification(args: argparse.Namespace) -> int:
                 if temp_root.exists() else [])
         if driver is not None:
             driver.close()
+        cleanup = summary["cleanup"]
+        if cleanup["still_alive"] or cleanup["errors"] or summary["port_after"] == 200:
+            recorder.record(
+                "cleanup-incomplete", "fail",
+                f"回收未完成：still_alive={cleanup['still_alive']} "
+                f"errors={cleanup['errors']} port_after={summary['port_after']}")
+        summary["not_verified"] = list(recorder.blocked)
         summary["verdict"] = recorder.verdict()
         summary["elapsed_s"] = round(time.time() - started, 1)
         (output / "result.json").write_text(

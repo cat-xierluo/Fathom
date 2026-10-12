@@ -140,6 +140,15 @@ def test_health_endpoint_returns_required_identity_fields(tmp_path):
         assert body["port"] == port
         assert body["runtime_mode"] == "development"
         assert body["pid"] == proc.pid
+        from fathom.frontend_resources import FrontendResources
+        assert body["frontend_revision"] == FrontendResources(REPO_ROOT / "frontend").revision
+        with urlopen(f"http://127.0.0.1:{port}/api/frontend-manifest") as response:
+            manifest = json.loads(response.read())
+            assert response.headers["Cache-Control"] == "no-store"
+        assert manifest["revision"] == body["frontend_revision"]
+        with urlopen(f"http://127.0.0.1:{port}{manifest['entry_path']}") as response:
+            assert response.headers["Cache-Control"] == "no-store"
+            assert response.read() == (REPO_ROOT / "frontend/index.html").read_bytes()
         body_text = json.dumps(body, ensure_ascii=False)
         # 不含令牌/凭据/真实路径
         assert "token" not in body

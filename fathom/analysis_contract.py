@@ -49,7 +49,10 @@ from . import reports# ---------------------------------------------------------
 # --------------------------------------------------------------------------
 
 #: 事实包 schema 版本；结构变化时递增。
-FACTS_SCHEMA_VERSION = 1
+#: v2（ISS-190A）：dataset 块新增三个可空身份列（plan_id/round_id/
+#: metric_version），让已保存证据能证明自己属于哪个计划。legacy 行三字段
+#: 为 null（不补造身份）。解码方按值判定，null 与旧版等价。
+FACTS_SCHEMA_VERSION = 2
 
 #: 结构化解读结果的 schema 版本；与 prompt 中声明一致。
 RESULT_SCHEMA_VERSION = 1
@@ -184,6 +187,12 @@ class FactsPackage:
                 "root_display": p["dataset"]["root_display"],
                 "min_kb": p["dataset"]["min_kb"],
                 "exclude_names": p["dataset"]["exclude_names"],
+                # 身份三字段（ISS-190A）：legacy 证据为 None（不补造身份），
+                # plan 档证据带真实 plan_id/round_id/metric_version。
+                # 只认 plan_id 这一个维度，不做容错归一。
+                "plan_id": p["dataset"].get("plan_id"),
+                "round_id": p["dataset"].get("round_id"),
+                "metric_version": p["dataset"].get("metric_version"),
             },
             "snapshots": {
                 "a": {"snapshot_id": self.snapshot_ids[0],
@@ -212,6 +221,99 @@ def _fetch_snapshot(conn: sqlite3.Connection, sid: int) -> sqlite3.Row:
     if row is None:
         raise AnalysisContractError("snapshot_not_found", f"快照 {sid} 不存在")
     return row
+
+
+def _reject_new_plan_identity(row_a: sqlite3.Row, row_b: sqlite3.Row,
+                              sid_a: int, sid_b: int) -> None:
+    """身份闸门：**同一计划内的双快照区间**放行，其余一律拒绝构造事实包。
+
+    ISS-153 审计返修 2 定的原合同是「带 plan_id 的快照一律拒绝构造事实包」：
+    当时 ``agent_analyses`` 表没有身份列，落库证据只有 (root, min_kb,
+    exclude_names) 三元组，无法证明证据属于哪个计划。ISS-190A 已把
+    plan_id/round_id/metric_version 三列接入 ``agent_analyses``（写侧与读侧
+    分档），证据侧的身份缺口不再存在，因此 ISS-190B 把支持范围从「全拒」放宽
+    到**同计划双快照**——该区间本就在一个计划身份内，落库证据能逐字证明它
+    属于哪个计划，读回时也不会与其他计划混淆。
+
+    放行条件（三者同时成立）：两侧 plan_id 均非 NULL 且**逐字相等**；两侧
+    metric_version 均非 NULL 且逐字相等；否则一律拒绝。
+
+    仍然拒绝（**跨 plan 与混搭不放宽**，错误码与语义保持不变）：
+
+    - 跨 plan：两侧 plan_id 不相等——两个计划的区间不可直接解读变化；
+    - 混搭：一侧 plan 档、一侧 legacy（NULL）——无法证明同属一个身份口径；
+    - 计量版本不一致（含任一侧为 NULL）：变化量不可比。
+
+    判定只认「plan_id 是否为 NULL」与「两侧身份/计量版本是否逐字相等」，
+    不做容错归一、不做前缀或大小写折叠。空串 plan_id 按「声称新身份但身份
+    为空」拒绝，不回退成 legacy 读法（那等于静默降级解读并落库）；legacy 路径
+    （两侧 plan_id 均为 NULL）直接返回，行为与 v7 逐字一致。
+    错误信息指名拒绝的事实与双方身份详情，不回显根路径、阈值或掩码等内部细节。
+
+    校验置于同口径校验**之前**：同口径检查在 plan 档只会报出
+    ``dataset_mismatch``（"不是同一数据集"），那是失真的理由——真正的原因是
+    两侧身份不可比（跨计划、混搭或计量版本不一致）。
+
+    本闸门由**两个入口共享**：``build_facts_package()``（conn 入口）与
+    ``build_facts_from_rows()``（行构造核心）。只挂在 conn 入口等于留旁路——
+    任何持有行的调用方（夹具、单测、未来的其他消费者）直调核心就能拿到不含
+    身份的事实包，共享核心的合同形同虚设（ISS-153 审计返修 3）。核心入口从
+    行自身读 ``id`` 作为 sid（真实 ``sqlite3.Row`` 上与传入 sid 逐字相同）；
+    窄行（Mapping 且无 ``id``）下 sid 为 None，错误信息如实标注而非谎报编号。
+    """
+    def _label(sid):
+        return sid if sid is not None else "（该行未提供 id）"
+
+    plan_a = _row_get(row_a, "plan_id")
+    plan_b = _row_get(row_b, "plan_id")
+
+    # legacy 双侧：逐字保持 v7 行为（直接返回，不读 metric_version）。
+    if plan_a is None and plan_b is None:
+        return
+
+    # 空串是「声称新身份但身份为空」，两侧任一为空串即拒绝（含两侧皆空串）：
+    # 绝不可读成 legacy，那等于把降级解读并落库。
+    if (isinstance(plan_a, str) and not plan_a) or \
+       (isinstance(plan_b, str) and not plan_b):
+        raise AnalysisContractError(
+            "plan_identity_unsupported",
+            f"快照 {_label(sid_a)}（plan_id={plan_a!r}）与快照 "
+            f"{_label(sid_b)}（plan_id={plan_b!r}）的计划身份为空值，无法证明"
+            "区间属于同一个真实计划；已拒绝构造事实包（不落库、不静默按 legacy "
+            "口径解读）",
+        )
+
+    # 混搭：一侧 plan 档、一侧 legacy（NULL）。
+    if plan_a is None or plan_b is None:
+        raise AnalysisContractError(
+            "plan_identity_unsupported",
+            f"所选区间混搭了计划身份与 legacy 数据集：快照 {_label(sid_a)} 的 "
+            f"plan_id={plan_a!r}、快照 {_label(sid_b)} 的 plan_id={plan_b!r}；"
+            "AI 变化解读要求两侧属于同一计划身份（同一 legacy 数据集，或同一"
+            "计划内的两个快照），已拒绝构造事实包（不落库、不静默降级口径）",
+        )
+
+    # 跨 plan：两侧都带身份但不相等。
+    if plan_a != plan_b:
+        raise AnalysisContractError(
+            "plan_identity_unsupported",
+            f"所选区间跨计划：快照 {_label(sid_a)} 属于 plan_id={plan_a!r}、"
+            f"快照 {_label(sid_b)} 属于 plan_id={plan_b!r}；两个计划的区间不可"
+            "直接解读变化，已拒绝构造事实包（不落库、不静默混读）",
+        )
+
+    # 同 plan：再要求两侧计量版本都存在且相等，否则变化量不可比。
+    ver_a = _row_get(row_a, "metric_version")
+    ver_b = _row_get(row_b, "metric_version")
+    if ver_a is None or ver_b is None or ver_a != ver_b:
+        raise AnalysisContractError(
+            "plan_identity_unsupported",
+            f"所选区间虽同属计划 plan_id={plan_a!r}，但两侧计量版本不一致"
+            f"（metric_version={ver_a!r} 与 {ver_b!r}）；不同计量版本的快照"
+            "不可按同一口径解读变化，已拒绝构造事实包（不落库、不静默降级）",
+        )
+
+    # 同计划双快照：放行构造，后续同口径校验照常（root/min_kb/exclude_names）。
 
 
 def compute_net_delta(row_a: sqlite3.Row, row_b: sqlite3.Row) -> int | None:
@@ -429,6 +531,11 @@ def build_facts_package(
 ) -> FactsPackage:
     """在同一读取事务内提取 a/b 元数据与 diff，构造事实包。
 
+    - 身份闸门先于同口径校验：仅**同计划双快照**（两侧 plan_id 相等且
+      metric_version 相等）放行；跨 plan、plan↔legacy 混搭、计量版本不一致、
+      空串身份均抛 ``AnalysisContractError("plan_identity_unsupported")``
+      ——明确拒绝、不落库（见 ``_reject_new_plan_identity``）。
+      legacy 两侧（plan_id 均为 NULL）不受影响，行为与 v7 一致。
     - 口径校验复用 ``reports.same_dataset``：root/min_kb/exclude_names
       任一不等（含 NULL 与已知阈值混用）抛 ``AnalysisContractError``。
     - 事务：连接不在事务中时显式 ``BEGIN`` 并在结束后回滚（纯只读，
@@ -442,6 +549,7 @@ def build_facts_package(
     try:
         row_a = _fetch_snapshot(conn, sid_a)
         row_b = _fetch_snapshot(conn, sid_b)
+        _reject_new_plan_identity(row_a, row_b, sid_a, sid_b)
         if not reports.same_dataset(row_a, row_b):
             raise AnalysisContractError(
                 "dataset_mismatch",
@@ -475,7 +583,19 @@ def build_facts_from_rows(
 
     conn 入口负责同口径校验与同事务读取；本函数只做确定性组装，
     供夹具与单测直接注入。
+
+    身份闸门在此**下沉到核心**（ISS-153 审计返修 3，语义于 ISS-190B 放宽）：
+    放行与拒绝口径与 ``build_facts_package()`` **完全一致**——同计划双快照
+    （plan_id 与 metric_version 均逐字相等）放行，其余一律抛
+    ``plan_identity_unsupported``（见 ``_reject_new_plan_identity``）。
+    闸门不能只挂在 conn 入口——两个入口共享同一构造核心，把闸门放在外层
+    等于可绕：直调本核心即可生成跨计划区间的事实包并落库。校验顺序同 conn
+    入口：身份闸门先于同口径校验，否则 plan 档只会得到失真的
+    ``dataset_mismatch``。
+    legacy 行（两侧 plan_id 均为 NULL，或窄行无该列）行为与 v7 逐字一致。
     """
+    _reject_new_plan_identity(
+        row_a, row_b, _row_get(row_a, "id"), _row_get(row_b, "id"))
     if not reports.same_dataset(row_a, row_b):
         raise AnalysisContractError(
             "dataset_mismatch",
@@ -520,6 +640,12 @@ def build_facts_from_rows(
             "exclude_names": [
                 s for s in str(_row_get(row_a, "exclude_names", "")).split(";") if s
             ],
+            # 身份三字段（ISS-190A）：从 a 快照行读出，legacy 行读作 None。
+            # 闸门保证 plan 档走不到这里，故当前恒为 None；字段随包落库，
+            # 190B 放开闸门后即自动携带真实身份。
+            "plan_id": _row_get(row_a, "plan_id"),
+            "round_id": _row_get(row_a, "round_id"),
+            "metric_version": _row_get(row_a, "metric_version"),
             "units": "KiB",
         },
         "a": {

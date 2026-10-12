@@ -50,29 +50,58 @@ env:
   # (tests/test_upgrade_restore.py 安装后失败的真实旧 bundle 与数据恢复
   # 聚焦测试)；739 = 727 + 12(ISS-097
   # 升级事务聚焦测试)，727 = 720 + 7(ISS-096)，720 已含 ISS-030A/040B/040C/
-  # 037/081/090/091 批次）：ISS-126 后 1051 pytest、39 API/浏览器检查、214 前端
+  # 037/081/090/091 批次）：ISS-126 后 1051 pytest、39 API/浏览器检查、217 前端
   # refresh（ISS-100 起随浏览器 job 执行；ISS-111 权限分区断言 179 → 188；
   # ISS-113 更新无感化 +5：开关关闭回现状 1、后台下载呈现与取消 1、重试
   # 下载 1、downloaded ready 与确认取消 1、确认安装至 installed 1；
   # available/浏览器降级断言原地改写不计数；ISS-115 权限错误行/历史快照
   # +3、校验歧义 +2，比值断言原地更新不计数；ISS-116 分类显示 +2；
   # ISS-114 滚动边界在 980/1220 两视口各增 4 项；ISS-112 深链按钮
-# hidden 计算样式互斥断言 +4；ISS-118 深链降级 fallback 镜像互斥断言 +2=214）、
+  # hidden 计算样式互斥断言 +4；ISS-118 深链降级 fallback 镜像互斥断言 +2=214；
+  # ISS-143 目录详情趋势首/中/末点真实悬停 +3=217）、
   # cargo locked offline build +
   # 单测 67（ISS-100 起随 cargo job 执行；ISS-113 +3：settings.json 宽读
   # fail-safe、prefetch 决策分支、downloaded ready 载荷合同；ISS-113 修复
   # episode 1 +2：预下载独占门门序两钉子——持门期间 install 被拒 busy /
   # CAS 失败放弃不扰动既有门；ISS-114 原生 mask ABI 拒绝路径 +2；
-# ISS-110 prepare 期望 pid/导航 URL/失败话术 +3（1 项原地改写）=69。
+# ISS-110 prepare 期望 pid/导航 URL/失败话术 +3（1 项原地改写）=69；
+# ISS-147 后 pytest 1147 = 1109 + 38(tests/test_diff_children.py——绑定
+# 历史区间的同级差分 /api/diff/children：任务卡三反例红测 + 分页游标
+# 绑定 + 四态行/结构节点 + root=/ 与相似前缀段边界 + HTML/换行目录名 +
+# 参数与数据集错误语义 + 同级三序)。
+# ISS-152 +29（28+返修 B-1 降级用例 1）：tests/test_storage_discovery.py
+# 启动盘容器与卷发现适配器（共享 free 唯一权威/UUID 稳定身份/可见路径
+# 归属与 firmlink 去重/卸载锁定未知态/降级三态，plist 结构化输出）。
+# ISS-150 +32：tests/test_bigfiles_scoped.py——限定目录的 largest/recent
+# 模式与范围约束（两反例 + 越界/竞态/去重/预算披露）。
+# ISS-164 +20：tests/test_bigfiles_task_handle.py——大文件查询任务句柄与
+# 取消产品入口（句柄确定性与不泄露路径 2 + manager 同键去重/取消/未知句柄
+# 2 + API 提交即得句柄/同参同句柄/旧式 409 附句柄 3 + 取消至 cancelled
+# 与进程组回收 1 + 双任务互不误伤/幂等/终态如实/保留期 404 4 + 状态对齐与
+# 404/400 2 + 写令牌 403 与坏 body 400 与读端点免令牌 3 + 旧式阻塞调用逐
+# 字段兼容钉住 1；另 tests/test_api_security.py 白名单登记改动不增减用例）。
   PYTHON_VERSION: "3.14.6"
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "1235"
+  EXPECTED_PYTEST_PASSED: "1806"
   EXPECTED_BROWSER_PASSED: "39"
-  EXPECTED_REFRESH_PASSED: "214"
+  EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "77"
-  EXPECTED_CARGO_PASSED: "69"
+  EXPECTED_AGENT_PASSED: "56"
+  # ISS-148 树形同级变化回归（真实 FastAPI+生产页面实点）
+  EXPECTED_TREE_PASSED: "74"
+  # ISS-151 目录当前大文件回归（真实 FastAPI+生产页面实点）
+  EXPECTED_DIR_BIGFILES_PASSED: "36"
+  EXPECTED_SCOPE_SETTINGS_PASSED: "177"
+  # ISS-158 整盘总览与变化入口回归（真实 FastAPI+生产总览页实点，55 项）
+  EXPECTED_STORAGE_OVERVIEW_PASSED: "67"
+  # ISS-188 总览交接意图与迟到目录响应（真实 serve/Chromium，三视口）
+  EXPECTED_DIFF_HANDOFF_PASSED: "55"
+  # ISS-160 跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI+生产页面实点）
+  EXPECTED_INVESTIGATION_PASSED: "55"
+  EXPECTED_CARGO_PASSED: "79"
+  EXPECTED_UPDATER_RECOVERY_PASSED: "16"
 
 jobs:
   pytest:
@@ -108,7 +137,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 1235 项通过）
+      - name: pytest（断言 1806 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh
@@ -153,7 +182,7 @@ jobs:
           npm install "playwright@${PLAYWRIGHT_VERSION}"
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" --version
 
-      - name: API/浏览器 39 项、前端 refresh 214 项与 AI 解读 77 项检查（断言计数）
+      - name: API/浏览器 39 项、前端 refresh 217 项、AI 解读 77 项与当前扫描对象设置 93 项检查（断言计数）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
           NODE_PATH: ${{ runner.temp }}/pw/node_modules
@@ -204,7 +233,7 @@ jobs:
           cargo --version
           [ "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION" ]
 
-      - name: Cargo.lock 锁定离线构建与单测（断言 69 项通过）
+      - name: Cargo.lock 锁定离线构建与单测（断言 79 项通过）
         env:
           CARGO_PREFETCH: '1'
         run: bash scripts/ci_cargo_locked.sh

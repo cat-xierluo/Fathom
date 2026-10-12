@@ -236,6 +236,87 @@ def notify_scan_done(
     return send_notification(title, body, sound)
 
 
+# ── ISS-154 一轮多范围的轮次级通知 ──
+
+TITLE_ROUND_FULL = "Fathom 本轮扫描完成"
+TITLE_ROUND_PARTIAL = "Fathom 本轮部分完成"
+TITLE_ROUND_FAILED = "Fathom 本轮扫描失败"
+
+_ROUND_TITLES = {
+    "full": TITLE_ROUND_FULL,
+    "partial": TITLE_ROUND_PARTIAL,
+    "failed": TITLE_ROUND_FAILED,
+    "cancelled": TITLE_INTERRUPTED,
+}
+
+
+def build_round_notification(
+    status: str,
+    members: list[dict],
+    free_bytes: int | None,
+    *,
+    capacity_known: bool = True,
+) -> tuple[str, str, str | None]:
+    """构造一轮多范围扫描的轮次通知（标题, 正文, 声音或 None）。
+
+    关键合同（ISS-154 反例）：**部分成功绝不使用「全部完成」措辞**。
+    full 之外的状态各有独立标题，正文只报「成功 N 个 / 失败 M 个」这种
+    可数事实并指名失败范围，不声称整盘数据都是当前的。cancel 走既有
+    「已中断」标题（那里「保留上次快照」才是事实）。
+
+    ``free_bytes`` 是本轮**容器级**容量样本的共享剩余；``None`` 时不写
+    剩余、也不做低空间阈值判断（未知不做阈值化），绝不借用某目录的
+    statvfs 结果。
+    """
+    total = len(members)
+    done = [m for m in members if m.get("status") == "done"]
+    failed = [m for m in members if m.get("status") == "failed"]
+    other = [m for m in members
+             if m.get("status") not in {"done", "failed"}]
+    title = _ROUND_TITLES.get(status, TITLE_INTERRUPTED)
+    parts: list[str] = [f"{total} 个范围中 {len(done)} 个成功"]
+    if failed:
+        parts.append(f"{len(failed)} 个失败")
+    if other:
+        parts.append(f"{len(other)} 个未完成")
+    if status != "full" and failed:
+        # 指名失败范围（根路径本身就是用户给的范围，可安全披露）。
+        shown = "、".join(str(m.get("root") or "?") for m in failed[:2])
+        parts.append(f"失败：{shown}")
+    if status != "full":
+        parts.append("失败范围沿用上次样本")
+    if not capacity_known:
+        parts.append("整盘容量未更新")
+    if status == "full" and not total:
+        parts.append("本轮没有范围")
+    main = "；".join(parts)
+    body_limit = BODY_MAX_CHARS
+    suffix = ""
+    if free_bytes is not None:
+        suffix = f"，剩余 {free_bytes / 1024**3:.1f} GB"
+    body = _clip(" ".join(main.split()), max(body_limit - len(suffix), 1))
+    if suffix:
+        body = _clip(body + suffix, body_limit)
+    if free_bytes is not None and free_bytes / 1024**3 < config.FREE_ALERT_GB:
+        return TITLE_ALERT, body, ALERT_SOUND
+    return title, body, None
+
+
+def notify_scan_round(
+    *, status: str, members: list[dict], free_bytes: int | None,
+    capacity_known: bool = True,
+) -> bool:
+    """轮次级通知入口：构造并发送。永不抛出（与既有通知入口一致）。"""
+    try:
+        title, body, sound = build_round_notification(
+            status, members, free_bytes, capacity_known=capacity_known
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"轮次通知构造异常：{exc!r}")
+        return False
+    return send_notification(title, body, sound)
+
+
 def notify_first_snapshot(
     free_bytes: int | None,
     *,

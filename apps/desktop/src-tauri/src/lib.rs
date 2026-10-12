@@ -108,6 +108,9 @@ fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
     }
     match handle.handshake() {
         Ok(Some(instance)) => {
+            if let Err(err) = navigate_target_url(instance.port, instance.frontend_revision.as_deref(), None) {
+                return retry_error_json(&err, None, &runtime);
+            }
             if handle.reused.load(std::sync::atomic::Ordering::SeqCst) {
                 serde_json::json!({
                     "state": "reused",
@@ -115,6 +118,7 @@ fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
                     "service": instance.service,
                     "protocol_version": instance.protocol_version,
                     "version": instance.version,
+                    "frontend_revision": instance.frontend_revision,
                 })
             } else {
                 serde_json::json!({
@@ -125,6 +129,7 @@ fn helper_status(state: State<'_, HelperState>) -> serde_json::Value {
                     "version": instance.version,
                     "instance_id": instance.instance_id,
                     "runtime_mode": instance.runtime_mode,
+                    "frontend_revision": instance.frontend_revision,
                 })
             }
         }
@@ -206,36 +211,40 @@ fn helper_retry(app: AppHandle, state: State<'_, HelperState>) -> serde_json::Va
 /// ISS-110：计算主窗口导航目标。返回 ``(目标 URL, 同源跳过)``：
 /// - 保留当前页面的 hash 片段（如 ``#/settings``）——升级失败回滚后用户
 ///   留在原页面，不因导航丢 hash「跳到主界面」；
-/// - 当前页面已是同一 ``127.0.0.1:<port>`` 源时 ``same_origin=true``：
+/// - 当前页面已是同一 ``127.0.0.1:<port>`` 源且 revision 一致时跳过：
 ///   调用方跳过导航——升级失败回滚重启 helper 后端口通常未变，跳过可避免
 ///   文档重载，设置页的升级失败呈现（前端内存态）与 hash 一并原样保留。
-///   首次启动（当前为 tauri 内置页，host 非 127.0.0.1）与端口变化不受影响。
-fn navigate_target_url(port: u16, current: Option<&Url>) -> (String, bool) {
-    let (fragment, same_origin) = match current {
+///   首次启动、端口或资源内容变化均直接进入对应 revision 空间。
+fn navigate_target_url(port: u16, revision: Option<&str>, current: Option<&Url>) -> Result<(String, bool), String> {
+    let revision = revision.filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        .ok_or_else(|| "helper 未提供有效前端资源身份，请退出旧版后台服务后重试握手".to_string())?;
+    let entry_path = format!("/_fathom/resources/{revision}/");
+    let (fragment, same_resources) = match current {
         Some(url) => {
-            let same_origin = url.host_str() == Some("127.0.0.1")
-                && url.port_or_known_default() == Some(port);
-            (url.fragment().unwrap_or("").to_string(), same_origin)
+            let same_resources = url.scheme() == "http" && url.host_str() == Some("127.0.0.1")
+                && url.port_or_known_default() == Some(port)
+                && (url.path() == entry_path || url.path() == format!("{entry_path}index.html"));
+            (url.fragment().unwrap_or("").to_string(), same_resources)
         }
         None => (String::new(), false),
     };
-    let mut url_str = format!("http://127.0.0.1:{port}/");
+    let mut url_str = format!("http://127.0.0.1:{port}{entry_path}");
     if !fragment.is_empty() {
         url_str.push('#');
         url_str.push_str(&fragment);
     }
-    (url_str, same_origin)
+    Ok((url_str, same_resources))
 }
 
 /// 导航主窗口到 ``http://127.0.0.1:<port>/``；仅在握手成功时调用。
 /// ISS-110：同源跳过 + hash 保留（见 ``navigate_target_url``）——升级失败
 /// 回滚后停留在设置页且失败原因可见，不导航到根 URL 丢上下文。
-fn navigate_main_to(window: &WebviewWindow, port: u16) -> Result<(), String> {
+fn navigate_main_to(window: &WebviewWindow, port: u16, revision: Option<&str>) -> Result<(), String> {
     let current = window.url().ok();
-    let (url_str, same_origin) = navigate_target_url(port, current.as_ref());
+    let (url_str, same_origin) = navigate_target_url(port, revision, current.as_ref())?;
     if same_origin {
         println!(
-            "[helper] 目标 127.0.0.1:{port} 与当前页面同源；跳过导航（保留当前页面与 hash 上下文，ISS-110）"
+            "[helper] 目标 127.0.0.1:{port} 与当前页面同源且资源身份相同；跳过导航（保留当前页面与 hash 上下文，ISS-110）"
         );
         return Ok(());
     }
@@ -291,7 +300,7 @@ fn start_helper_internal(app: &AppHandle, state: &State<'_, HelperState>) -> Res
                 })
                 .unwrap_or(false);
             if let Some(win) = app.get_webview_window("main") {
-                let _ = navigate_main_to(&win, instance.port);
+                navigate_main_to(&win, instance.port, instance.frontend_revision.as_deref())?;
             } else {
                 eprintln!("[helper] 主窗口不存在，跳过 navigate");
             }
@@ -308,13 +317,7 @@ fn start_helper_internal(app: &AppHandle, state: &State<'_, HelperState>) -> Res
             }
             Ok(())
         }
-        Ok(None) => {
-            // 复用路径但 instance 字段为空；不再拉起
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = navigate_main_to(&win, helper::DEFAULT_PORT);
-            }
-            Ok(())
-        }
+        Ok(None) => Err("helper 握手未返回资源身份，请重试握手".to_string()),
         Err(err) => {
             // 检查 helper 是否让位（same-service-discovered）或端口耗尽
             let event = {
@@ -326,8 +329,12 @@ fn start_helper_internal(app: &AppHandle, state: &State<'_, HelperState>) -> Res
             };
             match event {
                 Some(HelperEvent::SameServiceDiscovered { port, .. }) => {
+                    let revision = match HelperHandle::probe_health(port) {
+                        helper::ProbeKind::Ours { frontend_revision, .. } => frontend_revision,
+                        _ => return Err("复用 helper 未就绪，请重试握手".to_string()),
+                    };
                     if let Some(win) = app.get_webview_window("main") {
-                        let _ = navigate_main_to(&win, port);
+                        navigate_main_to(&win, port, revision.as_deref())?;
                     }
                     Ok(())
                 }
@@ -507,6 +514,83 @@ const UPDATER_EVENT: &str = "updater-state";
 /// （经确认层）取出执行；安装成功后清空，失败保留供重试。
 struct UpdaterState(Mutex<Option<tauri_plugin_updater::Update>>);
 
+/// ISS-182：壳内呈现快照跨 WebView/origin 重载存活；不写磁盘、不保存制品或密钥。
+/// 新操作推进世代；旧查询/事件不能复活已被新操作取代的终态。
+#[derive(Default)]
+struct UpdaterPresentationSnapshot {
+    generation: u64,
+    revision: u64,
+    status: Option<serde_json::Value>,
+    activity: Option<serde_json::Value>,
+}
+
+impl UpdaterPresentationSnapshot {
+    fn begin(&mut self) -> u64 {
+        self.generation += 1;
+        self.revision += 1;
+        self.activity = None;
+        self.generation
+    }
+
+    fn check_generation(&mut self, retry: bool, busy: bool) -> u64 {
+        // 查询本身不开始安装/下载。仅明确的失败重试可开启下一轮。
+        let retryable = matches!(self.activity.as_ref().and_then(|a| a["state"].as_str()),
+            Some("failed" | "cancelled"));
+        if retry && !busy && retryable { self.begin() } else { self.generation }
+    }
+
+    fn allows_auto_prefetch(&self) -> bool {
+        !matches!(self.activity.as_ref().and_then(|a| a["state"].as_str()),
+            Some("installed" | "failed" | "cancelled"))
+    }
+
+    fn begin_prefetch(&mut self) -> Option<u64> {
+        self.allows_auto_prefetch().then(|| self.begin())
+    }
+
+    fn record(&mut self, generation: u64, mut payload: serde_json::Value, activity: bool)
+        -> Option<serde_json::Value>
+    {
+        if generation != self.generation { return None; }
+        // 复用已下载字节的通知不是新操作，不能抹掉同一世代的失败或 installed。
+        if activity && payload["state"] == "downloaded" {
+            if let Some(previous) = &self.activity {
+                if previous["state"] != "downloading" && previous["state"] != "downloaded" {
+                    return None;
+                }
+            }
+        }
+        self.revision += 1;
+        payload["presentation"] = if activity { "activity" } else { "check" }.into();
+        payload["generation"] = self.generation.into();
+        payload["revision"] = self.revision.into();
+        if activity { self.activity = Some(payload.clone()); }
+        else { self.status = Some(payload.clone()); }
+        Some(payload)
+    }
+
+    fn snapshot(&self) -> serde_json::Value {
+        serde_json::json!({ "recovery": true, "generation": self.generation,
+            "revision": self.revision, "status": self.status, "activity": self.activity })
+    }
+}
+
+struct UpdaterPresentation(Mutex<UpdaterPresentationSnapshot>);
+
+fn begin_updater_presentation(app: &AppHandle) -> u64 {
+    app.state::<UpdaterPresentation>().0.lock().map(|mut s| s.begin()).unwrap_or(0)
+}
+
+fn publish_updater_activity(app: &AppHandle, generation: u64, payload: serde_json::Value)
+    -> Option<serde_json::Value>
+{
+    let published = app.state::<UpdaterPresentation>().0.lock().ok()?
+        .record(generation, payload, true)?;
+    let _ = app.emit(UPDATER_EVENT, published.clone());
+    Some(published)
+}
+
+
 /// ISS-113：`auto_download_updates` 设置键。存储 = 运行根 ``settings.json``
 /// （Python ``fathom/config.py`` 持久化，前端经既有 PUT /api/config 写入，
 /// 壳侧**只读不写**——单一设置源，不引第二份壳侧存储）。缺键/文件缺失/
@@ -542,6 +626,35 @@ fn auto_download_updates_enabled(runtime_dir: &Path) -> bool {
         value.get(UPDATER_AUTO_DOWNLOAD_KEY),
         Some(serde_json::Value::Bool(false))
     )
+}
+
+/// ISS-155 接缝：``storage_scope`` 设置键。与 ``UPDATER_AUTO_DOWNLOAD_KEY``
+/// 同源同存储——运行根 ``settings.json``（Python ``fathom/config.py`` 持久化，
+/// 壳侧**只读不写**）。
+const STORAGE_SCOPE_KEY: &str = "storage_scope";
+
+/// ISS-155 接缝：读运行根 settings.json 的 ``storage_scope``（``std::fs`` +
+/// ``serde_json::Value`` 宽读，与 ``auto_download_updates_enabled`` 同风格、
+/// 不引 HTTP）。返回 ``Some(范围)`` 或 ``None``。
+///
+/// 降级口径（全部落 ``None`` = 旧口径「未配置」，调用方按既有行为继续，
+/// 不因形态异常改变既有判定）：
+/// - 文件缺失 / 不可读 / JSON 损坏 → ``None``；
+/// - 键缺失 → ``None``（不猜默认范围，避免壳侧替 Python 选口径）；
+/// - 键存在但**形态错误**（非字符串、空串/全空白、非标量如 object/array/
+///   数字/布尔）→ 整体降级 ``None``，不部分取值。
+///
+/// 未知键一律容忍：只 ``get`` 目标键，不校验同级其他字段。
+fn storage_scope_setting(runtime_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(runtime_dir.join("settings.json")).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    // 仅接受非空字符串；其余形态（含 null/数字/布尔/object/array）一律 None。
+    let raw = value.get(STORAGE_SCOPE_KEY)?.as_str()?;
+    let scope = raw.trim();
+    if scope.is_empty() {
+        return None;
+    }
+    Some(scope.to_string())
 }
 
 /// ISS-113：发现可用更新后的预下载决策（纯函数，单测直接覆盖分支）。
@@ -773,8 +886,28 @@ async fn perform_updater_check(
 async fn updater_check(
     app: AppHandle,
     state: State<'_, UpdaterState>,
+    recover: Option<bool>,
+    retry: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let status = perform_updater_check(&app, Some(state.inner())).await;
+    if recover == Some(true) {
+        return Ok(app.state::<UpdaterPresentation>().0.lock()
+            .map(|snapshot| snapshot.snapshot())
+            .unwrap_or_else(|_| serde_json::json!({ "recovery": true, "error": "更新呈现锁中毒" })));
+    }
+    let ctl = app.state::<UpdaterInstallCtl>();
+    let busy = ctl.install_active.load(std::sync::atomic::Ordering::Acquire);
+    let generation = app.state::<UpdaterPresentation>().0.lock()
+        .map(|mut s| s.check_generation(retry == Some(true), busy)).unwrap_or(0);
+    let mut status = perform_updater_check(&app, Some(state.inner())).await;
+    if let Ok(mut snapshot) = app.state::<UpdaterPresentation>().0.lock() {
+        if let Some(published) = snapshot.record(generation, status.clone(), false) {
+            status = published;
+        } else {
+            status["generation"] = generation.into();
+            status["revision"] = 0.into();
+            return Ok(status);
+        }
+    }
     maybe_spawn_updater_prefetch(&app, &status);
     Ok(status)
 }
@@ -834,7 +967,8 @@ async fn updater_install(
         }));
     }
     let _gate = InstallActiveGuard(ctl.inner());
-    updater_install_transaction(&app, &state, ctl.inner(), update).await
+    let generation = begin_updater_presentation(&app);
+    updater_install_transaction(&app, &state, ctl.inner(), update, generation).await
 }
 
 /// ISS-102/113：下载候选的结果三分支（原 ISS-102 事务内枚举上移——后台
@@ -853,6 +987,7 @@ async fn download_update_with_progress(
     app: &AppHandle,
     update: &tauri_plugin_updater::Update,
     ctl: &UpdaterInstallCtl,
+    generation: u64,
 ) -> UpdaterDownloadOutcome {
     let mut downloaded: u64 = 0;
     let mut last_emitted: u64 = 0;
@@ -864,8 +999,7 @@ async fn download_update_with_progress(
             downloaded = downloaded.saturating_add(chunk as u64);
             if progress_should_emit(last_emitted, downloaded, total) {
                 last_emitted = downloaded;
-                let _ = emit_app.emit(
-                    UPDATER_EVENT,
+                let _ = publish_updater_activity(&emit_app, generation,
                     updater_download_progress_json(
                         &current_version,
                         &target_version,
@@ -934,6 +1068,7 @@ async fn updater_install_transaction(
     state: &State<'_, UpdaterState>,
     ctl: &UpdaterInstallCtl,
     update: tauri_plugin_updater::Update,
+    generation: u64,
 ) -> Result<serde_json::Value, String> {
     // 协议①-④的 Python 侧入口 = 同一冻结 helper（生产 CLI fathom/__main__.py）。
     let runtime_dir = {
@@ -950,17 +1085,16 @@ async fn updater_install_transaction(
     let helper_bin = match locate_helper(&app) {
         Ok(bin) => bin,
         Err(err) => {
-            return Ok(serde_json::json!({
-                "ok": false,
-                "state": "failed",
+            let payload = serde_json::json!({ "ok": false, "state": "failed", "kind": "helper",
                 "error": format!("无法定位冻结 helper，升级未开始：{err}"),
-            }));
+                "hint": "升级未开始；请重试或手动安装 DMG",
+                "current_version": update.current_version, "available_version": update.version });
+            return Ok(publish_updater_activity(app, generation, payload.clone()).unwrap_or(payload));
         }
     };
 
     ctl.begin(UpdaterInstallPhase::Preparing);
-    let _ = app.emit(
-        UPDATER_EVENT,
+    let _ = publish_updater_activity(&app, generation,
         serde_json::json!({
             "state": "preparing",
             "current_version": update.current_version,
@@ -996,10 +1130,19 @@ async fn updater_install_transaction(
         expected_helper_pid,
     );
     let prepare_arg_refs: Vec<&str> = prepare_args.iter().map(String::as_str).collect();
-    let prepare = match run_upgrade_phase(
+    let prepare = match run_upgrade_phase_polled(
         &helper_bin,
         &runtime_dir,
         &prepare_arg_refs,
+        || {
+            let helper_state = app.state::<HelperState>();
+            let guard = helper_state.0.lock()
+                .map_err(|_| "helper 句柄锁中毒，无法回收旧进程".to_string())?;
+            if let Some(handle) = guard.as_ref() {
+                handle.reap_exited_child()?;
+            }
+            Ok(())
+        },
     ) {
         Ok(payload) => payload,
         Err(err) => serde_json::json!({ "ok": false, "kind": "internal", "error": err }),
@@ -1015,24 +1158,13 @@ async fn updater_install_transaction(
             .and_then(|value| value.as_str())
             .unwrap_or("未知失败")
             .to_string();
-        // prepare 已自回滚；壳侧（进程属主）补齐旧 helper 重启。
-        rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "prepare 失败");
+        eprintln!("[updater] 升级准备失败（kind={kind}）：{error}");
         let hint = prepare_failure_hint(&kind);
-        let _ = app.emit(
-            UPDATER_EVENT,
-            serde_json::json!({
-                "state": "failed",
-                "kind": kind,
-                "error": error,
-                "hint": hint,
-            }),
-        );
-        return Ok(serde_json::json!({
-            "ok": false,
-            "state": "failed",
-            "kind": kind,
-            "error": format!("{error}（{hint}）"),
-        }));
+        return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+            "prepare 失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                "kind": kind, "error": error, "hint": hint,
+                "current_version": update.current_version, "available_version": update.version })));
+
     }
 
     // ⑤ download_and_install 前半（download 内完成下载+minisign 验签）：
@@ -1050,36 +1182,18 @@ async fn updater_install_transaction(
             );
             bytes
         }
-        None => match download_update_with_progress(app, &update, ctl).await {
+        None => match download_update_with_progress(app, &update, ctl, generation).await {
             UpdaterDownloadOutcome::Cancelled => {
-                rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载取消");
-                let _ = app.emit(
-                    UPDATER_EVENT,
-                    serde_json::json!({
-                        "state": "cancelled",
-                        "current_version": update.current_version,
-                        "available_version": update.version,
-                        "hint": "下载已取消；旧版本保持运行，可再次安装",
-                    }),
-                );
-                return Ok(serde_json::json!({
-                    "ok": false,
-                    "state": "cancelled",
-                    "error": "下载已取消（旧版本保持运行，候选保留）",
-                }));
+                return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+                    "下载取消", generation, serde_json::json!({ "ok": false, "state": "cancelled",
+                        "kind": "cancelled", "error": "下载已取消",
+                        "current_version": update.current_version, "available_version": update.version })));
             }
             UpdaterDownloadOutcome::Failed(err) => {
-                rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "下载失败");
-                let error = format!("下载/验签失败（已回滚，候选保留，可重试）：{err}");
-                let _ = app.emit(
-                    UPDATER_EVENT,
-                    serde_json::json!({ "state": "failed", "error": error }),
-                );
-                return Ok(serde_json::json!({
-                    "ok": false,
-                    "state": "failed",
-                    "error": error,
-                }));
+                return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+                    "下载失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                        "kind": "download", "error": format!("下载/验签失败：{err}"),
+                        "current_version": update.current_version, "available_version": update.version })));
             }
             UpdaterDownloadOutcome::Completed(bytes) => bytes,
         },
@@ -1087,8 +1201,7 @@ async fn updater_install_transaction(
 
     // 进入安装（download_and_install 后半）：不可取消，文案明确（合同⑤）。
     ctl.begin(UpdaterInstallPhase::Installing);
-    let _ = app.emit(
-        UPDATER_EVENT,
+    let _ = publish_updater_activity(&app, generation,
         serde_json::json!({
             "state": "installing",
             "current_version": update.current_version,
@@ -1098,17 +1211,11 @@ async fn updater_install_transaction(
         }),
     );
     if let Err(err) = update.install(&bytes) {
-        rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir, "安装失败");
-        let error = format!("安装失败（已回滚到旧版本，候选保留，可重试）：{err}");
-        let _ = app.emit(
-            UPDATER_EVENT,
-            serde_json::json!({ "state": "failed", "error": error }),
-        );
-        return Ok(serde_json::json!({
-            "ok": false,
-            "state": "failed",
-            "error": error,
-        }));
+        return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+            "安装失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                "kind": "install", "error": format!("安装失败：{err}"),
+                "current_version": update.current_version, "available_version": update.version })));
+
     }
 
     // 新 helper 身份核验（030A step6 握手语义的壳侧生产化）：安装后 bundle
@@ -1119,27 +1226,10 @@ async fn updater_install_transaction(
         Err(err) => Err(format!("无法定位新 helper（身份核验失败）：{err}")),
     };
     if let Err(err) = verify {
-        rollback_upgrade_and_restart_helper(
-            app,
-            &helper_bin,
-            &runtime_dir,
-            "新 helper 握手失败",
-        );
-        let error = format!("{err}（已回滚到可运行旧版，旧数据不动）");
-        let _ = app.emit(
-            UPDATER_EVENT,
-            serde_json::json!({
-                "state": "failed",
-                "kind": "handshake",
-                "error": error,
-            }),
-        );
-        return Ok(serde_json::json!({
-            "ok": false,
-            "state": "failed",
-            "kind": "handshake",
-            "error": error,
-        }));
+        return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+            "新 helper 握手失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                "kind": "handshake", "error": err,
+                "current_version": update.current_version, "available_version": update.version })));
     }
 
     // ⑥成功收尾（ISS-098：数据库校验是成功判定的一部分）：upgrade-finalize
@@ -1161,26 +1251,11 @@ async fn updater_install_transaction(
                     .and_then(|value| value.as_str())
                     .unwrap_or("未知数据库校验失败")
                     .to_string();
-                rollback_upgrade_and_restart_helper(
-                    app,
-                    &helper_bin,
-                    &runtime_dir,
-                    "finalize 数据库校验失败",
-                );
-                let _ = app.emit(
-                    UPDATER_EVENT,
-                    serde_json::json!({
-                        "state": "failed",
-                        "kind": "db_verify_failed",
-                        "error": error.clone(),
-                    }),
-                );
-                return Ok(serde_json::json!({
-                    "ok": false,
-                    "state": "failed",
-                    "kind": "db_verify_failed",
-                    "error": error,
-                }));
+                return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+                    "finalize 数据库校验失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                        "kind": "db_verify_failed", "error": error,
+                        "current_version": update.current_version, "available_version": update.version })));
+
             }
         }
         Err(err) => {
@@ -1200,21 +1275,10 @@ async fn updater_install_transaction(
             *guard = None;
         }
     }
-    let _ = app.emit(
-        UPDATER_EVENT,
-        serde_json::json!({
-            "state": "installed",
-            "current_version": update.current_version,
-            "available_version": update.version,
-            "hint": "更新已安装；重启应用后生效",
-        }),
-    );
-    Ok(serde_json::json!({
-        "ok": true,
-        "state": "installed",
-        "current_version": update.current_version,
-        "available_version": update.version,
-    }))
+    let payload = serde_json::json!({ "ok": true, "state": "installed",
+        "current_version": update.current_version, "available_version": update.version,
+        "hint": "更新已安装；重启应用后生效" });
+    Ok(publish_updater_activity(app, generation, payload.clone()).unwrap_or(payload))
 }
 
 /// 重启应用以完成更新（独立命令，仅经「重启以完成」确认层调用）。
@@ -1463,8 +1527,22 @@ fn wait_child_bounded(
     child: &mut std::process::Child,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
+    wait_child_bounded_polled(child, timeout, || Ok(()))
+}
+
+/// 等待协调子进程时轮询父壳自有 helper 的退出回收；不提前终止 helper。
+fn wait_child_bounded_polled(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+    mut on_poll: impl FnMut() -> Result<(), String>,
+) -> Result<(), String> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
+        if let Err(err) = on_poll() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err);
+        }
         match child.try_wait() {
             Ok(Some(_)) => return Ok(()),
             Ok(None) => {}
@@ -1490,12 +1568,23 @@ fn run_upgrade_phase(
     runtime_dir: &Path,
     extra_args: &[&str],
 ) -> Result<serde_json::Value, String> {
+    run_upgrade_phase_polled(bin, runtime_dir, extra_args, || Ok(()))
+}
+
+fn run_upgrade_phase_polled(
+    bin: &Path,
+    runtime_dir: &Path,
+    extra_args: &[&str],
+    on_poll: impl FnMut() -> Result<(), String>,
+) -> Result<serde_json::Value, String> {
     let mut child = upgrade_helper_command(bin, runtime_dir, extra_args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|err| format!("启动升级协调子命令失败（{}）：{err}", bin.display()))?;
-    wait_child_bounded(&mut child, std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S))?;
+    wait_child_bounded_polled(
+        &mut child, std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S), on_poll,
+    )?;
     let output = child
         .wait_with_output()
         .map_err(|err| format!("读取升级协调子命令输出失败：{err}"))?;
@@ -1598,6 +1687,7 @@ fn prepare_failure_hint(kind: &str) -> &'static str {
 /// 受理取消请求（UPDATER_CANCEL_EVENT 回调）：准备/下载阶段置取消标志
 /// （下载在 poll 边界中止并回滚）；已进入安装则拒绝并回明确文案。
 fn handle_cancel_request(app: &AppHandle) {
+    let generation = app.state::<UpdaterPresentation>().0.lock().map(|s| s.generation).unwrap_or(0);
     let ctl = app.state::<UpdaterInstallCtl>();
     let phase = ctl.current();
     if phase.allows_cancel() {
@@ -1611,8 +1701,7 @@ fn handle_cancel_request(app: &AppHandle) {
             "[updater] 取消请求被拒绝（阶段 {}）：{UPDATER_CANCEL_REFUSED_HINT}",
             phase.as_str()
         );
-        let _ = app.emit(
-            UPDATER_EVENT,
+        let _ = publish_updater_activity(&app, generation,
             serde_json::json!({
                 "state": phase.as_str(),
                 "cancellable": false,
@@ -1633,7 +1722,9 @@ fn rollback_upgrade_and_restart_helper(
     bin: &Path,
     runtime_dir: &Path,
     reason: &str,
-) {
+    generation: u64,
+    mut outcome: serde_json::Value,
+) -> serde_json::Value {
     // ISS-098：只有回滚子命令如实报告成功（旧版文件已恢复、身份与库校验
     // 通过——或材料缺失分支的既有语义）才重启 helper；恢复失败
     // （kind=restore_failed）时绝不启动安装区里未恢复的 N+1——材料与
@@ -1661,9 +1752,15 @@ fn rollback_upgrade_and_restart_helper(
              启动时经 upgrade-detect 可检测并恢复；不启动未核验的安装区 helper）"
         ),
     }
+    outcome["rollback_ok"] = should_restart.into();
     if !should_restart {
-        return;
+        outcome["hint"] = "自动恢复未完成；恢复材料与升级日志已保留，请先恢复后重试".into();
+    } else if outcome.get("hint").is_none() {
+        outcome["hint"] = "已恢复旧版本与数据库；候选保留，可重试".into();
     }
+    // 快照必须先存入壳，线程随后换端口/导航时任何新页面均可回读。
+    let outcome = publish_updater_activity(app, generation, outcome.clone()).unwrap_or(outcome);
+    if !should_restart { return outcome; }
     let handle = app.clone();
     let spawned = std::thread::Builder::new()
         .name("fathom-updater-helper-restart".to_string())
@@ -1678,6 +1775,7 @@ fn rollback_upgrade_and_restart_helper(
     if let Err(err) = spawned {
         eprintln!("[updater] 回滚后重启线程创建失败：{err}（握手页「重试握手」可手动恢复）");
     }
+    outcome
 }
 
 /// 启动延迟检查（ISS-040B）：std 线程 + async_runtime::block_on（不引 tokio
@@ -1691,13 +1789,16 @@ fn spawn_updater_startup_check(app: &AppHandle) {
         .name("fathom-updater-startup".to_string())
         .spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(UPDATER_STARTUP_DELAY_S));
+            let generation = handle.state::<UpdaterPresentation>().0.lock().map(|s| s.generation).unwrap_or(0);
             let store = handle.state::<UpdaterState>();
             let status =
                 tauri::async_runtime::block_on(perform_updater_check(&handle, Some(store.inner())));
-            if let Err(err) = handle.emit(UPDATER_EVENT, status.clone()) {
-                eprintln!("[updater] 启动延迟检查状态事件发送失败：{err}");
+            let published = handle.state::<UpdaterPresentation>().0.lock().ok()
+                .and_then(|mut s| s.record(generation, status, false));
+            if let Some(status) = published {
+                let _ = handle.emit(UPDATER_EVENT, status.clone());
+                maybe_spawn_updater_prefetch(&handle, &status);
             }
-            maybe_spawn_updater_prefetch(&handle, &status);
         });
     if let Err(err) = spawned {
         // 线程起不起来不阻塞启动：手动检查入口仍在。
@@ -1717,6 +1818,11 @@ fn spawn_updater_startup_check(app: &AppHandle) {
 /// UPDATER_CANCEL_EVENT 在 poll 边界受理。完成后只发 ready 事件，**绝不
 /// 安装**——六步安装合同不变，安装仍只经 updater_install（confirmed=true）。
 fn maybe_spawn_updater_prefetch(app: &AppHandle, status: &serde_json::Value) {
+    // 自动检查不能把尚待用户处理的失败/installed 变成另一轮下载。
+    // 显式检查或确认安装才会 begin 新世代并清理该终态。
+    if !app.state::<UpdaterPresentation>().0.lock()
+        .map(|s| s.allows_auto_prefetch()).unwrap_or(false) { return; }
+
     if status.get("state").and_then(|v| v.as_str()) != Some(UpdaterCheckState::Available.as_str())
     {
         return;
@@ -1762,8 +1868,8 @@ fn maybe_spawn_updater_prefetch(app: &AppHandle, status: &serde_json::Value) {
     ) {
         PrefetchPlan::Disabled => {}
         PrefetchPlan::AlreadyReady => {
-            let _ = app.emit(
-                UPDATER_EVENT,
+            let generation = app.state::<UpdaterPresentation>().0.lock().map(|s| s.generation).unwrap_or(0);
+            let _ = publish_updater_activity(&app, generation,
                 updater_prefetch_ready_json(&candidate.current_version, available_version),
             );
         }
@@ -1794,6 +1900,10 @@ fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater
                 );
                 return;
             };
+            // 线程排队期间可能已安装完毕，拿到门后再次原子核对并开始世代。
+            let generation = handle.state::<UpdaterPresentation>().0.lock().ok()
+                .and_then(|mut s| s.begin_prefetch());
+            let Some(generation) = generation else { return; };
             // 门已由本轮持有：先回 Preparing 复位上一轮可能残留的取消标志，
             // 再进 Downloading（取消只应在下载进行中受理，见
             // handle_cancel_request）。
@@ -1807,6 +1917,7 @@ fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater
                 &handle,
                 &update,
                 ctl.inner(),
+                generation,
             ));
             match outcome {
                 UpdaterDownloadOutcome::Completed(bytes) => {
@@ -1818,15 +1929,13 @@ fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater
                             });
                         }
                     }
-                    let _ = handle.emit(
-                        UPDATER_EVENT,
+                    let _ = publish_updater_activity(&handle, generation,
                         updater_prefetch_ready_json(&update.current_version, &update.version),
                     );
                     println!("[updater] 后台下载完成（ready 等待安装确认）：{}", update.version);
                 }
                 UpdaterDownloadOutcome::Cancelled => {
-                    let _ = handle.emit(
-                        UPDATER_EVENT,
+                    let _ = publish_updater_activity(&handle, generation,
                         serde_json::json!({
                             "state": "cancelled",
                             "current_version": update.current_version,
@@ -1837,8 +1946,7 @@ fn spawn_updater_prefetch_download(app: &AppHandle, update: tauri_plugin_updater
                 }
                 UpdaterDownloadOutcome::Failed(err) => {
                     let error = format!("后台下载失败（已停止，可重试）：{err}");
-                    let _ = handle.emit(
-                        UPDATER_EVENT,
+                    let _ = publish_updater_activity(&handle, generation,
                         serde_json::json!({ "state": "failed", "error": error }),
                     );
                     eprintln!("[updater] {error}");
@@ -1914,6 +2022,7 @@ pub fn run() {
             app.manage(HelperState(Mutex::new(Some(HelperHandle::new(runtime_dir)))));
             // ISS-040B：更新候选暂存句柄（启动延迟检查/手动检查写入）。
             app.manage(UpdaterState(Mutex::new(None)));
+            app.manage(UpdaterPresentation(Mutex::new(UpdaterPresentationSnapshot::default())));
             // ISS-113：后台预下载产物暂存（开关开启时检查发现 available 后
             // 自动下载；安装成功清空，失败/取消保留供重试）。
             app.manage(UpdaterPrefetch(Mutex::new(None)));
@@ -1999,6 +2108,101 @@ mod tests {
     use super::*;
     use helper::ExhaustedInfo;
     use tauri::plugin::Plugin;
+
+    #[test]
+    fn presentation_terminal_survives_reload_and_ready_notification() {
+        let mut state = UpdaterPresentationSnapshot::default();
+        let generation = state.begin();
+        state
+            .record(
+                generation,
+                serde_json::json!({"state":"available", "current_version":"0.4.0",
+            "available_version":"0.4.1"}),
+                false,
+            )
+            .unwrap();
+        let terminal = state
+            .record(
+                generation,
+                serde_json::json!({"state":"failed", "kind":"install",
+            "error":"invalid gzip header", "hint":"已恢复，可重试"}),
+                true,
+            )
+            .unwrap();
+        let recovered = state.snapshot();
+        assert_eq!(recovered["activity"], terminal);
+        assert!(!state.allows_auto_prefetch());
+        assert!(state.begin_prefetch().is_none());
+        assert_eq!(recovered["activity"]["kind"], "install");
+        assert_eq!(recovered["activity"]["error"], "invalid gzip header");
+        assert_eq!(recovered["activity"]["hint"], "已恢复，可重试");
+        assert!(state
+            .record(generation, serde_json::json!({"state":"downloaded"}), true)
+            .is_none());
+        state
+            .record(generation, serde_json::json!({"state":"up_to_date"}), false)
+            .unwrap();
+        assert_eq!(state.snapshot()["activity"], terminal);
+        assert_eq!(state.check_generation(false, false), generation);
+        assert_eq!(state.snapshot()["activity"], terminal);
+        assert_eq!(state.check_generation(true, true), generation);
+        assert_eq!(state.check_generation(true, false), generation + 1);
+        assert!(state.snapshot()["activity"].is_null());
+    }
+
+    #[test]
+    fn presentation_new_generation_rejects_stale_terminal() {
+        let mut state = UpdaterPresentationSnapshot::default();
+        let previous = state.begin();
+        state
+            .record(
+                previous,
+                serde_json::json!({"state":"failed", "error":"old failure"}),
+                true,
+            )
+            .unwrap();
+        let current = state.begin();
+        assert!(state.snapshot()["activity"].is_null());
+        let preparing = state
+            .record(current, serde_json::json!({"state":"preparing"}), true)
+            .unwrap();
+        assert!(preparing.get("error").is_none());
+        assert!(state
+            .record(previous, serde_json::json!({"state":"failed"}), true)
+            .is_none());
+        assert!(state
+            .record(previous, serde_json::json!({"state":"available"}), false)
+            .is_none());
+        assert_eq!(state.snapshot()["activity"], preparing);
+    }
+
+    #[test]
+    fn presentation_installed_survives_reload_until_new_operation() {
+        let mut state = UpdaterPresentationSnapshot::default();
+        let generation = state.begin();
+        let installed = state
+            .record(
+                generation,
+                serde_json::json!({"state":"installed",
+            "current_version":"0.4.0", "available_version":"0.4.1", "hint":"重启后生效"}),
+                true,
+            )
+            .unwrap();
+        assert_eq!(state.snapshot()["activity"], installed);
+        assert_eq!(state.check_generation(false, false), generation);
+        assert_eq!(state.check_generation(true, false), generation);
+        assert_eq!(state.snapshot()["activity"], installed);
+        assert!(!state.allows_auto_prefetch());
+        assert!(state.begin_prefetch().is_none());
+        assert!(state
+            .record(generation, serde_json::json!({"state":"downloaded"}), true)
+            .is_none());
+        state.begin();
+        assert!(state.snapshot()["activity"].is_null());
+        assert!(state.allows_auto_prefetch());
+        // 真正退出壳后的新进程没有旧快照，不用磁盘遗留终态替代新事实。
+        assert!(UpdaterPresentationSnapshot::default().snapshot()["activity"].is_null());
+    }
 
     /// ISS-068：断言**名字合同**（非注册护栏）——上游 tauri-plugin-opener 的
     /// `Plugin::name()` 必须等于前端命令前缀 `plugin:opener|open_url` 中的
@@ -2306,6 +2510,88 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ISS-155 接缝：settings.json 的 ``storage_scope`` **形态正确**读取——
+    /// 字符串值原样（去空白）透传；未知键容忍；缺文件/缺键按旧口径 ``None``。
+    #[test]
+    fn storage_scope_reads_string_value_tolerating_unknown_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "fathom-iss155-scope-ok-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录失败");
+        let path = dir.join("settings.json");
+
+        // 缺文件 → None（旧口径「未配置」，非 panic）
+        assert_eq!(
+            storage_scope_setting(&dir),
+            None,
+            "settings.json 缺失必须降级 None"
+        );
+
+        // 缺键 + 未知键容忍：只 get 目标键，同级其他字段形态不影响
+        for (text, expected) in [
+            (
+                r#"{"scan_time": "12:00", "auto_download_updates": false}"#,
+                None::<String>,
+            ),
+            // 正确形态：带首尾空白，取 trim 后值
+            (r#"{"storage_scope": "  documents  "}"#, Some("documents".to_string())),
+            // 无空白原样透传
+            (r#"{"storage_scope": "downloads"}"#, Some("downloads".to_string())),
+            // 未知键共存时仍读得到
+            (
+                r#"{"future_key": {"nested": true}, "storage_scope": "photos"}"#,
+                Some("photos".to_string()),
+            ),
+        ] {
+            std::fs::write(&path, text).expect("写临时 settings 失败");
+            assert_eq!(
+                storage_scope_setting(&dir),
+                expected,
+                "settings.json={text:?} 应读作 {expected:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ISS-155 接缝：``storage_scope`` **形态错误**整体降级 ``None``（旧口径）
+    /// ——不部分取值、不 panic；非字符串、空串/全空白、损坏 JSON 均同归 None。
+    #[test]
+    fn storage_scope_degrades_to_none_on_malformed_shape() {
+        let dir = std::env::temp_dir().join(format!(
+            "fathom-iss155-scope-bad-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("创建临时目录失败");
+        let path = dir.join("settings.json");
+
+        for text in [
+            // 非字符串标量
+            r#"{"storage_scope": null}"#,
+            r#"{"storage_scope": 42}"#,
+            r#"{"storage_scope": true}"#,
+            // 复合形态
+            r#"{"storage_scope": {"value": "documents"}}"#,
+            r#"{"storage_scope": ["documents"]}"#,
+            // 空串/全空白：形态错误，升级为 None 而非 Some("")
+            r#"{"storage_scope": ""}"#,
+            r#"{"storage_scope": "   "}"#,
+            // JSON 损坏
+            "not json at all",
+            r#"{"storage_scope": "documents"#,
+        ] {
+            std::fs::write(&path, text).expect("写临时 settings 失败");
+            assert_eq!(
+                storage_scope_setting(&dir),
+                None,
+                "settings.json={text:?} 形态错误必须整体降级 None（旧口径）"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ISS-113：预下载决策分支——关闭优先（Disabled 压过 AlreadyReady）；
     /// 同版本已缓存 → AlreadyReady；开启未缓存/跨版本缓存 → Download。
     #[test]
@@ -2576,39 +2862,40 @@ mod tests {
         assert_eq!(absent.last().map(String::as_str), Some("0"));
     }
 
-    /// ISS-110：导航目标计算——hash 保留 + 同源跳过。升级失败回滚重启
-    /// helper 后：端口未变 → 同源跳过（设置页失败呈现与 hash 原样保留）；
-    /// 端口变化或首次启动 → 导航到新端口并保留当前 hash，不丢页面上下文。
+    /// ISS-110 同内容 revision 回滚不重载：内存失败态及 hash 均保持。
     #[test]
     fn navigate_target_url_keeps_hash_and_skips_same_origin() {
-        // 首次启动：当前是 tauri 内置页（host 非 127.0.0.1）→ 导航根 URL。
-        let builtin: Url = "tauri://localhost/".parse().unwrap();
-        let (url, skip) = navigate_target_url(7952, Some(&builtin));
-        assert_eq!(url, "http://127.0.0.1:7952/");
-        assert!(!skip, "非本服务源必须真实导航");
-
-        // 无当前 URL（读取失败）→ 同上。
-        let (url, skip) = navigate_target_url(7952, None);
-        assert_eq!(url, "http://127.0.0.1:7952/");
+        let revision = "a".repeat(64);
+        let entry = format!("http://127.0.0.1:7952/_fathom/resources/{revision}/");
+        let settings: Url = format!("{entry}#/settings").parse().unwrap();
+        let (url, skip) = navigate_target_url(7952, Some(&revision), Some(&settings)).unwrap();
+        assert_eq!(url, format!("{entry}#/settings"));
+        assert!(skip, "同源且同revision必须保留内存上下文");
+        let moved: Url = format!("http://127.0.0.1:7953/_fathom/resources/{revision}/#/settings").parse().unwrap();
+        let (url, skip) = navigate_target_url(7952, Some(&revision), Some(&moved)).unwrap();
+        assert_eq!(url, format!("{entry}#/settings"));
         assert!(!skip);
+    }
 
-        // 同端口 + 设置页 hash → 同源跳过（页面不重载，上下文保留）。
-        let settings: Url = "http://127.0.0.1:7952/#/settings".parse().unwrap();
-        let (url, skip) = navigate_target_url(7952, Some(&settings));
-        assert_eq!(url, "http://127.0.0.1:7952/#/settings", "hash 必须保留");
-        assert!(skip, "同源必须跳过导航");
+    #[test]
+    fn navigation_enters_revision_directly_and_reloads_changed_or_bare_origin() {
+        let revision = "b".repeat(64);
+        let entry = format!("http://127.0.0.1:7952/_fathom/resources/{revision}/");
+        for current in [None, Some("tauri://localhost/"), Some("http://127.0.0.1:7952/#/settings"),
+                        Some("http://127.0.0.1:7952/_fathom/resources/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/#/settings")] {
+            let current = current.map(|s| s.parse::<Url>().unwrap());
+            let (url, skip) = navigate_target_url(7952, Some(&revision), current.as_ref()).unwrap();
+            assert!(!skip, "裸/旧revision/首次入口必须真实导航");
+            assert!(url.starts_with(&entry));
+            if current.as_ref().and_then(|u| u.fragment()).is_some() { assert!(url.ends_with("#/settings")); }
+        }
+    }
 
-        // 端口变化（helper 换端口）→ 导航新端口并保留 hash（不导航到根）。
-        let moved: Url = "http://127.0.0.1:7953/#/settings".parse().unwrap();
-        let (url, skip) = navigate_target_url(7952, Some(&moved));
-        assert_eq!(url, "http://127.0.0.1:7952/#/settings");
-        assert!(!skip);
-
-        // 同端口但无 hash → 同源跳过（拼不出 hash 就不附加）。
-        let plain: Url = "http://127.0.0.1:7952/".parse().unwrap();
-        let (url, skip) = navigate_target_url(7952, Some(&plain));
-        assert_eq!(url, "http://127.0.0.1:7952/");
-        assert!(skip);
+    #[test]
+    fn navigation_rejects_missing_or_invalid_revision_without_bare_fallback() {
+        for revision in [None, Some(""), Some("../old"), Some("0.4.1"), Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")] {
+            assert!(navigate_target_url(7952, revision, None).unwrap_err().contains("资源身份"));
+        }
     }
 
     /// ISS-040C：控制面阶段机——begin 复位/推进取消语义（下载中受理、安装
@@ -2738,6 +3025,98 @@ mod tests {
             .expect("子进程必须已退出");
         assert!(!reaped.success(), "被超时终止的 sleep 不应成功退出");
         let _ = child_pid;
+    }
+
+    /// ISS-179：旧 helper 的父进程是壳，而 prepare 是它的兄弟进程。
+    /// 不起额外 reaper；生产 ps -p 只有在壳 wait 后才会判退出。
+    #[test]
+    fn upgrade_wait_reaps_owned_exited_helper() {
+        let runtime = std::env::temp_dir().join(format!("fathom-reap-{}", std::process::id()));
+        let handle = helper::HelperHandle::new(runtime);
+        let child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id();
+        handle.adopt(child, 1, 0);
+        let mut prepare = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("while ps -p {pid} -o pid= >/dev/null; do sleep 0.05; done"))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn().unwrap();
+        let result = wait_child_bounded_polled(
+            &mut prepare, std::time::Duration::from_secs(5), || handle.reap_exited_child(),
+        );
+        assert_eq!(handle.helper_pid(), None, "已退出句柄必须清除");
+        // 红测也回收自有 child，避免留下测试僵尸。
+        handle.stop().unwrap();
+        assert!(result.is_ok(), "壳必须在等待 prepare 时回收旧 helper：{result:?}");
+    }
+
+    /// 显式指定真实冻结 helper 才运行；使用空库、合成扫描根与独立端口。
+    #[test]
+    #[ignore = "requires FATHOM_UPGRADE_TEST_HELPER pointing to a frozen helper"]
+    fn frozen_upgrade_prepare_reaps_shell_owned_helper() {
+        let source = std::path::PathBuf::from(std::env::var("FATHOM_UPGRADE_TEST_HELPER").unwrap());
+        let root = std::env::temp_dir().join(format!("fathom-frozen-reap-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("scanroot")).unwrap();
+        // rollback 会恢复安装区；先复制到测试自有安装区，绝不写原 app。
+        assert!(std::process::Command::new("/bin/cp").arg("-R")
+            .arg(source.parent().unwrap()).arg(root.join("installed-helper"))
+            .status().unwrap().success());
+        let bin = root.join("installed-helper").join("fathom-helper");
+        let identity = probe_helper_identity(&bin).unwrap();
+        let from_version = identity["version"].as_str().unwrap();
+        let to_version = format!("{from_version}-test");
+        let runtime = root.join("runtime");
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        drop(socket);
+        let handle = helper::HelperHandle::new(runtime.clone());
+        struct StopOnDrop<'a>(&'a helper::HelperHandle);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) { let _ = self.0.stop(); }
+        }
+        let _cleanup = StopOnDrop(&handle);
+        let log = std::fs::File::create(root.join("serve.log")).unwrap();
+        let child = std::process::Command::new(&bin)
+            .args(["--runtime-dir", runtime.to_str().unwrap(), "--runtime-mode", "release",
+                   "--port", &port.to_string(), "--port-range", "0", "serve"])
+            .env("FATHOM_SCAN_ROOT", root.join("scanroot"))
+            .env_remove("FATHOM_DB").env_remove("FATHOM_RESOURCE_DIR")
+            .stdout(log.try_clone().unwrap()).stderr(log).spawn().unwrap();
+        let pid = child.id();
+        handle.adopt(child, port, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !matches!(helper::HelperHandle::probe_health(port), helper::ProbeKind::Ours { .. }) {
+            if std::time::Instant::now() > deadline {
+                let _ = handle.stop();
+                panic!("隔离 helper 启动超时；证据 {}", root.display());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        println!("本壳拥有的隔离 helper pid={pid}");
+        // 0.3.6 的 CLI 尚无 --expected-helper-pid，用其原有 argv 合同。
+        let args = ["upgrade-prepare", "--from", from_version, "--to", &to_version,
+                    "--helper-dir", bin.parent().unwrap().to_str().unwrap()];
+        let result = run_upgrade_phase_polled(&bin, &runtime, &args, || handle.reap_exited_child());
+        let _ = handle.stop();
+        let payload = result.unwrap();
+        std::fs::write(root.join("prepare.json"), serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
+        println!("frozen prepare evidence {}: {payload}", root.display());
+        assert_eq!(payload["ok"], true, "真实冻结入口必须完成 prepare：{payload}");
+        assert!(std::path::Path::new(payload["backup_path"].as_str().unwrap()).is_file());
+        assert!(!runtime.join("helper-instance.json").exists());
+        let rollback = run_upgrade_phase(&bin, &runtime, &["upgrade-rollback"]).unwrap();
+        assert_eq!(rollback["ok"], true, "{rollback}");
+    }
+
+    #[test]
+    fn upgrade_wait_poll_failure_reaps_own_coordinator() {
+        let mut child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let result = wait_child_bounded_polled(
+            &mut child, std::time::Duration::from_secs(5), || Err("probe failed".to_string()),
+        );
+        assert_eq!(result, Err("probe failed".to_string()));
+        assert!(child.try_wait().unwrap().is_some(), "错误出口须回收本次协调子进程");
     }
 
     /// ISS-097：有界等待不误伤快速退出的子进程（正常路径语义不变）。

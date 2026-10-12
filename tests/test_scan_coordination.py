@@ -880,8 +880,21 @@ def test_timeout_message_reports_partial_progress_count(tmp_path, monkeypatch):
     生产实证（2026-09-18 run 5）：263 分钟后超时，报文只有"最后输出路径"，
     运维无法区分两种根本不同的故障——(a) du 一直在推进、只是量大跑不完，
     还是 (b) du 卡在某个目录、几乎不推进。二者处置完全不同。本用例先红后绿：
-    让假 du 在 0.3 秒内先后写出两条完整记录再挂起，断言超时报文含有
+    让假 du 先写出两条完整记录再挂起，断言超时报文含有
     "已产出 N 条记录" 进度线索，且 N == 2（只数完整记录，半条碎片不计）。
+
+    ISS-165：时限从 0.4s 提到 5s 以消除 x86_64 CI 的启动时延竞态。
+    run_du 的 deadline 从进入时刻起算（scanner.py 的 started 在 Popen 之前），
+    假 du 子进程"fork/exec + python -c 冷启动 + 首写落管"的时延全部计入
+    时限预算；x86 runner 高负载下该时延可达数百毫秒，逼近 0.4s 时超时先于
+    首条记录落管，报文如实报"已产出 0 条记录"导致断言假红（产品行为正确，
+    错在夹具隐含"首写必然远早于时限"）。假 du 写完 2 条完整记录 + 半条
+    碎片后即永久挂起，时限只是超时触发器，加大预算不改变断言对象——
+    5s 相当于把首写余量放大到 x86 观测尾部（~0.37s，见 ISS-165 复现
+    harness 扫描）的 13 倍，翻转形态需要首写时延 >4.9s，对 python -c
+    不存在该量级。不采用 _DU_READY_HOOK：它在 Popen 之后才被调用而
+    started 早已取值，钩子等待时长同样消耗 deadline 预算，无法真正
+    后移时限起点。
     """
     runtime = tmp_path / "runtime"
     root = tmp_path / "root"
@@ -891,7 +904,9 @@ def test_timeout_message_reports_partial_progress_count(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "REPORTS_DIR", runtime / "reports")
     monkeypatch.setattr(config, "LOGS_DIR", runtime / "logs")
     monkeypatch.setattr(config, "DEFAULT_ROOT", root)
-    monkeypatch.setattr(config, "DU_TIMEOUT_S", 0.4)
+    # ISS-165：5s 时限覆盖子进程启动到首写的全部时延（见 docstring），
+    # 假 du 写完记录即挂起，超时照常触发，断言语义不变。
+    monkeypatch.setattr(config, "DU_TIMEOUT_S", 5.0)
     monkeypatch.setattr(scanner, "_lsof_du_cwd", lambda pid: "")
 
     real_popen = subprocess.Popen
@@ -917,7 +932,7 @@ def test_timeout_message_reports_partial_progress_count(tmp_path, monkeypatch):
     with pytest.raises(scanner.ScanInterruptedError) as excinfo:
         scan_coordinator.run_scan(source="cli", root=root)
     message = str(excinfo.value)
-    assert "du 超过 0.4 秒安全时限" in message
+    assert "du 超过 5 秒安全时限" in message
     # 进度线索：只数完整记录（2 条），末条路径为 /b。
     assert "已产出 2 条记录" in message
     assert "/b" in message

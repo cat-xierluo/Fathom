@@ -6,8 +6,11 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - GET  /api/volume-trend     卷容量趋势序列
 - GET  /api/trees            某快照的目录树（旭日图数据）
 - GET  /api/diff             两快照差分
+- GET  /api/diff/children    绑定 a/b 区间的直属子目录差分（ISS-147）
 - GET  /api/trend?path=      单目录历史大小序列
-- GET  /api/bigfiles         近期大文件
+- GET  /api/bigfiles         近期大文件（?wait=false 立即返回 task_id 句柄）
+- GET  /api/bigfiles/status?task_id=   大文件任务状态（running/五态/cancelled）
+- POST /api/bigfiles/cancel  取消大文件任务（需写令牌；句柄即凭证）
 - GET  /api/bootstrap        发放写令牌（同源受控，ISS-022）
 - POST /api/scan             触发手动扫描（后台执行，状态入 scan_runs 表）
 - GET  /api/scan/status      查询扫描任务状态（?history=N 附最近 N 条记录）
@@ -21,7 +24,7 @@ API 清单（自动文档见 http://127.0.0.1:7952/docs）：
 - POST /api/analysis/jobs              执行预览（只收 preview_id/digest/幂等键）
 - GET  /api/analysis/jobs/{id}         查询 job 状态（纯读无副作用）
 - GET  /api/analysis/jobs?a=&b=        按区间查在途 job（仅非终态，ISS-120）
-- POST /api/analysis/jobs/{id}/cancel  取消（终态不复活）
+- POST /api/analysis/jobs/{id}/cancel  取消（本次受理 200；到达前已终结 409）
 - GET  /api/analyses?a=&b=             某 a→b 区间的历史解读（含过期原因）
 - DELETE /api/analyses/{id}            撤销解读（删除正文与关联事实包）
 
@@ -56,17 +59,17 @@ import sqlite3
 import subprocess
 import threading
 from pathlib import Path
+from typing import Optional, Sequence
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from . import SERVICE_IDENTITY, __version__, __protocol_version__
 from . import agent_runtime
 from . import analysis_manager
-from . import bigfiles, config, db, launchd, reports, scan_coordinator
+from . import bigfiles, config, db, hierarchy, launchd, reports, scan_coordinator
 
 # version 只从单一版本源 fathom.__version__ 读取（ISS-037）；本文件内
 # 禁止再出现硬编码语义化版本字面量，校验器会拦截。
@@ -221,7 +224,17 @@ def api_health():
         "pid": os.getpid(),
         "port": config.PORT,
         "runtime_mode": config.get_runtime_config().mode,
+        "frontend_revision": _frontend_resources.revision if _frontend_resources else None,
     }
+
+
+@app.get("/api/frontend-manifest")
+def api_frontend_manifest():
+    """只读资源身份；无本机路径，无扫描或设置副作用。"""
+    if _frontend_resources is None:
+        raise HTTPException(503, "前端资源不可用")
+    return JSONResponse(_frontend_resources.manifest(),
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/status")
@@ -276,6 +289,14 @@ def api_status():
 
 @app.get("/api/snapshots")
 def api_snapshots():
+    """快照列表（含卷容量）。
+
+    ISS-176：下发 ``plan_id``（新身份行非空，legacy 行为 null），前端
+    ``changes.js`` 的 datasetKey 据此分两档（plan 档按 plan_id、legacy 档
+    按三元组），与后端 ``reports.same_dataset`` 同一口径——此前前端拿不到
+    plan_id，只能把新身份行按三元组并进 legacy 窗口。字段命名与既有响应
+    一致，直接取列值不做派生。
+    """
     conn = _get_conn()
     try:
         rows = conn.execute(
@@ -283,6 +304,7 @@ def api_snapshots():
                       s.min_kb, s.collection_status,
                       s.vanished_count, s.exclude_names,
                       s.confirmed_missing_count, s.path_unverified_count,
+                      s.plan_id,
                       v.total_bytes, v.free_bytes
                FROM snapshots s LEFT JOIN volume_stats v ON v.snapshot_id = s.id
                ORDER BY s.created_at DESC, s.id DESC"""
@@ -297,17 +319,36 @@ def api_volume_trend(limit: int = Query(120, ge=2, le=2000)):
     """卷容量趋势：最新快照所属数据集（同根同 min_kb，ISS-021 口径）内
     先取最新 N 条，再正序输出（AUD-09：旧实现 ASC LIMIT 取的是最早 N 条，
     序列超过 limit 时最新点反而被截掉；跨数据集历史也不得混点）。
+
+    ISS-155 审计返修 B1 —— **窗口限定 legacy**（``plan_id IS NULL``）：
+    ISS-154 范围扫描写入的新身份快照会与 legacy 历史混成一条「可比」折线
+    且不报错，与 /api/trend、/api/diff 的显式拒绝直接矛盾。
+
+    选「限定 legacy」而非 409 拒绝的理由：本端点不接受任何快照/范围参数
+    （无 a/b、无 anchor、无 path），调用方**没有可被拒绝的显式身份**，
+    能拒绝的对象不存在。语义对齐 reports.find_same_dataset_snapshot_rows
+    与 analysis_manager._evaluate_expiry 的既有先例：别的 plan 即便同根同
+    阈值同排除同一天，也不混入 legacy 窗口。
+
+    锚点同样必须取 legacy 最新行：若锚点取了新身份行，再用它的 root/min_kb
+    去选窗口，会把一条 legacy 曲线挂到新身份计划的阈值上——那正是本次要
+    消除的混读。响应仍是数组（旧 volume-trend 消费者兼容，ISS-157 要求），
+    排除事实通过「新身份行不在结果里」直接可观测。
     """
     conn = _get_conn()
     try:
-        latest = _latest_snapshots(conn, 1)
+        latest = conn.execute(
+            """SELECT * FROM snapshots
+               WHERE plan_id IS NULL
+               ORDER BY created_at DESC, id DESC LIMIT 1"""
+        ).fetchone()
         if not latest:
             return []
-        anchor = latest[0]
+        anchor = latest
         rows = conn.execute(
             """SELECT s.created_at, v.total_bytes, v.free_bytes
                FROM snapshots s JOIN volume_stats v ON v.snapshot_id = s.id
-               WHERE s.root = ? AND s.min_kb IS ?
+               WHERE s.root = ? AND s.min_kb IS ? AND s.plan_id IS NULL
                ORDER BY s.created_at DESC, s.id DESC
                LIMIT ?""",
             (anchor["root"], anchor["min_kb"], limit),
@@ -402,6 +443,123 @@ def api_trees(snapshot_id: int | None = None, min_kb: int = Query(51200, ge=1)):
         conn.close()
 
 
+# ---------- 跨身份闸门（ISS-155 引入，ISS-176 按完整身份放开） ----------
+#
+# ISS-153 起的范围快照带 ``plan_id``（新身份），legacy 行为 NULL。跨快照
+# 读取（diff / trend / children 树）依赖 ``(root, min_kb, exclude_names)``
+# 三元组身份——三元组**无法区分同一目录在不同计划下的两次采集**，拿它读
+# 新身份行会静默产出「看起来可比、实际口径不同」的折线/排名（AUD-05 同类）。
+#
+# ISS-155 的做法是把带 plan_id 的行**一律** 409 掉（范围能力未落地时的
+# 占位闸门）。ISS-176 补齐范围侧身份后该占位不再成立：v8 的 plan_id 已
+# 编码规范根/范围卷/计量版本/阈值/排除掩码，**同 plan 即可比**，两档口径
+# 统一由 ``reports.same_dataset`` 承担。本闸门只负责它之前那一层：
+# 两侧身份**互相矛盾**时（跨 plan、legacy↔plan 混搭）显式 409，
+# **绝不**回落 legacy 三元组口径去混读。
+#
+# legacy 行（plan_id 为 NULL，或窄行无该列）行为逐字节不变。
+_NEW_IDENTITY_HTTP = 409
+_NEW_IDENTITY_CODE = "plan_identity_unsupported"
+
+
+def _row_plan_id(row: object) -> object:
+    """读快照行的 plan_id；窄行（旧库/测试夹具）无该列时按 legacy 处理。"""
+    try:
+        return row["plan_id"]  # type: ignore[index]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _reject_mixed_plan_identity(
+    rows: Sequence[tuple[str, object]],
+) -> None:
+    """两侧身份互相矛盾即 409 拒绝（跨 plan / legacy↔plan 混搭）。
+
+    ``rows`` 为 ``(标签, 快照行)`` 序列。判定分两档（与
+    ``reports.same_dataset`` 同一口径，ISS-176 对齐）：
+
+    - 全部 legacy（plan_id 皆为空）：本闸门直接放行，后续三元组口径
+      （同根同 min_kb 同排除掩码）按 ISS-021/ISS-066 既有语义判定；
+    - 全部新身份且 plan_id 相同：放行——v8 的 plan_id 已编码规范根、
+      范围卷、计量版本、阈值与排除掩码，同 plan 即可比，跨快照读取
+      按完整身份工作（ISS-176）；
+    - 其余（plan_id 不同，或一侧新身份一侧 legacy）：矛盾，409 拒绝。
+
+    标签只进消息（告诉调用方是哪个快照参数被拒），不参与判定。抛
+    ``HTTPException`` 而非静默降级：矛盾身份下按三元组混读会产出
+    「看起来可比、实际口径不同」的折线/排名。快照本身仍可在
+    ``/api/snapshots`` 与 ``/api/status`` 中查看。
+    """
+    plans = [(label, _row_plan_id(row)) for label, row in rows]
+    if all(plan is None for _label, plan in plans):
+        return  # 纯 legacy 档：交回三元组口径
+    if all(plan is not None for _label, plan in plans) \
+            and len({plan for _label, plan in plans}) == 1:
+        return  # 同一计划的两次采集：按完整身份可比
+    offending = [label for label, plan in plans if plan is not None]
+    if not offending:
+        offending = [label for label, plan in plans]
+    labels = "、".join(offending)
+    raise HTTPException(
+        _NEW_IDENTITY_HTTP,
+        detail={
+            "error": "plan_identity_unsupported",
+            "code": _NEW_IDENTITY_CODE,
+            "message": (
+                f"{labels} 的数据集身份互相矛盾（跨 plan_id，或新身份与 legacy "
+                "混搭）。跨快照的对比/趋势需要同一范围计划下的可比性判定，"
+                "已明确拒绝而不是按旧单根三元组口径混读。同一 plan_id 的两个"
+                "快照可正常对比；快照本身仍可在 /api/snapshots 与 /api/status "
+                "中查看。"
+            ),
+            "snapshots": offending,
+        },
+    )
+
+
+def _new_identity_scope_active() -> bool:
+    """已选范围是否为新身份（范围选择只在新身份版本下才能落盘）。"""
+    return config.effective_scope_selection() is not None
+
+
+def _bigfiles_scope_key() -> str:
+    """已选范围的身份串，进 bigfiles 去重/缓存键（ISS-176）。
+
+    未启用范围时返回空串——legacy 旧口径的键与 ISS-155 之前逐字节一致，
+    旧缓存条目继续可命中，既有行为零变化。启用范围时把 mode、按位置成对的
+    规范根与 scope_id、container_id 一起并入：不同范围选择（含同一目录归属
+    不同计划的组合）产生不同键，两个计划的结果不会互相复用。含
+    ``identity_version``，范围身份口径升级时旧键自然失效。
+    """
+    selection = config.effective_scope_selection()
+    if selection is None:
+        return ""
+    parts = [str(selection.mode), str(selection.identity_version)]
+    roots = list(selection.roots)
+    scope_ids = list(selection.scope_ids)
+    for idx, root in enumerate(roots):
+        scope_id = scope_ids[idx] if idx < len(scope_ids) else ""
+        parts.append(f"{root}#{scope_id}")
+    parts.append(str(selection.container_id or ""))
+    return "|".join(parts)
+
+
+def _reject_bigfiles_under_new_identity() -> None:
+    """保留：bigfiles 的新身份闸门（ISS-176 起不再按范围启用即拒绝）。
+
+    ISS-150 的 ``BigfilesManager`` 去重/缓存键原只含「规范根 + 模式 + 参数 +
+    范围配置版本」，**不含 scope_id/plan_id**，范围启用后同一目录可能属于
+    不同计划下的不同数据集，按旧键去重会把两个计划的结果互相复用。ISS-176
+    在 ``bigfiles.BigfilesQuery.key`` 补入范围身份（``scope_key``）后该缝
+    已闭合：不同范围选择不再共享去重/缓存条目，故本函数不再拒绝任何请求，
+    保留函数体为空转仅为不改动 ``/api/bigfiles`` 的调用形状与既有断言。
+
+    与 reveal 的差别不变：reveal 逐路径判定，多范围天然支持；bigfiles 是
+    **单根聚合查询**，其口径现在由去重键里的范围身份逐次绑定。
+    """
+    return None
+
+
 @app.get("/api/diff")
 def api_diff(
     a: int | None = None,
@@ -430,6 +588,9 @@ def api_diff(
             if row is None:
                 raise HTTPException(404, f"快照 {sid} 不存在")
             meta[sid] = row
+        # ISS-176：身份矛盾闸门先于同口径校验（跨 plan/混搭若落到三元组
+        # 会得到失真的 dataset_mismatch）。同 plan 对与 legacy 对均放行。
+        _reject_mixed_plan_identity(((f"快照 {a}", meta[a]), (f"快照 {b}", meta[b])))
         if not reports.same_dataset(meta[a], meta[b]):
             raise HTTPException(
                 400,
@@ -448,24 +609,200 @@ def api_diff(
         conn.close()
 
 
+@app.get("/api/diff/children")
+def api_diff_children(
+    a: int = Query(...),
+    b: int = Query(...),
+    path: str | None = None,
+    cursor: str | None = None,
+    limit: int = Query(hierarchy.CHILDREN_DEFAULT_LIMIT, ge=1,
+                       le=hierarchy.CHILDREN_MAX_LIMIT),
+    filter: str = Query("all"),
+    sort: str = Query("delta"),
+):
+    """绑定历史区间的同级差分（ISS-147）：a→b 区间内某目录的直属子目录。
+
+    与 /api/diff（Top25 折叠列表）和 /api/browse（恒绑定最新快照）互补，
+    为树形展开提供真实数据，不要求从折叠列表猜树：
+
+    - a/b 必填且严格绑定本次请求：old 取 a、new 取 b，不受更新快照影响；
+    - a/b 必须同数据集（同根同阈值同排除掩码），否则 400；
+    - path 按路径段落在数据集根内（默认根本身），越界/相对/含 `.`、`..`
+      段 400；两侧既无直接记录也无任何已记录后代时 404（如实说明可能
+      低于阈值或权限受限，不冒充空目录）；
+    - 行状态：measured（两侧直接记录，delta 可为 0）/ first_recorded
+      （b 首次入库，不代表文件系统新建）/ unrecorded（b 未记录，不是
+      删除证据）/ structural（双侧无直接记录、仅有已记录后代的导航
+      节点）；单侧缺测与结构节点 old/new/delta 为 null，不填 0；
+    - filter=changed 保留自身命中或有命中后代的行——父净 0 且子 +20/-20
+      抵消的整枝不被漏掉；排序只在同级内进行；
+    - 分页显式可见（total/has_more/next_cursor），游标绑定
+      a/b/path/filter/sort，任一变化即 400 需重新从首页请求；未展示分页
+      不得当作「未细分变化」；不提供子树净增量合计（目录累计不可相加）。
+    """
+    if filter not in hierarchy.FILTER_VALUES:
+        raise HTTPException(
+            400, f"filter 必须是 {'/'.join(hierarchy.FILTER_VALUES)}：{filter!r}")
+    if sort not in hierarchy.SORT_VALUES:
+        raise HTTPException(
+            400, f"sort 必须是 {'/'.join(hierarchy.SORT_VALUES)}：{sort!r}")
+    conn = _get_conn()
+    try:
+        meta: dict[int, dict] = {}
+        for sid in (a, b):
+            row = conn.execute("SELECT * FROM snapshots WHERE id=?", (sid,)).fetchone()
+            if row is None:
+                raise HTTPException(404, f"快照 {sid} 不存在")
+            meta[sid] = row
+        # ISS-176：身份矛盾闸门先于同口径校验（跨 plan/混搭若落到三元组
+        # 会得到失真的 dataset_mismatch）。同 plan 对与 legacy 对均放行。
+        _reject_mixed_plan_identity(((f"快照 {a}", meta[a]), (f"快照 {b}", meta[b])))
+        if not reports.same_dataset(meta[a], meta[b]):
+            raise HTTPException(
+                400,
+                f"快照 {a} 与 {b} 不属于同一数据集（同根同口径），已拒绝跨数据集对比",
+            )
+        try:
+            target = hierarchy.normalize_target(path, meta[a]["root"])
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+        offset = 0
+        if cursor is not None:
+            payload = hierarchy.decode_cursor(cursor)
+            if payload is None:
+                raise HTTPException(400, "游标无效：无法解码")
+            if (not hierarchy.cursor_matches(
+                    payload, a=a, b=b, path=target, filter=filter, sort=sort)
+                    or hierarchy.cursor_offset(payload) is None):
+                raise HTTPException(
+                    400, "游标与当前查询参数（a/b/path/filter/sort）不匹配，"
+                         "请从首页重新请求")
+            offset = payload["offset"]
+
+        collected = hierarchy.collect_children(conn, a, b, target)
+        parent = collected["parent"]
+        if (not collected["children"]
+                and parent.old_kb is None and parent.new_kb is None):
+            raise HTTPException(
+                404,
+                f"路径 {target} 在快照 {a} 与 {b} 中均无记录"
+                "（可能低于入库阈值或权限受限）",
+            )
+
+        rows = list(collected["children"].values())
+        if filter == "changed":
+            rows = [r for r in rows if r.self_changed or r.has_changed_descendants]
+        rows = hierarchy.sort_rows(rows, sort)
+        total = len(rows)
+        page = rows[offset:offset + limit]
+        has_more = offset + limit < total
+        next_cursor = None
+        if has_more:
+            next_cursor = hierarchy.encode_cursor({
+                "v": 1, "a": a, "b": b, "path": target,
+                "filter": filter, "sort": sort, "offset": offset + limit,
+            })
+
+        return {
+            "a": dict(meta[a]),
+            "b": dict(meta[b]),
+            "dataset": {
+                "root": meta[a]["root"],
+                "min_kb": meta[a]["min_kb"],
+                # v5+ schema 恒有该列；NULL 不可能出现（NOT NULL DEFAULT ''）
+                "exclude_names": meta[a]["exclude_names"] or "",
+                # ISS-176：下发身份档位，供前端两档收敛（与 same_dataset 同口径）
+                "plan_id": _row_plan_id(meta[a]),
+            },
+            "path": target,
+            "ancestors": [r.to_dict() for r in hierarchy.ancestor_rows(
+                conn, a, b, meta[a]["root"], target)],
+            "parent": parent.to_dict(),
+            "children": [r.to_dict() for r in page],
+            "counts": {"a_entries": collected["a_entries"],
+                       "b_entries": collected["b_entries"]},
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(page),
+                "total": total,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            },
+            "query": {"filter": filter, "sort": sort},
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/trend")
 def api_trend(path: str = Query(..., min_length=1),
-              limit: int = Query(120, ge=2, le=2000)):
-    """单目录历史大小序列。
+              limit: int = Query(120, ge=2, le=2000),
+              anchor_snapshot_id: Optional[int] = Query(None)):
+    """单目录历史大小序列（ISS-149：显式锚定 + 缺测窗口；兼容旧形态）。
 
-    口径（ISS-024）：
-    - 数据集隔离：以"最新一条记录该路径的快照"为锚，只返回锚快照同数据集
-      （同根同 min_kb）内的点。嵌套监控根或改阈值后，同一绝对路径可能存在
-      于多个数据集，跨数据集混点会画出不可比的折线（AUD-09 同类反例）。
-    - 最新窗口：先取最新 N 条再正序输出，超过 limit 时最新点必须保留
-      （旧实现 ASC LIMIT 截掉的是最新端）。
-    - gap 语义：只返回确有记录的历史点；路径在中间某些快照缺失时缺不补点。
-    - 路径从未有记录：200 + 空 points（是"无记录"不是错误，与 400/404 区分）。
+    两种形态由 anchor_snapshot_id 区分：
+
+    - 锚定调用（anchor_snapshot_id 显式）：以该快照的**数据集身份**
+      （root, min_kb, exclude_names，经 reports.dataset_identity，153 扩展
+      身份后自动继承）取同数据集快照窗口，窗口内**每个快照一个点**（时间
+      正序）：有记录 recorded=true 且 size_kb 为实测值；无条目 size_kb=null、
+      recorded=false（缺测不补 0，前端以 connectNulls=false 断线呈现）。
+      每点带 snapshot_id 与完整扫描时间 created_at，同日多次扫描可区分。
+      limit 截"最新 N 个快照"再正序输出：数据集快照总数超过 limit 时
+      truncated=true（截掉的是最早端，最新点必在）。响应含数据集身份
+      dataset 与 total_snapshots/truncated 截断说明；锚快照不存在 → 404；
+      路径在该数据集从未记录 → 200 + 全 null 点（"窗口在、点缺"，不是错误）。
+    - 旧调用（无 anchor_snapshot_id，兼容）：以"最新一条记录该路径的快照"
+      为锚，points 只含确有记录的点（{created_at, size_kb}），ISS-024 gap
+      语义与响应形态不变（缺不补点、路径从未记录返回空 points）。
+
+    数据集隔离（ISS-024 口径 + ISS-149 收紧）：嵌套监控根、改阈值或改排除
+    掩码都会形成不同数据集，跨数据集混点会画出不可比的折线（AUD-09 同类
+    反例、ISS-066 三元组身份）；两种形态的数据集谓词统一走 reports 辅助
+    （find_same_dataset_snapshot_rows），不在本端点另写身份过滤。
     """
     conn = _get_conn()
     try:
+        if anchor_snapshot_id is not None:
+            anchor = conn.execute(
+                "SELECT * FROM snapshots WHERE id=?", (anchor_snapshot_id,)
+            ).fetchone()
+            if anchor is None:
+                raise HTTPException(404, f"快照 {anchor_snapshot_id} 不存在")
+            # ISS-176：锚定形态按锚快照的完整身份取窗口（find_same_dataset_snapshot_rows
+            # 已按 plan_id 分档），跨身份矛盾由 _reject_mixed_plan_identity 兜底。
+            identity = reports.dataset_identity(anchor)
+            all_rows = reports.find_same_dataset_snapshot_rows(conn, identity)
+            truncated = len(all_rows) > limit
+            window_rows = all_rows[-limit:] if truncated else all_rows
+            recorded = {
+                r["snapshot_id"]: r["size_kb"]
+                for r in conn.execute(
+                    "SELECT snapshot_id, size_kb FROM entries WHERE path = ?", (path,))
+            }
+            points = [
+                {"snapshot_id": row["id"], "created_at": row["created_at"],
+                 "size_kb": recorded.get(row["id"]),
+                 "recorded": row["id"] in recorded}
+                for row in window_rows
+            ]
+            return {
+                "path": path,
+                "anchor_snapshot_id": anchor["id"],
+                "dataset": {"root": identity[0], "min_kb": identity[1],
+                            "exclude_names": identity[2],
+                            # ISS-176：随响应下发身份档位，前端据此判断
+                            # 窗口是 plan 档（按 plan_id）还是 legacy 档
+                            # （按三元组），与 datasetKey 两档判定同源。
+                            "plan_id": identity[3] if len(identity) > 3 else None},
+                "points": points,
+                "total_snapshots": len(all_rows),
+                "truncated": truncated,
+            }
         anchor = conn.execute(
-            """SELECT s.id, s.root, s.min_kb FROM entries e
+            """SELECT s.* FROM entries e
                JOIN snapshots s ON s.id = e.snapshot_id
                WHERE e.path = ?
                ORDER BY s.created_at DESC, s.id DESC LIMIT 1""",
@@ -473,25 +810,62 @@ def api_trend(path: str = Query(..., min_length=1),
         ).fetchone()
         if anchor is None:
             return {"path": path, "points": []}
-        rows = conn.execute(
-            """SELECT s.created_at, e.size_kb FROM entries e
-               JOIN snapshots s ON s.id = e.snapshot_id
-               WHERE e.path = ? AND s.root = ? AND s.min_kb IS ?
-               ORDER BY s.created_at DESC, s.id DESC
-               LIMIT ?""",
-            (path, anchor["root"], anchor["min_kb"], limit),
-        ).fetchall()
-        rows.reverse()  # 输出时间正序
-        return {"path": path, "points": [dict(r) for r in rows]}
+        # ISS-176：旧形态（无显式锚）同样按锚快照的完整身份取窗口（下方
+        # dataset_identity + find_same_dataset_snapshot_rows 已按 plan_id 分档），
+        # 新身份点不再被拒，也不再被旧三元组窗口连成混读折线。单行锚定不存在
+        # 「两侧身份矛盾」，故不需要 _reject_mixed_plan_identity。
+        # 旧形态兼容：与旧实现逐点等价——数据集内该路径**有记录的点**按
+        # (created_at, id) 倒序取最新 limit 条再正序输出（缺测快照本就不
+        # 出现）。数据集身份（窗口）来自 reports 辅助，entries 只按 path 取。
+        dataset_rows = reports.find_same_dataset_snapshot_rows(
+            conn, reports.dataset_identity(anchor))
+        size_by_sid = {
+            r["snapshot_id"]: r["size_kb"]
+            for r in conn.execute(
+                "SELECT snapshot_id, size_kb FROM entries WHERE path = ?", (path,))
+        }
+        recorded_in_dataset = [
+            (row["created_at"], row["id"], size_by_sid[row["id"]])
+            for row in dataset_rows if row["id"] in size_by_sid
+        ]
+        recorded_in_dataset.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        legacy = [
+            {"created_at": created_at, "size_kb": size_kb}
+            for created_at, _sid, size_kb in recorded_in_dataset[:limit]
+        ]
+        legacy.reverse()
+        return {"path": path, "points": legacy}
     finally:
         conn.close()
+
+
+def _bigfiles_allowed_roots() -> Optional[list[Path]]:
+    """bigfiles 查询的**生效范围根**列表；``None`` = 未启用范围（legacy 旧根）。
+
+    ISS-177：范围启用后，实际查询范围必须跟着用户已选范围走，而不是继续用
+    旧的单根 ``DEFAULT_ROOT``——否则显式 path 会被错误拒绝（该目录就在生效
+    范围内），且无 path 时会静默继续查旧根。返回按选择顺序的根（顺序即
+    ISS-155 的采集顺序，首根即缺省查询根）。
+
+    未启用时返回 None，``bigfiles.resolve_query_root`` 走 ISS-150 单根旧口径，
+    行为与去重键逐字节不变。
+    """
+    selection = config.effective_scope_selection()
+    if selection is None:
+        return None
+    roots = [Path(root) for root in selection.roots]
+    return roots or None
 
 
 @app.get("/api/bigfiles")
 def api_bigfiles(days: int = Query(7, ge=1, le=90),
                  min_mb: int = Query(100, ge=1, le=10240),
-                 topn: int = Query(50, ge=1, le=200)):
-    """近期大文件查询（ISS-032）。
+                 topn: int = Query(50, ge=1, le=200),
+                 mode: str = Query("recent", pattern="^(recent|largest)$"),
+                 path: Optional[str] = Query(None),
+                 wait: bool = Query(True)):
+    """近期大文件 / 当前最大文件查询（ISS-032；ISS-150 扩展 mode/path；
+    ISS-164 扩展 task_id/wait）。
 
     显式触发语义：每次请求经 ``BigfilesManager.submit``；同参数并发请求自动
     去重；TTL 缓存可命中、过期可辨；find 进程组可被取消/超时回收。返回字段
@@ -500,34 +874,98 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
     /``error_message``/``raw_truncated``，前端据此展示进度、范围、失败、截断
     与过期缓存。失败/权限受限返回 200 + ``state`` 字段（语义可辨），仅坏参
     数由全局 ``RequestValidationError`` 处理器返回 400。
+
+    ISS-150：
+    - ``mode=largest`` 按当前 st_size 逻辑大小排序，不带 mtime 过滤；
+      ``mode=recent``（缺省）保持既有行为，旧 GET 调用不变。
+    - ``path`` 限定查询目录：仅接受监控根内的规范化目录（经
+      ``bigfiles.resolve_query_root``，拒绝 ``..``/相似前缀根/符号链接越界，
+      路径已移走返回 404）；不传即监控根。
+    - ISS-177（查询范围语义）：范围启用后，**校验与缺省根都以已选范围为准**，
+      不再按旧根 ``DEFAULT_ROOT`` 判定——显式 path 落在任一已选根内即可查，
+      无 path 时取**第一个已选根**（ISS-155 保存语义里 roots 的顺序即采集
+      顺序，首根即主根）。``scope.root``/``scope.resolved_root``/
+      ``scope.scope_roots`` 如实反映实际查询范围。范围未启用时逐字节回落
+      旧单根口径（``scope_roots`` 为 null）。
+    - ``incomplete=True`` 表示时间/输出预算提前截断，``files`` 只是
+      「已检查文件中的较大项」而非目录的当前最大文件。
+    - ``stats.started_at``/``stats.finished_at`` 为查询起止（epoch 秒）。
+
+    ISS-164（任务句柄与取消的产品入口）：
+    - 响应新增 ``task_id``：由去重键确定性派生（``bf-`` + sha256 前 16 位），
+      同参并发去重与按句柄寻址因此落在同一条任务上；``task_id`` 不泄露
+      完整 root 路径。选确定性哈希而非 UUID 的完整理由见
+      ``bigfiles.BigfilesManager.task_id_for`` 的 docstring。
+    - ``wait=false``（新增参数，缺省 ``true`` = 旧行为）立即返回 202 +
+      ``task_id``/``state``/``scope``，**不阻塞**等 find：这是前端「离开页面
+      / 改查询范围时取消本任务」能拿到句柄的前提——浏览器中止 HTTP 请求只
+      断连接、不取消服务端 find，取消必须显式走 ``POST /api/bigfiles/cancel``。
+      此时结果本体仍从本端点（``wait=true``）按原参数取。
+    - ``wait=true`` 语义逐字段不变（仅新增 ``task_id``）：旧前端/CLI 零改动；
+      被取消/超时时 409/504 响应体附增 ``task_id`` 供前端恢复句柄。
     """
-    manager = _get_bigfiles_manager()
-    future = manager.submit(
-        config.DEFAULT_ROOT, days=days, min_mb=min_mb, topn=topn,
-        timeout=config.BIGFILE_FIND_TIMEOUT_S,
-    )
+    # ISS-176：范围身份已并入去重/缓存键，闸门不再拒绝（见函数 docstring）。
+    _reject_bigfiles_under_new_identity()
+    # ISS-177：实际查询范围随**生效范围**走（未启用时为 None = 旧单根口径）。
+    allowed_roots = _bigfiles_allowed_roots()
     try:
-        result = future.result(timeout=config.BIGFILE_FIND_TIMEOUT_S + 1.0)
+        resolved_root = bigfiles.resolve_query_root(path,
+                                                     allowed_roots=allowed_roots)
+    except bigfiles.BigfilesScopeError as exc:
+        raise HTTPException(exc.status, str(exc))
+    timeout_s = (config.BIGFILE_LARGEST_TIMEOUT_S if mode == "largest"
+                 else config.BIGFILE_FIND_TIMEOUT_S)
+    manager = _get_bigfiles_manager()
+    # ISS-176：把已选范围身份并入去重/缓存键——不同范围选择（或与未启用范围
+    # 的旧口径）不再共享同一条查询结果，因此无需再对已启用范围一律 409。
+    future = manager.submit(
+        resolved_root, days=days, min_mb=min_mb, topn=topn, mode=mode,
+        timeout=timeout_s, scope_key=_bigfiles_scope_key(),
+    )
+    task_id = future.task_id
+    scope = {
+        # ISS-177：``root``/``resolved_root`` 必须如实反映**实际查询范围**，
+        # 不能在范围启用后仍回显旧根（旧根此时根本没被查过）。
+        "root": str(allowed_roots[0]) if allowed_roots
+        else str(config.DEFAULT_ROOT),
+        "resolved_root": str(resolved_root),
+        "scope_roots": [str(root) for root in allowed_roots]
+        if allowed_roots else None,
+        "requested_path": path,
+        "mode": mode,
+        "days": days,
+        "min_mb": min_mb,
+        "topn": topn,
+    }
+    if not wait:
+        # 非阻塞提交：立刻交句柄（202），不碰结果本体。state 如实——缓存命中
+        # 的同参请求此时已是终态（terminal=true），前端应改走 wait=true 取本体。
+        submitted = manager.status_view(task_id)
+        return JSONResponse(
+            {"task_id": task_id, "state": submitted["state"],
+             "terminal": submitted["terminal"], "submitted": True,
+             "scope": scope},
+            status_code=202,
+        )
+    try:
+        result = future.result(timeout=timeout_s + 1.0)
     except concurrent.futures.CancelledError:
         return JSONResponse(
-            {"detail": "大文件查询已取消"},
+            {"detail": "大文件查询已取消", "task_id": task_id,
+             "state": "cancelled"},
             status_code=409,
         )
     except concurrent.futures.TimeoutError:
         future.cancel()
         return JSONResponse(
-            {"detail": "大文件查询超时，请稍后重试"},
+            {"detail": "大文件查询超时，请稍后重试", "task_id": task_id},
             status_code=504,
         )
     return {
         "state": result.state.value,
+        "task_id": task_id,
         "files": result.files,
-        "scope": {
-            "root": str(config.DEFAULT_ROOT),
-            "days": days,
-            "min_mb": min_mb,
-            "topn": topn,
-        },
+        "scope": scope,
         "stats": {
             "wall_ms": result.stats.wall_ms,
             "peak_rss_bytes": result.stats.peak_rss_bytes,
@@ -535,14 +973,71 @@ def api_bigfiles(days: int = Query(7, ge=1, le=90),
             "find_exit_code": result.stats.find_exit_code,
             "find_stderr_lines": result.stats.find_stderr_lines,
             "permission_denied_lines": result.stats.permission_denied_lines,
+            "started_at": result.stats.started_at,
+            "finished_at": result.stats.finished_at,
         },
         "truncated": result.truncated,
         "raw_truncated": result.raw_truncated,
+        "incomplete": result.incomplete,
         "expired": result.state == bigfiles.BigfilesState.EXPIRED,
         "cached": result.cached,
         "cache_age_s": result.cache_age_s,
         "error_message": result.error_message,
     }
+
+
+@app.get("/api/bigfiles/status")
+def api_bigfiles_status(task_id: str = Query(...)):
+    """按 task_id 查大文件任务状态（ISS-164，纯读、无副作用、无需写令牌）。
+
+    返回真实状态与既有五态对齐：在途 ``running``；终态为 ``BigfilesState``
+    六态之一或 ``cancelled``。另含 ``terminal``/``cancel_requested``/
+    ``created_at``/``finished_at``/``error_message``/``scope``（scope 不含
+    requested_path——状态查询只从句柄知道查询本身，不回显调用方原始输入）。
+
+    **不含结果本体**：``files``/``stats`` 等仍从 ``GET /api/bigfiles`` 按原
+    参数按需取（命中缓存或在途去重），状态查询保持轻量、可高频轮询。
+    未知或已超出保留期的 task_id → 404；缺参数 → 400。
+    """
+    try:
+        return _get_bigfiles_manager().status_view(task_id)
+    except bigfiles.BigfilesTaskNotFound:
+        raise HTTPException(404, "未知或已过期的 task_id")
+
+
+@app.post("/api/bigfiles/cancel")
+def api_bigfiles_cancel(payload: Optional[dict] = Body(default=None)):
+    """按 task_id 取消大文件任务（ISS-164，需写令牌 X-Fathom-Token）。
+
+    守卫：POST 走既有 ``local_boundary_guard`` 写令牌闸门（缺/伪造令牌 403），
+    与 ``POST /api/scan``/``/api/reveal``/``PUT /api/config`` 同一口径。
+
+    只取消该 task_id 对应任务：触发既有取消路径（find 进程组 SIGTERM →
+    回收窗口内升级 SIGKILL，只回收自有进程组），终态 ``cancelled``。取消受理
+    与回收完成之间是异步的——响应里的 ``state``/``terminal`` 如实反映当下，
+    前端可轮询 ``GET /api/bigfiles/status`` 确认收敛。
+
+    幂等（不报错、状态如实）：
+    - 已取消 → 200 + ``cancelled=true``；
+    - 已完成/已过期（终态非 cancelled）→ 200 + ``cancelled=false`` + 真实
+      终态，不谎称已取消、不复活终态；
+    - 未知或已超出保留期的 task_id → 404。
+
+    句柄即凭证：不校验「谁提交的」，也没有「他人任务」概念；越权面由写令牌
+    闸门承担（ISS-022 同源）。
+    """
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "请求体必须是 JSON 对象")
+    unknown = sorted(set(payload) - {"task_id"})
+    if unknown:
+        raise HTTPException(400, f"请求体含未知字段：{', '.join(unknown)}")
+    task_id = payload.get("task_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise HTTPException(400, "task_id 必须是非空字符串")
+    try:
+        return _get_bigfiles_manager().cancel_task(task_id)
+    except bigfiles.BigfilesTaskNotFound:
+        raise HTTPException(404, "未知或已过期的 task_id")
 
 
 _BIGFILES_MANAGER: bigfiles.BigfilesManager | None = None
@@ -687,6 +1182,19 @@ async def api_analysis_jobs(request: Request):
     return JSONResponse({"job": job, "replayed": replayed}, status_code=202)
 
 
+@app.get("/api/analysis/history")
+def api_analysis_history(limit: int = Query(20, ge=1, le=100),
+                         offset: int = Query(0, ge=0)):
+    """Agent 中心纯读分页：跨区间在途与生命周期历史，关闭引擎仍可读。"""
+    return _get_analysis_manager().list_history(limit=limit, offset=offset)
+
+
+@app.get("/api/analyses/{analysis_id}")
+def api_analysis_record(analysis_id: int):
+    """按记录 ID 读取原区间正文与证据，不要求快照仍在，也不触发分析。"""
+    return {"analysis": _get_analysis_manager().get_analysis(analysis_id)}
+
+
 @app.get("/api/analysis/jobs/{job_id}")
 def api_analysis_job(job_id: str):
     """查询 job 状态（纯读，无派发/探测/外传副作用）。"""
@@ -710,17 +1218,29 @@ def api_analysis_jobs_lookup(a: int = Query(...), b: int = Query(...)):
 
 @app.post("/api/analysis/jobs/{job_id}/cancel")
 def api_analysis_job_cancel(job_id: str):
-    """请求取消：可经 cancelling；终态不复活（409 job_terminal，响应携带
-    最终状态——与完成竞争只有一个确定结果）。"""
+    """请求取消：本次受理 → 200；到达前已终结 → 具名 409（ISS-175）。
+
+    两种响应各自对应一个确定事实，判据来自 ``cancel_job`` 的受理标记而**不是**
+    「返回时是否终态」：
+
+    - **200**：本次调用受理了取消（到达时非终态，且取消已生效）。响应里的
+      ``job.status`` 如实反映当下，**可以是终态 cancelled**——那是 worker 在
+      本次取消驱动下于毫秒内收敛的结果，属取消成功，不是取消失败。
+    - **409 + reason_code=job_terminal**：请求到达前任务已是终态，或到达后完成
+      抢先写入终态。取消确实没生效；响应携带真实终态，绝不复活终态。
+
+    终态不复活、取消先到即取消胜的不变量不变（见
+    ``analysis_manager.cancel_job`` / ``_commit_success``）。
+    """
     view = _get_analysis_manager().cancel_job(job_id)
-    if view.get("terminal"):
-        return JSONResponse(
-            {"reason_code": "job_terminal",
-             "detail": "任务已结束，取消不再生效",
-             "job": view},
-            status_code=409,
-        )
-    return {"job": view}
+    if view.get("cancel_accepted"):
+        return {"job": view}
+    return JSONResponse(
+        {"reason_code": "job_terminal",
+         "detail": "任务已结束，取消不再生效",
+         "job": view},
+        status_code=409,
+    )
 
 
 @app.get("/api/analyses")
@@ -752,7 +1272,7 @@ def api_bootstrap():
     return {"token": _WRITE_TOKEN}
 
 
-def _config_view_with_reload_state() -> dict:
+def _config_view_with_reload_state(*, discovered_startup: config.ScopeSelection | None = None) -> dict:
     """effective_settings_view + 只读漂移检测（ISS-016B）。
 
     解析已注册 scan plist 的计划时间并与生效 scan_time 比对，结果挂在
@@ -760,7 +1280,7 @@ def _config_view_with_reload_state() -> dict:
     （绝不猜、绝不让 /api/config 因漂移检测而 5xx）；全程零写入零命令
     执行。
     """
-    view = config.effective_settings_view()
+    view = config.effective_settings_view(discovered_startup=discovered_startup)
     try:
         registered = launchd.read_registered_scan_time()
     except Exception:  # noqa: BLE001 - 漂移检测失败只降级，不影响配置读取
@@ -821,6 +1341,9 @@ async def api_config_put(request: Request):
         raise HTTPException(400, "请求体必须是合法 JSON 对象")
     if not isinstance(body, dict):
         raise HTTPException(400, "请求体必须是 JSON 对象")
+    # 发现失败在落盘之前停止；generic scope guard 仍优先返回既有 400。
+    discovered_startup = (config.effective_scope_selection()
+                          if "storage_scope" not in body and config.default_startup_scope_requested() else None)
     try:
         config.update_user_settings(body)
     except config.ConfigurationError as exc:
@@ -834,7 +1357,7 @@ async def api_config_put(request: Request):
             _get_analysis_manager().refresh_policy()
         except Exception:  # noqa: BLE001 - 撤销失败不阻塞设置保存的成功反馈
             logger.exception("analysis 策略刷新失败（设置已保存）")
-    config_view = _config_view_with_reload_state()
+    config_view = _config_view_with_reload_state(discovered_startup=discovered_startup)
     return {
         "applied": True,
         "service_reload": "requires_user_action",
@@ -844,13 +1367,476 @@ async def api_config_put(request: Request):
     }
 
 
+# ---------- ISS-155：范围发现 / 计划预览 / 范围选择保存 ----------
+#
+# 合同要点（任务卡 ISS-155）：
+# - **新能力不自动启用**：``config.scope_settings_view()["enabled"]`` 为 False
+#   时（用户从未显式选择），本组端点只读回显发现结果，生产扫描范围与旧口径
+#   逐字节不变。发现 ≠ 已监控。
+# - 读端点（discovery/preview）无副作用、无需写令牌；写端点（PUT scope）经
+#   local_boundary_guard 的 Host/Origin/写令牌三重闸门，与既有写方法同一合同。
+# - 保存**只改下一轮计划**，不触发扫描、不注册/重载任何调度。
+# - 身份/计划未接线的消费者（trend/AI 等跨口径聚合）由调用方显式拒绝，本卡
+#   不把新身份静默塞进旧口径读取路径。
+
+def _discovery_payload() -> dict:
+    """启动盘容器/卷发现（ISS-152 只读适配器的 HTTP 转交，零持久化）。
+
+    发现失败/非 APFS/非 macOS 一律返回 storage.py 的降级态 + errors，
+    本层不猜、不补造身份，也不回退成「全盘可读」的乐观结论。
+    """
+    from . import storage  # 延迟导入：发现适配器只在被请求时才载入
+    try:
+        # diskutil info 接受设备或挂载点，不接受任意用户目录；启动盘发现
+        # 与旧单根扫描设置无关，必须从真正的启动挂载点开始。
+        discovery = storage.discover_startup("/")
+    except Exception as exc:  # noqa: BLE001 - 发现失败必须可观测，不 5xx 崩服务
+        logger.exception("存储发现失败（范围预览不可用）")
+        return {"ok": False, "error": "discovery-failed",
+                "detail": type(exc).__name__}
+    return {"ok": True, "discovery": discovery.as_dict()}
+
+
+@app.get("/api/storage/discovery")
+def api_storage_discovery():
+    """启动盘容器/卷发现结果（只读，无副作用、无需写令牌）。"""
+    return _discovery_payload()
+
+
+@app.get("/api/storage/summary")
+def api_storage_summary(limit: int = Query(120, ge=2, le=2000)):
+    """容器容量与目录归因摘要（ISS-157，只读持久化事实）。
+
+    只返回**已落库**的容量样本、轮次成员与快照测量：请求本身不触发任何
+    du/statvfs/发现调用，更不隐式全盘扫描。
+
+    契约要点（每条都对应一条不可越过的红线）：
+
+    - **共享 free 只计一次**：同容器的多卷共享剩余空间，剩余空间取容器级
+      读数一次（``storage.shared_free_once``），卷级 free 绝不相加。
+    - **目录归因父子不可加**：归因只用互不重叠的测量根
+      （``storage.non_overlapping_roots``），子根被显式列出为已吸收。
+    - **差额只在同主体/同计划且两侧有效可比较时显示**，并带
+      「尚无法由目录变化解释」限制；有符号，不是垃圾/可回收量；不可比
+      则为 ``null`` 且给出原因，缺失读数不补 0。
+    - **失败成员的旧有效值标 stale**，不当本轮已测贡献。
+    - **整轮跨时间**：给出成员各自时刻与显式跨度，不压成单一时点。
+    - **不计算伪覆盖率**：阈值/权限不参与覆盖率计算，摘要里没有该字段。
+    """
+    from . import storage
+    conn = _get_conn()
+    try:
+        return _storage_summary_payload(conn, limit=limit)
+    finally:
+        conn.close()
+
+
+def _storage_summary_payload(conn: sqlite3.Connection, *, limit: int) -> dict:
+    """读取摘要事实，并只读发现一次当前默认主体；不发起采集或保存。"""
+    from . import storage
+
+    selection = config.effective_scope_selection()
+    container_id = getattr(selection, "container_id", None) if selection else None
+
+    samples = _capacity_sample_rows(conn, limit=limit,
+                                    container_id=container_id)
+    free_view = storage.shared_free_once(samples, container_id)
+
+    rounds = reports.latest_rounds_with_members(conn, limit=2)
+    latest = rounds[0] if rounds else None
+    previous = rounds[1] if len(rounds) > 1 else None
+
+    attribution = reports.round_attribution(conn, latest["round_id"]) \
+        if latest else None
+    prev_attribution = reports.round_attribution(conn, previous["round_id"]) \
+        if previous else None
+
+    # 跨轮身份核对（ISS-157 返修 B1）：先查两轮是否同主体/同计划/同归因根
+    # 集合，再叠加**两侧各自**的质量与 stale 条件。任一不满足即不可比 →
+    # 差额为 null，绝不因为「本轮是 full」就放行。
+    identity_reasons: list[str] = []
+    if attribution and prev_attribution:
+        identity_reasons = reports.cross_round_identity_reasons(
+            attribution, prev_attribution)
+    # 质量门两侧对称（R1 返修）：前轮不合格同样让基线失效，且原因文本
+    # 指明是哪一轮——「本轮 full」不能为「前轮 partial」背书。
+    own_reasons: list[str] = (
+        reports.own_round_reasons(attribution, label="本轮")
+        if attribution is not None else [])
+    previous_reasons: list[str] = (
+        reports.own_round_reasons(prev_attribution, label="前轮")
+        if prev_attribution is not None else [])
+
+    # 容量主体与生效 scope 绑定（R2 返修）：生效容器与轮次成员容器不一致时，
+    # 容量读数说的不是同一件事 → 明确不可比，不输出数值差额。
+    scope_reasons: list[str] = []
+    if latest and previous:
+        if not container_id:
+            scope_reasons.append(
+                "缺容量主体身份：无生效容器，容量读数无法与轮次绑定。")
+        for rnd, att in ((latest, attribution), (previous, prev_attribution)):
+            if att is None:
+                continue
+            rnd_containers = set(att.get("container_ids") or [])
+            if container_id and container_id not in rnd_containers:
+                scope_reasons.append(
+                    f"容量主体不匹配：生效容器 {container_id} 不在该轮"
+                    f"（round_id={rnd['round_id']}）归因容器"
+                    f" {sorted(rnd_containers)} 内。")
+
+    # 成员级容器绑定（B3 返修）：上面的「所选容器 ∈ 轮次容器集合」是包含
+    # 判断，混容器成员与 container_id=NULL 的成员都能绕过它。参与求和的
+    # 成员必须逐个属于生效容器，否则 measured_kb 的口径就不是所选容器。
+    member_reasons: list[str] = []
+    if latest and previous:
+        for rnd, att in ((latest, attribution), (previous, prev_attribution)):
+            if att is None:
+                continue
+            member_reasons += reports.member_container_reasons(
+                att, container_id=container_id,
+                label="本轮" if rnd is latest else "前轮")
+
+    comparable = bool(attribution and prev_attribution and not identity_reasons
+                      and not own_reasons and not previous_reasons
+                      and not scope_reasons and not member_reasons)
+    all_reasons = identity_reasons + scope_reasons + member_reasons \
+        + own_reasons + previous_reasons
+    if latest and previous and not comparable:
+        block_reason = "；".join(all_reasons) or None
+    else:
+        block_reason = None
+
+    # P3：归因内的 comparable_to_previous 只看**本轮**质量门，会与顶层跨轮
+    # 结论矛盾（跨计划/跨根/成员容器不符时它仍为 true）。顶层 comparability
+    # 是跨轮结论的唯一权威，故在组装处把该字段对齐到顶层判定，避免同一个
+    # payload 里出现两个互相打架的可比性答案。
+    if attribution is not None:
+        if latest and previous:
+            attribution["comparable_to_previous"] = comparable
+        attribution["comparable_note"] = (
+            "需要同主体、同计划、两侧都有效（无失败成员、无子根吸收）"
+            "且参与归因的成员逐一属于所选容器才可比；否则差额为 null。"
+            "本字段已对齐顶层 comparability（跨轮结论的唯一权威）。")
+
+    payload = {
+        "scope": {
+            "container_id": container_id,
+            "mode": getattr(selection, "mode", None) if selection else None,
+            "roots": list(getattr(selection, "roots", ()) or ()) if selection else [],
+            "identity_version": getattr(selection, "identity_version", None)
+            if selection else None,
+        },
+        "capacity": {
+            "subject": "container" if container_id else None,
+            "container_id": container_id,
+            "unit": "bytes",
+            **free_view,
+            "samples": len(samples),
+        },
+        "round": latest,
+        "previous_round": previous,
+        "attribution": attribution,
+        "comparability": {
+            "comparable": comparable,
+            "identity_reasons": identity_reasons,
+            "scope_reasons": scope_reasons,
+            "member_reasons": member_reasons,
+            "own_reasons": own_reasons,
+            "previous_reasons": previous_reasons,
+        },
+        "unexplained": storage.difference_view(
+            comparable=comparable,
+            free_before=reports.round_free_bytes(
+                conn, previous["round_id"], container_id=container_id)
+            if previous else None,
+            free_after=reports.round_free_bytes(
+                conn, latest["round_id"], container_id=container_id)
+            if latest else None,
+            # 目录测量侧是 KB（snapshots.total_kb），容量侧是 bytes；
+            # 差额必须同单位，显式换算到 bytes，绝不混算。
+            measured_before=(_kb_to_bytes(prev_attribution["measured_kb"])
+                             if prev_attribution
+                             and prev_attribution.get("measured_kb") is not None
+                             else None),
+            measured_after=(_kb_to_bytes(attribution["measured_kb"])
+                            if attribution
+                            and attribution.get("measured_kb") is not None
+                            else None),
+            reason=block_reason if (latest and previous)
+            else "只有一个轮次，缺同计划前一轮可比基线。",
+        ) if (latest and previous) else storage.difference_view(
+            comparable=False, free_before=None, free_after=None,
+            measured_before=None, measured_after=None,
+            reason="尚无完整轮次对（需同主体、同计划的两轮）。"),
+    }
+    return payload
+
+
+def _kb_to_bytes(kb: int | None) -> int | None:
+    """KB → bytes（显式换算；None 透传，不用 0 冒充缺失）。"""
+    return None if kb is None else int(kb) * 1024
+
+
+def _capacity_sample_rows(conn: sqlite3.Connection, *, limit: int,
+                          container_id: str | None = None) -> list[dict]:
+    """读最近的**所选容器**容量样本（时间正序；limit 只截最新端）。
+
+    ISS-157 返修 R2：``container_capacity_samples`` 无外键，可混有其他容器
+    的样本。若全局取最近 N 条，别容器的较新样本会把当前容器的样本挤出窗口
+    （甚至让读数整体落到别的容器上）。故先按 ``container_id`` 绑定主体再
+    截断；无容器身份时不猜主体，返回空窗口（下游如实报「没有容量样本」）。
+
+    与既有序列查询同一处 AUD-09 修正：先 DESC 取最新 N 条再正序输出，
+    避免「取最早 N 条、最新点被截掉」。
+    """
+    if not container_id:
+        return []
+    rows = conn.execute(
+        "SELECT id, container_id, total_bytes, free_bytes, source, "
+        "sampled_at, round_id FROM container_capacity_samples "
+        "WHERE container_id=? "
+        "ORDER BY sampled_at DESC, id DESC LIMIT ?", (container_id, limit),
+    ).fetchall()
+    return [dict(row) for row in reversed(rows)]
+
+
+def _plan_preview(selection: config.ScopeSelection) -> dict:
+    """把已校验的范围选择解析为「下一轮计划」预览（不落盘、不扫描）。
+
+    预览给出范围根与其稳定身份、读限（每范围 du 时限）、资源预算
+    （min_kb / 排除掩码）和 identity 版本——即任务卡要求的「计划根 + 读取
+    限制 + 排除/资源预算 + identity 版本」。此处**不**打开数据库、不登记
+    scan_scopes/scan_plans：登记只发生在真实扫描轮次（ISS-154）。
+    """
+    from . import scan_coordinator, scanner
+    pinned = scanner.PinnedScanConfig.capture(
+        metric_version=scan_coordinator.METRIC_VERSION)
+    plans = []
+    for index, root in enumerate(selection.roots):
+        scope_id = selection.scope_ids[index] if index < len(selection.scope_ids) \
+            else scan_coordinator.derived_scope_id(root)
+        plans.append({
+            "scope_id": scope_id,
+            "root": root,
+            "display_name": Path(root).name or root,
+            "plan_id": scanner.plan_identity_id(
+                scope_id, root, int(pinned.metric_version),
+                int(pinned.min_kb), pinned.exclude_names_canonical),
+        })
+    return {
+        "mode": selection.mode,
+        "container_id": selection.container_id,
+        "identity_version": selection.identity_version,
+        "revision": selection.revision,
+        "plans": plans,
+        "read_limits": {"du_timeout_s": pinned.du_timeout_s,
+                        "per_root": True},
+        "budget": {"min_kb": int(pinned.min_kb),
+                   "exclude_names": pinned.exclude_names_canonical},
+    }
+
+
+def _process_scan_override_hint(override: dict[str, str]) -> str:
+    source = "启动参数 --scan-root" if override["source"] == "cli" else "环境变量 FATHOM_SCAN_ROOT"
+    return (f"本进程扫描使用{source}指定的根 {override['root']}（旧单目录口径），"
+            "不使用已保存范围；保存选择与候选预览不会解除该覆盖，也不触发扫描。")
+
+
+@app.get("/api/storage/plan/preview")
+def api_storage_plan_preview(mode: Optional[str] = Query(None),
+                              roots: Optional[str] = Query(None)):
+    """范围计划预览（只读）：校验给定选择并回显下一轮计划，不保存任何东西。
+
+    - 无候选参数时回显保存选择及本进程覆盖；有覆盖时不返回未消费的
+      保存计划。读取不发现磁盘或保存计划。
+    - 给定 ``mode``/``roots``（分号分隔）时按候选预览，供 UI「预览→保存」；
+      启动盘无根候选解析真实挂载入口；校验失败 400、发现失败 503，均不落盘。
+    """
+    view = config.scope_settings_view()
+    override = view["scan_override"]
+    if not mode and not roots:
+        effective = view["effective_selection"]
+        current = config._validated_storage_scope_whole(effective) if effective else None
+        return {"enabled": view["enabled"], "identity_version":
+                view["identity_version"],
+                "selection": view["selection"],
+                "effective_selection": effective,
+                "source": view["source"],
+                "saved_active": view["saved_active"],
+                "scan_override": override,
+                "plan_source": ("process_override" if override else
+                                "startup_discovery" if config.default_startup_scope_requested() else
+                                "saved_selection" if current is not None else "default"),
+                "plan": None if override or current is None else _plan_preview(current),
+                "hint": (_process_scan_override_hint(override) if override else
+                         "当前扫描对象：内置启动盘整体，无需选择或保存范围；旧保存值与历史保留，不作为当前默认。"
+                         if config.default_startup_scope_requested() else
+                         "扫描使用当前选择；尚未启用范围能力时按旧单根口径运行。"
+                         "选择范围只改下一轮计划。")}
+    candidate = (config._validated_storage_scope_whole(view["effective_selection"])
+                 if config.default_startup_scope_requested() and mode == config.SCOPE_MODE_STARTUP
+                 and not roots else _scope_candidate_from_query(mode, roots))
+    return {"enabled": view["enabled"],
+            "identity_version": view["identity_version"],
+            "selection": view["selection"],
+            "effective_selection": view["effective_selection"],
+            "scan_override": override,
+            "plan_source": "candidate",
+            "plan": _plan_preview(candidate),
+            "hint": ("这是候选预览，不代表当前生效范围。预览不改任何配置；"
+                     "保存只影响下一轮计划，不触发扫描。"
+                     + (_process_scan_override_hint(override) if override else ""))}
+
+
+def _default_startup_selection() -> config.ScopeSelection:
+    """从本机启动容器的可见挂载入口生成默认候选（不保存、不扫描）。"""
+    payload = _discovery_payload()
+    discovery = payload.get("discovery") or {}
+    container = discovery.get("startup_container") or {}
+    if not payload.get("ok") or not container.get("container_id"):
+        raise HTTPException(503, "无法发现内置启动盘；当前范围未改动，请重新读取后重试。")
+    roots: list[str] = []
+    ids: list[str] = []
+    entries = discovery.get("visible_entries") or []
+    volumes = discovery.get("startup_volumes") or []
+    for volume in volumes:
+        volume_id = volume.get("volume_id")
+        if not volume_id or volume.get("container_id") != container["container_id"]:
+            continue
+        if volume.get("status") != "accessible" and not (
+                "system" in (volume.get("roles") or [])
+                and any(e.get("volume_id") == volume_id
+                        and e.get("via") == "snapshot_mount" for e in entries)):
+            continue
+        visible = [e.get("visible_path") for e in entries
+                   if e.get("volume_id") == volume_id]
+        mount = volume.get("mount_point")
+        # System 原卷通常未挂载，真正可读的是归属已确认的启动快照 /。
+        # 未挂载/锁定/归属未知的卷不猜测路径，不自动纳入外接设备。
+        candidates = visible or ([mount] if mount and volume.get("status") == "accessible" else [])
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not Path(candidate).is_dir():
+                continue
+            root = str(Path(candidate).resolve())
+            if root in roots:
+                if ids[roots.index(root)] != volume_id:
+                    raise HTTPException(503, "启动盘挂载身份冲突；当前范围未改动。")
+                continue
+            roots.append(root)
+            ids.append(volume_id)
+            break  # 同卷别名只采一次
+    if not roots:
+        raise HTTPException(503, "未发现可采集的启动盘挂载入口；当前范围未改动。")
+    return config.ScopeSelection(
+        mode=config.SCOPE_MODE_STARTUP, roots=tuple(roots), scope_ids=tuple(ids),
+        container_id=container["container_id"])
+
+
+def _scope_candidate_from_query(mode: Optional[str],
+                                roots: Optional[str]) -> config.ScopeSelection:
+    """把查询参数装配成候选范围选择（fail-closed 校验）。"""
+    if not mode:
+        raise HTTPException(400, "预览候选必须显式给出 mode")
+    raw_roots = [item for item in (roots or "").split(";") if item]
+    if mode == config.SCOPE_MODE_STARTUP and not raw_roots:
+        return _default_startup_selection()
+    try:
+        fields = config._validated_storage_scope(  # noqa: SLF001 - 同包内共用校验层
+            {"mode": mode, "roots": raw_roots}, partial=False)
+        return config.ScopeSelection(
+            mode=str(fields["mode"]),
+            roots=tuple(fields.get("roots", ())),  # type: ignore[arg-type]
+            identity_version=config.SCOPE_IDENTITY_VERSION)
+    except config.ConfigurationError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.put("/api/storage/scope")
+async def api_storage_scope_put(request: Request):
+    """保存范围选择（需写令牌；原子写 + 版本冲突保护；不触发扫描）。
+
+    请求体 ``{"mode": ..., "roots": [...], "scope_ids": [...],
+    "container_id": ..., "expected_revision": int}``。
+
+    - ``expected_revision`` 与当前生效版本不一致 → **409** 且旧值不动
+      （预览→保存之间的并发改动必须显式重预览）；
+    - 校验失败 400、写失败 500，两者都不产生半更新状态；
+    - 服务自身不注册/不重载 launchd、不触发扫描。
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(400, "请求体必须是合法 JSON 对象")
+    if not isinstance(body, dict):
+        raise HTTPException(400, "请求体必须是 JSON 对象")
+    unknown = sorted(set(body) - {
+        "mode", "roots", "scope_ids", "container_id", "expected_revision",
+        "selected_at"})
+    if unknown:
+        raise HTTPException(400, f"请求体含未知字段：{', '.join(unknown)}")
+    expected = body.get("expected_revision")
+    if expected is not None and (isinstance(expected, bool)
+                                 or not isinstance(expected, int)
+                                 or expected < 0):
+        raise HTTPException(400, f"expected_revision 必须是非负整数：{expected!r}")
+    discovered_startup = (config.effective_scope_selection()
+                          if config.default_startup_scope_requested() else None)
+    payload = {key: value for key, value in body.items()
+               if key != "expected_revision"}
+    if (payload.get("mode") == config.SCOPE_MODE_STARTUP
+            and ("roots" not in payload or payload["roots"] == [])):
+        # 选择「启动盘整体」就能保存完整候选，无需手填 macOS 卷路径。
+        # 不使用客户端传来的容器/卷身份替代本次真实发现。
+        resolved = discovered_startup or _default_startup_selection()
+        payload.update(roots=list(resolved.roots), scope_ids=list(resolved.scope_ids),
+                       container_id=resolved.container_id)
+    try:
+        saved = config.save_scope_selection(
+            config._validated_storage_scope_whole(payload),  # noqa: SLF001
+            expected_revision=expected)
+    except config.ScopeVersionConflict as exc:
+        raise HTTPException(409, str(exc))
+    except config.ConfigurationError as exc:
+        raise HTTPException(400, str(exc))
+    except OSError as exc:
+        raise HTTPException(500, f"settings.json 写入失败（旧文件未改动）：{exc}")
+    view = config.scope_settings_view(discovered_startup=discovered_startup)
+    override = view["scan_override"]
+    return {
+        "applied": True,
+        "triggers_scan": False,
+        "scope": view,
+        "plan": _plan_preview(saved),
+        "plan_source": "saved_compatibility" if config.default_startup_scope_requested() else "saved_selection",
+        "hint": ("范围选择已保存。" + _process_scan_override_hint(override) if override else
+                 "旧范围已保存为兼容资料，不作为当前默认；普通扫描仍固定内置启动盘整体。"
+                 if config.default_startup_scope_requested() else
+                 "范围选择已保存，仅影响下一轮计划；扫描需另行显式触发"
+                 "（旧 HOME 历史快照保留为 legacy 口径，不与新基线混比）。"),
+    }
+
+
 @app.post("/api/scan")
 def api_scan():
+    """触发一次手动扫描（后台执行，状态入 scan_runs 表）。
+
+    ISS-178（D1）：**范围采集复用 scan_coordinator 的多范围路径**。已启用范围
+    能力时，本端点与 CLI ``scan --scope`` 调用同一个执行体（``start_scan``
+    收到 ``scopes``），因此 UI 触发的快照带 ``plan_id``，``scan_plans`` /
+    ``scan_rounds`` / ``scan_round_members`` 正常落库；D1 之前这里恒传
+    ``scopes=None``，UI 静默走单根旧路径，三张表全空。
+
+    普通 release 直接消费当前只读发现的启动盘意图，不保存或改写旧范围。
+    显式环境根/CLI 隔离仍保留原单根行为，开发保存范围仍兼容。
+    发现或身份验证失败停止，不回退 HOME；旧历史不改写。
+    """
     global _active_scan, _active_scan_thread
     if not _scan_lock.acquire(blocking=False):
         return JSONResponse({"ok": False, "message": "已有扫描在进行中"}, status_code=409)
     try:
-        session = scan_coordinator.start_scan(source="api")
+        from . import cli as _cli  # 延迟导入：复用 CLI 公共化的范围构造段
+        scopes = _cli.scope_specs_from_effective_selection(apply_default=True)
+        session = scan_coordinator.start_scan(source="api", scopes=scopes)
         _active_scan = session
         run_id = session.run_id
     except scan_coordinator.ScanBusyError as exc:
@@ -862,6 +1848,11 @@ def api_scan():
             }},
             status_code=409,
         )
+    except scan_coordinator.ScanScopeError as exc:
+        # ISS-178：范围规格构造失败（生效选择与范围 ID 不一一对应等）是**用法
+        # 错误**，如实 400 回传，不静默回落到单根旧路径假装扫描成功。
+        _scan_lock.release()
+        return JSONResponse({"ok": False, "message": str(exc)}, status_code=400)
     except scan_coordinator.UpgradeWriteStopError as exc:
         # ISS-097 停写条件：升级事务进行中（journal 在位），拒绝开始写入。
         _scan_lock.release()
@@ -903,7 +1894,8 @@ def api_scan():
             _scan_lock.release()
         return JSONResponse({"ok": False, "message": "扫描线程启动失败", "run_id": run_id},
                             status_code=503)
-    return {"ok": True, "message": "扫描已启动", "run_id": run_id}
+    return {"ok": True, "message": "扫描已启动", "run_id": run_id,
+            "scopes": len(session.scopes)}
 
 
 @app.get("/api/scan/status")
@@ -1048,86 +2040,253 @@ app.router.add_event_handler("shutdown", _shutdown_analysis)
 # ---------- v0.2：目录浏览器 / 日报档案 / Finder 打开 ----------
 
 @app.get("/api/browse")
-def api_browse(path: str | None = None):
-    """目录浏览器：指定目录的直接子目录（最新快照）+ 与同数据集前一快照的差值 + 自身趋势。
+def api_browse(
+    path: str | None = None,
+    snapshot_id: int | None = None,
+    cursor: str | None = None,
+    limit: int = Query(hierarchy.CHILDREN_DEFAULT_LIMIT, ge=1,
+                       le=hierarchy.CHILDREN_MAX_LIMIT),
+):
+    """目录浏览器：指定目录的直接子目录 + 与前一可比快照的差值 + 自身趋势。
 
-    对应 DESIGN.md 分布页合同：面包屑下钻 + 行级 Finder 打开。差值基线取
-    最新快照的同数据集前驱（与日报/ diff 同一选择逻辑）；没有可比基线时
-    delta_kb 为 null——无基线不伪造"增长"（AUD-04）。
+    对应 DESIGN.md 分布页合同：面包屑下钻 + 行级 Finder 打开。两种形态由
+    snapshot_id 区分（ISS-159）：
+
+    - 旧调用（无 snapshot_id，兼容）：恒绑定最新快照与其同数据集前驱，
+      响应形态与差值口径不变；差值基线取同数据集前驱（与日报/diff 同一
+      选择逻辑），没有可比基线时 delta_kb 为 null——无基线不伪造"增长"
+      （AUD-04）。
+    - 显式快照（ISS-159）：分布主读数只指所选快照——路径按该快照 root
+      约束；行状态 measured（直接入库记录）/ structural（仅已记录后代、
+      可导航，size 为 null 不填 0）；与前一可比快照的差分仅为次级且基线
+      区间显式可见（comparison 携带基线快照 id/时点；单快照或前驱跨口径
+      时为 null——差分未知，不冒充基线）；直属子目录稳定分页（游标绑定
+      快照/路径，未展示分页不得当作无子目录）；质量字段（采集状态、
+      消失/拒绝计数）随所选快照返回，不与最新混用；趋势点带 snapshot_id
+      （历史序列明确非本快照专属）。快照不存在 → 404（可能已被保留策略
+      淘汰）；路径无直接记录也无任何已记录后代 → 404，不冒充空目录。
     """
     conn = _get_conn()
     try:
-        snaps = _latest_snapshots(conn, 1)
-        if not snaps:
-            raise HTTPException(409, "尚无快照，请先扫描")
-        new_sid = snaps[0]["id"]
-        predecessor = reports.find_same_dataset_predecessor(conn, new_sid)
-        old_sid = predecessor["id"] if predecessor else None
-        # root=/ 时 rstrip("/") 得空串：归一成 "/"，否则 target/prefix/面包屑
-        # 全部错位（ISS-024 root=/ 边界）。
-        root_path = snaps[0]["root"].rstrip("/") or "/"
-        target = (path.rstrip("/") or root_path) if path else root_path
-        # root=/ 时任何绝对路径都在根内（root_path + "/" 会拼出 "//" 误拒）。
-        inside = target.startswith("/") if root_path == "/" else (
-            target == root_path or target.startswith(root_path + "/"))
-        if not inside:
-            raise HTTPException(400, f"路径必须在监控根 {root_path} 之内")
+        if snapshot_id is None:
+            return _browse_legacy(conn, path)
 
-        new_entries = reports.load_snapshot(conn, new_sid)
-        old_entries = reports.load_snapshot(conn, old_sid) if old_sid else {}
+        snap = conn.execute(
+            "SELECT * FROM snapshots WHERE id=?", (snapshot_id,)
+        ).fetchone()
+        if snap is None:
+            raise HTTPException(
+                404,
+                f"快照 {snapshot_id} 不存在（可能已被保留策略淘汰），请改选其他快照")
+        # 路径按所选快照的身份约束：多卷/同路径不同身份各读各的事实。
+        root_path = snap["root"].rstrip("/") or "/"
+        try:
+            target = hierarchy.normalize_target(path, root_path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
-        prefix = target.rstrip("/") + "/"  # root=/ 时 target+"/" 会拼出 "//"
-        children = []
-        for p, size in new_entries.items():
-            if not p.startswith(prefix):
-                continue
-            rest = p[len(prefix):]
-            # rest 必须是非空单段：root=/ 时根条目 "/" 自身会以空前缀命中
-            if rest and "/" not in rest:  # 直接子目录
-                old_size = old_entries.get(p)
-                children.append({
-                    "name": rest,
-                    "path": p,
-                    "size_kb": size,
-                    # 无同数据集基线或该目录基线中未记录：差值不可知（None），
-                    # 不把当前大小冒充为增量；是否首次记录由 is_new 表达。
-                    "delta_kb": (size - old_size) if old_size is not None else None,
-                    "is_new": old_sid is not None and p not in old_entries,
-                })
-        children.sort(key=lambda c: c["size_kb"], reverse=True)
+        offset = 0
+        if cursor is not None:
+            payload = hierarchy.decode_cursor(cursor)
+            if payload is None:
+                raise HTTPException(400, "游标无效：无法解码")
+            if (not hierarchy.cursor_matches_snapshot(
+                    payload, s=snapshot_id, path=target, sort="size")
+                    or hierarchy.cursor_offset(payload) is None):
+                raise HTTPException(
+                    400, "游标与当前查询参数（快照/路径）不匹配，"
+                         "请从首页重新请求")
+            offset = payload["offset"]
 
-        # 侧栏趋势与子目录差值同一数据集口径（ISS-024）：只取当前快照同
-        # 数据集（同根同 min_kb）内该路径的记录点，跨数据集不混点。
-        points = [
-            dict(r)
-            for r in conn.execute(
-                """SELECT s.created_at, e.size_kb FROM entries e
-                   JOIN snapshots s ON s.id = e.snapshot_id
-                   WHERE e.path = ? AND s.root = ? AND s.min_kb IS ?
-                   ORDER BY s.created_at ASC""",
-                (target, snaps[0]["root"], snaps[0]["min_kb"]),
+        collected = hierarchy.collect_children_snapshot(conn, snapshot_id, target)
+        if not collected["children"] and collected["parent_size"] is None:
+            raise HTTPException(
+                404,
+                f"路径 {target} 在快照 {snapshot_id} 中无记录"
+                "（可能低于入库阈值、权限受限或路径不存在）",
             )
-        ]
-        # 面包屑
-        parts = target[len(root_path):].strip("/").split("/") if target != root_path else []
-        crumbs = [{"name": root_path.rsplit("/", 1)[-1] or "/", "path": root_path}]
-        acc = root_path
-        for seg in filter(None, parts):
-            acc = acc + "/" + seg
-            crumbs.append({"name": seg, "path": acc})
+
+        # 次级差分：仅与同数据集前驱可比，基线区间显式可见；无前驱或前驱
+        # 跨口径（不同数据集）时 comparison 为 null——差分未知。
+        predecessor = reports.find_same_dataset_predecessor(conn, snapshot_id)
+        comparison = None
+        prev_sizes: dict[str, int] = {}
+        prev_parent: int | None = None
+        if predecessor is not None:
+            comparison = {"snapshot_id": predecessor["id"],
+                          "created_at": predecessor["created_at"]}
+            prev = hierarchy.collect_children_snapshot(
+                conn, predecessor["id"], target)
+            prev_sizes = {name: n.size_kb
+                          for name, n in prev["children"].items()
+                          if n.size_kb is not None}
+            prev_parent = prev["parent_size"]
+
+        rows = hierarchy.sort_snapshot_rows(list(collected["children"].values()))
+        total = len(rows)
+        page = rows[offset:offset + limit]
+        has_more = offset + limit < total
+        next_cursor = None
+        if has_more:
+            next_cursor = hierarchy.encode_cursor({
+                "v": 2, "s": snapshot_id, "path": target,
+                "sort": "size", "offset": offset + limit,
+            })
+
+        def _secondary(size_kb: int | None, name: str | None = None):
+            """次级差分读数：两侧都有直接测量才可比；基线缺测不冒充 0。"""
+            if comparison is None or size_kb is None:
+                return None, None
+            old = prev_sizes.get(name) if name is not None else prev_parent
+            if old is None:
+                return None, True   # 前驱无直接记录：以 is_new 表达首次入库
+            return size_kb - old, False
+
+        parent_delta, _ = _secondary(collected["parent_size"])
+        children_out = []
+        for node in page:
+            delta, is_new = _secondary(node.size_kb, node.name)
+            row = node.to_dict()
+            row["delta_kb"] = delta
+            row["is_new"] = bool(is_new)
+            children_out.append(row)
 
         return {
             "path": target,
-            "size_kb": new_entries.get(target, 0),
-            "delta_kb": (new_entries.get(target, 0) - old_entries.get(target, 0))
-                        if old_sid and target in old_entries else None,
-            "children": children,
-            "trend": points,
-            "crumbs": crumbs,
-            "snapshot_at": snaps[0]["created_at"],
+            "size_kb": collected["parent_size"],
+            "status": "measured" if collected["parent_size"] is not None
+                      else "structural",
+            "delta_kb": parent_delta,
+            "children": children_out,
+            "trend": _trend_points(conn, target, snap),
+            "crumbs": _browse_crumbs(root_path, target),
+            "snapshot_at": snap["created_at"],
+            "snapshot": {
+                "id": snap["id"],
+                "created_at": snap["created_at"],
+                "root": snap["root"],
+                "min_kb": snap["min_kb"],
+                "exclude_names": snap["exclude_names"] or "",
+                "collection_status": snap["collection_status"],
+                "vanished_count": snap["vanished_count"],
+                "denied_count": snap["denied_count"],
+            },
+            "comparison": comparison,
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "returned": len(page),
+                "total": total,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+            },
         }
     finally:
         conn.close()
+
+
+def _browse_legacy(conn, path: str | None):
+    """旧形态（无 snapshot_id）：恒绑定最新快照与其同数据集前驱。
+
+    行为自 ISS-024 起不变，本卡不改动其任何读数与响应键；历史实点由
+    显式 snapshot_id 形态承接（ISS-159）。
+    """
+    snaps = _latest_snapshots(conn, 1)
+    if not snaps:
+        raise HTTPException(409, "尚无快照，请先扫描")
+    new_sid = snaps[0]["id"]
+    predecessor = reports.find_same_dataset_predecessor(conn, new_sid)
+    old_sid = predecessor["id"] if predecessor else None
+    # root=/ 时 rstrip("/") 得空串：归一成 "/"，否则 target/prefix/面包屑
+    # 全部错位（ISS-024 root=/ 边界）。
+    root_path = snaps[0]["root"].rstrip("/") or "/"
+    target = (path.rstrip("/") or root_path) if path else root_path
+    # root=/ 时任何绝对路径都在根内（root_path + "/" 会拼出 "//" 误拒）。
+    inside = target.startswith("/") if root_path == "/" else (
+        target == root_path or target.startswith(root_path + "/"))
+    if not inside:
+        raise HTTPException(400, f"路径必须在监控根 {root_path} 之内")
+
+    new_entries = reports.load_snapshot(conn, new_sid)
+    old_entries = reports.load_snapshot(conn, old_sid) if old_sid else {}
+
+    prefix = target.rstrip("/") + "/"  # root=/ 时 target+"/" 会拼出 "//"
+    children = []
+    for p, size in new_entries.items():
+        if not p.startswith(prefix):
+            continue
+        rest = p[len(prefix):]
+        # rest 必须是非空单段：root=/ 时根条目 "/" 自身会以空前缀命中
+        if rest and "/" not in rest:  # 直接子目录
+            old_size = old_entries.get(p)
+            children.append({
+                "name": rest,
+                "path": p,
+                "size_kb": size,
+                # 无同数据集基线或该目录基线中未记录：差值不可知（None），
+                # 不把当前大小冒充为增量；是否首次记录由 is_new 表达。
+                "delta_kb": (size - old_size) if old_size is not None else None,
+                "is_new": old_sid is not None and p not in old_entries,
+            })
+    children.sort(key=lambda c: c["size_kb"], reverse=True)
+
+    # 侧栏趋势与子目录差值同一数据集口径（ISS-024）：只取当前快照同
+    # 数据集（同根同 min_kb）内该路径的记录点，跨数据集不混点。
+    points = [
+        dict(r)
+        for r in conn.execute(
+            """SELECT s.created_at, e.size_kb FROM entries e
+               JOIN snapshots s ON s.id = e.snapshot_id
+               WHERE e.path = ? AND s.root = ? AND s.min_kb IS ?
+               ORDER BY s.created_at ASC""",
+            (target, snaps[0]["root"], snaps[0]["min_kb"]),
+        )
+    ]
+
+    return {
+        "path": target,
+        "size_kb": new_entries.get(target, 0),
+        "delta_kb": (new_entries.get(target, 0) - old_entries.get(target, 0))
+                    if old_sid and target in old_entries else None,
+        "children": children,
+        "trend": points,
+        "crumbs": _browse_crumbs(root_path, target),
+        "snapshot_at": snaps[0]["created_at"],
+    }
+
+
+def _trend_points(conn, target: str, snap) -> list[dict]:
+    """所选快照同数据集内该路径的已记录点（时间正序，点带快照身份）。
+
+    与旧行为同一「记录点」口径（缺测窗口由 /api/trend 锚定形态承接），
+    数据集身份统一走 reports 辅助（legacy/plan 分档），每点追加
+    snapshot_id：趋势是历史序列，明确不是所选快照的专属读数。
+    """
+    size_by_sid = {
+        r["snapshot_id"]: r["size_kb"]
+        for r in conn.execute(
+            "SELECT snapshot_id, size_kb FROM entries WHERE path = ?", (target,))
+    }
+    # find_same_dataset_snapshot_rows 恒为时间正序（reports 合同），直接输出。
+    rows = reports.find_same_dataset_snapshot_rows(
+        conn, reports.dataset_identity(snap))
+    return [
+        {"snapshot_id": row["id"], "created_at": row["created_at"],
+         "size_kb": size_by_sid[row["id"]]}
+        for row in rows if row["id"] in size_by_sid
+    ]
+
+
+def _browse_crumbs(root_path: str, target: str) -> list[dict]:
+    """面包屑：数据集根 → … → 当前路径（root=/ 时根名为 "/"）。"""
+    parts = (target[len(root_path):].strip("/").split("/")
+             if target != root_path else [])
+    crumbs = [{"name": root_path.rsplit("/", 1)[-1] or "/", "path": root_path}]
+    acc = root_path
+    for seg in filter(None, parts):
+        acc = acc + "/" + seg
+        crumbs.append({"name": seg, "path": acc})
+    return crumbs
 
 
 @app.get("/api/reports")
@@ -1167,19 +2326,31 @@ async def api_reveal(request: Request):
     if not isinstance(raw, str) or not raw:
         raise HTTPException(400, "path 必须是非空字符串")
 
-    root_str = str(config.DEFAULT_ROOT).rstrip("/") or "/"
-    if not (raw == root_str or raw.startswith(root_str + "/")):
+    # ISS-155：范围启用后，reveal 只放行**已选择的规范根**内路径；未选中的
+    # 卷/发现结果一律不放行（发现 ≠ 已授权）。未启用时回落旧单根口径，
+    # 行为逐字节不变。
+    selection = config.effective_scope_selection()
+    allowed_roots = ([str(root) for root in selection.roots]
+                     if selection is not None
+                     else [str(config.DEFAULT_ROOT).rstrip("/") or "/"])
+    if not any(raw == root or raw.startswith(root + "/")
+               for root in allowed_roots):
         # 字符串层先拒绝相对路径与前缀同名根（/scanroot-evil 不是 /scanroot）
-        raise HTTPException(400, f"路径必须是监控根 {root_str} 之内的绝对路径")
+        if selection is None:
+            # 未启用范围能力：文案与边界逐字节保持旧单根口径（ISS-022 合同）
+            raise HTTPException(400, f"路径必须是监控根 {allowed_roots[0]} 之内的绝对路径")
+        listed = "、".join(allowed_roots)
+        raise HTTPException(400, f"路径必须是已选择范围 {listed} 之内的绝对路径")
 
     try:
-        root_real = Path(root_str).resolve()
         resolved = Path(raw).resolve()
+        root_reals = {Path(root).resolve() for root in allowed_roots}
     except (OSError, ValueError, RuntimeError):
         raise HTTPException(400, "路径无法规范化")
-    if resolved != root_real and root_real not in resolved.parents:
-        # 规范化层拒绝 .. 折叠与符号链接越界
-        raise HTTPException(400, "路径规范化后位于监控根之外，已拒绝")
+    if not any(resolved == root_real or root_real in resolved.parents
+               for root_real in root_reals):
+        # 规范化层拒绝 .. 折叠与符号链接越界（逐个已选根判定，ISS-155）
+        raise HTTPException(400, "路径规范化后位于已选范围之外，已拒绝")
     if not resolved.exists():
         raise HTTPException(404, "路径不存在（可能已被移动或删除）")
 
@@ -1190,6 +2361,10 @@ async def api_reveal(request: Request):
     return {"ok": True, "path": str(resolved)}
 
 
-# 前端静态资源挂载在最后，避免覆盖 /api 路由
-if config.FRONTEND_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(config.FRONTEND_DIR), html=True), name="frontend")
+# 前端静态资源挂载在最后，避免覆盖 /api 路由。revision 与服务字节同一冻结对象。
+from .frontend_resources import FrontendResources
+
+_frontend_resources = (FrontendResources(config.FRONTEND_DIR)
+                       if (config.FRONTEND_DIR / "index.html").is_file() else None)
+if _frontend_resources is not None:
+    app.mount("/", _frontend_resources, name="frontend")

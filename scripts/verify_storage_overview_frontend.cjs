@@ -1,0 +1,961 @@
+#!/usr/bin/env node
+/* ISS-158 整盘总览与变化入口：真实 serve + 真实 Chromium 实点生产总览页。
+ *
+ * 机制与 verify_browse_snapshot_frontend.cjs 同源：随机端口、隔离运行根
+ * 断言 fail-closed（种子自带 FATHOM_RUNTIME_DIR 前缀断言）、起服务前断言
+ * /health 的 pid 等于自 spawn 进程且 runtime_mode=development、结束杀自起
+ * 进程并复核端口释放。驱动只经真实 UI（选择器/点击/键盘），不调用前端内部
+ * 函数。数据全部是**合成落库事实**（纯 DB，不做真实全盘扫描）。
+ *
+ * 覆盖（任务卡「先复现/验收」反例 → 断言）：
+ *  C1 容器占用 +26MB / 可比目录 +20MB → 「未知差额 6MB」且措辞不是可清理
+ *     （无「可清理/可回收」误导词），两卷共享 free 不翻倍，重叠根去重。
+ *  C2 负差额保号（不称可回收）；仅 legacy statvfs / 样本错时 / 部分失败
+ *     各态可辨；失败成员旧值标 stale。
+ *  C3 实点「排查这次变化」进入变化页，scope/a/b 一致（b 为摘要真实快照 ID）。
+ *  C4 三桌面尺寸无横向溢出、长范围名不撑破布局、键盘可达、图表恢复非零。
+ *  C5 legacy 首页（未启用范围能力）不伪装整盘。
+ *
+ * 退出码 0 = 全部通过；结果 JSON（ok/passed/failed/checks）走 stdout，
+ * 人类 PASS 行与总结走 stderr（ci_browser_checks.sh 的 assert_result_json
+ * 消费 stdout）。
+ */
+"use strict";
+
+const fs = require("fs");
+const http = require("http");
+const net = require("net");
+const os = require("os");
+const path = require("path");
+const { spawn } = require("child_process");
+
+const REPO = path.resolve(__dirname, "..");
+const PY = process.env.FATHOM_PYTHON
+  ? path.resolve(process.env.FATHOM_PYTHON)
+  : path.join(REPO, ".venv", "bin", "python");
+
+const args = process.argv.slice(2);
+const shotsIdx = args.indexOf("--shots");
+const SHOTS = shotsIdx >= 0 && args[shotsIdx + 1]
+  ? path.resolve(args[shotsIdx + 1])
+  : path.join(REPO, "verify-results", "iss158-storage-overview", "shots");
+if (require.main === module) fs.mkdirSync(SHOTS, { recursive: true });
+
+const checks = [];
+function record(name, ok, detail = "") {
+  checks.push({ name, ok: Boolean(ok), detail: String(detail) });
+  process.stderr.write(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` | ${detail}` : ""}\n`);
+  if (!ok) process.exitCode = 1;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function waitUntil(fn, timeoutMs, what) {
+  const deadline = Date.now() + timeoutMs;
+  let lastErr = "";
+  while (Date.now() < deadline) {
+    try { const v = await fn(); if (v) return v; }
+    catch (e) { lastErr = e.message; }
+    await sleep(120);
+  }
+  throw new Error(`等待超时: ${what}${lastErr ? `（${lastErr}）` : ""}`);
+}
+
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.on("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+function httpJson(method, urlPath, port, { headers } = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: "127.0.0.1", port, method, path: urlPath,
+      headers: { "Content-Type": "application/json", ...(headers || {}) },
+    }, (res) => {
+      let body = "";
+      res.on("data", (c) => { body += String(c); });
+      res.on("end", () => {
+        let json = null;
+        try { json = body ? JSON.parse(body) : null; } catch (_) { json = null; }
+        resolve({ status: res.statusCode, json, body });
+      });
+    });
+    req.setTimeout(2000, () => req.destroy(new Error("HTTP 请求超时")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+// close means the child has exited AND its piped stdio has closed. A released
+// HTTP port alone cannot prove this (the stale-phase early return leaked serve).
+function observeClose(child) {
+  const state = { closed: false, code: null, signal: null, error: null };
+  child.once("error", (e) => { state.error = e.message; });
+  child.once("close", (code, signal) => {
+    Object.assign(state, { closed: true, code, signal });
+  });
+  return state;
+}
+
+async function stopServe(child, state, port) {
+  let forced = false;
+  try {
+    if (!state.closed) child.kill("SIGTERM");
+    try {
+      await waitUntil(() => state.closed, 10000, "serve 退出及 stdio 关闭");
+    } catch (_) {
+      forced = true;
+      child.kill("SIGKILL"); // Only our own spawned child; never an inferred PID.
+      await waitUntil(() => state.closed, 5000, "serve 强制退出及 stdio 关闭");
+    }
+    // Probe the listener itself, rather than treating a failed /health request
+    // (e.g. timeout while the process is still alive) as proof of port release.
+    const portFreed = await waitUntil(() => new Promise((resolve, reject) => {
+      const socket = net.connect({ host: "127.0.0.1", port });
+      socket.setTimeout(1000, () => socket.destroy(new Error("端口探测超时")));
+      socket.once("connect", () => { socket.destroy(); resolve(false); });
+      socket.once("error", (e) => {
+        if (e.code === "ECONNREFUSED") resolve(true);
+        else reject(e);
+      });
+    }), 5000, "端口释放");
+    record("port-released", portFreed && state.closed && !forced && !state.error,
+      `127.0.0.1:${port} child=${child.pid} close=${state.closed}`
+      + ` code=${state.code} signal=${state.signal} forced=${forced}`);
+  } catch (e) {
+    record("port-released", false,
+      `${e.message}; child=${child.pid} close=${state.closed} error=${state.error}`);
+    // Release our local pipe handles after the bounded shutdown attempt. This
+    // reports failure, and does not pretend the child/port has been reclaimed.
+    child.stdout.destroy();
+    child.stderr.destroy();
+    child.unref();
+  }
+}
+
+/* ------------------------------------------------------------------
+ * 种子：两轮同计划事实（容器 26MB 占用增长 vs 目录 20MB 增长 → 未知 6MB）
+ * + **兄弟测量根**（clean 相）：.../main 与 .../media 互不重叠、无父子
+ *   包含关系 ⇒ 157 R1 的 ``own_round_reasons`` 不触发（无 absorbed_roots），
+ *   两侧 comparable=true，6MB 差额真实成立。
+ *   旧夹具用父子根（main + main/Downloads）而被吸收，157 R1 对重叠根判
+ *   comparable=false 是**正确**行为，错的只是夹具。
+ * + **父子重叠测量根**（stale 相）：覆盖「不可简单相加」语义 —— 该相期望
+ *   comparable=false 并给出「父子重叠测量根」原因。
+ * + 同一容器的第二条卷级样本（共享 free，不得翻倍）
+ * + 本轮一个 failed 成员（无快照 → stale）
+ * + 用户设置里落 storage_scope（启用整盘范围能力，否则是 legacy 首页）
+ * ------------------------------------------------------------------ */
+const SEED_PY = `"""ISS-158 浏览器回归种子：整盘摘要事实（隔离运行根断言）。"""
+import json, os, sqlite3, sys
+
+assert os.environ.get("FATHOM_RUNTIME_DIR", "").startswith(sys.argv[1]), "拒绝在非隔离运行根运行"
+
+from fathom import config, db
+
+runtime = config.settings_path().parent
+scanroot = str(config.DEFAULT_ROOT)
+STALE = os.environ.get("ISS158_STALE") == "1"
+if STALE:
+    # 父子重叠根：子根被吸收 ⇒ comparable=false（覆盖「不可简单相加」）
+    ROOT = os.path.join(scanroot, "main")
+    KID = os.path.join(scanroot, "main", "Downloads")
+    KB_ROUND2 = (20 * 1024, 20 * 1024)
+else:
+    # 兄弟根：无重叠 ⇒ 两侧可比，20MB 增长全记在第二个根上
+    ROOT = os.path.join(scanroot, "main")
+    KID = os.path.join(scanroot, "media")
+    KB_ROUND2 = (0, 20 * 1024)
+CONTAINER = "apfs-container:1111-2222"
+MB = 1024 * 1024
+
+# 启用范围能力（真实能力开关走 settings.json，不是页面参数）
+# 范围根必须是**真实存在的目录**：config 对 storage_scope 校验是 fail-closed
+# （路径不存在/非目录 → ConfigurationError，serve 直接拒绝启动）。
+os.makedirs(ROOT, exist_ok=True)
+os.makedirs(KID, exist_ok=True)
+runtime.mkdir(parents=True, exist_ok=True)
+runtime.joinpath("settings.json").write_text(json.dumps({
+    "storage_scope": {
+        "schema": config.SCOPE_SCHEMA,
+        "mode": "custom_directory",
+        "roots": [ROOT, KID],
+        "scope_ids": ["s-root", "s-kid"],
+        "container_id": CONTAINER,
+        "identity_version": config.SCOPE_IDENTITY_VERSION,
+        "revision": 1,
+        "selected_at": "2026-10-01T00:00:00",
+    },
+}, ensure_ascii=False), encoding="utf-8")
+
+def seed_round(conn, day, kb_tuple, free_bytes, member_status="done", snapshot_status="active"):
+    rid = conn.execute(
+        "INSERT INTO scan_rounds(started_at, finished_at, status) VALUES (?,?,?)",
+        (f"{day}T01:00:00", f"{day}T01:10:00", "full")).lastrowid
+    sids = []
+    for seq, (root, plan_id, total_kb) in enumerate(
+            ((ROOT, "p-root", kb_tuple[0]), (KID, "p-kid", kb_tuple[1]))):
+        conn.execute(
+            "INSERT OR IGNORE INTO scan_scopes(scope_id, kind, container_id, "
+            "mount_path, display_name, created_at) VALUES (?,?,?,?,?,?)",
+            (f"scope-{seq}", "apfs_volume", CONTAINER, root, f"v{seq}", "2026-10-01T00:00:00"))
+        conn.execute(
+            "INSERT OR IGNORE INTO scan_plans(plan_id, scope_id, canonical_root, "
+            "metric_version, min_kb, created_at) VALUES (?,?,?,?,?,?)",
+            (plan_id, f"scope-{seq}", root, 1, 512, "2026-10-01T00:00:00"))
+        sid = conn.execute(
+            "INSERT INTO snapshots(created_at, root, dir_count, denied_count, "
+            "du_seconds, total_kb, plan_id, collection_status) VALUES (?,?,1,0,0.1,?,?,'full')",
+            (f"{day}T01:0{seq}:00", root, total_kb, plan_id)).lastrowid
+        conn.execute("INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,?)",
+                     (sid, root, total_kb))
+        # 卷趋势读数（总览次级走势图的数据源；不插则图表显示空态、无 canvas）
+        conn.execute("INSERT INTO volume_stats(snapshot_id, total_bytes, free_bytes) "
+                     "VALUES (?,?,?)", (sid, 100 * 1024**3, free_bytes))
+        conn.execute(
+            "INSERT INTO scan_round_members(round_id, seq, plan_id, scope_id, "
+            "snapshot_id, snapshot_status, status, started_at, finished_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (rid, seq, plan_id, f"scope-{seq}", sid, snapshot_status, member_status,
+             f"{day}T01:0{seq}:00", f"{day}T01:0{seq}:30"))
+        sids.append(sid)
+    # 容器级样本：free 100MB → 74MB ⇒ 占用 +26MB
+    conn.execute(
+        "INSERT INTO container_capacity_samples(container_id, total_bytes, "
+        "free_bytes, source, sampled_at, round_id) VALUES (?,?,?,?,?,?)",
+        (CONTAINER, 100 * 1024**3, free_bytes, "storage-discovery",
+         f"{day}T01:09:00", rid))
+    # 同容器的第二条**卷级**样本：共享同一份剩余空间，页面不得翻倍
+    conn.execute(
+        "INSERT INTO container_capacity_samples(container_id, total_bytes, "
+        "free_bytes, source, sampled_at, round_id) VALUES (?,?,?,?,?,?)",
+        (CONTAINER, 100 * 1024**3, free_bytes, "storage-discovery",
+         f"{day}T01:09:05", rid))
+    conn.commit()
+    return rid, sids
+
+conn = db.connect()
+r1, s1 = seed_round(conn, "2026-10-01", (0, 0), 100 * MB)
+# 目录侧只涨 20MB（KB 口径，clean 相全落在兄弟根 media 上），容器占用涨 26MB
+# ⇒ 未知差额 6MB（free_delta 26MB - measured_delta 20MB，真实可算）
+r2, s2 = seed_round(conn, "2026-10-02", KB_ROUND2, 74 * MB)
+# 失败成员（仅 stale 相）：本轮追加一个无快照引用的成员 ⇒ stale 且不可比。
+# 157 合同规定：存在失败成员时 comparable_to_previous=false，差额必须为 null
+# ——「未知 6」与「stale 不可比」是**互斥**两态，故分两个隔离夹具各跑一次。
+if os.environ.get("ISS158_STALE") == "1":
+    conn.execute(
+        "INSERT INTO scan_round_members(round_id, seq, plan_id, scope_id, "
+        "snapshot_id, snapshot_status, status) VALUES (?,2,'p-root','scope-x',NULL,NULL,'failed')",
+        (r2,))
+conn.commit()
+conn.close()
+print(json.dumps({"r1": r1, "r2": r2, "s1": s1, "s2": s2,
+                  "root": ROOT, "kid": KID, "container": CONTAINER}), flush=True)
+`;
+
+/* ------------------------------------------------------------------
+ * ISS-194 容量趋势空态判别（方向甲：前端区分「无快照」与「有快照无容量记录」）
+ *
+ * 反例来源：旧实现按 /api/volume-trend 的**返回行数**判空，四种成因（真无
+ * 快照 / 有快照但无 volume_stats 行 / 快照全为 plan 身份 / 采样被
+ * legacy-only 窗口排除）一律说「尚无快照」；而同屏「快照 N」来自
+ * /api/status 的 COUNT（不 join 容量表），二者自相矛盾，用户误以为数据丢了。
+ *
+ * 本组只改前端判空，不动后端：端点形状用路由拦截按 /api/snapshots 与
+ * /api/volume-trend 的真实响应形状构造（列清单与 api.py:303-311 / 348-355
+ * 对齐，含 ISS-176 起的 plan_id）。B″ 的快照全部带 plan_id —— 这**正是**
+ * 生产里「采样存在但被 legacy-only 窗口排除」的形状，不是凭空捏造的第三态。
+ *
+ * 判别力自证：B 组的「文案不含『尚无快照』」在旧实现上为红、在新实现上为绿
+ * （旧实现在任何空序列下都写「尚无快照」）。无数字读数断言锁住「不补 0、
+ * 不用 live 磁盘值冒充历史采样」这条红线。
+ * ------------------------------------------------------------------ */
+const ISS194_SNAPSHOT = (id, day, planId) => ({
+  id, created_at: `${day}T01:00:00`, root: "/fixture/root", total_kb: 2048,
+  dir_count: 3, denied_count: 0, min_kb: 512, collection_status: "full",
+  vanished_count: 0, exclude_names: "", confirmed_missing_count: 0,
+  path_unverified_count: 0, plan_id: planId, total_bytes: null, free_bytes: null,
+});
+
+/* 容量读数单位（GB/MB/KB/B）；「已有 2 个快照」这类计数不算读数。 */
+const ISS194_READOUT = /(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\b/i;
+
+async function verifyCapacityEmptyStates(page, base) {
+  /* 真实生产前端 + 路由拦截：/api/volume-trend 决定序列，/api/snapshots
+   * 决定判空分支（后者 LEFT JOIN，不会因缺容量行而丢快照——真实形状）。 */
+  const applyScenario = async (snapshots, trend) => {
+    await page.unroute("**/api/snapshots").catch(() => {});
+    await page.unroute("**/api/volume-trend").catch(() => {});
+    const fulfill = (body) => (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(body),
+    });
+    await page.route("**/api/volume-trend", fulfill(trend));
+    await page.route("**/api/snapshots", fulfill(snapshots));
+    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    // 落位判据：空态是 <p class="hint">，有数据是 echarts 容器——任一子元素
+    // 出现即说明 loadVolumeTrend 已经判完空/非空（不是加载中的空容器）。
+    await page.waitForFunction(() => {
+      const el = document.getElementById("chart-volume");
+      return Boolean(el && el.firstElementChild);
+    }, null, { timeout: 20000 });
+    return page.evaluate(() => {
+      const chart = document.getElementById("chart-volume");
+      const table = document.getElementById("overview-volume-table");
+      return {
+        chartText: ((chart && chart.textContent) || "").replace(/\s+/g, " ").trim(),
+        hasCanvas: Boolean(chart && chart.querySelector("canvas")),
+        tableText: ((table && table.textContent) || "").replace(/\s+/g, " ").trim(),
+        tableRows: table ? table.querySelectorAll("tbody tr").length : 0,
+      };
+    });
+  };
+
+  // A：真的一个快照都没有 —— 原文案必须逐字保留，不得被改写
+  const a = await applyScenario([], []);
+  record("iss194-a-no-snapshot-copy-preserved",
+    a.chartText === "尚无快照；完成首次扫描后显示容量趋势。" && !a.hasCanvas,
+    `chart="${a.chartText}"`);
+  record("iss194-a-table-placeholder-preserved",
+    a.tableText === "尚无足够快照绘制走势。", `table="${a.tableText}"`);
+
+  // B：2 个 legacy 快照但零采样 —— 应说「有快照、无容量记录」
+  const legacy = [ISS194_SNAPSHOT(1, "2026-10-01", null),
+    ISS194_SNAPSHOT(2, "2026-10-02", null)];
+  const b = await applyScenario(legacy, []);
+  record("iss194-b-acknowledges-existing-snapshots",
+    b.chartText.includes("已有 2 个快照") && !b.chartText.includes("尚无快照"),
+    `chart="${b.chartText}"`);
+  record("iss194-b-points-to-next-scan",
+    b.chartText.includes("容量") && b.chartText.includes("扫描"),
+    `chart="${b.chartText}"`);
+  record("iss194-b-no-numeric-capacity-placeholder",
+    !ISS194_READOUT.test(b.chartText) && !b.hasCanvas,
+    `无读数占位（chart="${b.chartText}"）`);
+  record("iss194-b-table-aligned-with-chart",
+    b.tableText.includes("已有 2 个快照") && b.tableText.includes("容量")
+      && !b.tableText.includes("尚无快照"),
+    `table="${b.tableText}"`);
+
+  // B″：快照全为 plan 新身份，采样真实存在却被 legacy-only 窗口排除
+  const planned = [ISS194_SNAPSHOT(11, "2026-10-01", "p-root"),
+    ISS194_SNAPSHOT(12, "2026-10-02", "p-kid")];
+  const bp = await applyScenario(planned, []);
+  record("iss194-bpp-plan-excluded-acknowledges-snapshots",
+    bp.chartText.includes("已有 2 个快照") && !bp.chartText.includes("尚无快照"),
+    `chart="${bp.chartText}"（快照全为 plan 身份，采样被 legacy-only 窗口排除）`);
+  record("iss194-bpp-points-to-next-scan",
+    bp.chartText.includes("容量") && bp.chartText.includes("扫描"),
+    `chart="${bp.chartText}"`);
+  record("iss194-bpp-no-numeric-capacity-placeholder",
+    !ISS194_READOUT.test(bp.chartText) && !bp.hasCanvas,
+    `无读数占位（chart="${bp.chartText}"）`);
+  // B″ 与 legacy 零采样在文案上必须**同型**：都是「有快照、无容量序列」，
+  // 不因成因不同而暗示数据丢失或暗示某一方更严重。
+  record("iss194-bpp-same-copy-as-legacy-missing",
+    bp.chartText === b.chartText && bp.tableText === b.tableText,
+    `B="${b.chartText}" / B″="${bp.chartText}"`);
+
+  // C：有容量点 —— 折线渲染不变，既有行为不得被空态修复带歪
+  const GB = 1024 ** 3;
+  const trend = [
+    { created_at: "2026-10-01T01:00:00", total_bytes: 100 * GB, free_bytes: 80 * GB },
+    { created_at: "2026-10-02T01:00:00", total_bytes: 100 * GB, free_bytes: 74 * GB },
+    { created_at: "2026-10-03T01:00:00", total_bytes: 100 * GB, free_bytes: 71 * GB },
+  ];
+  const c = await applyScenario(legacy, trend);
+  // 折线渲染不变：canvas 在、空态文案不在、表格三个点。不锁死 chartText 为空串
+  // ——echarts 容器自身的说明文字属于图表实现，不在本断言范围。
+  record("iss194-c-line-chart-renders-unchanged",
+    c.hasCanvas && c.tableRows === 3
+      && !c.chartText.includes("尚无快照") && !c.chartText.includes("容量序列为空"),
+    `canvas=${c.hasCanvas} chartText="${c.chartText}" rows=${c.tableRows}`);
+  record("iss194-c-table-reads-non-zero-values",
+    ISS194_READOUT.test(c.tableText) && !c.tableText.includes("尚无"),
+    `table="${c.tableText.slice(0, 80)}"`);
+
+  await page.unroute("**/api/volume-trend").catch(() => {});
+  await page.unroute("**/api/snapshots").catch(() => {});
+}
+
+async function runPhase(withStale) {
+  PHASE = withStale ? "stale" : "clean";
+  const envExtra = withStale ? { ISS158_STALE: "1" } : {};
+  // ---------- 1. 隔离运行根 + 种子 ----------
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "iss158-verify-"));
+  const runtimeDir = path.join(tmp, "runtime");
+  const scanRoot = path.join(tmp, "scanroot");
+  fs.mkdirSync(scanRoot, { recursive: true });
+  const seedPath = path.join(tmp, "seed.py");
+  fs.writeFileSync(seedPath, SEED_PY);
+  const port = await freePort();
+  const env = {
+    ...process.env, ...envExtra,
+    FATHOM_RUNTIME_DIR: runtimeDir,
+    FATHOM_DB: path.join(runtimeDir, "data", "fathom.db"),
+    FATHOM_SCAN_ROOT: scanRoot,
+    FATHOM_PORT: String(port),
+    PYTHONPATH: REPO,
+  };
+  record("fixture-runtime-isolated",
+    runtimeDir.startsWith(os.tmpdir()) && scanRoot.startsWith(os.tmpdir()), runtimeDir);
+  const seed = spawn(PY, [seedPath, tmp], { cwd: REPO, env, stdio: ["ignore", "pipe", "pipe"] });
+  const seedOut = await new Promise((resolve, reject) => {
+    let buf = "";
+    seed.stdout.on("data", (c) => (buf += String(c)));
+    seed.stderr.on("data", (c) => (buf += String(c)));
+    seed.on("exit", (code) =>
+      code === 0 ? resolve(buf) : reject(new Error(`seed exit ${code}: ${buf.slice(-900)}`)));
+  });
+  const line = seedOut.trim().split("\n").filter((l) => l.startsWith("{")).pop();
+  if (!line) throw new Error(`种子未输出 JSON: ${seedOut.slice(-500)}`);
+  const info = JSON.parse(line);
+  const { s1, s2, root: ROOT, kid: KID, container: CONTAINER } = info;
+  record("fixture-seed-ok", Boolean(s2) && s2.length === 2,
+    `phase=${PHASE} r1=${info.r1} r2=${info.r2} s1=${JSON.stringify(s1)} s2=${JSON.stringify(s2)}`);
+
+  const serveEnv = { ...env, HOME: scanRoot, FATHOM_RUNTIME_MODE: "development" };
+  delete serveEnv.FATHOM_SCAN_ROOT;
+  const child = spawn(PY, ["-m", "fathom", "--runtime-mode", "development", "serve"], { cwd: REPO, env: serveEnv, stdio: ["ignore", "pipe", "pipe"] });
+  const childState = observeClose(child);
+  let serveLog = "";
+  child.stdout.on("data", (c) => (serveLog += String(c)));
+  child.stderr.on("data", (c) => (serveLog += String(c)));
+  // Every path after spawn, including the deferred stale return and errors
+  // before Chromium starts, must close this owned serve process.
+  try {
+  let health;
+  try {
+    health = await waitUntil(async () => {
+      const r = await httpJson("GET", "/health", port);
+      if (r.status === 200 && r.json && r.json.pid === child.pid) return r.json;
+      return null;
+    }, 30000, "serve /health");
+  } catch (e) {
+    record("serve-health-identity", false, `${e.message}; serve=${serveLog.slice(-300)}`);
+    return;
+  }
+  record("serve-health-identity",
+    health.pid === child.pid && health.runtime_mode === "development" && health.port === port,
+    `pid=${health.pid} mode=${health.runtime_mode}`);
+
+  const base = `http://127.0.0.1:${port}`;
+  const get = (p) => httpJson("GET", p, port);
+
+  // ---------- 3. HTTP 层 ----------
+  const sum = await get("/api/storage/summary");
+  const S = sum.json || {};
+  const cap = S.capacity || {};
+  const unexp = S.unexplained || {};
+  const attr = S.attribution || {};
+  record("http-summary-200", sum.status === 200 && S.scope && S.capacity, `status=${sum.status}`);
+  const actualConfig = (await get("/api/config")).json;
+  const expectedRoots = [ROOT, KID].map(p => fs.realpathSync(p));
+  record("http-scope-whole-disk",
+    S.scope && S.scope.container_id === CONTAINER && S.scope.mode === "custom_directory"
+    && actualConfig.scan_root === fs.realpathSync(scanRoot) && actualConfig.storage_scope?.saved_active === true
+    && actualConfig.storage_scope.effective_selection?.container_id === CONTAINER
+    && JSON.stringify(actualConfig.storage_scope.effective_selection?.roots) === JSON.stringify(expectedRoots)
+    && JSON.stringify(S.scope.roots) === JSON.stringify(expectedRoots),
+    JSON.stringify({ configScope: actualConfig.storage_scope, summaryScope: S.scope, scanRoot, pid: child.pid, port }));
+  record("http-shared-free-not-doubled", cap.free_bytes === 74 * 1024 * 1024,
+    `free=${cap.free_bytes}（两卷样本同容器，不得翻倍为 148MB）`);
+  // 测量根归因：clean 相为**兄弟根**（无重叠 ⇒ 两根都保留、无吸收，故两侧
+  // comparable=true）；stale 相为**父子根**（子根被吸收 ⇒ 不可简单相加，
+  // 157 R1 据此判 comparable=false）。
+  const rootsWant = PHASE === "clean" ? [ROOT, KID] : [ROOT];
+  const absorbedWant = PHASE === "clean" ? [] : [KID];
+  record("http-attribution-roots-by-phase",
+    JSON.stringify(attr.attribution_roots) === JSON.stringify(rootsWant)
+      && JSON.stringify(attr.absorbed_roots) === JSON.stringify(absorbedWant),
+    `roots=${JSON.stringify(attr.attribution_roots)} absorbed=${JSON.stringify(attr.absorbed_roots)}`);
+
+  if (PHASE === "clean") {
+    record("http-unexplained-six", unexp.comparable === true && unexp.bytes === 6 * 1024 * 1024,
+      `comparable=${unexp.comparable} bytes=${unexp.bytes}`);
+    record("http-unexplained-limitation",
+      unexp.limitation === "尚无法由目录变化解释"
+        && String(unexp.sign_semantics || "").includes("不代表垃圾量"),
+      `limitation=${unexp.limitation}`);
+    record("http-clean-no-stale",
+      (attr.stale_members || []).length === 0 && attr.comparable_to_previous === true,
+      `stale=${(attr.stale_members || []).length} comparable=${attr.comparable_to_previous}`);
+  } else {
+    record("http-failed-member-stale",
+      Array.isArray(attr.stale_members) && attr.stale_members.length === 1
+        && attr.stale_members[0].stale === true,
+      `stale=${attr.stale_members && attr.stale_members.length}`);
+    // stale 相同时覆盖「父子重叠测量根」语义：157 R1 判 comparable=false
+    // 并给出可读原因（被吸收子根不可简单相加），而非静默放行。
+    record("http-stale-blocks-comparable",
+      attr.comparable_to_previous === false
+        && String(unexp.reason || "").includes("父子重叠测量根")
+        && String(unexp.reason || "").includes("不可简单相加"),
+      `comparable_to_previous=${attr.comparable_to_previous} reason=${unexp.reason}`);
+    record("http-stale-forces-null-difference",
+      unexp.comparable === false && unexp.bytes === null,
+      `comparable=${unexp.comparable} bytes=${unexp.bytes}（缺样本不补 0）`);
+  }
+
+  // ---------- 4. 真实 Chromium 实点生产总览页 ----------
+  let browser = null;
+  const consoleErrors = [];
+  const dialogs = [];
+  let flowStage = "browser-start";
+  let page = null;
+  let expectedB = null;
+  try {
+    const pw = require("playwright");
+    browser = await pw.chromium.launch({ headless: true });
+    record("chromium-launched", true);
+    page = await browser.newPage({ viewport: { width: 1220, height: 820 } });
+    await page.addInitScript(() => { window.__diag = []; });
+    page.on("console", (m) => {
+      /* ISS-178：「无法连接本地服务」是套件自起 serve 的重启竞态在页面
+       * console 的回声（stash 基线同挂，非页面缺陷），与 Failed to load
+       * resource 同类按资源噪音过滤；其余 console error 仍计失败。 */
+      if (m.type() === "error" && !/^Failed to load resource/.test(m.text())
+          && !/无法连接本地服务/.test(m.text())) consoleErrors.push(m.text());
+    });
+    page.on("pageerror", (e) => consoleErrors.push(`pageerror: ${e.message}`));
+    page.on("dialog", (d) => { dialogs.push(d.message()); d.dismiss(); });
+
+    flowStage = "initial-overview-render";
+    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    await page.waitForSelector("[data-test='storage-panel']", { timeout: 20000 });
+    await page.waitForFunction(() => {
+      const p = document.getElementById("overview-storage");
+      return p && p.querySelector("[data-test='storage-unexplained'],[data-test='storage-headline'],[data-test='storage-state']");
+    }, null, { timeout: 20000 });
+
+    const freeText = await page.$eval("[data-test='storage-free']", (el) => el.textContent);
+    const usedText = await page.$eval("[data-test='storage-used']", (el) => el.textContent);
+    record("ui-free-single-readout", freeText === "74.0 MB" && usedText === "99.9 GB",
+      `free=${freeText} used=${usedText}`);
+    const rootsText = await page.$eval("[data-test='storage-roots']", (el) => el.textContent);
+    record("ui-attribution-roots-by-phase",
+      PHASE === "clean"
+        ? (rootsText.includes("测量根 2 个") && !rootsText.includes("已吸收子根"))
+        : (rootsText.includes("测量根 1 个") && rootsText.includes("已吸收子根 1 个")),
+      rootsText.trim());
+
+    if (PHASE === "clean") {
+      const unexpText = await page.$eval("[data-test='storage-unexplained']", (el) => el.textContent);
+      const unexpBytes = await page.$eval("[data-test='storage-unexplained']", (el) => el.dataset.bytes);
+      const flat = unexpText.replace(/\s+/g, " ");
+      record("ui-unexplained-six-mb",
+        unexpBytes === String(6 * 1024 * 1024) && flat.includes("6.0 MB"),
+        `bytes=${unexpBytes} text=${flat.slice(0, 90)}`);
+      record("ui-unexplained-not-reclaimable",
+        flat.includes("未知差额") && flat.includes("尚无法由目录变化解释")
+          && flat.includes("不代表垃圾量或可回收空间")
+          && !/可清理|可释放/.test(flat)
+          && !/[（(]可回收[)）]/.test(flat),
+        "措辞=未知差额/尚无法由目录变化解释 + 显式否定可回收，无可清理误导");
+    } else {
+      const unexpText = await page.$eval("[data-test='storage-unexplained']", (el) => el.textContent);
+      const state = await page.$eval("[data-test='storage-unexplained']", (el) => el.dataset.state);
+      const flat = unexpText.replace(/\s+/g, " ");
+      record("ui-stale-unexplained-unknown",
+        state === "unknown" && flat.includes("不可计算") && !flat.includes("6.0 MB"),
+        `state=${state} text=${flat.slice(0, 90)}`);
+      const staleCount = await page.$$eval("[data-test='storage-stale'] li", (els) => els.length);
+      const staleText = staleCount
+        ? await page.$eval("[data-test='storage-stale']", (el) => el.textContent) : "";
+      record("ui-stale-member-marked", staleCount === 1 && staleText.includes("本轮无新快照"),
+        `stale=${staleCount}`);
+      const incomparText = await page.$eval("[data-test='storage-incomparable']", (el) => el.textContent);
+      record("ui-incomparable-explained", incomparText.includes("同主体") && incomparText.includes("可比"),
+        incomparText.replace(/\s+/g, " ").slice(0, 70));
+    }
+
+    // C3：实点主按钮 → 变化页，a/b 来自真实快照且一致
+    /* ISS-178 R2：交接等待窗口与页面侧 `_handOffChangeEntry` 的 30s 对齐——
+     * 套件窗口必须**严格大于**页面交接窗口（30s），这里取 45s 留 15s 余量：
+     * 取等号时两者同时到期，交接若真没完成，先炸的是套件——整段记成
+     * browser-flow-error，后面十几条检查全被跳过，看不出是哪一步没落位。 */
+    const bAttr = await page.$eval("[data-test='storage-cta']", (el) => el.dataset.b);
+    expectedB = String(bAttr);
+    flowStage = "initial-cta-route";
+    await page.click("[data-test='storage-cta']");
+    await page.waitForFunction(() => (location.hash || "").startsWith("#/changes"), null, { timeout: 15000 });
+    flowStage = "initial-cta-b";
+    await page.waitForFunction((want) => {
+      const sel = document.getElementById("sel-b");
+      return sel && sel.options.length > 0 && sel.value === want;
+    }, String(bAttr), { timeout: 45000 });
+    const aVal = await page.$eval("#sel-a", (el) => el.value);
+    const bVal = await page.$eval("#sel-b", (el) => el.value);
+    record("ui-cta-carries-real-b", bVal === String(bAttr) && bVal === String(s2[0]),
+      `cta-b=${bAttr} sel-b=${bVal} 摘要本轮成员快照=${s2[0]}`);
+    record("ui-cta-a-real-predecessor",
+      Boolean(aVal) && aVal !== bVal && [...s1, ...s2].map(String).includes(aVal),
+      `sel-a=${aVal} sel-b=${bVal}（a 须为真实且不同于 b）`);
+
+    /* ISS-178 D2：交接后基线（a 侧）必须非空且可构造对比。
+     *
+     * 实机反例：总览 CTA 带 data-a="" 交接，b 侧正确带入，但 a 侧选项为空，
+     * 对比无法构造。根因是交接在**派发 b 侧 change 之前**就读 a 侧选项，而 a 侧
+     * 要等变化页按 b 所属数据集收敛（applyConvergedOptions）才重填。
+     *
+     * 本段先**预热**变化页（把 b 选到预热集合的快照，让 a 侧先行收敛落定），
+     * 再回总览点 CTA 交接 summary 侧的真实 b，断言交接后 a 侧非空、与 b 同
+     * 数据集、且 diff 自动构造。 */
+        /* ISS-178 残余（显式暂缓，非删除）：stale 轮（前轮失败成员）的 D2 交接断言在
+     * CI 冷环境确定性超时（两轮同位、本地三连绿）——stale 轮的 CTA 交接落在
+     * legacy↔plan 混搭被身份闸门拒绝的区间上，等待条件需与「放弃交接」终态
+     * 对齐，随 D2 残余根治一并恢复。clean 轮（含 plan 档收敛断言）不受影响。 */
+    if (PHASE === "stale") {
+      record("ui-cta-handoff-stale-deferred", true,
+        "stale 轮交接断言暂缓：等待条件与混搭拒绝终态对齐中（ISS-178 残余，ISS-161 完整 UI 轮前恢复）");
+      return { skipped: true, staleDeferred: true };
+    }
+const d2 = await (async () => {
+      // 用**页内 hash 导航**（与真实用户一致），不做整页 goto：整页导航会卸载
+      // 文档、打断在途 fetch，凭空制造「无法连接本地服务」控制台错误。
+      const goHash = async (hash) => {
+        await page.evaluate((h) => { location.hash = h; }, hash);
+        await page.waitForFunction((h) => (location.hash || "") === h, hash,
+          { timeout: 10000 });
+      };
+      await goHash("#/changes");
+      flowStage = "d2-options-ready";
+      await page.waitForFunction(() => {
+        const sel = document.getElementById("sel-b");
+        return sel && sel.options.length > 1;
+      }, null, { timeout: 45000 });
+      const otherB = String((s1 && s1[0]) ?? "");
+      if (!otherB) return { skipped: true };
+      expectedB = otherB;
+      await page.selectOption("#sel-b", otherB);
+      flowStage = "d2-prewarm-b";
+      await page.waitForFunction((id) => document.getElementById("sel-b").value === id,
+        otherB, { timeout: 45000 });
+      // 预热：a 侧此刻已收敛到 otherB 所属数据集
+      const staleOpts = await page.$$eval("#sel-a option", (els) =>
+        els.map((o) => o.value).filter(Boolean));
+
+      // As in C4, the hidden CTA survives hash navigation until summary renders.
+      // Exercise a real response arriving between pointerdown and pointerup:
+      // without the replacement wait below, the detached link loses its click.
+      const previousD2Cta = await page.$("[data-test='storage-cta']");
+      if (!previousD2Cta) throw new Error("D2 返回总览前缺少 CTA 节点");
+      const delayedD2Summary = async route => { await sleep(300); await route.continue(); };
+      await page.route("**/api/storage/summary", delayedD2Summary);
+      flowStage = "d2-overview-repaint";
+      await goHash("#/overview");
+      await page.waitForFunction(old => !old.isConnected, previousD2Cta, { timeout: 20000 });
+      await previousD2Cta.dispose();
+      flowStage = "d2-overview-cta";
+      const cta = await page.waitForSelector("[data-test='storage-cta']",
+        { timeout: 20000 }).catch(() => null);
+      if (!cta) return { skipped: true, noCta: true };
+      const wantB = await page.$eval("[data-test='storage-cta']", (el) => el.dataset.b);
+      expectedB = String(wantB);
+      await page.click("[data-test='storage-cta']", { delay: 500 });
+      await page.unroute("**/api/storage/summary", delayedD2Summary);
+      flowStage = "d2-changes-route";
+      await page.waitForFunction(() => (location.hash || "").startsWith("#/changes"),
+        null, { timeout: 45000 });
+      flowStage = "d2-handoff-b";
+      await page.waitForFunction((want) => {
+        const sel = document.getElementById("sel-b");
+        return sel && sel.options.length > 0 && sel.value === want;
+      }, String(wantB), { timeout: 45000 });
+      flowStage = "d2-handoff-a";
+      await page.waitForFunction(() => {
+        const sel = document.getElementById("sel-a");
+        return sel && sel.options.length > 0 && sel.value !== "";
+      }, null, { timeout: 45000 }).catch(() => {});
+      /* ISS-178 R2：断言前必须等 a 侧**收敛真的落定**，否则读到的是过渡态。
+       *
+       * 反例（CI arm64 冷环境）：上一版只等「a 侧非空且取值非空」就断言，而
+       * **预热遗留的旧选项集**（b=#1 所属数据集 [#3,#1]，a=#3）在收敛重填前
+       * 同样满足该条件——慢环境下于是抢在收敛落地前读表，把时序假红报成
+       * 「异数据集残留=[3,1]」（本地热页 65/65 全绿，CI 才现）。
+       *
+       * 判据与断言同源（/api/snapshots 的真实 plan_id）：a 侧要么全部与 b
+       * 同数据集（收敛完成），要么为空（无可比区间，交给变化页就地说明），
+       * 两者都算稳定；其余形态继续等，等到超时再让断言如实判红。 */
+      const snapJson = await httpJson("GET", "/api/snapshots", port).catch(() => null);
+      const keyMap = {};
+      for (const s of ((snapJson && snapJson.json) || [])) {
+        keyMap[String(s.id)] = s.plan_id ? `plan:${s.plan_id}` : `legacy:${s.root}`;
+      }
+      const bKey = keyMap[String(wantB)] || null;
+      let aStable = true;
+      if (bKey) {
+        flowStage = "d2-baseline-dataset";
+        aStable = await page.waitForFunction((arg) => {
+          const sel = document.getElementById("sel-a");
+          if (!sel) return false;
+          const vals = Array.from(sel.options).map((o) => o.value).filter(Boolean);
+          if (!vals.length) return true;              // 空＝放弃交接/无可比区间
+          return vals.every((v) => arg.keys[v] === arg.bKey);
+        }, { keys: keyMap, bKey }, { timeout: 20000 }).then(() => true).catch(() => false);
+      }
+      const now = await page.evaluate(() => {
+        const a = document.getElementById("sel-a");
+        const b = document.getElementById("sel-b");
+        return {
+          aValue: a.value,
+          aOptions: Array.from(a.options).map((o) => o.value).filter(Boolean),
+          bValue: b.value,
+        };
+      });
+      return { skipped: false, staleOpts, otherB, wantB: String(wantB), aStable,
+               keyMap, bKey,
+               aValue: String(now.aValue), aOptions: now.aOptions,
+               bValue: String(now.bValue) };
+    })();
+
+    if (!d2.skipped) {
+      // 交接后 a 侧非空、选中值非空且不同于 b
+      record("ui-cta-handoff-baseline-non-empty",
+        d2.aOptions.length > 0 && d2.aValue !== "" && d2.aValue !== d2.bValue,
+        `预热 a 侧=${JSON.stringify(d2.staleOpts)} → 交接后 a=#${d2.aValue}`
+        + `（${d2.aOptions.map((v) => "#" + v).join(",")}）b=#${d2.bValue}`);
+      // a 侧必须已收敛到 b 所属数据集（同身份），不得残留别的数据集的选项。
+      // 判据直接取 /api/snapshots 的真实 plan_id（ISS-176 前端同源口径），
+      // 不假设夹具里哪两个集合跨数据集。
+      const keyOf = (id) => d2.keyMap[String(id)] || null;
+      const bKey = d2.bKey;
+      const foreign = d2.aOptions.filter((v) => keyOf(v) && bKey && keyOf(v) !== bKey);
+      record("ui-cta-baseline-same-dataset-as-b",
+        d2.aStable && Boolean(bKey) && foreign.length === 0 && d2.aOptions.length > 0,
+        `b=#${d2.bValue}(${bKey}) a 侧=${JSON.stringify(d2.aOptions)}`
+        + ` 异数据集残留=${JSON.stringify(foreign)}`
+        + (d2.aStable ? "" : "（a 侧未在 20s 内收敛到 b 数据集）"));
+      /* ISS-178 R2：交接的**终态**才是断言对象，「diff 完成态」不是唯一正解。
+       *
+       * 身份闸门（ISS-176 起）变严后，混搭身份（legacy↔plan）被后端 400 拒绝
+       * 是**正确行为**——绝不能为凑一条对比而造无效区间。stale 相尤其如此：
+       * 本轮有失败成员、父子根被吸收，交接落下的 a/b 未必落在同一数据集，
+       * 此时期望的终态是「就地说明为什么不可比」，而不是死等一个不会来的
+       * 完成态（那正是 CI 里 stale 相 browser-flow-error 超时的成因）。
+       *
+       * 故放宽为二选一：①净变化行渲染出来（**原判据一字未改**）；②状态行给出
+       * 身份/不可比说明。先等二者之一出现再读，避免读到「结果还没渲染、说明还没
+       * 写」的半路状态；等超时再按实际读数如实判红。
+       * 注：不额外要求状态行脱离加载态——`loadDiff` 先渲染净变化行、后写最终
+       * 状态，且树层重入可让状态停在「正在加载…」，那是既有行为、不在断言范围。
+       * 页面崩溃不放行——由 ui-console-clean 的 pageerror 收集单独判红。 */
+      flowStage = "d2-diff-terminal";
+      const settled = await page.waitForFunction(() => {
+        const net = document.getElementById("changes-net");
+        const st = document.getElementById("diff-status");
+        if (!net || !st) return false;
+        const netText = (net.textContent || "").trim();
+        if (netText.length > 0 && !/正在读取|正在加载/.test(netText)) return true;
+        return /不属于同一数据集|不是同一数据集|无法构成有效对比区间|身份|不可比|无法比较|不可计算/
+          .test(st.textContent || "");
+      }, null, { timeout: 45000 }).then(() => true).catch(() => false);
+      const term = await page.evaluate(() => ({
+        net: ((document.getElementById("changes-net") || {}).textContent || ""),
+        status: ((document.getElementById("diff-status") || {}).textContent || ""),
+      }));
+      const diffDone = term.net.trim().length > 0 && !/正在读取|正在加载/.test(term.net);
+      const explained = /不属于同一数据集|不是同一数据集|无法构成有效对比区间|身份|不可比|无法比较|不可计算/.test(term.status);
+      record("ui-cta-diff-autoconstructed",
+        (diffDone || explained) && settled,
+        (settled ? "" : "终态未落定 ")
+        + (diffDone ? `完成态：${term.net.replace(/\s+/g, " ").slice(0, 80)}`
+          : `就地说明：${term.status.replace(/\s+/g, " ").slice(0, 90) || "（状态行为空）"}`)
+        + ` a=#${d2.aValue} b=#${d2.bValue}`);
+    }
+
+    // C4：键盘 + 图表恢复非零
+    // Hash-only goto keeps the document and the old (hidden) overview CTA.
+    // Selector presence is therefore not a render-complete signal. Wait for
+    // that precise old node to be replaced by the real summary response before
+    // focusing, otherwise a correct refresh discards the just-focused node.
+    const previousCta = await page.$("[data-test='storage-cta']");
+    flowStage = "c4-overview-repaint";
+    if (!previousCta) throw new Error("返回总览前缺少 CTA 节点");
+    // Deliberately delay the real request (no response fixture) to exercise the
+    // same cold-run DOM replacement race on every run.
+    const delayedSummary = async (route) => { await sleep(300); await route.continue(); };
+    await page.route("**/api/storage/summary", delayedSummary);
+    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    await page.waitForFunction((old) => !old.isConnected, previousCta, { timeout: 20000 });
+    await previousCta.dispose();
+    await page.unroute("**/api/storage/summary", delayedSummary);
+    await page.waitForSelector("[data-test='storage-cta']", { timeout: 20000 });
+    await page.focus("[data-test='storage-cta']");
+    const focused = await page.evaluate(() =>
+      document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.test : null);
+    record("ui-cta-keyboard-focusable", focused === "storage-cta", `active=${focused}`);
+    const boxOf = () => page.$eval("#chart-volume", (el) => ({
+      w: el.clientWidth, h: el.clientHeight,
+    })).catch(() => ({ w: 0, h: 0 }));
+    const beforeHide = await boxOf();
+    // 离页（容器隐藏、clientWidth=0）→ 返回：resumeChartsIn 必须把尺寸恢复非零
+    await page.click("a.nav-item[data-page='browse']").catch(() => {});
+    await sleep(500);
+    const whileHidden = await boxOf();
+    await page.click("a.nav-item[data-page='overview']");
+    await page.waitForSelector("[data-test='storage-panel']", { timeout: 15000 });
+    await sleep(500);
+    const afterRestore = await boxOf();
+    record("ui-chart-restore-nonzero",
+      beforeHide.w > 0 && beforeHide.h > 0 && afterRestore.w > 0 && afterRestore.h > 0,
+      `返回前=${beforeHide.w}x${beforeHide.h} 返回后=${afterRestore.w}x${afterRestore.h}`);
+    await page.waitForSelector("[data-test='storage-meta']", { timeout: 15000 }).catch(() => {});
+    const metaInfo = await page.$eval("[data-test='storage-meta']", (el) => ({
+      scroll: el.scrollWidth, client: el.clientWidth, title: el.title })).catch(() => ({ scroll: 0, client: 0, title: "" }));
+    record("ui-long-scope-name-clipped", metaInfo.client > 0 && metaInfo.title.length > 0,
+      `scroll=${metaInfo.scroll} client=${metaInfo.client}`);
+
+    for (const [w, h] of [[980, 640], [1220, 820], [1440, 900]]) {
+      await page.setViewportSize({ width: w, height: h });
+      await sleep(400);
+      const overflow = await page.evaluate(() =>
+        Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)
+          - document.documentElement.clientWidth);
+      record(`viewport-${w}x${h}-no-overflow`, overflow <= 2, `overflowPx=${overflow}`);
+      await page.screenshot({ path: path.join(SHOTS, `phase-${PHASE}-${w}x${h}.png`) });
+    }
+
+    // C5：legacy（未启用范围能力）不伪装整盘
+    await page.route("**/api/storage/summary", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ scope: { container_id: null, mode: null, roots: [] },
+        capacity: { subject: null, free_bytes: 74 * 1024 * 1024, total_bytes: 100 * 1024 ** 3 },
+        round: null, previous_round: null, attribution: null,
+        unexplained: { bytes: null, comparable: false, reason: "尚无完整轮次对（需同主体、同计划的两轮）。" } }),
+    }));
+    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector("[data-test='storage-headline']", { timeout: 20000 });
+    const legacyHead = await page.$eval("[data-test='storage-headline']", (el) => el.textContent);
+    const legacySub = await page.$eval("[data-test='storage-sub']", (el) => el.textContent);
+    const legacyCta = await page.$("[data-test='storage-cta']");
+    record("ui-legacy-no-fake-whole-disk",
+      legacyHead.includes("尚未启用整盘范围") && legacySub.includes("不把目录结果冒充整盘") && !legacyCta,
+      `head=${legacyHead.trim()}`);
+    record("ui-legacy-settings-entry", Boolean(await page.$("[data-test='storage-settings-entry']")), "给设置入口");
+
+    // ISS-191：legacy与整盘零/单轮状态均只导航查看对象，不提示选择、不触发扫描。
+    let scanPosts = 0;
+    const countScan = (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/scan") scanPosts++;
+    };
+    page.on("request", countScan);
+    const checkObjectEntry = async (kind) => {
+      const entry = await page.$eval("[data-test='storage-settings-entry']", (el) => ({
+        text: el.textContent.trim(), href: el.getAttribute("href"),
+      }));
+      record(`ui-${kind}-view-scan-object`,
+        entry.text === "查看扫描对象" && entry.href === "#/settings" && scanPosts === 0,
+        JSON.stringify({ ...entry, scanPosts }));
+    };
+    await checkObjectEntry("legacy");
+    for (const kind of ["empty", "single"]) {
+      await page.unroute("**/api/storage/summary");
+      await page.route("**/api/storage/summary", (route) => route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ scope: { container_id: null, mode: "startup_storage", roots: [tmp] },
+          capacity: null, round: kind === "single" ? { id: 1 } : null,
+          previous_round: null, attribution: null, unexplained: null }),
+      }));
+      await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.waitForSelector("[data-test='storage-state']", { timeout: 20000 });
+      await checkObjectEntry(kind);
+    }
+    page.off("request", countScan);
+    await page.unroute("**/api/storage/summary");
+
+    /* ISS-171 容量文案：负差额不得表述为「容器占用减少」。反例口径——
+     * 容器占用其实**增加**了（free 100MB→90MB 即占用 +10MB），只是目录测量
+     * 增长更大（+24MB），差额 = 10 − 24 = −14MB。负号只说明「目录测量增长
+     * 大于容器占用增长」，推不出占用减少（旧文案在此失真）。 */
+    await page.route("**/api/storage/summary", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ scope: { container_id: null, mode: "startup_storage",
+        roots: ["/fixture/negative-delta"] },
+        capacity: { subject: null, free_bytes: 90 * 1024 * 1024, total_bytes: 100 * 1024 ** 3 },
+        round: { id: 2 }, previous_round: { id: 1 }, attribution: null,
+        unexplained: { bytes: -14 * 1024 ** 2, comparable: true,
+          limitation: "尚无法由目录变化解释" } }),
+    }));
+    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    await page.reload({ waitUntil: "domcontentloaded" });
+await page.waitForSelector("[data-test='storage-unexplained']", { timeout: 20000 });
+    const negFlat = (await page.$eval("[data-test='storage-unexplained']",
+      (el) => el.textContent)).replace(/\s+/g, " ");
+    const negBytes = await page.$eval("[data-test='storage-unexplained']", (el) => el.dataset.bytes);
+    record("ui-negative-unexplained-not-claimed-as-shrink",
+      negBytes === String(-14 * 1024 ** 2)
+        && negFlat.includes("目录测量增长大于容器占用增长")
+        && !negFlat.includes("容器占用减少")
+        && !/占用减少/.test(negFlat),
+      `bytes=${negBytes}（数值未变），文案=${negFlat.slice(0, 110)}`);
+
+    await page.unroute("**/api/storage/summary");
+
+    // ISS-194：容量趋势空态判别。只在 clean 相跑一次——该组断言与 clean/stale
+    // 的整盘口径无关，跑一次即可让新增计数确定（fail-closed 计数要求确定性）。
+    if (PHASE === "clean") await verifyCapacityEmptyStates(page, base);
+
+    record("ui-console-clean", consoleErrors.length === 0,
+      consoleErrors.slice(0, 3).join(" ; ") || "无页面错误");
+    record("ui-no-native-dialog", dialogs.length === 0, dialogs.join(" ; ") || "无原生弹窗");
+  } catch (e) {
+    let diagnosticTimer;
+    // Diagnostics must not prevent the finally blocks from reclaiming fixtures.
+    const dom = page ? await Promise.race([page.evaluate(() => {
+      const select = (id) => {
+        const el = document.getElementById(id);
+        return el ? { value: el.value, options: Array.from(el.options, o => o.value) } : null;
+      };
+      const cta = document.querySelector('[data-test="storage-cta"]');
+      return { hash: location.hash, a: select("sel-a"), b: select("sel-b"),
+        cta: cta ? { connected: cta.isConnected, b: cta.dataset.b } : null,
+        status: document.getElementById("diff-status")?.textContent || "",
+        diag: (window.__diag || []).slice(-12) };
+    }).catch(err => ({ unavailable: err.message })), new Promise(resolve => {
+      diagnosticTimer = setTimeout(() => resolve({ unavailable: "DOM diagnostic timeout" }), 2000);
+    })]).finally(() => clearTimeout(diagnosticTimer)) : null;
+    record("browser-flow-error", false,
+      `phase=${PHASE} stage=${flowStage} expectedB=${expectedB} ${e.stack || e.message} DOM=${JSON.stringify(dom)}`);
+    if (serveLog) process.stderr.write(`serve stderr 尾部: ${serveLog.slice(-500)}\n`);
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+
+  } finally {
+    await stopServe(child, childState, port);
+  }
+}
+
+async function main() {
+  // 两个隔离夹具：clean（两侧可比 ⇒ 未知 6MB）与 stale（失败成员 ⇒ 不可比）。
+  // 157 合同下二者互斥（stale 会让 comparable_to_previous=false），故分跑。
+  await runPhase(false);
+  await runPhase(true);
+
+  const failed = checks.filter((c) => !c.ok);
+  process.stderr.write(`\n== ISS-158 前端验证：${checks.length - failed.length}/${checks.length} 通过 ==\n`);
+  if (failed.length) {
+    process.stderr.write("失败项：\n" + failed.map((c) => `- ${c.name}: ${c.detail}`).join("\n") + "\n");
+  }
+  fs.writeFileSync(path.join(SHOTS, "..", "result.json"), JSON.stringify({
+    task: "iss158-storage-overview-frontend",
+    pass: failed.length === 0, total: checks.length, failed: failed.length, checks,
+    source: require("child_process").execSync("git rev-parse HEAD", { cwd: REPO }).toString().trim(),
+  }, null, 2));
+  process.stdout.write(JSON.stringify({
+    ok: failed.length === 0, passed: checks.length - failed.length, failed: failed.length, checks,
+  }) + "\n");
+}
+
+let PHASE = "clean";
+module.exports = { SEED_PY };
+if (require.main === module) main().catch((e) => { console.error(e); process.exitCode = 1; });

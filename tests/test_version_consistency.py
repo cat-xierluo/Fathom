@@ -100,12 +100,14 @@ def test_cargo_toml_drift_detected(tmp_path: Path) -> None:
 
 
 def test_single_source_bump_without_sync_detected(tmp_path: Path) -> None:
-    # 只升单一源、不同步消费方：权威源变 0.4.0，其余三处立即被比对为漂移。
+    # 只升单一源、不同步消费方：权威源变为「当前 patch +1」的下一版本（写死字面量会在真实版本追上时失效），其余三处立即被比对为漂移。
     root = _make_copy(tmp_path)
-    _rewrite(root / "fathom/__init__.py", f'__version__ = \"{CURRENT}\"', '__version__ = "0.4.0"')
+    parts = CURRENT.split(".")
+    nxt = ".".join(parts[:-1] + [str(int(parts[-1]) + 1)])
+    _rewrite(root / "fathom/__init__.py", f'__version__ = "{CURRENT}"', f'__version__ = "{nxt}"')
     result = _run_checker(root)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "0.4.0" in result.stdout
+    assert nxt in result.stdout
 
 
 def test_api_hardcoded_version_reintroduced(tmp_path: Path) -> None:

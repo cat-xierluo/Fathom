@@ -423,7 +423,7 @@ class TestISS066ExcludeNamesValidation:
         loaded = config.load_user_settings(path)
         assert loaded.exclude_names == "a;b"
 
-    def test_exclude_names_source_annotation_in_effective_view(self, monkeypatch):
+    def test_exclude_names_source_annotation_in_effective_view(self, monkeypatch, isolated):
         """effective_settings_view 标注来源：env > settings > default。
 
         显式 reset 模块内 _USER_SETTINGS 到默认 UserSettings()，

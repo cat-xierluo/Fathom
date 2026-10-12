@@ -11,11 +11,12 @@ import { overviewPage } from "./pages/overview.js";
 import { changesPage } from "./pages/changes.js";
 import { browsePage } from "./pages/browse.js";
 import { bigfilesPage } from "./pages/bigfiles.js";
+import { agentPage } from "./pages/agent.js";
 import { settingsPage } from "./pages/settings.js";
 
 export const PAGE_TITLES = {
   overview: "总览", changes: "变化", browse: "分布",
-  bigfiles: "大文件", settings: "设置",
+  bigfiles: "大文件", agent: "Agent", settings: "设置",
 };
 
 const PAGES = {
@@ -24,6 +25,7 @@ const PAGES = {
   browse: browsePage,
   bigfiles: bigfilesPage,
   settings: settingsPage,
+  agent: agentPage,
 };
 
 /* 单一刷新入口：只加载当前激活页的数据。 */
@@ -36,7 +38,9 @@ export function refreshActivePage() {
 
 export function navigate() {
   const previous = state.page;
-  const hash = (location.hash || "#/overview").slice(2);
+  const rawHash = location.hash || "#/overview";
+  // 设置页自身以 #settings/about 持久化分区；重载仍应进入设置页。
+  const hash = /^#settings\/[a-z]+$/i.test(rawHash) ? "settings" : rawHash.slice(2);
   state.page = PAGE_TITLES[hash] ? hash : "overview";
   if (previous !== state.page) PAGES[previous]?.leave?.();
 

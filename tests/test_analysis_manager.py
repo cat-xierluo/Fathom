@@ -144,6 +144,28 @@ def wait_terminal(manager: am.AnalysisManager, job_id: str,
     raise AssertionError(f"job 未在 {timeout}s 内到终态：{view}")
 
 
+def wait_running(manager: am.AnalysisManager, job_id: str,
+                 timeout: float = 15.0) -> dict:
+    """条件等待 job 进入 running：等状态而非等时间（ISS-169）。
+
+    旧形态是 ``time.sleep(0.3)  # 进入 running``——等的是时钟不是状态：
+    冷启动/高负载下 job 还在启动途中，撤销动作落在运行之前，用例就测不到
+    「运行中撤销」这条合同（假绿）；反之机器够快时 0.3s 又纯属多余。
+    改为轮询至 running 出现，上限 ``timeout``（默认 15s，与同族
+    wait_terminal 同档），既不吞掉真失败，也不再吃冷启动的调度余量。
+    """
+    deadline = time.monotonic() + timeout
+    view = None
+    while True:
+        view = manager.job_view(job_id)
+        if view["status"] == "running":
+            return view
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    raise AssertionError(f"job 未在 {timeout}s 内进入 running：{view}")
+
+
 def agent_rows() -> list[sqlite3.Row]:
     conn = db.connect()
     try:
@@ -603,6 +625,28 @@ class TestReplayReleasesLease:
     def _acquire_or_busy(manager: am.AnalysisManager) -> "am.AnalysisLease":
         return am.AnalysisLease.acquire(manager._lock_path, source="lease-probe")
 
+    def _acquire_after_release(self, manager: am.AnalysisManager,
+                               timeout: float = 30.0) -> "am.AnalysisLease":
+        """等 worker 收尾把租约还回来再抢，而不是终态一可见就抢。
+
+        wait_terminal() 只等 SQLite 终态行落地，而分析租约的释放发生在之后
+        工作线程的 finally 块里，二者之间存在收尾窗口（实测最坏约 280ms，
+        ISS-167）。终态可见的瞬间直接抢租约会落进这个窗口抛 AnalysisBusy：
+        那是等待条件不完整，不是产品泄漏——租约最终一定归还。
+
+        这里只把「立刻抢」放宽为「条件等待」，被断言的语义不变：抢到的仍
+        必须是本进程自己的租约，真泄漏依然会超时失败。
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                return self._acquire_or_busy(manager)
+            except am.AnalysisBusy:
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        f"租约在 {timeout}s 内未归还，仍被占用") from None
+                time.sleep(0.05)
+
     def test_same_key_replay_uses_pre_lease_fast_path(self, ok_setup,
                                                       monkeypatch):
         """常规同键重放在取租约之前就返回（start_job 幂等快检）。
@@ -631,7 +675,7 @@ class TestReplayReleasesLease:
                                              "lease-after")
         assert replay is True and replayed["job_id"] == job["job_id"]
         assert acquired == [], "幂等快检命中时不应再取租约"
-        lease = self._acquire_or_busy(manager)
+        lease = self._acquire_after_release(manager)
         lease.release()
 
     def test_replay_inside_lease_releases_lease(self, ok_setup):
@@ -662,7 +706,7 @@ class TestReplayReleasesLease:
             manager._find_job_by_idempotency = original_find
         assert calls == 2, "应走「预检 miss → 租约内重查 hit」的出口"
         assert replay is True and replayed["job_id"] == job["job_id"]
-        lease = self._acquire_or_busy(manager)
+        lease = self._acquire_after_release(manager)
         lease.release()
 
         # 不止「锁能再取」：重放之后必须真能启动一个新任务跑到终态。
@@ -719,7 +763,7 @@ class TestReplayReleasesLease:
             manager._find_job_by_idempotency = original_find
         assert calls == 3, "应走 INSERT 撞唯一约束再重查的重放路径"
         assert replay is True and replayed["job_id"] == planted["job_id"]
-        lease = self._acquire_or_busy(manager)
+        lease = self._acquire_after_release(manager)
         lease.release()
 
     def test_active_job_still_blocks_concurrent_analysis(self, ok_setup):
@@ -840,7 +884,8 @@ class TestCancelAndTimeout:
         t0 = time.monotonic()
         final = wait_terminal(manager, job["job_id"], timeout=15)
         assert final["status"] == "timed_out"
-        assert time.monotonic() - t0 < 10
+        # ISS-169：与上方 wait_terminal(timeout=15) 同界限（原 10s 更窄）
+        assert time.monotonic() - t0 <= 15
         assert agent_rows() == []
 
 
@@ -1117,7 +1162,7 @@ class TestRevocationGates:
         preview = manager.create_preview(a, b)
         job, _ = manager.start_job(preview.preview_id, preview.request_digest,
                                    "key-disable")
-        time.sleep(0.3)  # 进入 running
+        wait_running(manager, job["job_id"])  # ISS-169：等 running 而非 sleep(0.3)
         config.update_user_settings({"analysis": {"enabled": False}})
         manager.refresh_policy()
         final = wait_terminal(manager, job["job_id"])
@@ -1154,7 +1199,7 @@ class TestRevocationGates:
         preview = manager.create_preview(a, b)
         job, _ = manager.start_job(preview.preview_id, preview.request_digest,
                                    "key-late-write")
-        time.sleep(0.3)
+        wait_running(manager, job["job_id"])  # ISS-169：等 running 而非 sleep(0.3)
         from fathom import upgrade
         journal = upgrade.journal_path_from_db(Path(config.DB_PATH))
         journal.write_text(json.dumps({"txn_id": "t2", "phase": "prepared"}),

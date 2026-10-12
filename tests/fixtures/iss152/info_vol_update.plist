@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>APFSContainerReference</key>
+	<string>disk3</string>
+	<key>APFSSnapshot</key>
+	<false/>
+	<key>BusProtocol</key>
+	<string>Apple Fabric</string>
+	<key>CapacityInUse</key>
+	<integer>123456789</integer>
+	<key>Content</key>
+	<string>41504653-0000-11AA-AA11-00306543ECAC</string>
+	<key>DeviceBlockSize</key>
+	<integer>4096</integer>
+	<key>DeviceIdentifier</key>
+	<string>disk3s2</string>
+	<key>DeviceNode</key>
+	<string>/dev/disk3s2</string>
+	<key>DiskUUID</key>
+	<string>20000000-0000-4000-8000-000000000032</string>
+	<key>Ejectable</key>
+	<false/>
+	<key>FileVault</key>
+	<false/>
+	<key>FilesystemName</key>
+	<string>APFS</string>
+	<key>FilesystemType</key>
+	<string>apfs</string>
+	<key>FreeSpace</key>
+	<integer>0</integer>
+	<key>Internal</key>
+	<true/>
+	<key>Locked</key>
+	<false/>
+	<key>MediaType</key>
+	<string>通用</string>
+	<key>MountPoint</key>
+	<string>/System/Volumes/Update</string>
+	<key>ParentWholeDisk</key>
+	<string>disk3</string>
+	<key>Removable</key>
+	<false/>
+	<key>Sealed</key>
+	<false/>
+	<key>VolumeName</key>
+	<string>Update</string>
+	<key>VolumeUUID</key>
+	<string>20000000-0000-4000-8000-000000000032</string>
+	<key>WholeDisk</key>
+	<false/>
+	<key>Writable</key>
+	<true/>
+</dict>
+</plist>

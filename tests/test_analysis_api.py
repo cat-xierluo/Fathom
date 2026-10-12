@@ -67,6 +67,40 @@ def _new_preview(client, setup, key: str):
     return body, r2.json()
 
 
+def _cancel_script(client, setup, key: str) -> dict:
+    """派发一个长驻进程的任务（取消路径可及），返回 job 视图。"""
+    setup["script"].write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "2.1.237 (Claude Code)"; exit 0; fi\n'
+        "cat > /dev/null\nsleep 30\n", encoding="utf-8")
+    _, started = _new_preview(client, setup, key)
+    return started["job"]
+
+
+def _wait_worker_done(manager, job_id: str, timeout: float = 20.0) -> None:
+    """等 worker 线程自我摘除（终态写入≠ 线程退出；避免用例带着活线程收尾）。
+
+    这是收尾等待，不参与被测交错：判据是注册表里已无该 job（有界轮询），
+    不是「等多久算成功」的概率断言。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with manager._lock:
+            if job_id not in manager._jobs:
+                return
+        time.sleep(0.02)
+    raise AssertionError(f"worker 未在 {timeout}s 内退出 job_id={job_id}")
+
+
+def _analysis_count(manager) -> int:
+    """已落正文的解读条数（取消路径必须为 0）。"""
+    conn = db.connect(manager._db_path)
+    try:
+        return conn.execute("SELECT COUNT(*) FROM agent_analyses").fetchone()[0]
+    finally:
+        conn.close()
+
+
 # ---------- 边界与语义 ----------
 
 
@@ -217,22 +251,73 @@ class TestPreviewAndJobs:
         r = client.get(f"/api/analysis/jobs/{job['job_id']}")
         assert r.json()["job"]["revoked"] is True
 
-    def test_cancel_via_api_and_terminal_409(self, client, api_ok_setup):
-        api_ok_setup["script"].write_text(
-            "#!/bin/sh\n"
-            'if [ "$1" = "--version" ]; then echo "2.1.237 (Claude Code)"; exit 0; fi\n'
-            "cat > /dev/null\nsleep 30\n", encoding="utf-8")
-        _, started = _new_preview(client, api_ok_setup, "api-cancel")
-        job = started["job"]
+    def test_cancel_accepted_200_when_worker_converged_before_read(
+            self, client, api_ok_setup, monkeypatch):
+        """本次受理的取消，即使最终读取已见终态 → 200（ISS-175 arm64 首败根因）。
+
+        旧实现用「返回时是否终态」代理「取消是否生效」：受理后在毫秒内收敛的
+        取消会被答成 409「取消不再生效」——观察竞态，不是取消失败。
+
+        交错用受控注入固定，不依赖真实时序（CI arm64 首败即源于此）：
+        取消到达（任务在途）→ 本次受理置 cancelling → **在受理与返回前读取之间**
+        由持有方按生产路径 ``_finish`` 收敛到终态 cancelled → 最后一次读取看见
+        终态。期望 200 + 终态 cancelled + 无正文落地。
+        """
+        job = _cancel_script(client, api_ok_setup, "api-cancel-converge")
+        manager = api._ANALYSIS_MANAGER
+        real_mark = manager._mark_cancelling
+        order = []
+
+        def mark_then_converge(job_id):
+            marked = real_mark(job_id)
+            order.append(("mark", marked))
+            # 真实路径里这一步是 worker 跑完/被回收后收敛的终态写入。
+            with manager._lock:
+                rec = manager._jobs.get(job_id)
+            assert rec is not None
+            manager._finish(rec, "cancelled", "cancelled", 12)
+            return marked
+
+        monkeypatch.setattr(manager, "_mark_cancelling", mark_then_converge)
+
         r = client.post(f"/api/analysis/jobs/{job['job_id']}/cancel")
-        assert r.status_code == 200
+        assert r.status_code == 200, r.text  # 受理成功，不是「取消不再生效」
+        body = r.json()["job"]
+        assert body["cancel_accepted"] is True
+        assert body["terminal"] is True and body["status"] == "cancelled"
+        assert "reason_code" not in r.json()  # 200 不带 409 的具名原因
+        assert order == [("mark", True)]  # 本次调用确实受理（非他方先受理）
+        assert _analysis_count(manager) == 0  # 取消路径不落半份正文
+        _wait_worker_done(manager, job["job_id"])
+
+    def test_cancel_arriving_after_terminal_is_named_409(self, client,
+                                                        api_ok_setup):
+        """到达前已终结 → 具名 409 job_terminal（幂等，不复活终态）。
+
+        本条是「本次受理」的对照面：任务早已终态，取消确实没生效，409 语义
+        由现有前端/测试依赖，故保持并在此写清。
+        """
+        job = _cancel_script(client, api_ok_setup, "api-cancel-late")
+        r = client.post(f"/api/analysis/jobs/{job['job_id']}/cancel")
+        assert r.status_code == 200, r.text
+        final = wait_terminal(api._ANALYSIS_MANAGER, job["job_id"], timeout=20)
+        assert final["status"] == "cancelled"
+
+        r = client.post(f"/api/analysis/jobs/{job['job_id']}/cancel")
+        assert r.status_code == 409
+        assert r.json()["reason_code"] == "job_terminal"
+        assert r.json()["job"]["status"] == "cancelled"
+        assert r.json()["job"]["cancel_accepted"] is False
+
+    def test_cancel_via_api_and_terminal_409(self, client, api_ok_setup):
+        """真实进程路径：受理 → 200；收敛后再取消 → 409（回归护栏）。"""
+        job = _cancel_script(client, api_ok_setup, "api-cancel")
+        r = client.post(f"/api/analysis/jobs/{job['job_id']}/cancel")
+        # 受理判定与「返回时是否已收敛」解耦：受理必为 200，不再是概率竞态。
+        assert r.status_code == 200, r.text
+        assert r.json()["job"]["cancel_accepted"] is True
         assert r.json()["job"]["status"] in ("cancelling", "cancelled")
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            view = client.get(f"/api/analysis/jobs/{job['job_id']}").json()["job"]
-            if view["terminal"]:
-                break
-            time.sleep(0.05)
+        view = wait_terminal(api._ANALYSIS_MANAGER, job["job_id"], timeout=20)
         assert view["status"] == "cancelled"
         r = client.post(f"/api/analysis/jobs/{job['job_id']}/cancel")
         assert r.status_code == 409

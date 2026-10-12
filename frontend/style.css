@@ -721,6 +721,19 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
   z-index: 30; overflow: auto;
   padding: 18px 20px;
 }
+/* DESIGN 合同（ISS-148 审计返修）：目录详情是跨页共享侧面板，在较窄桌面
+ * 窗口改为全宽详情——窄断点（≤980，现有最小窗口 980×640）占满视口宽，
+ * 不再被 min(420px, 90vw) 压成 420px；宽窗保留右侧栏形态。 */
+@media (max-width: 980px) {
+  .changes-detail { width: 100%; border-left: none; box-shadow: none; }
+}
+/* 搜索命中已加载后代时，仅因后代命中的祖先行弱化保留（导航节点语义） */
+tr.tree-ancestor-hit .tree-name { color: var(--muted); }
+.tree-ancestor-mark {
+  font-size: 11px; color: var(--muted); white-space: nowrap;
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 5px; margin-left: 6px;
+}
 .changes-detail[hidden] { display: none; }
 .changes-detail .detail-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -762,6 +775,13 @@ th[aria-sort="descending"] .th-sort::after { content: " ↓"; color: var(--prima
 .changes-detail .detail-section h3 {
   margin: 0 0 6px; font-size: 11px; font-weight: 600;
   color: var(--muted); letter-spacing: 0.04em;
+}
+/* ISS-151：目录详情「当前大文件」区——模式切换 + 查询按钮控件条，
+ * 与独立大文件页共享同一查询域（范围/模式/状态），样式沿用 .controls 语言 */
+.detail-bf-bar { display: flex; align-items: center; gap: 8px; margin: 2px 0 8px; }
+.detail-bf-bar select {
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px;
+  font-size: var(--fs-table); background: var(--card); color: var(--text);
 }
 .changes-detail .detail-trend { width: 100%; height: 140px; }
 .changes-detail .detail-actions {
@@ -1207,6 +1227,10 @@ code {
 .analysis-finding { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
 .analysis-finding-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .analysis-finding-evidence { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+/* 证据编号不在表行内：保持可发现，并按编号文字适配宽度。 */
+.analysis-finding-evidence .btn-mini, .analysis-inspect .btn-mini {
+  opacity: 1; width: auto; min-width: 44px; padding: 0 6px; white-space: nowrap;
+}
 .analysis-limitations li, .analysis-inspect li { overflow-wrap: anywhere; line-height: 1.5; }
 .analysis-prompt {
   max-height: 280px; overflow: auto; white-space: pre-wrap; word-break: break-word;
@@ -1222,7 +1246,7 @@ code {
   padding: 10px 12px; margin-top: 8px; display: grid; gap: 4px;
 }
 .analysis-evidence-head { display: flex; align-items: center; gap: 8px; }
-.analysis-evidence-head .btn-mini { margin-left: auto; }
+.analysis-evidence-head .btn-mini { margin-left: auto; opacity: 1; }
 .analysis-evidence-path {
   margin: 0; font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   overflow-wrap: anywhere; color: var(--used);
@@ -1230,3 +1254,103 @@ code {
 /* evidence 定位高亮：浅品牌底闪烁两次的静态等价物（无动画依赖：
  * 2.4 秒后由 JS 移除类，reduced-motion 无差异） */
 #changes-body tr.analysis-locate-flash > td { background: var(--subsel-bg); }
+
+/* ===== 树形同级变化表（ISS-148）：消费 /api/diff/children 的层级视图 ===== */
+
+/* 层级缩进与展开箭头：箭头旋转表达展开态（几何同 icons.js chevron） */
+.tree-indent { display: inline-block; flex: none; }
+.tree-toggle {
+  border: none; background: none; cursor: pointer; color: var(--muted);
+  padding: 2px; margin-right: 2px; border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: -2px;
+}
+.tree-toggle:hover { color: var(--primary); background: var(--bg); }
+.tree-toggle svg { transition: transform 160ms; }
+.tree-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+/* 无下级的行留等宽空位，名称列对齐（占位不可聚焦） */
+.tree-toggle-leaf { cursor: default; width: 17px; }
+
+/* 目录名按钮：动作与展开箭头分开（名字=证据详情，箭头=展开） */
+.tree-name {
+  border: none; background: none; padding: 0; cursor: pointer;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+  color: var(--text); max-width: 320px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: -2px;
+}
+.tree-name:hover { color: var(--primary); text-decoration: underline; }
+.tree-tbl td.dir-cell { max-width: 480px; white-space: nowrap; }
+
+/* 状态徽章：首录/结构节点为中性信息（非告警，不用警示色） */
+.st.st-first { color: var(--primary); } .st.st-first .st-dot { background: var(--mineral); }
+.st.st-structural { color: var(--muted); } .st.st-structural .st-dot { background: var(--border); }
+
+/* 层级辅助行（加载中/空态/错误/加载更多）：跟随层级缩进 */
+.tree-aux td { color: var(--muted); font-size: 12px; }
+.tree-aux .hint { display: inline; }
+.tree-error-text { color: var(--danger); }
+.tree-load-more {
+  border: 1px solid var(--border); background: var(--card); color: var(--muted);
+  border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 12px;
+}
+.tree-load-more:hover { border-color: var(--primary); color: var(--primary); }
+
+/* 面包屑 / 本级摘要 / 动态说明（聚焦非根时出现） */
+.tree-crumbs { margin: 2px 0 6px; }
+.tree-parent {
+  margin: 2px 0 6px; padding: 6px 10px; background: #f6f7fa; border-radius: 6px;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; font-size: 12px;
+}
+.tree-parent[hidden] { display: none; }
+.tree-parent strong {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; font-weight: 600;
+  word-break: break-all;
+}
+.tree-parent .num { font-variant-numeric: tabular-nums; }
+#tree-note[hidden] { display: none; }
+.tree-filter { width: auto; }
+.th-plain { color: var(--muted); font-weight: 500; }
+
+/* 分布页快照选择（ISS-159）：两分区共源——占用分布与目录浏览器都指所选
+ * 快照；窄屏换行，选择器与质量提示保持可读。 */
+.browse-snap-bar {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 6px 10px; margin: 0 0 10px; padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--card);
+}
+.browse-snap-bar select { max-width: 320px; }
+.browse-snap-bar .hint { min-width: 0; word-break: break-word; }
+
+/* ===== ISS-158 整盘总览 =====
+   整盘读数与未知差额同屏；未知差额用中性可读块，绝不用「可回收/垃圾」
+   绿意措辞（那会把未知量说成可清理量）。长范围名靠 text-overflow 截断，
+   完整路径在 title 中，不撑破布局。 */
+.ov-unexplained {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+}
+.ov-unexplained .rl { display: block; font-size: 12px; opacity: 0.72; }
+.ov-unexplained .rv { font-size: 22px; font-variant-numeric: tabular-nums; }
+.ov-unexplained[data-state="known"] { border-color: rgba(190, 140, 80, 0.4); }
+.ov-unexplained[data-state="unknown"] { border-style: dashed; }
+.ov-unexplained .hint { margin: 4px 0 0; }
+.ov-members { margin-top: 8px; font-size: 13px; opacity: 0.85; }
+#overview-storage [data-test="storage-meta"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Agent 中心：长范围与历史在桌面最小视口内保持可读。 */
+.agent-range-controls { flex-wrap: wrap; }
+.agent-range-controls label { display:flex; align-items:center; gap:8px; min-width:0; }
+.agent-range-controls select { max-width:280px; min-width:120px; }
+.agent-history-scroll { overflow-x:auto; }
+#page-agent .tbl td { overflow-wrap:anywhere; }
+#page-agent .panel-head { flex-wrap:wrap; gap:8px; }
+/* .btn 的 display 覆盖 UA hidden；分页结束后必须确实收起加载更多。 */
+#agent-history-more[hidden] { display:none; }
+/* 查看原任务是历史列表主动作，不沿用悬停才显现的辅助按钮。 */
+#page-agent [data-agent-job] { opacity:1; white-space:nowrap; }

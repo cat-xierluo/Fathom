@@ -19,6 +19,12 @@ const { chromium } = require("playwright");
 const REPO = path.resolve(__dirname, "..");
 const ROOT = "/fixture/root";
 const TOKEN = "iss023-fixture-token";
+// ISS-143：不同日期、不同容量及同日二次扫描，捕获详情悬停错用序列索引。
+const DETAIL_TREND_POINTS = [
+  { created_at: "2026-09-24T10:00:00", size_kb: 525 * 1024 ** 2 },
+  { created_at: "2026-09-28T10:00:00", size_kb: 545 * 1024 ** 2 },
+  { created_at: "2026-09-28T18:30:00", size_kb: 550 * 1024 ** 2 },
+];
 const evidenceDir = fs.mkdtempSync(path.join(os.tmpdir(), "fathom-iss027-"));
 const checks = [];
 
@@ -246,6 +252,86 @@ function createFixture() {
         free_bytes: s.free_bytes,
       })));
     }
+    if (url.pathname === "/api/diff/children") {
+      // ISS-148：树形同级变化表消费真实后端的 ISS-147 端点；夹具镜像生产
+      // 响应形状（dataset/ancestors/parent/children/pagination/counts/query），
+      // 行数据与 /api/diff 的 Build/Archive 同源，另注一行稳定的 Build/Assets
+      // 供展开箭头呈现（仅夹具数据，不断言其语义）。
+      const rows = snapshots();
+      if (rows.length < 2) return json(res, 409, { detail: "至少需要两个快照才能对比" });
+      const aId = url.searchParams.get("a") || String(rows[1].id);
+      const bId = url.searchParams.get("b") || String(rows[0].id);
+      const sa = rows.find((s) => String(s.id) === String(aId));
+      const sb = rows.find((s) => String(s.id) === String(bId));
+      if (!sa || !sb) return json(res, 404, { detail: "快照不存在" });
+      const filter = url.searchParams.get("filter") || "all";
+      const sort = url.searchParams.get("sort") || "delta";
+      const target = url.searchParams.get("path") || ROOT;
+      const SEG_ROWS = [
+        { path: `${ROOT}/Build`, old_kb: 100000, new_kb: 101024, delta_kb: 1024, status: "measured" },
+        { path: `${ROOT}/Archive`, old_kb: 100000, new_kb: 98976, delta_kb: -1024, status: "measured" },
+        { path: `${ROOT}/Build/Assets`, old_kb: 1024, new_kb: 2048, delta_kb: 1024, status: "measured" },
+      ];
+      const kids = SEG_ROWS
+        .filter((r) => r.path !== target && r.path.startsWith(target === "/" ? "/" : target + "/"))
+        .map((r) => {
+          const rest = r.path.slice(target.length + 1);
+          const direct = !rest.includes("/");
+          const name = rest.split("/")[0];
+          return { r, direct, name, full: target === "/" ? `/${name}` : `${target}/${name}` };
+        });
+      const byName = new Map();
+      for (const k of kids) {
+        const cur = byName.get(k.full) ||
+          { path: k.full, name: k.name, old_kb: null, new_kb: null, delta_kb: null,
+            status: "structural", has_children: false, has_changed_descendants: false };
+        if (k.direct) {
+          cur.old_kb = k.r.old_kb; cur.new_kb = k.r.new_kb;
+          cur.delta_kb = k.r.delta_kb; cur.status = k.r.status;
+        } else {
+          cur.has_children = true;
+          cur.has_changed_descendants = true;
+        }
+        byName.set(k.full, cur);
+      }
+      let children = [...byName.values()];
+      if (filter === "changed") {
+        children = children.filter((c) =>
+          (c.old_kb != null && c.new_kb != null && c.old_kb !== c.new_kb) ||
+          (c.old_kb == null) !== (c.new_kb == null) || c.has_changed_descendants);
+      }
+      const cmpDelta = (x, y) =>
+        (x.delta_kb == null) - (y.delta_kb == null) ||
+        Math.abs(y.delta_kb || 0) - Math.abs(x.delta_kb || 0) ||
+        x.name.localeCompare(y.name);
+      const cmpSize = (x, y) =>
+        (x.new_kb == null) - (y.new_kb == null) || (y.new_kb || 0) - (x.new_kb || 0) ||
+        x.name.localeCompare(y.name);
+      if (sort === "name") children.sort((x, y) => x.name.localeCompare(y.name));
+      else if (sort === "size") children.sort(cmpSize);
+      else children.sort(cmpDelta);
+      const parentSeg = SEG_ROWS.find((r) => r.path === target);
+      const parent = {
+        path: target, name: target === "/" ? "/" : target.slice(target.lastIndexOf("/") + 1),
+        old_kb: parentSeg ? parentSeg.old_kb : 300000,
+        new_kb: parentSeg ? parentSeg.new_kb : 300100,
+        delta_kb: parentSeg ? parentSeg.delta_kb : 100,
+        status: parentSeg ? parentSeg.status : "measured",
+        has_children: children.length > 0, has_changed_descendants: true,
+      };
+      return json(res, 200, {
+        a: sa, b: sb,
+        dataset: { root: ROOT, min_kb: 5120, exclude_names: "" },
+        path: target,
+        ancestors: target === ROOT ? [] : [],
+        parent,
+        children,
+        counts: { a_entries: children.length, b_entries: children.length },
+        pagination: { limit: 100, offset: 0, returned: children.length,
+          total: children.length, has_more: false, next_cursor: null },
+        query: { filter, sort },
+      });
+    }
     if (url.pathname === "/api/diff") {
       // 总览摘要固定带 topn=5；竞态只针对摘要请求计数，不影响变化页对比
       if (state.scenario === "overview-old-success-new-500" && url.searchParams.get("topn") === "5") {
@@ -343,6 +429,11 @@ function createFixture() {
         matched_count: truncated ? 47 : 2,
         node_count: truncated ? 20000 : 2,
         node_limit: 20000,
+      });
+    }
+    if (url.pathname === "/api/trend") {
+      return json(res, 200, {
+        path: url.searchParams.get("path"), points: DETAIL_TREND_POINTS,
       });
     }
     if (url.pathname === "/api/browse") {
@@ -624,6 +715,15 @@ function createFixture() {
       }
       return json(res, 200, { ...state.config });
     }
+    if (url.pathname === "/api/storage/discovery") {
+      return json(res, 200, {ok:true,discovery:{startup_container:{container_id:"apfs-container:fixture"},startup_volumes:[],other_devices:[]}});
+    }
+    if (url.pathname === "/api/storage/plan/preview") {
+      const override=state.scenario === "scan-root-env" ? {source:"env",root:ROOT}:null;
+      return json(res, 200, {enabled:!override,source:override?"process_override":"startup_discovery",identity_version:1,selection:null,
+        effective_selection:override?null:{mode:"startup_storage",roots:[ROOT],scope_ids:["apfs-volume:fixture"],container_id:"apfs-container:fixture",revision:0},scan_override:override,
+        plan:override?null:{mode:"startup_storage",plans:[{root:ROOT,scope_id:"apfs-volume:fixture",plan_id:"plan:fixture"}],read_limits:{du_timeout_s:14400},budget:{min_kb:5120,exclude_names:[]},identity_version:1}});
+    }
     if (url.pathname === "/api/permissions") {
       // ISS-111：设置「权限」分区数据源。fda 三态由 scenario 驱动
       // （fda-denied / fda-unknown），默认 granted；notification/coverage
@@ -708,9 +808,10 @@ function createFixture() {
 }
 
 async function waitForText(page, selector, expected) {
+  // 窗口给足 CI 慢环境：仅放大等待上限，失败仍按失败抛出，不改变断言语义
   await page.waitForFunction(
     ({ selector, expected }) => document.querySelector(selector)?.textContent.includes(expected),
-    { selector, expected }, { timeout: 10000 });
+    { selector, expected }, { timeout: 30000 });
 }
 
 /* ISS-105 品牌位图像素采样：img 绘入 canvas 后取中心（深潭墨核心）、
@@ -822,6 +923,8 @@ async function main() {
     for (const size of [{ width: 980, height: 640 }, { width: 1220, height: 820 }]) {
       await page.setViewportSize(size);
       await openPage("#/bigfiles");
+      // ISS-151：查询改为仅显式点击发起，进页不再自动遍历
+      await page.click("#btn-bigfiles");
       await page.waitForFunction(() => document.querySelectorAll("#tbl-bigfiles tbody [data-reveal]").length === 48);
       await page.waitForFunction(() => {
         const el = document.querySelector(".page-container");
@@ -1052,7 +1155,14 @@ async function main() {
 
     /* ---------- 大文件 / 设置页走查（五页覆盖） ---------- */
     await openPage("#/bigfiles");
-    await page.waitForSelector("#tbl-bigfiles tbody tr");
+    // ISS-151：查询改为仅显式点击发起，进页只呈现待查询提示。
+    // idle/查询中提示行同样是 <tr>，waitForSelector("tbody tr") 会立即命中
+    // 而不等数据行（CI 慢环境下 fetch 未返回即触发下方即时断言而翻车）；
+    // 改为条件等待首条数据行的 data-reveal 按钮，窗口给足 CI 慢环境。
+    await page.click("#btn-bigfiles");
+    await page.waitForFunction(
+      () => document.querySelectorAll("#tbl-bigfiles tbody [data-reveal]").length > 0,
+      undefined, { timeout: 30000 });
     const big = await page.evaluate(() => ({
       text: document.querySelector("#tbl-bigfiles").textContent,
       svg: Boolean(document.querySelector("#tbl-bigfiles [data-reveal] svg")),
@@ -1065,12 +1175,14 @@ async function main() {
 
     /* ---------- 大文件状态矩阵（ISS-032） ---------- */
     // 默认已是 OK；显式遍历其余五态（截断/过期/失败/权限/无匹配）。
-    // 通过 setScenario 切换夹具，然后重新打开页面让前端重发请求。
+    // 通过 setScenario 切换夹具，然后重新打开页面并显式点「查询」让前端
+    // 重发请求（ISS-151：查询仅由明确点击发起，进页不再自动遍历）。
     const bigfilesReadBody = async () =>
       page.evaluate(() => document.querySelector("#tbl-bigfiles tbody").textContent);
 
     await setScenario("bigfiles-truncated");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "结果被截断");
     const truncated = await bigfilesReadBody();
     record("bigfiles-truncated-state-shown",
@@ -1082,6 +1194,7 @@ async function main() {
 
     await setScenario("bigfiles-expired");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "缓存已过期");
     const expired = await bigfilesReadBody();
     record("bigfiles-expired-state-shown",
@@ -1092,6 +1205,7 @@ async function main() {
 
     await setScenario("bigfiles-failed");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "查询失败");
     const bigFailed = await bigfilesReadBody();
     record("bigfiles-failed-state-shown",
@@ -1103,6 +1217,7 @@ async function main() {
 
     await setScenario("bigfiles-permission-denied");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "权限受限");
     const permDenied = await bigfilesReadBody();
     record("bigfiles-permission-denied-state-shown",
@@ -1113,6 +1228,7 @@ async function main() {
 
     await setScenario("bigfiles-no-match");
     await openPage("#/bigfiles");
+    await page.click("#btn-bigfiles");
     await waitForText(page, "#tbl-bigfiles tbody", "无匹配文件");
     const noMatch = await bigfilesReadBody();
     record("bigfiles-no-match-state-shown",
@@ -1127,8 +1243,12 @@ async function main() {
     await setScenario(null);
     // 回到默认 OK 状态，以便任何后续断言（若依赖 bigfiles）不踩雷
     await openPage("#/bigfiles");
-    await page.waitForSelector("#tbl-bigfiles tbody tr");
     await page.click("#btn-bigfiles");
+    // 同上：等数据行真正渲染（提示行也是 <tr>，waitForSelector 不构成等待），
+    // 收尾时查询域回到 done 数据态再离开页面
+    await page.waitForFunction(
+      () => document.querySelectorAll("#tbl-bigfiles tbody [data-reveal]").length > 0,
+      undefined, { timeout: 30000 });
 
     await openPage("#/settings");
 
@@ -1231,7 +1351,7 @@ async function main() {
       effectiveHidden: document.getElementById("config-effective")?.hidden,
     }));
     record("settings-page-shows-server-config",
-      settingsLive.values.scanRoot === ROOT && settingsLive.values.scanTime === "13:30" &&
+      settingsLive.values.scanRoot === undefined && settingsLive.values.scanTime === "13:30" &&
         settingsLive.values.minKb === "5120" && settingsLive.values.freeAlert === "3.5" &&
         settingsLive.text.includes("21 天每日一份") && settingsLive.text.includes("8 周") &&
         !settingsLive.text.includes("35 天") && settingsLive.effectiveHidden === true,
@@ -1242,7 +1362,7 @@ async function main() {
     await page.waitForSelector("#settings-table tbody tr");
     const settingsText = await page.locator("#page-settings").textContent();
     record("settings-page-renders-config",
-      settingsText.includes("监控根目录") && settingsText.includes(ROOT) &&
+      settingsText.includes("当前扫描对象") && settingsText.includes(ROOT) &&
         settingsText.includes("服务地址"), settingsText.slice(0, 60));
     await page.evaluate(() => document.querySelector('.settings-nav-item[data-section="monitoring"]')?.click());  // 回到监控供后续用例
     // ISS-105：设置分区二级选中态 = 浅品牌底 + 海沟蓝（用户裁决④，深色实底
@@ -1415,7 +1535,7 @@ async function main() {
         detailsHaveFnmatch: detailsEls.some((d) => d.textContent.includes("fnmatch")),
         // 白话说明就位：阈值字段就近说明 + 根目录换数据集确认（默认可见）
         hasPlainThresholdDesc: outsideText.includes("小于该值的目录不进入统计"),
-        hasDatasetInterruptNote: outsideText.includes("历史对比将中断"),
+        hasDatasetInterruptNote: outsideText.includes("旧历史") || outsideText.includes("旧用户目录历史"),
         hasKbUnit: Boolean(sec.querySelector(".cfg-input-unit .cfg-unit")),
       };
     });
@@ -1459,7 +1579,7 @@ async function main() {
     const advancedText = await page.locator("#settings-section-advanced").textContent();
     record("settings-advanced-section-has-runinfo-and-service",
       advancedText.includes("运行信息") && advancedText.includes("服务管理") &&
-        advancedText.includes("监控根目录") && advancedText.includes("服务地址"),
+        advancedText.includes("当前扫描对象") && advancedText.includes("服务地址"),
       advancedText.slice(0, 160));
 
     // 计划与通知区：扫描时间/低空间/扫描历史/权限/自启。
@@ -1520,13 +1640,13 @@ async function main() {
     const monitorApplied = await page.evaluate(() => ({
       feedback: document.getElementById("config-feedback").textContent,
       minKb: document.getElementById("cfg-min-kb").value,
-      root: document.getElementById("cfg-scan-root").value,
+      root: document.getElementById("cfg-scan-root")?.value,
     }));
     record("settings-monitor-form-save-applies-and-hints-reinstall",
       monitorApplied.minKb === "2048" &&
         monitorApplied.feedback.includes("需重新安装") &&
         fixture.state.config.min_kb === 2048 &&
-        monitorApplied.root === ROOT &&
+        monitorApplied.root === undefined &&
         (fixture.state.counts.configPut || 0) === putBefore + 1,
       JSON.stringify(monitorApplied).slice(0, 200));
 
@@ -1536,7 +1656,7 @@ async function main() {
     const putCountBeforeReset = fixture.state.counts.configPut || 0;
     await page.click("#btn-config-reset");
     const resetValues = await page.evaluate(() => ({
-      root: document.getElementById("cfg-scan-root").value,
+      root: document.getElementById("cfg-scan-root")?.value,
       time: document.getElementById("cfg-scan-time").value,
       min: document.getElementById("cfg-min-kb").value,
       free: document.getElementById("cfg-free-alert-gb").value,
@@ -1544,7 +1664,7 @@ async function main() {
     }));
     record("settings-restore-default-fills-without-saving",
       resetValues.time === "12:00" && resetValues.min === "10240" &&
-        resetValues.free === "10" && resetValues.root === "/fixture/home" &&
+        resetValues.free === "10" && resetValues.root === undefined &&
         fixture.state.config.scan_time === "09:15" &&
         (fixture.state.counts.configPut || 0) === putCountBeforeReset,
       JSON.stringify(resetValues).slice(0, 120));
@@ -1729,23 +1849,13 @@ async function main() {
      * 改变当前生效值）必须在被覆盖字段下方就近可见，不能随摘要一起消失。 */
     await setScenario("scan-root-env");
     await openPage("#/settings");
-    await page.waitForFunction(
-      (root) => document.getElementById("cfg-scan-root")?.value === root,
-      ROOT, { timeout: 10000 });
-    const scanRootEnvState = await page.evaluate(() => {
-      const note = document.querySelector('[data-test="cfg-scan-root-override"]');
-      return {
-        noteHidden: note ? note.hidden : null,
-        noteText: note ? note.textContent : "",
-        inputValue: document.getElementById("cfg-scan-root")?.value,
-      };
-    });
-    record("iss108-scan-root-env-override-labeled-at-field",
-      scanRootEnvState.noteHidden === false &&
-        scanRootEnvState.noteText.includes("FATHOM_SCAN_ROOT") &&
-        scanRootEnvState.noteText.includes("保存不会改变当前生效值") &&
-        scanRootEnvState.inputValue === ROOT,
-      JSON.stringify(scanRootEnvState));
+    await page.waitForSelector('[data-test="scope-current"]');
+    const scanRootEnvState = await page.evaluate(() => ({
+      choices: document.querySelectorAll('#cfg-scan-root,input[name="scope-mode"],#scope-roots').length,
+      root: document.querySelector('[data-test="scope-scan-override"]')?.textContent || "",
+    }));
+    record("iss191-scan-root-env-readonly-object", scanRootEnvState.choices === 0 &&
+      scanRootEnvState.root.includes("FATHOM_SCAN_ROOT") && scanRootEnvState.root.includes(ROOT), JSON.stringify(scanRootEnvState));
     await setScenario(null);
 
     /* ---------- ISS-069 续作：保存路径自身必须拦住超限列表 ---------- */
@@ -2658,6 +2768,34 @@ async function main() {
     record("journey-daily-detail-opens",
       detail.title === "目录详情" && detail.path && detail.closeBtn === "关闭详情",
       JSON.stringify(detail));
+    // ISS-143：读取图表像素坐标后用真实鼠标悬停，不调用 formatter/showTip。
+    await page.waitForSelector("#detail-trend-chart canvas");
+    await page.locator("#detail-trend-chart").scrollIntoViewIfNeeded();
+    const trendTargets = await page.evaluate((points) => {
+      const target = document.getElementById("detail-trend-chart");
+      const chart = echarts.getInstanceByDom(target);
+      const box = target.getBoundingClientRect();
+      return points.map((point, index) => {
+        const pixel = chart.convertToPixel({ seriesIndex: 0 }, [index, point.size_kb]);
+        return { x: box.x + pixel[0], y: box.y + pixel[1] };
+      });
+    }, DETAIL_TREND_POINTS);
+    const detailTrendShots = [];
+    for (const [index, point] of DETAIL_TREND_POINTS.entries()) {
+      await page.mouse.move(trendTargets[index].x, trendTargets[index].y);
+      // ECharts 默认轴提示延时 0，留出渲染和位置动画时间后读取可见 DOM。
+      await page.waitForTimeout(350);
+      const tooltipText = await page.locator("#detail-trend-chart").innerText();
+      const date = index === 2 ? point.created_at : point.created_at.slice(5, 10);
+      const size = `${(point.size_kb / 1024 ** 2).toFixed(1)} GB`;
+      record(`iss143-detail-trend-hover-point-${index + 1}`,
+        tooltipText.includes(date) && tooltipText.includes(size),
+        JSON.stringify({ expectedDate: date, expectedSize: size, tooltipText,
+          mouse: trendTargets[index] }));
+      const shot = path.join(evidenceDir, `iss143-detail-trend-point-${index + 1}.png`);
+      await page.screenshot({ path: shot });
+      detailTrendShots.push(shot);
+    }
     // Esc 关闭，焦点返回触发行
     await page.keyboard.press("Escape");
     await page.waitForFunction(() => document.getElementById("changes-detail").hidden);
@@ -3979,7 +4117,12 @@ async function main() {
 
     // 5j) invoke 返回渲染路径（事件未到）：resolve 模式下确认成功，
     //     返回值 ok:true 直接转 installed 态（与事件幂等）。
-    await tpage4.evaluate(() => { window.__installMode = "resolve"; });
+    await tpage4.reload({ waitUntil: "networkidle" });
+    await tpage4.click("[data-section='about']");
+    await tpage4.evaluate(() => {
+      window.__installMode = "resolve";
+      window.__updaterCheck = { state: "available", current_version: "0.3.0", available_version: "0.4.0" };
+    });
     await tpage4.click("[data-test='updater-check-btn']");
     await tpage4.waitForFunction(() =>
       (document.querySelector("[data-test='updater-status-text']")?.textContent || "").includes("有可用更新"));
@@ -4029,6 +4172,13 @@ async function main() {
      * downloaded（ready）→ 「安装（需重启）」确认（复用 updater_install +
      * confirmed:true，六步合同不变）→ installed。下载阶段事件与取消语义
      * 复用 ISS-102 呈现（壳后台预下载与事务内下载同载荷）。 ---------- */
+    // 上一步已确认重启：IPC 夹具用新文档模拟新的壳生命周期，清旧 installed。
+    await tpage4.reload({ waitUntil: "networkidle" });
+    await tpage4.click("[data-section='about']");
+    await tpage4.evaluate(() => {
+      window.__installMode = "pending";
+      window.__updaterCheck = { state: "available", current_version: "0.3.0", available_version: "0.4.0" };
+    });
     // 8a) 开关拨回开：PUT true 落盘；重新检查回 available 后手动入口消失。
     await tpage4.click("[data-test='updater-check-btn']");
     await tpage4.waitForFunction(() =>
@@ -4192,7 +4342,7 @@ async function main() {
         browserModeRunInfo.tableText.includes("数据库") &&
         browserModeRunInfo.tableText.includes("du 安全时限") &&
         browserModeRunInfo.tableText.includes("桌面壳") &&
-        browserModeRunInfo.tableText.includes("监控根目录") &&
+        browserModeRunInfo.tableText.includes("当前扫描对象") &&
         !browserModeRunInfo.hasAdvancedPanel &&
         browserModeRunInfo.serviceInsideAdvancedExtra &&
         browserModeRunInfo.runInfoInsideAdvancedExtra &&
@@ -4248,7 +4398,7 @@ async function main() {
       };
     });
     record("settings-packaged-default-keeps-user-rows",
-      packagedDefault.table.includes("监控根目录") &&
+      packagedDefault.table.includes("当前扫描对象") &&
         packagedDefault.table.includes("快照保留") &&
         packagedDefault.table.includes("大文件默认范围") &&
         !packagedDefault.table.includes("服务地址") &&
@@ -4313,6 +4463,7 @@ async function main() {
         bigfilesPermShot, bigfilesNoMatchShot, permHubShot,
         permOverShot, permEmptyShot,
         packagedDefaultShot, packagedOpenShot,
+        ...detailTrendShots,
         ...viewportScreens],
       checks,
     }, null, 2) + "\n");
@@ -4324,7 +4475,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+module.exports = { createFixture };
+
+if (require.main === module) main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

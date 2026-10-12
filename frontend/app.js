@@ -1,5 +1,5 @@
 /* Fathom 前端入口（v0.3 模块化，见 docs/DESIGN.md 与 ISS-027）
- * hash 路由五页：#/overview #/changes #/browse #/bigfiles #/settings
+ * hash 路由六页：#/overview #/changes #/browse #/bigfiles #/agent #/settings
  * 模块边界（frontend/modules/）：请求 request / 格式化 format / 图表 charts /
  * 轮询 polling / Tauri 桥 tauri / 页面控制 router / 状态观测 status。
  * 数据刷新只经 router 的单一刷新入口；Tauri 桥在浏览器中静默降级。

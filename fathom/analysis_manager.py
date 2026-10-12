@@ -946,17 +946,26 @@ class AnalysisManager:
         payload = preview.facts.payload
         # dataset_root 存**真实根**（本地审计字段，不进模型输入——事实包
         # 内是脱敏别名）：历史过期评估要靠它与 snapshots 行对口径。
-        root_row = conn.execute("SELECT root FROM snapshots WHERE id=?",
-                                (preview.a_snapshot_id,)).fetchone()
+        root_row = conn.execute(
+            "SELECT root, plan_id, round_id, metric_version FROM snapshots WHERE id=?",
+            (preview.a_snapshot_id,)).fetchone()
         real_root = root_row["root"] if root_row is not None else ""
+        # 身份三列（ISS-190A）：取自 a 快照行（两侧 plan 身份此时必然一致，
+        # 否则构造事实包阶段已被闸门拒绝）。按快照行取值而非写死 NULL——
+        # 190B 放开闸门后即插即用：同 plan 双快照已能走到这里，三列落真实值。
+        plan_values = (
+            (root_row["plan_id"], root_row["round_id"], root_row["metric_version"])
+            if root_row is not None else (None, None, None)
+        )
         cur = conn.execute(
             "INSERT INTO agent_analyses("
             " job_id, a_snapshot_id, b_snapshot_id, a_created_at, b_created_at,"
             " dataset_root, dataset_min_kb, dataset_exclude_names,"
             " request_digest, facts_digest, prompt_version,"
             " adapter_contract_version, runtime_id, runtime_version, model,"
-            " result_json, facts_json, manifest_json, created_at)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " result_json, facts_json, manifest_json, created_at,"
+            " plan_id, round_id, metric_version)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (rec.job_id, preview.a_snapshot_id, preview.b_snapshot_id,
              payload["a"]["created_at"], payload["b"]["created_at"],
              real_root, payload["dataset"]["min_kb"],
@@ -969,7 +978,8 @@ class AnalysisManager:
              json.dumps(result, ensure_ascii=False),
              preview.facts.canonical_json.decode("utf-8"),
              json.dumps(preview.bundle.manifest, ensure_ascii=False),
-             _now()),
+             _now(),
+             *plan_values),
         )
         return int(cur.lastrowid)
 
@@ -1005,26 +1015,58 @@ class AnalysisManager:
     def cancel_job(self, job_id: str) -> dict:
         """请求取消：置 cancel_event 并转 cancelling；终态不复活。
 
-        与完成竞争只有一个确定结果：先到终态者胜，本方法看到终态即返回
-        当前视图（``terminal=True``，409 语义由 API 层映射），绝不改写
-        终态。本进程没有该在途任务时（如另一进程持有租约）不按 PID 发
-        信号，仅在状态仍可取消时标记 cancelling，由持有方收敛终态。"""
+        返回 job 视图 + 一个**仅取消响应语义**的 ``cancel_accepted`` 标记
+        （ISS-175）。该标记回答「这次调用是否真的让取消生效」，而不是
+        「最后一次读取看见的状态」——两者不是一回事：
+
+        - ``cancel_accepted=True``：**本次调用受理了取消**。任务在请求到达时
+          仍是非终态（starting/running/cancelling），且本次取消在生效：要么
+          本次调用把行推入 cancelling（受理判定见 ``_mark_cancelling``），
+          要么取消早已受理、仍在收敛。此时最终视图**可以**已经是终态
+          ``cancelled``——那是 worker 在本次取消驱动下收敛的结果，属成功。
+        - ``cancel_accepted=False``：**请求到达前任务已终结**（cancelled/
+          failed/succeeded/timed_out/interrupted 皆然），或到达后、完成抢先
+          写入了终态。取消没有生效，绝不改写终态，由 API 层映射为具名 409
+          ``job_terminal``。
+
+        旧实现用「返回时是否终态」代理「取消是否生效」，于是受理了取消却在
+        worker 已于毫秒内收敛后收到 409「取消不再生效」——观察竞态，不是取消
+        失败。受理与否现在由**到达态 + 本次 mark 的 rowcount**判定，与返回
+        时刻的读取结果解耦。
+
+        与完成竞争仍只有一个确定结果（先到终态者胜），且线性化来源不变：本
+        进程没有该在途任务时（如另一进程持有租约）不按 PID 发信号，仅在状态
+        仍可取消时标记 cancelling，由持有方收敛终态。
+        """
         with self._lock:
             rec = self._jobs.get(job_id)
-        if rec is None:
-            row = self._job_row(job_id)
-            if row is None:
-                raise AnalysisError("job_not_found", "未知分析任务",
-                                    status_code=404)
-            if row["status"] in TERMINAL_STATUSES:
-                return self.job_view(job_id)
-        self._mark_cancelling(job_id)
+        row = self._job_row(job_id)
+        if row is None:
+            raise AnalysisError("job_not_found", "未知分析任务",
+                                status_code=404)
+        # 到达态先行读一次：这是「到达前已终结」的判定依据，与后续任何读取
+        # （受理、worker 收敛）都无竞争，因此本调用自身是确定的。
+        if row["status"] in TERMINAL_STATUSES:
+            view = self.job_view(job_id)
+            view["cancel_accepted"] = False
+            return view
+        marked = self._mark_cancelling(job_id)
         if rec is not None:
             rec.cancel_event.set()
-        return self.job_view(job_id)
+        view = self.job_view(job_id)
+        # 受理 = 本次 mark 命中，或返回时仍未终结（取消已受理、正在收敛）。
+        # 返回时已终态且 mark 未命中的那一格，是完成抢在受理之前赢——取消确实
+        # 没生效，落 409；mark 命中后收敛的终态仍是取消的结果，落 200。
+        view["cancel_accepted"] = marked or not view["terminal"]
+        return view
 
-    def _mark_cancelling(self, job_id: str) -> None:
+    def _mark_cancelling(self, job_id: str) -> bool:
         """受理取消：置 cancelling（不写终态，终态由持有方收敛）。
+
+        返回**本次调用是否把行推入 cancelling**（rowcount>=1）。该返回是
+        ``cancel_job`` 的受理判定依据（ISS-175）：False 意味着到达时的
+        starting/running 已被别的写者改写（通常完成抢先），本次取消没有
+        受理，终态不该被算作取消的结果。
 
         **线性化来自 SQL 条件与写事务，不是这把锁**：_commit_success 的
         ``BEGIN IMMEDIATE`` 全程持有 SQLite 写锁，本 UPDATE 的
@@ -1038,11 +1080,12 @@ class AnalysisManager:
         with self._commit_lock:
             conn = db.connect(self._db_path)
             try:
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE analysis_runs SET status='cancelling' WHERE "
                     "job_id=? AND status IN ('starting','running')",
                     (job_id,))
                 conn.commit()
+                return cur.rowcount > 0
             finally:
                 conn.close()
 
@@ -1162,6 +1205,40 @@ class AnalysisManager:
         finally:
             conn.close()
 
+    def list_history(self, *, limit: int = 20, offset: int = 0) -> dict:
+        """跨区间生命周期分页；在途优先，读取不派发、不清理或隐藏过期记录。"""
+        conn = db.connect(self._db_path)
+        try:
+            total = conn.execute("SELECT COUNT(*) FROM analysis_runs").fetchone()[0]
+            rows = conn.execute(
+                "SELECT job_id, revoked_at FROM analysis_runs "
+                f"ORDER BY CASE WHEN status IN ({_ACTIVE_STATUSES_SQL}) "
+                "THEN 0 ELSE 1 END, created_at DESC, job_id DESC LIMIT ? OFFSET ?",
+                (*LEFTOVER_ACTIVE_STATUSES, limit, offset),
+            ).fetchall()
+            jobs = []
+            for row in rows:
+                view = self.job_view(row["job_id"])
+                view["revoked_at"] = row["revoked_at"]
+                saved = conn.execute("SELECT * FROM agent_analyses WHERE job_id=?",
+                                     (row["job_id"],)).fetchone()
+                view["analysis"] = None
+                if saved is not None:
+                    saved = dict(saved)
+                    expired, reason = self._evaluate_expiry(conn, saved)
+                    view["analysis"] = {
+                        "id": saved["id"], "created_at": saved["created_at"],
+                        "a_created_at": saved["a_created_at"],
+                        "b_created_at": saved["b_created_at"],
+                        "expired": expired, "expired_reason": reason,
+                    }
+                jobs.append(view)
+            more = offset + len(jobs) < total
+            return {"jobs": jobs, "total": total, "limit": limit, "offset": offset,
+                    "has_more": more, "next_offset": offset + len(jobs) if more else None}
+        finally:
+            conn.close()
+
     def get_analysis(self, analysis_id: int) -> dict:
         conn = db.connect(self._db_path)
         try:
@@ -1250,23 +1327,54 @@ class AnalysisManager:
                          row: dict) -> tuple[bool, str | None]:
         """历史语义（方案 §6）：新增快照不使不变的历史 a→b 报告过期；
         a/b 被同日替换/被淘汰、或原口径不能再验证时，读取层标 expired
-        并返回原因；已保存证据仍展示原日期与依据。"""
+        并返回原因；已保存证据仍展示原日期与依据。
+
+        身份隔离（ISS-153 审计返修 2）：本报告的 dataset 身份只有
+        (root, min_kb, exclude_names) 三元组，且构造事实包时已明确拒绝新
+        身份快照（见 analysis_contract._reject_new_plan_identity）——所以
+        本行的 a/b 必然是 legacy 快照。同日后继查询因此**只认 legacy
+        (plan_id IS NULL) 行**：别的 plan 即便同根同阈值同排除同一天，也不
+        是本数据集的替换证据。缺这一条就会把另一个数据集的快照说成是本报告
+        区间被替换，跨身份混读。
+
+        ISS-190A 起本行自带身份三列（plan_id/round_id/metric_version）：
+        legacy 行为 NULL，plan 档为真实值。plan 档行的同日后继按
+        **同一 plan_id** 匹配；legacy 行仍按上面的 (plan_id IS NULL)
+        口径逐字不变。**不得放宽为「同根同阈值即同身份」**。
+
+        无同身份后继时按 ``snapshot_pruned`` 如实落：快照确已消失，只是
+        无法归因为同日替换——既有枚举里这是唯一不撒谎的形态（新增枚举值会
+        让前端 changes.js 的原因映射落到兜底文案）。"""
         for sid_column, created_column in (("a_snapshot_id", "a_created_at"),
                                            ("b_snapshot_id", "b_created_at")):
             sid = row[sid_column]
             snap = conn.execute("SELECT * FROM snapshots WHERE id=?",
                                 (sid,)).fetchone()
             if snap is None:
-                # 同日**后继**（created_at 晚于被删快照、同数据集）存在
-                # → 该位置被同日替换（create_snapshot 同日落盘行为）；
-                # 无后继 → 按保留策略淘汰。基线早于被删快照，不算替换。
+                # 同日**后继**存在 → 该位置被同日替换（create_snapshot 同日
+                # 落盘行为）；无后继 → 按保留策略淘汰。基线早于被删快照，
+                # 不算替换。
+                #
+                # 身份分档（ISS-190A）：证据行自身带 plan_id 时，同日后继
+                # 按**同一 plan**（plan_id 相等）匹配；legacy 行（plan_id
+                # 为 NULL）走下面逐字不变的 legacy 口径——别的 plan 即便同根
+                # 同阈值同排除同一天，也不是本数据集的替换证据。
+                # 绝不放宽成「同根同阈值即同身份」。
+                if row.get("plan_id") is not None:
+                    successor_plan_sql = "AND plan_id = ?"
+                    successor_plan_args: tuple = (str(row["plan_id"]),)
+                else:
+                    successor_plan_sql = "AND plan_id IS NULL"
+                    successor_plan_args = ()
                 same_day = conn.execute(
                     "SELECT COUNT(*) c FROM snapshots WHERE root IS ? "
                     "AND min_kb IS ? AND exclude_names IS ? "
+                    f"{successor_plan_sql} "
                     "AND substr(created_at,1,10) = substr(?,1,10) "
                     "AND (created_at > ? OR (created_at = ? AND id > ?))",
                     (row["dataset_root"], row["dataset_min_kb"],
                      str(row["dataset_exclude_names"] or ""),
+                     *successor_plan_args,
                      str(row[created_column]),
                      str(row[created_column]), str(row[created_column]),
                      sid),

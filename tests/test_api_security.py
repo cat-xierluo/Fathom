@@ -28,6 +28,21 @@ EVIL_ORIGIN = "http://evil.example"
 TAURI_LOADER_ORIGIN = "tauri://localhost"
 
 
+def test_resource_manifest_and_version_graph_keep_existing_security_boundary():
+    with TestClient(api.app, base_url=f"http://127.0.0.1:{config.PORT}") as client:
+        manifest = client.get("/api/frontend-manifest")
+        assert manifest.status_code == 200
+        assert manifest.headers["Cache-Control"] == "no-store"
+        data = manifest.json()
+        assert set(data) == {"revision", "entry_path"}
+        assert data["revision"] == client.get("/health").json()["frontend_revision"]
+        for path in ["/api/frontend-manifest", data["entry_path"], data["entry_path"] + "app.js"]:
+            assert client.get(path).headers["Content-Security-Policy"] == api._CSP
+            assert client.get(path, headers={"host": "evil.example"}).status_code == 403
+            assert client.get(path, headers={"origin": EVIL_ORIGIN}).status_code == 403
+        assert client.post("/api/frontend-manifest").status_code == 403
+
+
 @pytest.fixture(autouse=True)
 def _isolated_env(tmp_path, monkeypatch):
     """全部可写路径与扫描根指到临时目录，避免触碰生产 data/reports/logs/HOME。"""
@@ -333,10 +348,16 @@ class TestReportAndCredentialHygiene:
         ISS-035B 加入四个分析 POST 端点（检测/预览/派发/取消）——它们只
         接受受控载荷（检测可选 Runtime ID、预览只收快照 ID、派发只收
         preview_id+digest+幂等键），不接受任意 prompt/命令/cwd/executable；
-        白名单外的任何新 POST 路由都应被视为合同外新增。"""
+        白名单外的任何新 POST 路由都应被视为合同外新增。
+
+        ISS-164 加入 ``/api/bigfiles/cancel``：载荷只收一个 ``task_id``
+        字符串（严格拒绝未知字段），不收命令/路径/prompt/executable；取消
+        只能作用于该句柄已登记的 find 进程组（不接受调用方指定 pid/信号/路径），
+        且与既有 POST 一样受 ``X-Fathom-Token`` 写令牌闸门约束。"""
         routes = {r.path for r in api.app.routes if getattr(r, "methods", None)
                   and "POST" in r.methods}
         assert routes == {"/api/scan", "/api/reveal",
+                          "/api/bigfiles/cancel",
                           "/api/analysis/runtimes/detect",
                           "/api/analysis/previews", "/api/analysis/jobs",
                           "/api/analysis/jobs/{job_id}/cancel"}

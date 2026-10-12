@@ -91,7 +91,7 @@ if [ -f "$INFO_PLIST" ]; then
   # 不再硬编码字面量（曾停留在 0.3.0，任何后续 bump 都会假红）
   EXPECTED_VERSION="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$ROOT/fathom/__init__.py" | head -1)"
   if [ -n "$EXPECTED_VERSION" ] && [ "$VERSION_OUT" = "$EXPECTED_VERSION" ]; then
-    record "a-infoplist-version" pass "CFBundleShortVersionString == $EXPECTED_VERSION（单一版本源）"
+    record "a-infoplist-version" pass "CFBundleShortVersionString == ${EXPECTED_VERSION}（单一版本源）"
   else
     record "a-infoplist-version" fail "CFBundleShortVersionString = ${VERSION_OUT}（预期 ${EXPECTED_VERSION:-未知}）"
   fi

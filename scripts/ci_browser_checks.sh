@@ -20,7 +20,7 @@
 #   - PW_INSTALL=1 且提供 PLAYWRIGHT_BIN 时下载 chromium（仅 CI 冷环境）。
 #
 # 断言口径：两套结果 JSON 均必须 ok=true、failed=0、passed 等于各自期望
-# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 214；
+# （EXPECTED_BROWSER_PASSED 默认 39；EXPECTED_REFRESH_PASSED 默认 217；
 # ISS-035C 起新增 analysis frontend 检查（EXPECTED_ANALYSIS_PASSED，ISS-128 后为 59，ISS-137 后为 77），
 # ISS-108 增补 5 项至 172 后，ISS-106 总览层级/五态容器再增 7 项=179：
 # ready 清态与次级图 1 + 空库等待 1 + 单快照等待 1 + 错误容器 1 +
@@ -51,13 +51,24 @@
 # 边界策略、正常 wheel 滚动、顶部边界和底部边界壳坐标；原生手势仍需
 # 单独实机证据；ISS-112 深链按钮 hidden 计算样式互斥断言再增 4 项=212；
 # ISS-118 深链降级 fallback 镜像互斥断言再增 2 项=214。
+# ISS-143 目录详情历史首/中/末点真实鼠标悬停再增 3 项=217。
+# ISS-149 树形套件 +14：trend 锚定窗口/缺测 null/排除隔离/等价表格
+# 键盘读数/真实悬停缺测标注/a-b 迟到响应不恢复旧曲线（60 → 74）。
+# ISS-159 新增分布页显式快照绑定回归（verify_browse_snapshot_frontend，
+# EXPECTED_BROWSE_SNAPSHOT_PASSED 默认 33）：真实 serve + 真实 Chromium，
+# HTTP 层旧行为形态/历史实点/次级差分/404 语义 + 页面层快照选择/结构
+# 节点/HTML 转义/单时点详情/恢复/分页/三视口。
+# ISS-160 新增跨页上下文/恢复/重扫核对闭环回归
+# （verify_storage_investigation_frontend，EXPECTED_INVESTIGATION_PASSED）：
+# 真实 serve 入口全流程 + net0/历史非 latest/分页/数据集切换 + 快速切页
+# 与故障不残留错读 + 键盘焦点/三视口/图表恢复 + mock 纪律对照。
 # verify 脚本自身任一检查失败都会以非零退出（pipefail 直通，不走门禁
 # 兜底），计数门禁只拦空跑与静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 expected="${EXPECTED_BROWSER_PASSED:-39}"
-expected_refresh="${EXPECTED_REFRESH_PASSED:-214}"
+expected_refresh="${EXPECTED_REFRESH_PASSED:-217}"
 
 if [ ! -x .runtime/bin/python ]; then
   requested_python="${FATHOM_PYTHON:-python3}"
@@ -103,7 +114,28 @@ fi
 out="$(mktemp)"
 refresh_out="$(mktemp)"
 analysis_out="$(mktemp)"
-trap 'rm -f "$out" "$refresh_out" "$analysis_out"' EXIT
+tree_out="$(mktemp)"
+trap 'rm -f "$out" "$refresh_out" "$analysis_out" "$tree_out"' EXIT
+
+# ISS-148：树形套件起真实 FastAPI，先预检解释器与 playwright 可用，
+# 缺前置时明确报错而不是在套件内表现为模糊的等待超时。脚本消费
+# FATHOM_PYTHON（同 CI pytest job 的注入口径），本机开发回退 .venv。
+tree_python="${FATHOM_PYTHON:-$(pwd)/.venv/bin/python}"
+if [ ! -x "$tree_python" ]; then
+  tree_python="${FATHOM_PYTHON:-.runtime/bin/python}"
+fi
+[ -x "$tree_python" ] || { echo "树形套件前置缺失: 解释器不可用（.venv/.runtime 均缺，或设 FATHOM_PYTHON）" >&2; exit 1; }
+export FATHOM_PYTHON="$tree_python"
+tree_node_path="${NODE_PATH:-}"
+if [ -n "$tree_node_path" ]; then
+  tree_chromium_found=0
+  IFS=':' read -r -a _pw_dirs <<< "$tree_node_path"
+  for _d in "${_pw_dirs[@]}"; do
+    if [ -d "$_d/playwright-core" ] || [ -d "$_d/playwright" ]; then tree_chromium_found=1; break; fi
+  done
+  [ "$tree_chromium_found" = "1" ] || { echo "树形套件前置缺失: NODE_PATH 中无 playwright 包（CI 先 PW_INSTALL=1）" >&2; exit 1; }
+fi
+
 node scripts/verify_api_security.cjs | tee "$out"
 
 # 两套检查同一门禁：结果 JSON 必须 ok=true、failed=0、passed==期望，
@@ -129,6 +161,11 @@ assert_result_json "$out" "$expected" "browser checks"
 node scripts/verify_frontend_refresh.cjs | tee "$refresh_out"
 assert_result_json "$refresh_out" "$expected_refresh" "frontend refresh"
 
+# ISS-182：双 origin 重载、失败字段/installed 恢复、旧世代拒绝及事件订阅回归。
+# 壳 IPC 明示为夹具；真实包更新仍由发行 GUI 验收负责。
+node scripts/verify_updater_recovery.cjs | tee "$tree_out"
+assert_result_json "$tree_out" "${EXPECTED_UPDATER_RECOVERY_PASSED:-16}" "updater recovery frontend"
+
 # ISS-035C：AI 解读前端回归（同 refresh 机制：纯 Node 合成 API + Playwright，
 # 随机端口）。70 项——七态/检测列表/授权层/世代守卫/幂等/HTML 转义/双视口；
 # ISS-126 起 codex/hermes 披露断言；ISS-128 起 +7 项幂等键生命周期与重放终态；审查后 +3 项重入终态标记（59 项）；ISS-135 起 +7 项跨会话在途发现/区间守卫/查询失败/取消 = 70 项。
@@ -139,3 +176,76 @@ assert_result_json "$refresh_out" "$expected_refresh" "frontend refresh"
 node scripts/verify_analysis_frontend.cjs | tee "$analysis_out"
 expected_analysis="${EXPECTED_ANALYSIS_PASSED:-77}"
 assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
+
+# ISS-189：Agent 常驻入口、同口径选点、共享生命周期与跨区间有界历史。
+# 真实 Chromium + 模拟 HTTP backend；真实 helper/原生入口另行验收。
+node scripts/verify_agent_frontend.cjs | tee "$analysis_out"
+assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-56}" "agent frontend"
+
+# ISS-148：树形同级变化回归（真实 FastAPI 隔离入口 + 生产页面实点）。
+# 53 项——三层展开/聚焦/返回、父 0 子抵消、缺父结构节点、单侧未记录、
+# 分页加载更多、错误重试、a/b 与路径竞态、键盘可达、HTML 路径安全、
+# 三视口无横向溢出、AI 区与排行/日报次级可达。失败自身非零退出，
+# pipefail 直通判红；计数漂移由 EXPECTED_TREE_PASSED 兜底（同上口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_tree_changes_frontend.cjs | tee "$tree_out"
+expected_tree="${EXPECTED_TREE_PASSED:-74}"
+assert_result_json "$tree_out" "$expected_tree" "tree changes frontend"
+
+# ISS-151：目录当前大文件回归（真实 FastAPI 隔离入口 + 生产页面实点）。
+# 36 项——三层历史定位→largest/recent 切换、双目录并发取消不误伤、
+# 离开按句柄真实取消、移动 404 保历史、权限/空/截断、路径转义、键盘、
+# 三视口。失败自身非零退出，pipefail 直通判红；计数漂移由
+# EXPECTED_DIR_BIGFILES_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_directory_bigfiles_frontend.cjs | tee "$tree_out"
+expected_dir_bigfiles="${EXPECTED_DIR_BIGFILES_PASSED:-36}"
+assert_result_json "$tree_out" "$expected_dir_bigfiles" "directory bigfiles frontend"
+
+# ISS-159：分布页显式快照绑定回归（真实 FastAPI 隔离入口 + 生产页面实点）。
+# 33 项——HTTP 层（旧行为形态钉住/历史实点/次级差分显式/404 语义/跨根
+# 400/分页稳定）+ 页面层（快照选择器驱动两分区/结构节点不填 0/HTML 路径
+# 转义/distribution 单时点详情与下钻/404 一键恢复/分页追加/三视口无横向
+# 溢出）。失败自身非零退出，pipefail 直通判红；计数漂移由
+# EXPECTED_BROWSE_SNAPSHOT_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_browse_snapshot_frontend.cjs | tee "$tree_out"
+expected_browse_snapshot="${EXPECTED_BROWSE_SNAPSHOT_PASSED:-33}"
+assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot frontend"
+
+# ISS-191 当前扫描对象只读呈现：93项真实隔离serve/Chromium回归。
+# 未配置/旧custom/失效根、development和CLI/env覆盖，三视口无选择控件；
+# 读取/重读不写配置不扫描，主动合成启动盘首扫与summary一致，发现失败恢复；
+# AI/关于导航、身份/限制、键盘焦点及各自PID/port回收均验证。
+FATHOM_PYTHON="$tree_python" node scripts/verify_scope_settings_frontend.cjs | tee "$tree_out"
+expected_scope_settings="${EXPECTED_SCOPE_SETTINGS_PASSED:-177}"
+assert_result_json "$tree_out" "$expected_scope_settings" "scope settings frontend"
+
+# ISS-158：整盘总览与变化入口回归（真实 FastAPI 隔离入口 + 生产总览页实点）。
+# 57 项——两个隔离夹具：clean（两侧可比：容器 +26MB / 目录 +20MB ⇒ 未知差额
+# 6MB，两卷共享 free 不翻倍，重叠测量根去重）与 stale（本轮失败成员 ⇒ 旧值
+# stale、差额 null 不可比、不出现数值）。失败自身非零退出，pipefail 直通判
+# 红；计数漂移由 EXPECTED_STORAGE_OVERVIEW_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_storage_overview_frontend.cjs | tee "$tree_out"
+expected_storage_overview="${EXPECTED_STORAGE_OVERVIEW_PASSED:-67}"
+assert_result_json "$tree_out" "$expected_storage_overview" "storage overview frontend"
+
+# ISS-188：合法 b1 预热后的 CTA 与迟到目录响应、较新改选/第二 CTA、
+# 快速离页重入与旧等待器取消。真实 serve/生产前端，受控合法响应，三视口。
+FATHOM_PYTHON="$tree_python" node scripts/verify_diff_handoff_frontend.cjs | tee "$tree_out"
+expected_diff_handoff="${EXPECTED_DIFF_HANDOFF_PASSED:-55}"
+assert_result_json "$tree_out" "$expected_diff_handoff" "diff handoff frontend"
+
+# 同页较新意图的旧目录失败：完整生产 JS 模块与请求层，合成 DOM/网络。
+# 不能替代上面的 Chromium 回归；独立门禁防空跑、失败与计数漂移。
+node --experimental-vm-modules scripts/verify_stale_catalog_error.cjs | tee "$tree_out"
+assert_result_json "$tree_out" "7" "stale catalog error module"
+
+# ISS-160：跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI 隔离入口 + 生产页面实点）。
+# 真实 serve 入口全流程（总览→树展开→绑定历史详情→largest→返回→分布→设置→重扫）
+# + net0 内部变化/历史非 latest/分页/旧 HOME·新整盘切换 + 快速切页/改范围/重复
+# 请求/500/取消/同日替换/淘汰不残留错读 + 键盘与焦点返回/三桌面尺寸/图表隐藏恢复
+# + mock 仅注入受控故障。mock 纪律：page.route 只注入受控故障/系统动作，且每处
+# 都有撤除后真实 /api 端点恢复的对照断言；生产模块与 API 调用不被替身取代。
+# 失败自身非零退出，pipefail 直通判红；计数漂移由
+# EXPECTED_INVESTIGATION_PASSED 兜底（同树形口径）。
+FATHOM_PYTHON="$tree_python" node scripts/verify_storage_investigation_frontend.cjs | tee "$tree_out"
+expected_investigation="${EXPECTED_INVESTIGATION_PASSED:-55}"
+assert_result_json "$tree_out" "$expected_investigation" "storage investigation frontend"

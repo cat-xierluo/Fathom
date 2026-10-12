@@ -14,6 +14,8 @@
  * 计划一致性（ISS-016B）：消费 service_reload_state 四态（见下方 reloadStateInfo）；
  * 服务自身零系统写入口——drift 态的重装只经 010B autostart 确认层执行。
  *
+ * ISS-156：「范围与覆盖」作为「监控」分区内的独立面板承载（左导航保持 ISS-087
+ * 六分区不变，既有 IA 合同与 217 项前端回归依赖该结构）。
  * 信息架构（ISS-087）：左导航 + 右 section 的二分区布局——
  *   监控 / 计划与通知 / 权限 / 高级与诊断 / 关于 五个 section 互斥可见；
  *   ISS-083 折叠区原封迁入「高级与诊断」，ISS-040B 检查更新区迁入「关于」，
@@ -195,16 +197,9 @@ function renderEffective(cfg) {
     const input = document.getElementById(id);
     if (input) input.value = value == null ? "" : String(value);
   };
-  fill("cfg-scan-root", cfg.scan_root);
   fill("cfg-min-kb", cfg.min_kb);
   fill("cfg-scan-time", cfg.scan_time);
   fill("cfg-free-alert-gb", cfg.free_alert_gb);
-  const override = SOURCE_LABELS[cfg.sources?.scan_root];
-  const note = document.querySelector('[data-test="cfg-scan-root-override"]');
-  if (note) {
-    note.textContent = override || "";
-    note.hidden = !override;
-  }
   // 入库阈值可展开说明里的等效读数（5120 KB → 5.0 MB）：帮助不用 KB 思考的用户
   const equiv = document.querySelector('[data-test="cfg-min-kb-equiv"]');
   if (equiv) {
@@ -457,7 +452,6 @@ async function saveConfig(event) {
   event.preventDefault();
   const body = {};
   const values = {
-    scan_root: document.getElementById("cfg-scan-root")?.value.trim(),
     scan_time: document.getElementById("cfg-scan-time")?.value.trim(),
     min_kb: document.getElementById("cfg-min-kb")?.value.trim(),
     free_alert_gb: document.getElementById("cfg-free-alert-gb")?.value.trim(),
@@ -509,7 +503,6 @@ function resetToDefaults() {
     const input = document.getElementById(id);
     if (input) input.value = value;
   };
-  fill("cfg-scan-root", defaults.scan_root || "");
   fill("cfg-scan-time", defaults.scan_time || "");
   fill("cfg-min-kb", defaults.min_kb == null ? "" : String(defaults.min_kb));
   fill("cfg-free-alert-gb", defaults.free_alert_gb == null ? "" : String(defaults.free_alert_gb));
@@ -517,7 +510,7 @@ function resetToDefaults() {
 }
 
 /* ISS-087：计划与通知 section 独立表单（#schedule-form）只覆盖
- * scan_time + free_alert_gb；与 #config-form（监控：scan_root + min_kb）
+ * scan_time + free_alert_gb；与 #config-form（监控：min_kb）
  * 共用 showFeedback / renderEffective / lastConfig。scan_time 与
  * free_alert_gb 通过 document.getElementById 读取（与 saveConfig 同口径），
  * 故分两个 form 仍能由各自的 submit handler 各自 PUT。 */
@@ -612,7 +605,9 @@ async function loadSettings() {
   const dbMb = s.db_bytes ? (s.db_bytes / 1024 / 1024).toFixed(1) : "0.0";
   // ISS-083：第三列标记技术行——打包态收进折叠区，浏览器态全量按原序渲染
   const rows = [
-    ["监控根目录", `<code>${escapeHtml(s.root)}</code>`, false],
+    ["当前扫描对象", c ? (c.storage_scope?.scan_override ? `<code>${escapeHtml(c.storage_scope.scan_override.root)}</code>`
+      : c.storage_scope?.effective_selection ? c.storage_scope.effective_selection.roots.map((root) => `<code>${escapeHtml(root)}</code>`).join("、")
+      : c.scan_root ? `<code>${escapeHtml(c.scan_root)}</code>` : "当前不可用") : "读取失败，当前对象未知", false],
     ["服务地址", `<code>http://127.0.0.1:${escapeHtml(String(s.port))}</code>（本地回环）`, true],
     ["运行根", `<code>${escapeHtml(s.runtime?.runtime_dir || "")}</code>`, true],
     ["数据库", `<code>${escapeHtml(s.runtime?.db_path || "")}</code> · ${dbMb} MB`, true],
@@ -639,6 +634,8 @@ async function loadSettings() {
   loadUpdater();
   // 加载"AI 分析"分区（ISS-035C；可独立失败，不影响主配置）
   loadAnalysisSettings();
+  // 加载"范围与覆盖"分区（ISS-156；可独立失败，不影响其它分区）
+  loadScopeSettings();
 }
 
 /* ISS-109：状态/来源英文枚举的中文展示映射；未登记的值原样展示不吞字 */
@@ -1965,6 +1962,10 @@ let updaterCancelRequested = false;  // 取消请求已发出（按钮转「正�
 let updaterPendingNote = null; // 已确认但首个阶段事件未到达前的过渡说明（不伪造阶段名）
 let updaterReady = null;       // ISS-113：downloaded 事件载荷（后台下载完成，待安装确认；null=无）
 let updaterChecking = false;   // ISS-113：检查请求在途（「正在检查更新」一句话）
+let updaterGeneration = -1, updaterRevision = -1;
+let updaterRecoveryEpoch = 0;
+let updaterEventSequence = 0;
+let updaterListener = null;
 let updaterToggleNote = null;  // ISS-113：自动下载开关保存失败的就近提示（成功即清）
 
 /** ISS-113：自动下载开关当前生效值（/api/config 的 auto_download_updates；
@@ -2095,7 +2096,7 @@ function updaterInstallHtml(install, status) {
     ? `下载已取消：旧版本保持运行，候选保留，可再次安装。`
     : `更新失败：${install.error || "未知原因"}${install.hint ? `（${install.hint}）` : ""}`;
   const terminalBlock = terminal
-    ? `<p class="hint ${install.state === "failed" ? "cfg-error" : ""}" data-test="updater-terminal">${escapeHtml(terminalText)}</p>`
+    ? `<p class="hint ${install.state === "failed" ? "cfg-error" : ""}" data-test="updater-terminal" data-kind="${escapeHtml(install.kind || "")}">${escapeHtml(terminalText)}</p>`
     : "";
   return `
     ${updaterProgressHtml(install)}
@@ -2196,7 +2197,7 @@ function renderUpdaterBody(body, status, install, extraNote) {
   const installBtnNode = document.getElementById("btn-updater-install");
   if (installBtnNode) installBtnNode.addEventListener("click", () => confirmUpdaterInstall(body));
   const retryDownloadNode = document.getElementById("btn-updater-retry-download");
-  if (retryDownloadNode) retryDownloadNode.addEventListener("click", () => checkUpdater(body));
+  if (retryDownloadNode) retryDownloadNode.addEventListener("click", () => checkUpdater(body, true));
   const restartBtnNode = document.getElementById("btn-updater-restart");
   if (restartBtnNode) restartBtnNode.addEventListener("click", () => confirmUpdaterRestart(body));
   const cancelBtnNode = document.getElementById("btn-updater-cancel");
@@ -2235,33 +2236,43 @@ async function saveUpdaterAutoDownload(body, checked) {
  * 更新…」（Folia checking 语义）；结果做形状校验后渲染（失败也是可恢复
  * 状态行）。壳内发现 available 且开关开启时，检查返回即由后台下载事件
  * 推进（downloading → downloaded），前端无需本地触发。 */
-async function checkUpdater(body) {
+async function checkUpdater(body, retry = false) {
   const invoke = tauriInvoke();
   const checkBtn = document.getElementById("btn-updater-check");
   if (!invoke || !checkBtn) return;
   if (updaterChecking) return;
+  const epoch = ++updaterRecoveryEpoch;
   checkBtn.disabled = true;
   updaterChecking = true;
   renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
   let status = null;
   try {
-    status = await invoke("updater_check", {});
+    status = await invoke("updater_check", retry ? { retry: true } : {});
   } catch (e) {
+    if (epoch !== updaterRecoveryEpoch) return;
     updaterChecking = false;
     renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, `检查请求失败：${e?.message || e}`);
     return;
   }
+  if (epoch !== updaterRecoveryEpoch) return;
   updaterChecking = false;
   checkBtn.disabled = false;
   if (!status || typeof status.state !== "string" || !UPDATER_STATE_LABELS[status.state]) {
     renderUpdaterBody(body, lastUpdaterStatus, updaterInstall, "状态返回异常（不是预期的更新状态结构）。");
     return;
   }
+  if (!acceptUpdaterRevision(status)) {
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall); return;
+  }
+  // 普通查询不能消费已安装事务；运行中的旧壳版本仍可能检查到同一候选。
+  // installed 必须保持到用户明确重启，不能退回 downloaded/再次安装。
+  if (lastUpdaterStatus?.state === "installed") {
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+    return;
+  }
   lastUpdaterStatus = status;
-  // 新一轮检查取代上一轮呈现：旧安装事务终态（cancelled/failed——事务早已
-  // 结束，仅是呈现残留）与新结果并存会让状态行停留在旧终态；ready 在非
-  // available 确定态下也不再成立（如已最新）。
-  updaterInstall = null;
+  // 只有显式重试才放下失败终态；查询结果与失败原因可以同时呈现。
+  if (retry) updaterInstall = null;
   if (status.state !== "available") updaterReady = null;
   renderUpdaterBody(body, status, updaterInstall);
   renderAboutVersion();
@@ -2273,6 +2284,11 @@ async function checkUpdater(body) {
 async function runUpdaterInstallTransaction(body, pendingNote, fallbackVersion, fallbackCurrent) {
   const invoke = tauriInvoke();
   if (!invoke) return;
+  ++updaterRecoveryEpoch;
+  const previousInstall = updaterInstall, previousReady = updaterReady;
+  const previousRevision = updaterRevision, previousGeneration = updaterGeneration;
+  const previousEventSequence = updaterEventSequence;
+  updaterChecking = false;
   // 新一轮事务：清除上一轮终态呈现与取消标记，避免旧终态残留误导
   updaterInstall = null;
   updaterCancelRequested = false;
@@ -2289,12 +2305,27 @@ async function runUpdaterInstallTransaction(body, pendingNote, fallbackVersion, 
     return;
   }
   updaterPendingNote = null;
+  // busy 是本次命令拒绝，不是已受理事务的新终态；保留已知快照并就近解释。
+  if (outcome?.state === "busy") {
+    if (updaterRevision === previousRevision && updaterGeneration === previousGeneration
+        && updaterEventSequence === previousEventSequence) {
+      updaterInstall = previousInstall;
+      updaterReady = previousReady;
+    }
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall,
+      `安装未完成：${outcome.error || "已有下载或安装事务在进行中"}`);
+    return;
+  }
+  if (outcome?.state && !acceptUpdaterRevision(outcome)) {
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall); return;
+  }
   if (outcome && outcome.ok === true) {
     // 事件 installed 可能尚未到达：按返回值渲染（事件到达后幂等覆盖）
     if (!updaterInstall || updaterInstall.state !== "installed") {
       updaterInstall = null;
       updaterReady = null;
       lastUpdaterStatus = {
+        ...outcome,
         state: "installed",
         current_version: outcome.current_version || fallbackCurrent,
         available_version: outcome.available_version || fallbackVersion,
@@ -2306,7 +2337,7 @@ async function runUpdaterInstallTransaction(body, pendingNote, fallbackVersion, 
     // 以返回值补建终态呈现（错误可读，不吞错）。ready 字节被 Rust 保留，
     // 若终态源自已就绪安装的失败，重试入口按 ready 语境回到「安装（需重启）」。
     if (!updaterInstall || updaterInstall.state !== outcome.state) {
-      updaterInstall = { state: outcome.state, error: outcome?.error || "未知原因" };
+      updaterInstall = { ...outcome, error: outcome?.error || "未知原因" };
     }
     renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
   } else {
@@ -2444,71 +2475,115 @@ function confirmUpdaterRestart(body) {
   }
 }
 
-function loadUpdater() {
+/** 世代/修订号来自壳；未标号载荷只兼容旧壳，在已同步新协议后不能覆盖快照。 */
+function acceptUpdaterRevision(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  const generation = payload.generation, revision = payload.revision;
+  if (!Number.isSafeInteger(generation) || !Number.isSafeInteger(revision)) {
+    return updaterGeneration < 0;
+  }
+  if (generation < updaterGeneration || revision < updaterRevision) return false;
+  updaterGeneration = generation;
+  updaterRevision = revision;
+  return true;
+}
+
+function applyUpdaterPayload(payload) {
+  const state = payload && typeof payload.state === "string" ? payload.state : null;
+  if (!state) return;
+  if (payload.presentation === "check") {
+    // 启动检查只更新检查事实；已安装的重启入口仍由事务终态决定。
+    if (lastUpdaterStatus?.state !== "installed") lastUpdaterStatus = payload;
+    return true;
+  }
+  if (state === "installed") {
+    // 事务成功：清安装事务/ready 呈现与过渡说明，检查态转 installed
+    lastUpdaterStatus = { ...(lastUpdaterStatus || {}), ...payload };
+    updaterInstall = null;
+    updaterReady = null;
+    updaterPendingNote = null;
+    updaterCancelRequested = false;
+  } else if (state === "downloaded") {
+    const terminal = updaterInstall || lastUpdaterStatus;
+    if (Number.isSafeInteger(payload.generation) && terminal?.generation === payload.generation
+        && ["failed", "cancelled", "installed"].includes(terminal.state)) return false;
+    // ISS-113：后台下载完成（ready）——旧终态呈现清除，等待安装确认。
+    updaterReady = payload;
+    updaterInstall = null;
+    updaterPendingNote = null;
+    updaterCancelRequested = false;
+  } else if (UPDATER_PHASE_LABELS[state]) {
+    // 安装事务阶段/终态：合并载荷（downloading 进度按节流事件推进）。
+    // downloading 到达即视为新一轮下载在途（壳预下载或事务内下载），
+    // 旧 ready 呈现不再成立。
+    updaterInstall = { ...payload };
+    if (state === "downloading") updaterReady = null;
+    if (state === "cancelled") updaterCancelRequested = false;
+    if (state === "preparing") updaterPendingNote = null;
+  } else if (UPDATER_STATE_LABELS[state]) {
+    // 检查类事件（unconfigured/unreachable/up_to_date/available/failed）
+    lastUpdaterStatus = payload;
+    // 非 available 的确定态（如已最新）使旧 ready 呈现不再成立；
+    // available 同版本时 ready 仍有效（壳会随即重发 downloaded）。
+    if (state !== "available") updaterReady = null;
+    else if (updaterReady && payload.available_version
+      && payload.available_version !== updaterReady.available_version) {
+      updaterReady = null;
+    }
+  } else {
+    return;
+  }
+  return true;
+}
+
+async function loadUpdater() {
   const panel = _ensureUpdaterPanel();
   if (!panel) return;
   const body = panel.querySelector("[data-test='updater-panel-body']");
-  if (!body) return;
   const invoke = tauriInvoke();
-  if (!invoke) {
-    renderUpdaterBody(body, null, null);
-    return;
-  }
+  if (!body) return;
+  if (!invoke) { renderUpdaterBody(body, null, null); return; }
   renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
-  // ISS-113 无感化：进入设置页即自动检查一次（用户不必手点才知道当前状态；
-  // 壳内发现 available 且开关开启时随后台下载事件推进到 ready）。仅在尚无
-  // 任何已知状态时发起，避免每次进页重复请求。
-  if (!lastUpdaterStatus && !updaterInstall && !updaterReady) {
-    checkUpdater(body);
-  }
-  // updater-state 事件（ISS-040B 检查类 + ISS-102 安装事务阶段 + ISS-113
-  // downloaded/ready）：统一分发——检查类状态更新 lastUpdaterStatus；安装
-  // 阶段/终态更新 updaterInstall；downloaded 更新 updaterReady（后台下载
-  // 完成）；installed 为事务成功终态（清事务与 ready 呈现，转「重启以完成」
-  // 语境）；未知状态不猜测、不覆盖既有呈现。
+  const epoch = ++updaterRecoveryEpoch;
+  // 先订阅、再回读，消除 listener 注册与 snapshot 返回之间的空窗；单文档只订阅一次。
   const tauri = window.__TAURI__;
-  if (tauri && tauri.event && typeof tauri.event.listen === "function") {
-    tauri.event.listen("updater-state", (event) => {
-      const payload = event && event.payload;
-      const state = payload && typeof payload.state === "string" ? payload.state : null;
-      if (!state) return;
-      if (state === "installed") {
-        // 事务成功：清安装事务/ready 呈现与过渡说明，检查态转 installed
-        lastUpdaterStatus = { ...(lastUpdaterStatus || {}), ...payload };
+  if (!updaterListener && typeof tauri?.event?.listen === "function") {
+    updaterListener = Promise.resolve(tauri.event.listen("updater-state", event => {
+      const payload = event?.payload;
+      if (!acceptUpdaterRevision(payload)) return;
+      if (!applyUpdaterPayload(payload)) return;
+      ++updaterEventSequence;
+      renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+      renderAboutVersion();
+    })).catch(() => { updaterListener = null; });
+  }
+  if (updaterListener) await updaterListener;
+  if (epoch !== updaterRecoveryEpoch) return;
+  try {
+    const snapshot = await invoke("updater_check", { recover: true });
+    if (epoch !== updaterRecoveryEpoch) return;
+    if (snapshot?.recovery === true) {
+      if (snapshot.error) throw new Error(snapshot.error);
+      if (acceptUpdaterRevision(snapshot)) {
+        lastUpdaterStatus = snapshot.status || null;
         updaterInstall = null;
         updaterReady = null;
         updaterPendingNote = null;
         updaterCancelRequested = false;
-      } else if (state === "downloaded") {
-        // ISS-113：后台下载完成（ready）——旧终态呈现清除，等待安装确认。
-        updaterReady = payload;
-        updaterInstall = null;
-        updaterPendingNote = null;
-        updaterCancelRequested = false;
-      } else if (UPDATER_PHASE_LABELS[state]) {
-        // 安装事务阶段/终态：合并载荷（downloading 进度按节流事件推进）。
-        // downloading 到达即视为新一轮下载在途（壳预下载或事务内下载），
-        // 旧 ready 呈现不再成立。
-        updaterInstall = { ...(updaterInstall || {}), ...payload };
-        if (state === "downloading") updaterReady = null;
-        if (state === "cancelled") updaterCancelRequested = false;
-        if (state === "preparing") updaterPendingNote = null;
-      } else if (UPDATER_STATE_LABELS[state]) {
-        // 检查类事件（unconfigured/unreachable/up_to_date/available/failed）
-        lastUpdaterStatus = payload;
-        // 非 available 的确定态（如已最新）使旧 ready 呈现不再成立；
-        // available 同版本时 ready 仍有效（壳会随即重发 downloaded）。
-        if (state !== "available") updaterReady = null;
-        else if (updaterReady && payload.available_version
-          && payload.available_version !== updaterReady.available_version) {
-          updaterReady = null;
-        }
-      } else {
-        return;
+        if (snapshot.activity) applyUpdaterPayload({ ...snapshot.activity,
+          generation: snapshot.generation, revision: snapshot.revision });
       }
-      renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
-      renderAboutVersion();
-    });
+    } else if (acceptUpdaterRevision(snapshot)) {
+      // 兼容旧壳：旧 updater_check 不识别 recover，会返回检查状态。
+      applyUpdaterPayload(snapshot);
+    }
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall);
+    renderAboutVersion();
+    if (!lastUpdaterStatus && !updaterInstall && !updaterReady) checkUpdater(body);
+  } catch (e) {
+    if (epoch !== updaterRecoveryEpoch) return;
+    renderUpdaterBody(body, lastUpdaterStatus, updaterInstall,
+      `更新状态恢复失败：${e?.message || e}；可手动检查更新。`);
   }
 }
 
@@ -2539,8 +2614,294 @@ function renderAboutVersion() {
   }
 }
 
+/* ISS-191：当前扫描对象与覆盖只读呈现；不选择/保存范围。
+ * 发现不是采集事实，失效/权限受限不得伪装成零；主动采集保持独立动作。
+ */
+const SCOPE_PANEL_ID = "scope-panel";
+const SCOPE_STATUS_LABELS = {
+  accessible: "可访问",
+  unmounted: "未挂载",
+  locked: "已锁定（FileVault 未解锁）",
+  unknown: "状态未知",
+};
+
+let scopeState = {
+  view: null,        // GET /api/storage/plan/preview（无参数）的生效视图
+  discovery: null,   // GET /api/storage/discovery 的发现结果
+  discoveryError: null,
+  preview: null,     // 最近一次「候选」预览（只读预览结果）
+  previewError: null,
+  feedback: null,    // {text, kind}
+};
+
+function _scopeVolumeRow(v) {
+  const status = SCOPE_STATUS_LABELS[v.status] || v.status || "状态未知";
+  const name = escapeHtml(v.name || v.mount_point || v.device_identifier || v.volume_id || "未命名卷");
+  const role = (v.roles || []).map((r) => escapeHtml(r)).join(" / ");
+  // 卷信息只读展示；未挂载/锁定不因「发现到」而成为可采集入口。
+  const disabled = v.status && v.status !== "accessible";
+  return `<li class="scope-volume" data-test="scope-volume" data-volume-id="${escapeHtml(v.volume_id || "")}"
+        data-status="${escapeHtml(v.status || "unknown")}"${disabled ? " data-disabled=\"1\"" : ""}>
+        <span class="scope-volume-label">
+          <span class="scope-volume-name">${name}</span>
+        </span>
+        <span class="scope-volume-meta">${status}${role ? ` · ${role}` : ""}
+          ${v.mount_point ? ` · <code>${escapeHtml(v.mount_point)}</code>` : ""}</span>
+        ${v.filevault ? `<span class="scope-volume-meta">FileVault：${escapeHtml(v.filevault)}</span>` : ""}
+      </li>`;
+}
+
+function _scopeDeviceRow(d) {
+  const mounted = Boolean(d.mount_point);
+  return `<li class="scope-volume" data-test="scope-device" data-device-id="${escapeHtml(d.device_id || "")}">
+      <span class="scope-volume-name">${escapeHtml(d.name || d.device_id || "未命名设备")}</span>
+      <span class="scope-volume-meta">非启动容器 ${mounted
+        ? `· 已挂载 <code>${escapeHtml(d.mount_point)}</code>` : "· 未挂载（不提供监控入口）"}</span>
+    </li>`;
+}
+
+function _scopeCurrentRow() {
+  const view = scopeState.view;
+  if (!view) return `<p class="hint" data-test="scope-current">当前扫描对象不可用；请重新读取，不能回退用户目录。</p>`;
+  const override = view.scan_override;
+  const current = view.effective_selection;
+  const roots = override ? [override.root] : (current?.roots || []);
+  return `<p class="hint" data-test="scope-current" data-enabled="${view.enabled ? "1" : "0"}"
+      data-revision="${escapeHtml(String(view.selection?.revision ?? 0))}" data-source="${escapeHtml(view.source || "default")}">
+      当前扫描对象：<strong>${view.source === "startup_discovery" ? "内置启动盘整体" : override ? "本进程隔离目录" : "开发运行对象"}</strong>
+      · 根：${roots.map((r) => `<code>${escapeHtml(r)}</code>`).join("、") || "当前不可用"}。</p>`;
+}
+
+/* ISS-193：普通层按「当前对象 → 卷状态摘要 → 共享空间口径 → 本进程隔离 →
+ * 旧保存范围兼容 → 采集动作」排列；容器/卷/计划等标识只进技术折叠区。 */
+
+function _scopeOverrideRow() {
+  const override = scopeState.view?.scan_override;
+  if (!override) return "";
+  return `<p class="hint" data-test="scope-scan-override" data-source="${escapeHtml(override.source)}">
+      本进程由${override.source === "cli" ? "启动参数 --scan-root" : "环境变量 FATHOM_SCAN_ROOT"}隔离，实际根 <code>${escapeHtml(override.root)}</code>，不使用已保存范围。</p>`;
+}
+
+/* 旧 custom/legacy 兼容结论句逐字保留：防误解信息不是技术噪音。 */
+function _scopeCompatRow() {
+  const view = scopeState.view;
+  const saved = view?.selection;
+  if (!saved || view.saved_active) return "";
+  return `<p class="hint" data-test="scope-saved-compatibility">
+      旧保存范围仅保留兼容资料（修订 ${escapeHtml(String(saved.revision))}），不作为当前扫描决定；旧历史保持独立基线。</p>`;
+}
+
+/* 卷状态摘要：一句计数 + 不可访问卷逐个点名状态短语（不逐根展开技术字段）。
+ * 只取显示名与挂载点，不回退设备/卷标识——标识属技术层。 */
+function _scopeVolumeSummary(discovery) {
+  const volumes = discovery?.discovery?.startup_volumes || [];
+  if (!volumes.length) return "";
+  const accessible = volumes.filter((v) => v.status === "accessible");
+  // 不可访问 = 一切非可访问（含状态未知）；不可静默漏计，保证 M + 点名数 = N。
+  const blocked = volumes.filter((v) => v.status !== "accessible");
+  const named = blocked.map((v) => {
+    const name = escapeHtml(v.name || v.mount_point || "未命名卷");
+    const status = escapeHtml(SCOPE_STATUS_LABELS[v.status] || v.status || "状态未知");
+    return `<b>${name}</b>「${status}」`;
+  });
+  return `<p class="hint" data-test="scope-volume-summary" data-total="${volumes.length}" data-accessible="${accessible.length}">
+      启动容器内 ${volumes.length} 个卷，其中 ${accessible.length} 个可访问。${named.length ? `不可访问的卷：${named.join("、")}。` : "全部可访问。"}</p>`;
+}
+
+/* 共享剩余空间口径：容器级共享，不能按卷逐个相加（解读前提，不是设备标识）。 */
+function _scopeSharedFreeNote(discovery) {
+  if (!discovery?.discovery?.startup_container) return "";
+  return `<p class="hint" data-test="scope-shared-free">
+      剩余空间按启动容器口径共享，不按卷逐个相加。</p>`;
+}
+
+/* 计划读取失败/尚无计划是可见状态，留在普通层：失败不得藏进默认收起的折叠区。 */
+function _scopePlanStatusBlock() {
+  if (scopeState.previewError) {
+    return `<div class="hint cfg-error" data-test="scope-preview-error">
+      当前计划读取失败：${escapeHtml(scopeState.previewError)}（当前生效范围未改动）</div>`;
+  }
+  if (!scopeState.preview) {
+    return `<p class="hint" data-test="scope-preview-empty">当前使用显式隔离目录或尚无可用计划。</p>`;
+  }
+  return "";
+}
+
+/* 计划身份表与读取限制属技术诊断，进折叠区（普通层不出 plan_id/scope_id 等字面量）。 */
+function _scopePlanTechBlock() {
+  const plan = scopeState.preview;
+  if (!plan || scopeState.previewError) return "";
+  const rows = (plan.plans || []).map((p) => `<tr>
+      <td><code>${escapeHtml(p.root)}</code></td>
+      <td><code>${escapeHtml(p.display_name || "")}</code></td>
+      <td><code>${escapeHtml(p.scope_id)}</code></td>
+      <td><code>${escapeHtml(p.plan_id)}</code></td>
+    </tr>`).join("");
+  const rl = plan.read_limits || {};
+  const bg = plan.budget || {};
+  return `<div data-test="scope-preview">
+    <p class="hint" data-test="scope-preview-kind">当前计划：只读发现，不保存设置，也不代表已完成采集。</p>
+    <table class="scope-plan-table">
+      <thead><tr><th>根目录</th><th>名称</th><th>范围身份</th><th>计划身份</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="hint" data-test="scope-preview-limits">
+      读取限制：每根 du 超时 <code>${escapeHtml(String(rl.du_timeout_s ?? "—"))}</code> 秒
+      · 资源预算：min_kb <code>${escapeHtml(String(bg.min_kb ?? "—"))}</code>
+      · 排除项 ${escapeHtml(String((bg.exclude_names || []).length))} 条
+      · 身份版本 <code>${escapeHtml(String(plan.identity_version))}</code>
+    </p>
+    <p class="hint" data-test="scope-preview-uncertainty">
+      耗时不确定：实际时长随文件数量与权限可读性变化，预览不给出时间估计。
+    </p>
+  </div>`;
+}
+
+/* 发现清单全文（容器引用/挂载点/FileVault/标识/其它设备）进折叠区。 */
+function _scopeDiscoveryTechBlock(discovery) {
+  if (!discovery?.ok) return "";
+  const d = discovery.discovery || {};
+  const container = d.startup_container;
+  const volumes = d.startup_volumes || [];
+  const others = d.other_devices || [];
+  return `<div data-test="scope-discovery">
+    <p class="hint" data-test="scope-tech-note">下列卷/设备明细为只读发现结果；日常使用看上方摘要即可。</p>
+    ${container ? `<p class="hint" data-test="scope-container">
+      启动容器：<code>${escapeHtml(container.container_reference || container.container_id || "")}</code>
+      · 共享剩余空间（不按卷相加）</p>` : ""}
+    <ul class="scope-volume-list">${volumes.map(_scopeVolumeRow).join("")}</ul>
+    ${others.length ? `<p class="hint">其它设备（非启动容器，不自动纳入）：</p>
+      <ul class="scope-volume-list">${others.map(_scopeDeviceRow).join("")}</ul>` : ""}
+  </div>`;
+}
+
+function _scopeFirstRunBlock() {
+  if (!scopeState.view) return "";
+  return `<div class="panel scope-firstrun" data-test="scope-firstrun">
+      <h3>采集当前扫描对象（独立动作）</h3>
+      <p class="hint">无需选择或保存范围。读取本页不会扫描；主动采集完成后才形成新基线。</p>
+      <button type="button" class="btn" id="btn-scope-firstscan" data-test="scope-firstscan-btn">
+        ${icon("activity")}开始采集当前对象</button>
+      <span id="scope-firstscan-status" class="hint" data-test="scope-firstscan-status" hidden></span>
+      <p class="hint" data-test="scope-snapshot-expect">一次采集可看分布；变化需两个可比日期，同日采集不产生跨日基线。</p>
+      <p class="hint" data-test="scope-legacy-note">旧用户目录历史保留为 legacy 口径，不与新基线混比。</p>
+    </div>`;
+}
+
+function renderScopePanel() {
+  const panel = document.getElementById(SCOPE_PANEL_ID);
+  if (!panel) return;
+  const discovery = scopeState.discovery;
+  const fb = scopeState.feedback;
+
+  let summaryBlock;
+  if (scopeState.discoveryError) {
+    summaryBlock = `<p class="hint cfg-error" data-test="scope-discovery-error">
+      发现失败：${escapeHtml(scopeState.discoveryError)}。
+      不代表「没有可监控的卷」，也无法据此断言可读目录为 0。</p>`;
+  } else if (discovery?.ok) {
+    summaryBlock = `<p class="hint" data-test="scope-discovery-note">
+      以下卷状态来自<b>只读发现</b>，<b>不代表已完成采集</b>；当前扫描对象见上方。</p>
+      ${_scopeVolumeSummary(discovery)}
+      ${_scopeSharedFreeNote(discovery)}`;
+  } else {
+    summaryBlock = `<p class="hint" data-test="scope-discovery-pending">容器与卷信息读取中…</p>`;
+  }
+
+  const techBody = [
+    discovery?.ok ? _scopeDiscoveryTechBlock(discovery) : "",
+    _scopePlanTechBlock(),
+  ].filter(Boolean).join("");
+
+  panel.innerHTML = `
+    ${_scopeCurrentRow()}
+    <div class="cfg-actions">
+      <button type="button" class="btn" id="btn-scope-reload" data-test="scope-reload-btn">
+        ${icon("activity")}重新读取</button>
+    </div>
+    ${summaryBlock}
+    ${_scopeOverrideRow()}
+    ${_scopeCompatRow()}
+    ${_scopePlanStatusBlock()}
+    ${fb ? `<p class="hint cfg-${fb.kind}" data-test="scope-feedback" data-kind="${escapeHtml(fb.kind)}">
+      ${escapeHtml(fb.text)}</p>` : ""}
+    ${_scopeFirstRunBlock()}
+    <details class="adv-toggle" data-test="scope-tech">
+      <summary>${icon("settings", 12)} 技术诊断信息${icon("chevron", 14, "adv-chevron")}</summary>
+      <div class="adv-body" data-test="scope-tech-body">${techBody}</div>
+    </details>
+  `;
+
+  panel.querySelector("#btn-scope-reload")?.addEventListener("click", () => loadScopeSettings());
+  panel.querySelector("#btn-scope-firstscan")?.addEventListener("click", startFirstScan);
+
+}
+
+async function loadScopeSettings() {
+  const request = beginRequest("settingsScope");
+  renderScopePanel();
+  // 发现与生效视图互不依赖：任一失败都不阻断另一部分（失败不谎报 0）。
+  try {
+    const d = await fetchJSON("/api/storage/discovery");
+    if (!request.current()) return;
+    if (d && d.ok) { scopeState.discovery = d; scopeState.discoveryError = null; }
+    else { scopeState.discovery = null; scopeState.discoveryError = d?.error || "未知原因"; }
+  } catch (e) {
+    if (!request.current()) return;
+    scopeState.discovery = null;
+    scopeState.discoveryError = e.status === 0 ? "无法连接本地服务" : (e.message || `HTTP ${e.status}`);
+  }
+  if (!request.current()) return;
+  try {
+    scopeState.view = await fetchJSON("/api/storage/plan/preview");
+    if (!request.current()) return;
+    scopeState.preview = scopeState.view.plan || null;
+    scopeState.feedback = null;
+  } catch (e) {
+    if (!request.current()) return;
+    scopeState.view = null;
+    scopeState.preview = null;
+    scopeState.feedback = {
+      kind: "error",
+      text: `范围配置读取失败：${e.status === 0 ? "无法连接本地服务" : e.message}`,
+    };
+  }
+  if (!request.current()) return;
+  renderScopePanel();
+}
+
+async function startFirstScan() {
+  const status = document.getElementById("scope-firstscan-status");
+  const btn = document.getElementById("btn-scope-firstscan");
+  if (btn) btn.disabled = true;
+  if (status) { status.hidden = false; status.textContent = "正在请求采集当前对象…"; }
+  try {
+    const res = await apiPost("/api/scan", {});
+    if (status) {
+      status.textContent = res.status === 409
+        ? "已有扫描在进行中；不会启动重复采集。"
+        : "已开始采集当前对象：完成后形成新基线。";
+    }
+  } catch (e) {
+    if (status) {
+      status.textContent = `无法开始采集：${e.status === 0 ? "无法连接本地服务" : e.message}`;
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 export const settingsPage = {
   id: "settings",
+  enter() {
+    // 常驻页面初始化后，跨页的 AI 配置入口仍须在每次进入时消费深链。
+    const pending = window.__fathomSettingsSectionPending;
+    window.__fathomSettingsSectionPending = null;
+    const section = pending || _readHashSection();
+    if (SETTINGS_SECTIONS.includes(section)) {
+      activateSettingsSection(section, { persistHash: Boolean(pending) });
+    }
+  },
   load() {
     loadSettings();
     // 关于区版本：loadUpdater 完成后回填（异步），这里先设一次占位
@@ -2560,5 +2921,5 @@ export const settingsPage = {
         activateSettingsSection("permissions", { persistHash: true });
       });
   },
-  leave() { ["settings", "scanHistory", "settingsPermissions", "permHub", "settingsAutostart", "settingsUpdater", "settingsAnalysis"].forEach(invalidateRequest); },
+  leave() { ["settings", "scanHistory", "settingsPermissions", "permHub", "settingsAutostart", "settingsUpdater", "settingsAnalysis", "settingsScope"].forEach(invalidateRequest); },
 };

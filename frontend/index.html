@@ -25,6 +25,9 @@
     <a href="#/changes" data-page="changes" class="nav-item">
       <span class="nav-icon" data-icon="activity"></span><span class="nav-label">变化</span>
     </a>
+    <a href="#/agent" data-page="agent" class="nav-item">
+      <span data-icon="sparkles"></span> Agent
+    </a>
     <a href="#/browse" data-page="browse" class="nav-item">
       <span class="nav-icon" data-icon="pie"></span><span class="nav-label">分布</span>
     </a>
@@ -90,6 +93,12 @@
         <!-- ISS-105 表面层级：总览内容收进单张 L1 白卡；内部 L2 分组
              （最近变化 / 卷容量与走势 并排或上下，最近扫描在页脚组） -->
         <div class="surface">
+        <!-- ISS-158 整盘总览：首屏一个主要结果 + 「排查这次变化」主按钮。
+             容器/剩余/未知差额各自分别命名；未启用范围时不渲染整盘结论。 -->
+        <div class="panel" id="ov-panel-storage" data-test="storage-panel">
+          <div class="panel-head"><h2>整盘总览</h2></div>
+          <div id="overview-storage"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>加载中…</div>
+        </div>
         <div class="ov-grid">
           <div class="panel" id="ov-panel-changes">
             <div class="panel-head">
@@ -169,19 +178,33 @@
             <div class="panel-head">
               <h2>快照对比</h2>
               <div class="controls">
+                <!-- ISS-148：同级筛选走 /api/diff/children 的 filter（all/changed），
+                     不在本地重建筛选语义；changed 的隐藏说明由 changes.js 渲染 -->
+                <select id="changes-filter" class="ctl-input tree-filter" data-test="changes-filter"
+                        aria-label="同级行筛选">
+                  <option value="all">全部同级行</option>
+                  <option value="changed">仅变化（含变化后代）</option>
+                </select>
                 <input id="changes-search" class="ctl-input search" type="search"
                        placeholder="按路径过滤当前结果" aria-label="按路径过滤当前对比结果" autocomplete="off">
               </div>
             </div>
-            <p class="hint">搜索按目录路径过滤当前对比结果；改日期用上方共享的基线/对比选择。</p>
-            <p class="hint" id="changes-foot" hidden>列表包含父子目录，行值不可相加为净变化；"未记录"不等于新增或删除。</p>
+            <p class="hint">展开目录逐层看同级变化；点目录名看证据，点箭头展开，聚焦后用面包屑或 Esc 返回上级。</p>
+            <!-- ISS-148：聚焦下钻的面包屑（根 → … → 当前聚焦，crumbs 样式复用分布页） -->
+            <nav id="tree-crumbs" class="crumbs tree-crumbs" data-test="tree-crumbs" hidden
+                 aria-label="当前聚焦位置"></nav>
+            <!-- ISS-148：本级目录摘要（聚焦层的父行口径：累计值含全部后代，未知不渲染 0） -->
+            <p class="hint tree-parent" id="tree-parent" data-test="tree-parent" hidden></p>
+            <!-- ISS-148：筛选/搜索/降级的动态说明（被隐藏方向、只过滤已加载行等） -->
+            <p class="hint" id="tree-note" data-test="tree-note" hidden></p>
+            <p class="hint" id="changes-foot" hidden>目录大小为累计值（含全部后代），父行与子行不可相加；"未记录"与"首次记录"不是删除或新建的证据。</p>
             <div class="tbl-wrap">
-              <table class="tbl" id="changes-table">
+              <table class="tbl tree-tbl" id="changes-table">
                 <thead><tr>
-                  <th><button class="th-sort" data-sort="path" type="button">目录</button></th>
-                  <th class="num"><button class="th-sort" data-sort="prev" type="button">之前</button></th>
-                  <th class="num"><button class="th-sort" data-sort="curr" type="button">现在</button></th>
-                  <th class="num"><button class="th-sort" data-sort="delta" type="button">变化</button></th>
+                  <th><button class="th-sort" data-sort="name" type="button">目录</button></th>
+                  <th class="num"><span class="th-plain">之前</span></th>
+                  <th class="num"><button class="th-sort" data-sort="size" type="button">现在</button></th>
+                  <th class="num"><button class="th-sort" data-sort="delta" type="button">净变化</button></th>
                   <th>状态</th>
                   <th><span class="visually-hidden">操作</span></th>
                 </tr></thead>
@@ -260,10 +283,18 @@
           <button type="button" class="page-tab" data-tab="browser" data-test="browse-tab-browser">目录浏览器</button>
         </nav>
 
+        <!-- ISS-159：分布页快照选择——占用分布与目录浏览器共源（两分区都指
+             所选快照），默认最新；选择淘汰后可一键恢复 -->
+        <div class="browse-snap-bar" data-test="browse-snapshot-bar">
+          <label class="hint" for="browse-snap">快照</label>
+          <select id="browse-snap" data-test="browse-snapshot-select" aria-label="选择要查看的快照"></select>
+          <span class="hint" id="browse-snap-quality" data-test="browse-snapshot-quality"></span>
+        </div>
+
         <div class="surface">
         <section class="page-tab-section" data-tab="sunburst" data-test="browse-section-sunburst">
           <div class="panel">
-            <div class="panel-head"><h2>当前占用分布</h2><p class="hint">点击扇区切换到目录浏览器并定位</p></div>
+            <div class="panel-head"><h2 id="sunburst-title">占用分布</h2><p class="hint">点击扇区切换到目录浏览器并定位</p></div>
             <!-- ISS-107：默认图形的快照时点与根；数据不可知时如实显示"未知" -->
             <p class="hint" id="sunburst-context" data-test="sunburst-context">快照上下文加载中…</p>
             <div id="chart-sunburst" class="chart chart-lg"></div>
@@ -280,7 +311,7 @@
           <div class="browser-layout">
             <div class="browser-table-wrap">
               <table class="tbl" id="tbl-browse">
-                <thead><tr><th>目录</th><th class="num">大小</th><th class="num">较上快照</th><th class="num">占比</th><th></th></tr></thead>
+                <thead><tr><th>目录</th><th class="num">大小</th><th class="num" id="th-delta">较上快照</th><th class="num">占比</th><th></th></tr></thead>
                 <tbody></tbody>
               </table>
             </div>
@@ -292,27 +323,62 @@
           </div>
         </section>
         </div>
+        <!-- ISS-159：分布页目录详情（共用组件 distribution 单时点模式；
+             position:fixed 浮层与 changes-detail 同理置于 surface 之外） -->
+        <aside id="browse-detail" class="changes-detail" hidden aria-label="目录详情（所选快照时点）"></aside>
       </section>
 
       <!-- ===== 大文件（ISS-094 调研结论：天然单区块——一个查询表即整页，
            不加无意义 tab；与变化/分布的 tab 语言不冲突；ISS-105 单区块
-           即单张 L1 白卡） ===== -->
+           即单张 L1 白卡；ISS-151 目录详情与本页共用范围/模式/状态，
+           查询仅由明确点击发起） ===== -->
       <section class="page hidden" id="page-bigfiles">
         <div class="surface">
         <div class="panel">
           <div class="panel-head">
-            <h2>近期大文件</h2>
+            <h2>大文件</h2>
             <div class="controls">
+              <label>范围 <input type="text" id="bf-path" placeholder="监控根（可留空）" spellcheck="false" style="width:220px" aria-label="查询目录（监控根内的绝对路径，留空为监控根）"></label>
+              <label>模式
+                <select id="bf-mode" aria-label="大文件查询模式">
+                  <option value="recent" selected>近期修改</option>
+                  <option value="largest">当前最大</option>
+                </select>
+              </label>
               <label>近 <input type="number" id="bf-days" value="7" min="1" max="90"> 天</label>
               <label>≥ <input type="number" id="bf-mb" value="100" min="1"> MB</label>
               <button id="btn-bigfiles" class="btn">查询</button>
             </div>
           </div>
+          <p class="hint" style="margin:0 0 8px">点「查询」才开始（不后台遍历）；「近期修改」按近 N 天 mtime 过滤，「当前最大」按此刻 st_size 排序、不限修改时间——与历史快照 a→b 区间口径不同。查询进行中离开本页或改范围会自动取消。</p>
           <table class="tbl" id="tbl-bigfiles">
             <thead><tr><th class="num">大小</th><th>修改时间</th><th>文件</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
         </div>
+        </div>
+      </section>
+
+      <section class="page hidden" id="page-agent">
+        <div class="surface">
+          <div class="panel">
+            <div class="panel-head"><h2>变化解读</h2><button type="button" class="btn" id="agent-settings">去设置配置</button></div>
+            <p class="hint" id="agent-engine-summary" data-test="agent-engine-summary">引擎状态读取中…</p>
+            <div class="controls agent-range-controls">
+              <label>基线 <select id="agent-a" aria-label="Agent 基线快照"></select></label>
+              <label>对比 <select id="agent-b" aria-label="Agent 对比快照"></select></label>
+              <button type="button" class="btn" id="agent-refresh">刷新</button>
+            </div>
+            <p class="hint" id="agent-range-status" role="status" aria-live="polite"></p>
+            <p class="hint" id="agent-opened-task" data-test="agent-opened-task"></p>
+          </div>
+          <div class="panel panel-divided" id="agent-analysis-panel"><div id="agent-analysis-body"></div></div>
+          <div class="panel panel-divided">
+            <div class="panel-head"><h2>任务与历史</h2><button type="button" class="btn" id="agent-history-refresh">刷新任务历史</button></div>
+            <p class="hint" id="agent-history-count"></p><p class="hint cfg-error" id="agent-history-error" role="status"></p>
+            <div class="agent-history-scroll"><table class="tbl" data-test="agent-history"><thead><tr><th>原区间</th><th>状态</th><th>引擎</th><th>创建时间</th></tr></thead><tbody id="agent-history-body"></tbody></table></div>
+            <button type="button" class="btn" id="agent-history-more" hidden>加载更多任务</button>
+          </div>
         </div>
       </section>
 
@@ -368,22 +434,27 @@
                  默认不占主视野。 -->
             <section class="settings-section surface" data-section="monitoring"
                      id="settings-section-monitoring" aria-labelledby="settings-head-monitoring">
+              <!-- ISS-156 范围与覆盖：容器/卷发现 + 范围选择 + 计划预览 + 保存
+                   （只影响下一轮计划）+ 首次启用引导（首扫为独立明确动作）。
+                   作为「监控」分区内的独立面板承载，不新增左导航项：左导航保持
+                   ISS-087 六分区（既有 IA 合同与 217 项前端回归依赖该结构）。
+                   面板内容由 settings.js 按真实 discovery/plan/scope 载荷渲染，
+                   静态区只提供壳与无脚本兜底说明。 -->
+              <div class="panel scope-panel-wrap" aria-labelledby="settings-head-scope">
+                <div class="panel-head">
+                  <h2 id="settings-head-scope">范围与覆盖</h2>
+                  <p class="hint">当前扫描对象、覆盖与读取限制；采集是独立动作，无需选择或保存范围</p>
+                </div>
+                <div id="scope-panel" data-test="scope-panel">
+                  <p class="hint">正在读取容器与卷信息…</p>
+                </div>
+              </div>
               <div class="panel">
                 <div class="panel-head">
                   <h2 id="settings-head-monitoring">监控设置</h2>
                   <p class="hint">当前值已填入输入框；改动保存后生效</p>
                 </div>
                 <form id="config-form" class="config-form" novalidate>
-                  <div class="cfg-row">
-                    <label for="cfg-scan-root">监控根目录</label>
-                    <div class="cfg-field">
-                      <input class="ctl-input cfg-wide" id="cfg-scan-root" type="text"
-                             autocomplete="off" spellcheck="false" placeholder="例如 /Users/你/项目">
-                      <p class="cfg-override" data-test="cfg-scan-root-override" hidden></p>
-                      <p class="cfg-desc">要追踪容量变化的文件夹。当前版本只监控一个根目录；
-                        更改根目录会形成新数据集，历史对比将中断。</p>
-                    </div>
-                  </div>
                   <div class="cfg-row">
                     <label for="cfg-min-kb">入库阈值</label>
                     <div class="cfg-field">
@@ -540,7 +611,7 @@
                   </div>
                 </div>
                 <p class="hint about-blurb">
-                  macOS 目录容量历史追踪工具：记录哪些目录在增长，把最近变化与历史证据放在一起，
+                  Disk Insight for macOS：记录哪些目录在增长，把最近变化与历史证据放在一起，
                   帮助理解空间去向。所有数据只存在你的机器上。
                 </p>
                 <!-- ISS-108：每项 = 键 + 值容器两节点成组（.about-meta-val 包住

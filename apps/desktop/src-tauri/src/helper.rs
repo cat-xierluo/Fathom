@@ -174,6 +174,7 @@ pub struct HelperInstance {
     pub version: Option<String>,
     pub instance_id: Option<String>,
     pub runtime_mode: Option<String>,
+    pub frontend_revision: Option<String>,
 }
 
 /// 解析 helper-instance.json（JSON object）。文件不存在/格式错误返回 ``Err``。
@@ -217,6 +218,7 @@ pub fn read_helper_instance(runtime_dir: &Path) -> Result<HelperInstance, String
         version,
         instance_id,
         runtime_mode,
+        frontend_revision: None, // 实时 health 提供资源身份，旧 instance 文件保持兼容。
     })
 }
 
@@ -490,6 +492,7 @@ impl HelperHandle {
                     .get("version")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                frontend_revision: value.get("frontend_revision").and_then(|v| v.as_str()).map(String::from),
                 instance_id: value
                     .get("instance_id")
                     .and_then(|v| v.as_str())
@@ -528,7 +531,7 @@ impl HelperHandle {
             for offset in 0..=DEFAULT_PORT_RANGE {
                 let port = port_base.saturating_add(u16::from(offset));
                 match Self::probe_health(port) {
-                    ProbeKind::Ours { pid, .. } => {
+                    ProbeKind::Ours { pid, version, instance_id, frontend_revision, .. } => {
                         // 让位路径：helper 让位退出 0，外部已是同服务。
                         // ISS-059：探测到的实例若是本壳刚拉起的子进程
                         // （instance 文件写于 uvicorn 监听就绪前、路径 1 探活
@@ -543,9 +546,10 @@ impl HelperHandle {
                             port,
                             service: SERVICE_IDENTITY.into(),
                             protocol_version: PROTOCOL_VERSION,
-                            version: None,
-                            instance_id: None,
+                            version,
+                            instance_id,
                             runtime_mode: None,
+                            frontend_revision,
                         }));
                     }
                     ProbeKind::Refused => {}
@@ -568,7 +572,7 @@ impl HelperHandle {
     /// → ``/health`` 探活 → 处置。``Reuse`` 携带可复用实例；``Stale`` 时本
     /// 函数已删除陈旧文件；其余情形携带诊断信息供握手超时文案使用。
     fn instance_file_step(&self) -> InstanceStep {
-        let instance = match read_helper_instance(&self.runtime_dir) {
+        let mut instance = match read_helper_instance(&self.runtime_dir) {
             Ok(inst) => inst,
             Err(err) => return InstanceStep::Unavailable(err),
         };
@@ -581,7 +585,12 @@ impl HelperHandle {
         let probe = Self::probe_health(instance.port);
         let pid_alive = pid_is_alive(instance.pid);
         match instance_disposition(&probe, pid_alive) {
-            InstanceDisposition::Reuse => InstanceStep::Reuse(instance),
+            InstanceDisposition::Reuse => {
+                if let ProbeKind::Ours { frontend_revision, .. } = probe {
+                    instance.frontend_revision = frontend_revision;
+                }
+                InstanceStep::Reuse(instance)
+            },
             InstanceDisposition::StaleRemove => {
                 let stale_path = self.runtime_dir.join("helper-instance.json");
                 match std::fs::remove_file(&stale_path) {
@@ -617,6 +626,24 @@ impl HelperHandle {
     /// （语义：本壳无 helper，任何存活同服务实例都非本壳所有）。
     pub fn helper_pid(&self) -> Option<u32> {
         self.own_child_pid()
+    }
+
+    /// 回收本壳已退出的 helper（不发信号、不等待仍运行的进程）。
+    /// prepare 是 helper 的兄弟进程，不能 wait 它；若父壳不回收，ps -p
+    /// 会把已退出的僵尸进程继续判活。清掉句柄同时避免沿用已回收的 PID。
+    pub fn reap_exited_child(&self) -> Result<(), String> {
+        let mut guard = self.inner.lock()
+            .map_err(|_| "helper 子进程句柄锁中毒".to_string())?;
+        let exited = match guard.as_mut() {
+            Some(child) => child.try_wait()
+                .map_err(|err| format!("回收旧 helper 子进程失败：{err}"))?
+                .is_some(),
+            None => false,
+        };
+        if exited {
+            *guard = None;
+        }
+        Ok(())
     }
 
     /// 最近一次端口耗尽信息（ISS-059）；未发生过为 ``None``。
@@ -781,6 +808,7 @@ pub enum ProbeKind {
         pid: Option<i64>,
         version: Option<String>,
         instance_id: Option<String>,
+        frontend_revision: Option<String>,
     },
 }
 
@@ -903,6 +931,21 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     #[test]
+    fn reap_exited_child_preserves_live_child_and_accepts_no_child() {
+        let handle = HelperHandle::new(std::env::temp_dir());
+        handle.reap_exited_child().unwrap(); // 复用模式无自有子进程，零副作用。
+        let child = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id();
+        handle.adopt(child, 1, 0);
+        handle.reap_exited_child().unwrap();
+        assert_eq!(handle.helper_pid(), Some(pid));
+        assert!(handle.inner.lock().unwrap().as_mut().unwrap().try_wait().unwrap().is_none());
+        handle.stop().unwrap();
+        handle.reap_exited_child().unwrap();
+        assert_eq!(handle.helper_pid(), None);
+    }
+
+    #[test]
     fn identity_constants_match_helper() {
         assert_eq!(SERVICE_IDENTITY, "fathom");
         assert_eq!(PROTOCOL_VERSION, 1);
@@ -943,7 +986,7 @@ mod tests {
                 let mut buf = [0u8; 1024];
                 let _ = std::io::Read::read(&mut stream, &mut buf);
                 let body = format!(
-                    "{{\"service\":\"fathom\",\"protocol_version\":1,\"status\":\"ok\",\"pid\":{},\"version\":\"0.3.0\",\"instance_id\":\"t\"}}",
+                    "{{\"service\":\"fathom\",\"protocol_version\":1,\"status\":\"ok\",\"pid\":{},\"version\":\"0.3.0\",\"instance_id\":\"t\",\"frontend_revision\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}",
                     std::process::id()
                 );
                 let resp = format!(
@@ -989,6 +1032,7 @@ mod tests {
         assert_eq!(instance.service, "fathom");
         assert_eq!(instance.protocol_version, 1);
         assert_eq!(instance.port, port);
+        assert_eq!(instance.frontend_revision.as_deref(), Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
     }
 
     #[test]
@@ -1082,7 +1126,7 @@ mod tests {
         // 顺带断言：instance_disposition 自身的「身份匹配→复用」与「身份不
         // 符 + pid 不在」两条核心契约（纯函数），补齐拒绝路径的最小单元。
         assert_eq!(
-            instance_disposition(&ProbeKind::Ours { port: 7952, pid: Some(1), version: None, instance_id: None }, true),
+            instance_disposition(&ProbeKind::Ours { port: 7952, pid: Some(1), version: None, instance_id: None, frontend_revision: None }, true),
             InstanceDisposition::Reuse,
             "身份匹配的 Ours 探活结果应一律复用"
         );
@@ -1112,6 +1156,7 @@ mod tests {
             pid: Some(42),
             version: None,
             instance_id: None,
+            frontend_revision: None,
         };
         assert_eq!(
             instance_disposition(&ours, true),
@@ -1318,10 +1363,19 @@ mod tests {
         }
     }
 
+    // ISS-195：cargo test 默认多线程并行，旧实现用 PID + SystemTime 纳秒命名，
+    // 同一纳秒可被两个测试线程同时读到并拿到同一目录，交叠写各自的
+    // helper-instance.json 产生畸形 JSON（ISS-192 实测 8 跑 1 红）。
+    // 唯一性改为由同进程内单调计数器保证：fetch_add 对每个调用方返回不同值，
+    // 论证不依赖时钟精度。纳秒只留作人读前缀，回绕前的计数器亦不重复。
+    static TEMPDIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     fn tempdir() -> PathBuf {
+        let seq = TEMPDIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "fathom-helper-test-{}-{}",
+            "fathom-helper-test-{}-{}-{}",
             std::process::id(),
+            seq,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

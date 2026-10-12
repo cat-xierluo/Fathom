@@ -4,16 +4,56 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import fcntl
+import logging
 import os
 from pathlib import Path
 import re
 import sqlite3
+import threading
 import time
 from typing import Callable, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 7
+_LOG = logging.getLogger("fathom.db")
+
+SCHEMA_VERSION = 9
+
+# v8 之后的纯性能增量（ISS-168）：entries 的主键是
+# (snapshot_id, path) WITHOUT ROWID，path 不是主键前缀，因此 trend 的
+# path 等值查询（fathom/api.py::_trend_points 的
+# "SELECT snapshot_id, size_kb FROM entries WHERE path = ?"）用不上主键，
+# 只能全表扫描——100 万档大库实测 252ms，索引后为 log N。
+#
+# 硬约束：纯索引——不加列、不重建表、不迁移数据、不改 SCHEMA_VERSION
+# 语义。CREATE INDEX IF NOT EXISTS 命中即空操作，旧库打开时自动补建，
+# 对既有数据与行内容零风险（不动任何一行业务行）。
+_ENTRIES_PATH_INDEX = "idx_entries_path"
+# (索引名, DDL) 配对：让步逻辑要按名字登记待办，因此不能只留 SQL 串。
+_INDEX_DEFINITIONS: tuple[tuple[str, str], ...] = (
+    (
+        _ENTRIES_PATH_INDEX,
+        f"CREATE INDEX IF NOT EXISTS {_ENTRIES_PATH_INDEX} ON entries(path)",
+    ),
+)
+
+# 写锁让步（ISS-173）：建索引是需要写锁的 DDL，而 connect() 快路径是普通
+# 读连接。库正被扫描写事务（BEGIN IMMEDIATE）持有写锁时，DDL 会一直等到
+# busy_timeout（10s）后以 "database is locked" 失败——把后台补建索引变成
+# 用户可见的打开失败（上游百万档实测：普通 connect() 10.39s 后失败）。
+# 快路径因此只给一个很短的抢锁预算；抢不到就跳过本次补建并登记待办，
+# 让打开照常成功，下次连接再重试。
+_INDEX_PROBE_TIMEOUT_S = 0.25
+
+# SQLite 写锁竞争的报错措辞。只对竞争让步；语法错误、只读库、库损坏等
+# 同样可能抛 OperationalError，必须原样上抛，不能伪装成「已让步」。
+_LOCK_CONTENTION_HINT = "is locked"
+
+# 进程内待补建索引登记簿（ISS-173）。索引缺失 + 写锁被占时登记在此，
+# 下一次连接重试时清空；纯诊断/测试用途，不参与 schema 版本语义。
+_PENDING_INDEX_LOCK = threading.Lock()
+_PENDING_INDEXES: set[str] = set()
+_PENDING_INDEX_LOGGED: set[str] = set()
 
 _SCHEMA_STATEMENTS = (
     """CREATE TABLE snapshots (
@@ -115,8 +155,9 @@ _ANALYSIS_TABLE_STATEMENTS = (
 
 # Kept as a readable schema reference for tests and diagnostics.
 # 语句保持 v2 形态：全新库由迁移链 0→…→SCHEMA_VERSION 逐级建表并补列，
-# 保证"全新建库"与"旧库升级"到达完全相同的最终结构；v7 起分析两表由
-# 迁移链末端（_migrate_v6）追加，同样两条路径同构。
+# 保证"全新建库"与"旧库升级"到达完全相同的最终结构；v7 分析两表由
+# _migrate_v6、v8 身份/轮次表由 _migrate_v7 在迁移链末端追加，
+# 同样两条路径同构。
 SCHEMA = ";\n\n".join(_SCHEMA_STATEMENTS) + ";\n"
 
 # v3（ISS-021）为 snapshots 增加口径/质量元数据；两列均可空——
@@ -158,13 +199,101 @@ _SNAPSHOT_ALTER_V6 = (
     "confirmed_missing_count INTEGER",
     "path_unverified_count INTEGER",
 )
+# v8（ISS-153）为 snapshots 增加三个身份关联列，全部可空——
+# 旧行不补造身份：plan_id NULL 表示 legacy 口径（按 (root, min_kb,
+# exclude_names) 分组，不与新整盘身份混比）；round_id NULL 表示不属于
+# 任何扫描轮次；metric_version NULL 表示计量版本未知。新身份由后续
+# 接线（ISS-154）在采集时点显式提供，本版不改 API/协调器，零行为变化。
+_SNAPSHOT_ALTER_V8 = (
+    "plan_id TEXT",          # 所属规范根计划（scan_plans.plan_id）
+    "round_id INTEGER",      # 所属扫描轮次（scan_rounds.id；无外键）
+    "metric_version INTEGER",  # 计量版本（参与计划身份的显式列）
+)
+
+# v8（ISS-153）：卷/范围身份与扫描轮次兼容数据模型，五张新表。
+# 快照仍是单测量来源（不改 entries/snapshots 的测量列）；本组表只承载
+# 身份、轮次与整盘容量样本：
+# - scan_scopes：范围/卷/容器稳定 ID（scope_id 直接采用 storage 发现的
+#   稳定 ID，如 "apfs-volume:<uuid>" / "partition:<uuid>"）；legacy 路径
+#   不登记本表——旧行身份保持 NULL，不补造真实卷 UUID。
+# - scan_plans：规范根计划。数据集身份在新口径下 = 计划（范围 + 规范根 +
+#   计量版本 + 阈值 + 排除掩码），内容派生稳定 ID，同计划幂等。
+# - scan_rounds / scan_round_members：扫描轮次与成员关联，各自时间/状态。
+#   成员对快照的引用 ON DELETE SET NULL：快照被保留策略/同日替换淘汰时
+#   引用自动解除，历史行保留，由写入层把 snapshot_status 显式置
+#   'expired'（不靠 join 失败隐式发现）。
+# - container_capacity_samples：容器容量样本另存来源/时间——整盘容量
+#   只能来自容器级发现，不借某目录根 statvfs 冒充（round_id 无外键：
+#   诊断样本不阻塞任何轮次清理）。
+# 本组新表没有任何外键指向 analysis_runs/agent_analyses；v7 起的保留
+# 不变量不变：已保存 AI 证据不随快照淘汰级联删除。
+_IDENTITY_TABLE_STATEMENTS = (
+    """CREATE TABLE scan_scopes (
+        scope_id        TEXT PRIMARY KEY,
+        kind            TEXT NOT NULL,
+        container_id    TEXT,
+        volume_group_id TEXT,
+        device_id       TEXT,
+        mount_path      TEXT,
+        display_name    TEXT,
+        created_at      TEXT NOT NULL,
+        last_seen_at    TEXT
+    )""",
+    """CREATE TABLE scan_plans (
+        plan_id         TEXT PRIMARY KEY,
+        scope_id        TEXT NOT NULL REFERENCES scan_scopes(scope_id),
+        canonical_root  TEXT NOT NULL,
+        metric_version  INTEGER NOT NULL,
+        min_kb          INTEGER NOT NULL,
+        exclude_names   TEXT NOT NULL DEFAULT '',
+        created_at      TEXT NOT NULL,
+        UNIQUE (scope_id, canonical_root, metric_version, min_kb, exclude_names)
+    )""",
+    """CREATE TABLE scan_rounds (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        started_at  TEXT NOT NULL,
+        finished_at TEXT,
+        status      TEXT NOT NULL,
+        message     TEXT
+    )""",
+    """CREATE TABLE scan_round_members (
+        round_id        INTEGER NOT NULL REFERENCES scan_rounds(id) ON DELETE CASCADE,
+        seq             INTEGER NOT NULL,
+        plan_id         TEXT,
+        scope_id        TEXT,
+        snapshot_id     INTEGER REFERENCES snapshots(id) ON DELETE SET NULL,
+        snapshot_status TEXT,
+        status          TEXT NOT NULL,
+        started_at      TEXT,
+        finished_at     TEXT,
+        PRIMARY KEY (round_id, seq)
+    )""",
+    """CREATE TABLE container_capacity_samples (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        container_id TEXT NOT NULL,
+        total_bytes  INTEGER,
+        free_bytes   INTEGER,
+        source       TEXT NOT NULL,
+        sampled_at   TEXT NOT NULL,
+        round_id     INTEGER
+    )""",
+)
+
+# v6/v7 共享的快照列结构；v8 在其上追加三个可空身份关联列。
+_SNAPSHOT_COLUMNS_V6 = _SNAPSHOT_COLUMNS_V5 + (
+    ("confirmed_missing_count", "INTEGER", 0, 0),
+    ("path_unverified_count", "INTEGER", 0, 0),
+)
+_SNAPSHOT_COLUMNS_V8 = _SNAPSHOT_COLUMNS_V6 + (
+    ("plan_id", "TEXT", 0, 0), ("round_id", "INTEGER", 0, 0),
+    ("metric_version", "INTEGER", 0, 0),
+)
 
 _EXPECTED_TABLE_INFO = {
     # (name, declared type, notnull, primary-key order)
-    "snapshots": _SNAPSHOT_COLUMNS_V5 + (
-        ("confirmed_missing_count", "INTEGER", 0, 0),
-        ("path_unverified_count", "INTEGER", 0, 0),
-    ),
+    # v8 终态：snapshots 携带三个身份关联列；中间态由
+    # _EXPECTED_TABLE_INFO_V6/_V7 覆盖 snapshots 列集。
+    "snapshots": _SNAPSHOT_COLUMNS_V8,
     "entries": (
         ("snapshot_id", "INTEGER", 1, 1), ("path", "TEXT", 1, 2),
         ("size_kb", "INTEGER", 1, 0),
@@ -218,22 +347,98 @@ _ANALYSIS_TABLE_INFO = {
         ("created_at", "TEXT", 1, 0),
     ),
 }
-_EXPECTED_TABLE_INFO_V7 = dict(_EXPECTED_TABLE_INFO, **_ANALYSIS_TABLE_INFO)
+# v7/v8 形态：v7 = v6 基础 + 分析两表（快照列仍为 v6 集合，v8 身份列由
+# 7→8 步骤追加）；v8 = v7 + 五张身份/轮次表 + 快照三个身份列。
+_EXPECTED_TABLE_INFO_V7 = dict(
+    _EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V6, **_ANALYSIS_TABLE_INFO
+)
+
+# v8 身份/轮次表的期望列结构（由 _migrate_v7 创建）。
+_IDENTITY_TABLE_INFO = {
+    "scan_scopes": (
+        # TEXT PRIMARY KEY 列的 notnull 与 snapshots.id 同口径报 0。
+        ("scope_id", "TEXT", 0, 1), ("kind", "TEXT", 1, 0),
+        ("container_id", "TEXT", 0, 0), ("volume_group_id", "TEXT", 0, 0),
+        ("device_id", "TEXT", 0, 0), ("mount_path", "TEXT", 0, 0),
+        ("display_name", "TEXT", 0, 0), ("created_at", "TEXT", 1, 0),
+        ("last_seen_at", "TEXT", 0, 0),
+    ),
+    "scan_plans": (
+        ("plan_id", "TEXT", 0, 1), ("scope_id", "TEXT", 1, 0),
+        ("canonical_root", "TEXT", 1, 0), ("metric_version", "INTEGER", 1, 0),
+        ("min_kb", "INTEGER", 1, 0), ("exclude_names", "TEXT", 1, 0),
+        ("created_at", "TEXT", 1, 0),
+    ),
+    "scan_rounds": (
+        ("id", "INTEGER", 0, 1), ("started_at", "TEXT", 1, 0),
+        ("finished_at", "TEXT", 0, 0), ("status", "TEXT", 1, 0),
+        ("message", "TEXT", 0, 0),
+    ),
+    "scan_round_members": (
+        ("round_id", "INTEGER", 1, 1), ("seq", "INTEGER", 1, 2),
+        ("plan_id", "TEXT", 0, 0), ("scope_id", "TEXT", 0, 0),
+        ("snapshot_id", "INTEGER", 0, 0), ("snapshot_status", "TEXT", 0, 0),
+        ("status", "TEXT", 1, 0), ("started_at", "TEXT", 0, 0),
+        ("finished_at", "TEXT", 0, 0),
+    ),
+    "container_capacity_samples": (
+        ("id", "INTEGER", 0, 1), ("container_id", "TEXT", 1, 0),
+        ("total_bytes", "INTEGER", 0, 0), ("free_bytes", "INTEGER", 0, 0),
+        ("source", "TEXT", 1, 0), ("sampled_at", "TEXT", 1, 0),
+        ("round_id", "INTEGER", 0, 0),
+    ),
+}
+_IDENTITY_TABLES = frozenset(_IDENTITY_TABLE_INFO)
+_EXPECTED_TABLE_INFO_V8 = dict(
+    _EXPECTED_TABLE_INFO, **_ANALYSIS_TABLE_INFO, **_IDENTITY_TABLE_INFO
+)
+
+# v9（ISS-190A）：agent_analyses 追加三个**可空**身份列，承载「已保存证据
+# 属于哪个 plan/轮次/计量版本」——这正是 ISS-153 身份闸门当初挡下的缺口
+# （agent_analyses 无处证明证据身份）。语义与 _SNAPSHOT_ALTER_V8 逐条同源：
+# 全部可空、旧行**不回填**（NULL 即 legacy 档，不补造真实卷 UUID）；不加
+# scope_id（可由 plan_id 经 scan_plans 推导，用户裁决不冗余）；无外键、无
+# 级联删除通道——v7 起的保留不变量（证据不随快照/轮次淘汰消失）不变。
+_AGENT_ANALYSES_ALTER_V9 = (
+    "plan_id TEXT",          # 所属规范根计划（scan_plans.plan_id）
+    "round_id INTEGER",      # 所属扫描轮次（scan_rounds.id；无外键）
+    "metric_version INTEGER",  # 计量版本（参与计划身份的显式列）
+)
+# v9 的 agent_analyses 列结构 = v7/v8 形态 + 三个可空身份列。
+# ALTER ADD COLUMN 只能追加到表尾，故期望结构同样在尾部登记。
+_AGENT_ANALYSES_IDENTITY_V9 = (
+    ("plan_id", "TEXT", 0, 0),
+    ("round_id", "INTEGER", 0, 0),
+    ("metric_version", "INTEGER", 0, 0),
+)
+_ANALYSIS_TABLE_INFO_V9 = dict(_ANALYSIS_TABLE_INFO)
+_ANALYSIS_TABLE_INFO_V9["agent_analyses"] = (
+    _ANALYSIS_TABLE_INFO["agent_analyses"] + _AGENT_ANALYSES_IDENTITY_V9
+)
+_EXPECTED_TABLE_INFO_V9 = dict(
+    _EXPECTED_TABLE_INFO, **_ANALYSIS_TABLE_INFO_V9, **_IDENTITY_TABLE_INFO
+)
 
 
 def _expected_table_info(
     version: int,
 ) -> dict[str, tuple[tuple[str, str, int, int], ...]]:
-    """指定版本下每张表的期望列结构（v7 增加分析两表，v6 增加路径分类计数）。
+    """指定版本下每张表的期望列结构。
 
-    v4/v5 保留各自结构，用于迁移链中间状态校验；v3 及更早同理。
-    v6 形态不含分析两表——它们由 6→7 迁移步骤创建。
+    v7 增加分析两表（由 6→7 步骤创建）；v8 增加身份/轮次五表与快照三个
+    身份列（由 7→8 步骤创建）；v9 只为 agent_analyses 增加三个可空身份列
+    （由 8→9 步骤追加）。v4/v5 保留各自结构，用于迁移链中间状态
+    校验；v3 及更早同理。v6/v7 共享同一快照列集。
     """
-    if version >= SCHEMA_VERSION:
+    if version >= 9:
+        return _EXPECTED_TABLE_INFO_V9
+    if version >= 8:
+        return _EXPECTED_TABLE_INFO_V8
+    if version >= 7:
         return _EXPECTED_TABLE_INFO_V7
     if version >= 6:
-        # v6 形态：v6 快照结构 + 无分析两表（它们由 6→7 步骤创建）。
-        return _EXPECTED_TABLE_INFO
+        # v6 形态：v6/v7 快照结构 + 无分析两表（它们由 6→7 步骤创建）。
+        return dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V6)
     if version >= 5:
         return dict(_EXPECTED_TABLE_INFO, snapshots=_SNAPSHOT_COLUMNS_V5)
     if version >= 4:
@@ -259,11 +464,27 @@ _EXPECTED_FOREIGN_KEYS = {
         # agent_analyses 行，避免「清生命周期顺手删证据」的隐式通道。
         ("analysis_runs", "job_id", "job_id", "NO ACTION", "NO ACTION", "NONE"),
     ),
+    # v8（ISS-153）：身份/轮次表外键。scan_round_members.snapshot_id 用
+    # SET NULL——快照淘汰时引用自动解除，成员历史行保留；不设任何指向
+    # 分析两表的外键（已保存 AI 证据无级联删除通道）。
+    "scan_scopes": (),
+    "scan_plans": (
+        ("scan_scopes", "scope_id", "scope_id", "NO ACTION", "NO ACTION", "NONE"),
+    ),
+    "scan_rounds": (),
+    "scan_round_members": (
+        ("scan_rounds", "round_id", "id", "NO ACTION", "CASCADE", "NONE"),
+        ("snapshots", "snapshot_id", "id", "NO ACTION", "SET NULL", "NONE"),
+    ),
+    "container_capacity_samples": (),
 }
 
 _EXPECTED_WITHOUT_ROWID = {"snapshots": 0, "entries": 1, "volume_stats": 0, "scan_runs": 0,
-                           "scan_run_details": 0, "analysis_runs": 0, "agent_analyses": 0}
-_EXPECTED_AUTOINCREMENT = {"snapshots", "scan_runs", "agent_analyses"}
+                           "scan_run_details": 0, "analysis_runs": 0, "agent_analyses": 0,
+                           "scan_scopes": 0, "scan_plans": 0, "scan_rounds": 0,
+                           "scan_round_members": 0, "container_capacity_samples": 0}
+_EXPECTED_AUTOINCREMENT = {"snapshots", "scan_runs", "agent_analyses",
+                           "scan_rounds", "container_capacity_samples"}
 
 _V1_TABLES = frozenset({"snapshots", "entries", "volume_stats", "scan_runs"})
 
@@ -379,6 +600,90 @@ def _create_missing_tables(conn: sqlite3.Connection) -> None:
             conn.execute(statement)
 
 
+def _busy_timeout_ms(conn: sqlite3.Connection) -> int:
+    row = conn.execute("PRAGMA busy_timeout").fetchone()
+    return int(row[0]) if row else 0
+
+
+def _existing_index_names(conn: sqlite3.Connection) -> set[str]:
+    """已存在的索引名。纯读：WAL 下读者不被写事务阻塞，因此这一步安全。"""
+    return {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+
+
+def _register_pending_index(name: str, exc: Exception) -> None:
+    """登记待补建索引并记一次诊断日志（ISS-173）。"""
+    with _PENDING_INDEX_LOCK:
+        _PENDING_INDEXES.add(name)
+        first_time = name not in _PENDING_INDEX_LOGGED
+        _PENDING_INDEX_LOGGED.add(name)
+    if first_time:
+        _LOG.warning(
+            "索引 %s 缺失但当前库写锁被占用，本次跳过补建（打开不受影响）；"
+            "解锁后的下一次连接会自动重试。原始错误：%s",
+            name, exc,
+        )
+
+
+def _clear_pending_index(name: str) -> None:
+    with _PENDING_INDEX_LOCK:
+        _PENDING_INDEXES.discard(name)
+
+
+def pending_index_builds() -> frozenset[str]:
+    """当前登记的待补建索引快照（诊断/测试用）。"""
+    with _PENDING_INDEX_LOCK:
+        return frozenset(_PENDING_INDEXES)
+
+
+def _ensure_indexes(conn: sqlite3.Connection, *, allow_defer: bool = False) -> bool:
+    """幂等补建查询用二级索引（ISS-168），返回是否全部到位。
+
+    纯增量 DDL：只加索引，不加列、不重建表、不迁移数据。已存在时
+    CREATE INDEX IF NOT EXISTS 是空操作，因此对「已是当前 schema」的
+    库可在每次打开时无副作用地调用——connect() 快路径正是这样补建
+    索引的，否则不跑迁移链的老库永远拿不到索引。
+
+    ISS-173：建索引要写锁，而调用点多为普通读连接。库被扫描写事务
+    （BEGIN IMMEDIATE）持锁时，旧实现会等满 busy_timeout（10s）再抛
+    "database is locked"，把后台补建变成用户可见的打开失败。这里改成：
+
+    1. 先做纯读的廉价检查，已存在即零成本返回（WAL 下不被写锁阻塞）；
+    2. 真要建时才把 busy_timeout 压到 ``_INDEX_PROBE_TIMEOUT_S`` 做短
+       预算试探，抢不到就立刻让步；
+    3. ``allow_defer=True``（打开路径）遇竞争则登记待办、记一次日志、
+       返回 False——打开照常成功，下次连接重试；
+       ``allow_defer=False``（写事务路径，已持写锁，竞争不可能发生）
+       则原样上抛，fail-closed。
+    """
+    missing = [
+        (name, statement)
+        for name, statement in _INDEX_DEFINITIONS
+        if name not in _existing_index_names(conn)
+    ]
+    if not missing:
+        return True
+
+    original_timeout = _busy_timeout_ms(conn)
+    try:
+        conn.execute(f"PRAGMA busy_timeout={int(_INDEX_PROBE_TIMEOUT_S * 1000)}")
+        for name, statement in missing:
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError as exc:
+                if not allow_defer or _LOCK_CONTENTION_HINT not in str(exc).lower():
+                    raise
+                _register_pending_index(name, exc)
+                return False
+            _clear_pending_index(name)
+    finally:
+        # 恢复调用方的等待预算，避免短试探污染后续用户查询。
+        conn.execute(f"PRAGMA busy_timeout={original_timeout}")
+    return True
+
+
 def _migrate_v0(conn: sqlite3.Connection) -> None:
     """把可识别的无版本开发库提升为 v1；不改写既有业务行。
 
@@ -404,9 +709,13 @@ def _migrate_v1(conn: sqlite3.Connection) -> None:
 
 
 def _snapshot_column_names(conn: sqlite3.Connection) -> set[str]:
+    return _table_column_names(conn, "snapshots")
+
+
+def _table_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {
         str(row[1])
-        for row in conn.execute('PRAGMA table_info("snapshots")')
+        for row in conn.execute(f'PRAGMA table_info({_quote_identifier(table)})')
     }
 
 
@@ -414,15 +723,21 @@ def _detect_schema_version(conn: sqlite3.Connection) -> int:
     """根据实际结构推断 schema 版本。
 
     旧启发式「scan_run_details 存在即 v2」在后续版本引入新列后失效——
-    snapshots 才是版本演化的承载列；v7 的承载结构是分析两表（snapshots
-    列在 v6/v7 间无差异），故先查表存在性：
-    analysis_runs+agent_analyses → 7；两分类列 → 6；exclude_names → 5；
-    vanished_count → 4；min_kb+collection_status → 3；
+    snapshots 才是版本演化的承载列；v9 的承载结构是 agent_analyses 的
+    三个身份列（v8 的承载结构是身份/轮次五表），v7 的承载结构是分析两表。
+    判定顺序：身份五表齐全且 agent_analyses 已带三身份列 → 9；身份五表齐全
+    → 8；analysis_runs+agent_analyses → 7；两分类列 → 6；
+    exclude_names → 5；vanished_count → 4；min_kb+collection_status → 3；
     scan_run_details 表存在 → 2；只有 v1 表 → 1；空库 → 0。
     """
     tables = _user_tables(conn)
     if not tables:
         return 0
+    if _IDENTITY_TABLES <= tables:
+        if _AGENT_ANALYSES_IDENTITY_V9_COLUMNS <= _table_column_names(
+                conn, "agent_analyses"):
+            return 9
+        return 8
     if {"analysis_runs", "agent_analyses"} <= tables:
         return 7
     if "snapshots" in tables:
@@ -529,6 +844,68 @@ def _migrate_v6(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _migrate_v7(conn: sqlite3.Connection) -> None:
+    """v7→v8（ISS-153）：卷/范围身份与扫描轮次兼容数据模型。
+
+    snapshots 追加三个可空关联列（plan_id/round_id/metric_version）+
+    五张身份/轮次新表。与既有迁移同口径：幂等——列与表已齐全（如
+    user_version 被手动回退）时只做结构校验，不重复追加；全部 DDL 在
+    迁移事务内执行，任何失败随事务回滚（含建到一半的表），既有数据
+    不受影响。旧行三个新列保持 NULL——legacy 身份不补造（不造真实卷
+    UUID，不与新整盘身份混比），新身份由后续接线在采集时点显式提供，
+    本步不迁移、不改写任何历史行。"""
+    tables = _user_tables(conn)
+    columns = _snapshot_column_names(conn)
+    if (_IDENTITY_TABLES <= tables
+            and {"plan_id", "round_id", "metric_version"} <= columns):
+        _validate_schema(conn, allow_missing=False,
+                         version=_detect_schema_version(conn))
+        return
+    _validate_schema(conn, allow_missing=False, version=7)
+    for ddl in _SNAPSHOT_ALTER_V8:
+        if ddl.split()[0] not in columns:
+            conn.execute(f"ALTER TABLE snapshots ADD COLUMN {ddl}")
+    for statement in _IDENTITY_TABLE_STATEMENTS:
+        conn.execute(statement)
+
+
+_AGENT_ANALYSES_IDENTITY_V9_COLUMNS = frozenset(
+    name for name, _type, _notnull, _pk in _AGENT_ANALYSES_IDENTITY_V9
+)
+
+
+def _migrate_v8(conn: sqlite3.Connection) -> None:
+    """v8→v9（ISS-190A）：为 agent_analyses 追加三个可空身份列。
+
+    ISS-153 的身份闸门当初挡住了 plan 档解读，理由正是「已保存证据的
+    dataset 身份只有 (root, min_kb, exclude_names) 三元组，
+    ``agent_analyses`` 表无身份列，落库证据无法证明它属于哪个计划」。
+    本步只补承载位置，**不放开闸门**：解读侧三处拒绝原样保留，plan 档
+    仍不会落库，因此既有行三列恒为 NULL。
+
+    与既有迁移同口径：幂等——列已齐全（如 user_version 被手动回退）时只
+    做结构校验，不重复追加；全部 DDL 在迁移事务内执行，任何失败随事务
+    回滚，既有数据不受影响。旧行三列保持 NULL——**legacy 证据不补造
+    身份**（不猜计划、不猜卷 UUID）。无外键、无级联删除通道，
+    ``agent_analyses → analysis_runs`` 的 NO ACTION 不变。
+    """
+    tables = _user_tables(conn)
+    if "agent_analyses" not in tables:
+        # v8 结构必须已有分析两表（v6→v7 创建）；缺失时按 v8 校验暴露，
+        # 不在 v9 步骤里补建 v7 的表——保持每步只做本步的加法。
+        _validate_schema(conn, allow_missing=False, version=8)
+        return
+    columns = _table_column_names(conn, "agent_analyses")
+    if _AGENT_ANALYSES_IDENTITY_V9_COLUMNS <= columns:
+        _validate_schema(conn, allow_missing=False,
+                         version=_detect_schema_version(conn))
+        return
+    _validate_schema(conn, allow_missing=False, version=8)
+    for ddl in _AGENT_ANALYSES_ALTER_V9:
+        if ddl.split()[0] not in columns:
+            conn.execute(f"ALTER TABLE agent_analyses ADD COLUMN {ddl}")
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     0: _migrate_v0,
     1: _migrate_v1,
@@ -537,6 +914,8 @@ _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     4: _migrate_v4,
     5: _migrate_v5,
     6: _migrate_v6,
+    7: _migrate_v7,
+    8: _migrate_v8,
 }
 
 
@@ -610,6 +989,8 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
             )
         if version == SCHEMA_VERSION:
             _validate_schema(conn, allow_missing=False)
+            # 打开路径同快路径：抢不到写锁就让步登记待办，不让索引把打开搞失败。
+            _ensure_indexes(conn, allow_defer=True)
         elif version < SCHEMA_VERSION:
             _check_integrity(conn, label="数据库")
             tables = _user_tables(conn)
@@ -634,6 +1015,10 @@ def _prepare_database(path: Path) -> sqlite3.Connection:
                     # 结构和版本是同一迁移单元：必须在 commit 前验证，
                     # 否则失败会留下“标成 v1 但缺表”且不可重试的半成品。
                     _validate_schema(conn, allow_missing=False)
+                    # 纯索引在同一事务内幂等补建：新建库与旧库升级两条
+                    # 路径到达完全相同的最终结构（ISS-168）。此处已持写锁，
+                    # 不存在写锁竞争，故 strict（allow_defer=False）fail-closed。
+                    _ensure_indexes(conn)
                 elif locked_version != SCHEMA_VERSION:
                     raise UnsupportedSchemaVersion(
                         f"迁移竞争后 schema={locked_version}，当前支持 {SCHEMA_VERSION}"
@@ -675,6 +1060,12 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
                 )
             if version == SCHEMA_VERSION:
                 _validate_schema(current, allow_missing=False)
+                # 已是当前 schema 也不跑迁移链，老库仍可能缺 ISS-168 的
+                # 纯索引。已存在时先做纯读廉价检查即零成本返回；真要
+                # 建时只给 250ms 抢锁预算，抢不到就跳过并登记待办
+                # （ISS-173）——绝不让后台补建索引把打开变成 10s 等待
+                # 后的失败；解锁后的下一次连接会自动重试。
+                _ensure_indexes(current, allow_defer=True)
                 current.execute("PRAGMA journal_mode=WAL")
                 current.execute("PRAGMA foreign_keys=ON")
                 return current

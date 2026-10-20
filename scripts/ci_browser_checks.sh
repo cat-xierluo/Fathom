@@ -55,7 +55,7 @@
 # ISS-149 树形套件 +14：trend 锚定窗口/缺测 null/排除隔离/等价表格
 # 键盘读数/真实悬停缺测标注/a-b 迟到响应不恢复旧曲线（60 → 74）。
 # ISS-159 新增分布页显式快照绑定回归（verify_browse_snapshot_frontend，
-# EXPECTED_BROWSE_SNAPSHOT_PASSED 默认 33）：真实 serve + 真实 Chromium，
+# EXPECTED_BROWSE_SNAPSHOT_PASSED 默认 35）：真实 serve + 真实 Chromium，
 # HTTP 层旧行为形态/历史实点/次级差分/404 语义 + 页面层快照选择/结构
 # 节点/HTML 转义/单时点详情/恢复/分页/三视口。
 # ISS-160 新增跨页上下文/恢复/重扫核对闭环回归
@@ -180,7 +180,7 @@ assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
 # ISS-189：Agent 常驻入口、同口径选点、共享生命周期与跨区间有界历史。
 # 真实 Chromium + 模拟 HTTP backend；真实 helper/原生入口另行验收。
 node scripts/verify_agent_frontend.cjs | tee "$analysis_out"
-assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-56}" "agent frontend"
+assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-58}" "agent frontend"
 
 # ISS-148：树形同级变化回归（真实 FastAPI 隔离入口 + 生产页面实点）。
 # 53 项——三层展开/聚焦/返回、父 0 子抵消、缺父结构节点、单侧未记录、
@@ -207,7 +207,7 @@ assert_result_json "$tree_out" "$expected_dir_bigfiles" "directory bigfiles fron
 # 溢出）。失败自身非零退出，pipefail 直通判红；计数漂移由
 # EXPECTED_BROWSE_SNAPSHOT_PASSED 兜底（同树形口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_browse_snapshot_frontend.cjs | tee "$tree_out"
-expected_browse_snapshot="${EXPECTED_BROWSE_SNAPSHOT_PASSED:-33}"
+expected_browse_snapshot="${EXPECTED_BROWSE_SNAPSHOT_PASSED:-35}"
 assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot frontend"
 
 # ISS-191 当前扫描对象只读呈现：93项真实隔离serve/Chromium回归。
@@ -224,7 +224,7 @@ assert_result_json "$tree_out" "$expected_scope_settings" "scope settings fronte
 # stale、差额 null 不可比、不出现数值）。失败自身非零退出，pipefail 直通判
 # 红；计数漂移由 EXPECTED_STORAGE_OVERVIEW_PASSED 兜底（同树形口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_storage_overview_frontend.cjs | tee "$tree_out"
-expected_storage_overview="${EXPECTED_STORAGE_OVERVIEW_PASSED:-67}"
+expected_storage_overview="${EXPECTED_STORAGE_OVERVIEW_PASSED:-71}"
 assert_result_json "$tree_out" "$expected_storage_overview" "storage overview frontend"
 
 # ISS-188：合法 b1 预热后的 CTA 与迟到目录响应、较新改选/第二 CTA、

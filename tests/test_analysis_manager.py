@@ -404,6 +404,16 @@ class TestPreviewInvalidation:
                               "key-rt")
         assert ei.value.reason_code == "preview_stale"
 
+    def test_compatible_upgrade_after_preview_requires_new_preview(self, ok_setup, monkeypatch):
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        upgraded = dataclasses.replace(preview.runtime, version="2.1.303")
+        monkeypatch.setattr(am, "resolve_runtime", lambda *args: upgraded)
+        with pytest.raises(am.AnalysisError) as ei:
+            manager.start_job(preview.preview_id, preview.request_digest, "upgrade-after-preview")
+        assert ei.value.reason_code == "preview_stale"
+        assert not agent_rows()
+
     def test_runtime_removed_after_preview_rejected(self, ok_setup):
         """已选路径被移除 → 复核失败，绝不静默换另一家。"""
         manager = make_manager()

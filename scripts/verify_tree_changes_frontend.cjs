@@ -388,7 +388,7 @@ async function main() {
       JSON.stringify(detail).slice(0, 220));
     record("chain-detail-latest-labeled",
       detail.trendTitle.includes("#2 锚定同数据集") && detail.latest.includes("锚定 #2") &&
-        detail.current.includes("最新快照"),
+        detail.current.includes("所选快照"),
       `latest=${detail.latest} current=${detail.current}`);
     await page.screenshot({ path: path.join(SHOTS, "chain-detail-open.png") });
 
@@ -650,7 +650,7 @@ async function main() {
     await page.click('#changes-body tr[data-path="/synthetic/hist/x"] .tree-name');
     await waitUntil(async () => page.evaluate(() =>
       !document.getElementById("changes-detail").hidden &&
-      document.querySelector("#detail-current-info")?.textContent.includes("最新快照")), 10000, "hist 详情");
+      document.querySelector("#detail-current-info")?.textContent.includes("所选快照")), 10000, "hist 详情");
     const histDetail = await page.evaluate(() => ({
       stats: document.querySelector("[data-test='tree-detail-range-stats']").textContent,
       current: document.getElementById("detail-current-info").textContent,
@@ -665,7 +665,7 @@ async function main() {
     // 不代表所选旧区间（最新数据集为 weird，路径越界 400）
     record("hist-detail-latest-labeled-separately",
       histDetail.latest.includes("锚定 #6") && histDetail.latest.includes("/synthetic/hist") &&
-        histDetail.current.includes("最新快照") && histDetail.current.includes("不代表所选"),
+        histDetail.current.includes("所选快照") && histDetail.current.includes("6.8 MB") && !histDetail.current.includes("路径必须"),
       `current=${histDetail.current.slice(0, 80)} latest=${histDetail.latest}`);
     await page.keyboard.press("Escape");
 

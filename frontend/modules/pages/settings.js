@@ -1156,6 +1156,9 @@ const ANALYSIS_AVAIL_BADGES = {
  * SCAN_STATUS_LABELS 同口径）。 */
 const ANALYSIS_REASON_LABELS = {
   verified_version: "已验证版本",
+  compatible_capabilities: "调用参数兼容",
+  required_capabilities_missing: "缺少必要调用参数",
+  capability_probe_failed: "调用参数检测失败，可重试",
   not_found: "本机未找到该命令行",
   version_probe_failed: "版本探测失败（启动后无有效输出）",
   version_unrecognized: "版本号未识别（可能未经测试）",
@@ -1268,7 +1271,7 @@ function renderAnalysisRuntimes(body, cfgAnalysis, detectResult, detecting) {
           ${active ? `<span class="quality-chip ok" data-test="analysis-active-badge">当前使用</span>` : ""}
           ${versionText ? `<span class="hint">${versionText}</span>` : ""}
         </div>
-        ${reasonText ? `<p class="analysis-reason" data-test="analysis-reason">${escapeHtml(reasonText)}${info.detail && info.availability !== "ready" ? `：${escapeHtml(info.detail)}` : ""}</p>` : ""}
+        ${reasonText ? `<p class="analysis-reason" data-test="analysis-reason">${escapeHtml(reasonText)}${info.detail && (info.availability !== "ready" || info.reason_code === "compatible_capabilities") ? `：${escapeHtml(info.detail)}` : ""}</p>` : ""}
         ${selectable && capNote ? `<p class="analysis-reason" data-test="analysis-cap-note">${escapeHtml(capNote)}</p>` : ""}
         ${drift ? `<p class="analysis-reason cfg-error">检测到的入口与已保存路径不同；重新选择会更新保存的引擎。</p>` : ""}
         ${selectable ? `

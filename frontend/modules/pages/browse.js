@@ -111,7 +111,7 @@ async function loadSnapshotPicker() {
   snapshotCache = snaps;
   sel.disabled = !snaps.length;
   sel.replaceChildren(...snaps.map((s) =>
-    new Option(`#${s.id} ${String(s.created_at || "").slice(0, 16).replace("T", " ")}`,
+    new Option(`#${s.id} ${String(s.created_at || "").slice(0, 16).replace("T", " ")} · ${s.root || "未知范围"}`,
                String(s.id))));
   // 恢复所选；所选已不在列表（被保留策略淘汰）时回落最新并如实提示。
   const ids = snaps.map((s) => String(s.id));
@@ -119,6 +119,7 @@ async function loadSnapshotPicker() {
   const fellBack = Boolean(snapshotId()) && !ids.includes(wanted);
   sel.value = ids.includes(wanted) ? wanted : (ids[0] || "");
   state.browseSnapshotId = sel.value ? Number(sel.value) : null;
+  alignBrowsePath();
   const qualityEl = document.getElementById("browse-snap-quality");
   if (qualityEl) {
     const snap = snaps.find((s) => String(s.id) === sel.value);
@@ -128,9 +129,19 @@ async function loadSnapshotPicker() {
   }
 }
 
+function alignBrowsePath() {
+  const snap = snapshotCache.find(s => String(s.id) === String(snapshotId()));
+  const root = snap?.root?.replace(/\/+$/, "") || "/";
+  const path = state.browsePath;
+  if (path && root !== "/" && path !== root && !path.startsWith(root + "/")) {
+    state.browsePath = null;
+  }
+}
+
 function onSnapshotChange() {
   const sel = document.getElementById("browse-snap");
   state.browseSnapshotId = sel && sel.value ? Number(sel.value) : null;
+  alignBrowsePath();
   const qualityEl = document.getElementById("browse-snap-quality");
   if (qualityEl) {
     const snap = snapshotCache.find((s) => String(s.id) === sel.value);

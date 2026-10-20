@@ -1,5 +1,5 @@
 /* Agent 中心：选已保存快照区间、纯读跨区间任务历史；配置仍由设置页负责。 */
-import { fetchJSON, beginRequest, invalidateRequest } from '../request.js';
+import { fetchJSON, apiPost, beginRequest, invalidateRequest } from '../request.js';
 import { escapeHtml } from '../format.js';
 import { datasetKey } from '../dataset.js';
 import { createAnalysisPanel } from '../components/analysis-panel.js';
@@ -106,7 +106,7 @@ async function load() {
     if (!request.current()) return;
     const runtime = cfg.analysis?.runtime;
     const runtimeLabel = typeof runtime === 'string' ? runtime : runtime?.display_name || runtime?.id || '尚未选择';
-    el('agent-engine-summary').textContent = `${cfg.analysis?.enabled ? '变化解读已启用' : '变化解读未启用'} · 引擎 ${runtimeLabel}${runtime?.version ? ` v${runtime.version}` : ''}。启用与配置在设置中管理；关闭引擎仍可查看保留的任务和原文。`;
+    el('agent-engine-summary').textContent = `${cfg.analysis?.enabled ? '变化解读已启用' : '变化解读未启用'} · 引擎 ${runtimeLabel}${runtime?.version ? ` v${runtime.version}` : ''}。以上为保存的配置；可检测当前版本。关闭引擎仍可查看保留的任务和原文。`;
     snapshots = [...data].sort((a,b)=>b.created_at.localeCompare(a.created_at) || b.id-a.id);
     let persisted; try { persisted = JSON.parse(sessionStorage.getItem('fathom-agent-range') || 'null'); } catch (_) {}
     fillSelectors();
@@ -120,9 +120,38 @@ async function load() {
     await loadHistory({restore:true});
   } catch (e) { if (request.current()) el('agent-range-status').textContent = `Agent 页面读取失败：${e.message}；可点击刷新重试。`; }
 }
+async function detectSelectedRuntime() {
+  const request = beginRequest('agentRuntime');
+  const button = el('agent-detect');
+  button.disabled = true;
+  el('agent-runtime-status').textContent = '正在检测当前命令行版本与调用参数…';
+  try {
+    const cfg = await fetchJSON('/api/config');
+    if (!request.current()) return;
+    const selected = cfg.analysis?.runtime;
+    const id = typeof selected === 'string' ? selected : selected?.id;
+    if (!id) { el('agent-runtime-status').textContent = '尚未选择引擎，请前往设置配置。'; return; }
+    const response = await apiPost('/api/analysis/runtimes/detect', {runtime_id:id});
+    const data = await response.json();
+    if (!request.current()) return;
+    const info = data.runtimes?.[id];
+    if (!info) throw new Error('未返回所选引擎的检测结果');
+    const label = `${info.display_name || id}${info.version ? ` v${info.version}` : ''}`;
+    const moved = selected?.executable && info.executable && info.executable !== selected.executable;
+    el('agent-runtime-status').textContent = moved
+      ? `${label}：检测到的入口与已保存入口不同，请去设置重新选择。`
+      : info.availability === 'ready'
+        ? `${label} · 调用参数可用。登录与分析结果将在执行时检查。`
+        : `${label} · ${info.detail || info.reason_code || '暂不可用'}；可重新检测。`;
+  } catch (e) {
+    if (request.current()) el('agent-runtime-status').textContent = `检测失败：${e.message}；可重试。`;
+  } finally { if (request.current()) button.disabled = false; }
+}
+
 export const agentPage = {
   id:'agent',load,
   init() {
+    el('agent-detect').addEventListener('click', detectSelectedRuntime);
     el('agent-settings').addEventListener('click',()=>{window.__fathomSettingsSectionPending='analysis';location.hash='#/settings';});
     el('agent-refresh').addEventListener('click',()=>load());
     el('agent-history-refresh').addEventListener('click',()=>loadHistory());
@@ -139,5 +168,5 @@ export const agentPage = {
       updateRange(); renderHistory(Number(el('agent-history-count').textContent.match(/\d+/)?.[0] || jobs.length));
     });
   },
-  leave(){ ['agentPage','agentHistory'].forEach(invalidateRequest);panel.leave(); },
+  leave(){ ['agentPage','agentHistory','agentRuntime'].forEach(invalidateRequest);el('agent-detect').disabled=false;el('agent-runtime-status').textContent='';panel.leave(); },
 };

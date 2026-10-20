@@ -734,7 +734,7 @@ function createFixture() {
       return json(res, 200, {
         fda: {
           status: fdaStatus,
-          probe_path: "/fixture/home/Library/Containers",
+          probe_path: "/fixture/user/Library/Containers",
           entries: fdaStatus === "granted" ? 911 : null,
           ...(fdaStatus === "unknown" ? { detail: "NotFoundError" } : {}),
         },
@@ -3029,6 +3029,8 @@ async function main() {
     // 1) 三类缺口并存：denied=6 / vanished=4 / excluded=3 各自可解释文案
     await setMode("partial-all");
     await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-details'] > summary");
+    await page.click("[data-test='coverage-details'] > summary");
     await page.waitForSelector("[data-test='coverage-classes']");
     const covAll = await page.evaluate(() => ({
       classes: document.querySelector("[data-test='coverage-classes']")?.textContent || "",
@@ -3055,6 +3057,8 @@ async function main() {
     // 2) 仅 vanished（ISS-066 字段已暴露，denied=0）：只见未确认 chip
     await setMode("partial-vanished");
     await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-details'] > summary");
+    await page.click("[data-test='coverage-details'] > summary");
     await page.waitForSelector("[data-test='coverage-classes']");
     const covVanished = await page.evaluate(() =>
       document.querySelector("[data-test='coverage-classes']")?.textContent || "");
@@ -3070,6 +3074,8 @@ async function main() {
       vanishedQuality.slice(0, 120));
     await setMode("partial-vanished-inaccessible");
     await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-details'] > summary");
+    await page.click("[data-test='coverage-details'] > summary");
     await page.waitForSelector("[data-test='coverage-classes']");
     const permissionAmbiguousOverview = await page.evaluate(() => ({
       quality: document.getElementById("overview-quality")?.textContent || "",
@@ -3099,6 +3105,8 @@ async function main() {
 
     await setMode("partial-classified");
     await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-details'] > summary");
+    await page.click("[data-test='coverage-details'] > summary");
     await page.waitForSelector("[data-test='coverage-classes']");
     const classifiedOverview = await page.evaluate(() => ({
       quality: document.getElementById("overview-quality")?.textContent || "",
@@ -3130,6 +3138,8 @@ async function main() {
     // 3) 仅 excluded（exclude_names 数组）：只见排除掩码 chip
     await setMode("partial-excluded");
     await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-details'] > summary");
+    await page.click("[data-test='coverage-details'] > summary");
     await page.waitForSelector("[data-test='coverage-classes']");
     const covExcluded = await page.evaluate(() =>
       document.querySelector("[data-test='coverage-classes']")?.textContent || "");
@@ -3143,6 +3153,8 @@ async function main() {
     //    都不冒充这些计数。
     await setMode("partial-no-fields");
     await openPage("#/overview");
+    await page.waitForSelector("[data-test='coverage-details'] > summary");
+    await page.click("[data-test='coverage-details'] > summary");
     await page.waitForSelector("[data-test='coverage-classes']");
     const covDefended = await page.evaluate(() => ({
       classes: document.querySelector("[data-test='coverage-classes']")?.textContent || "",

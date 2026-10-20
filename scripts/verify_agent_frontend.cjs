@@ -169,6 +169,11 @@ async function main(){
   snaps=[...SNAPSHOTS];fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='enabled';
   await page.click('.nav-item[data-page="agent"]');await wait('#agent-b option');await choose('agent-a',1);await wait('#agent-analysis-body [data-test="analysis-state-idle"]');
   record('agent.engine-object-summary', (await page.locator('#agent-engine-summary').textContent()).includes('claude-code v2.1.237') && !(await page.locator('#agent-engine-summary').textContent()).includes('[object Object]') && !(await page.locator('#agent-engine-summary').textContent()).includes('/fixture/bin'));
+  const detectsBefore = fixture.state.detects;
+  await page.click('#agent-detect');
+  await page.waitForFunction(() => document.querySelector('#agent-runtime-status').textContent.includes('调用参数可用'));
+  record('agent.recheck-selected-runtime', fixture.state.detects === detectsBefore + 1 && (await page.locator('#agent-runtime-status').textContent()).includes('2.1.237'));
+  record('agent.recheck-keeps-range', await page.inputValue('#agent-a') === '1' && await page.inputValue('#agent-b') === '3');
   record('agent.valid-range-ready',(await page.locator('#agent-range-status').textContent()).includes('#1 → #3'));
   await page.reload();await wait('#agent-analysis-body [data-test="analysis-state-idle"]');record('agent.selected-range-restored',await page.inputValue('#agent-a')==='1'&&await page.inputValue('#agent-b')==='3');
   await page.click('#agent-analysis-body [data-test="analysis-preview-btn"]');await wait('#agent-analysis-body [data-test="analysis-state-preview"]');

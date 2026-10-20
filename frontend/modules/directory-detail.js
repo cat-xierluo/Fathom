@@ -126,7 +126,7 @@ export function createDirectoryDetail({
         <div id="detail-trend-table-host" hidden></div>
       </div>
       <div class="detail-section">
-        <h3>当前所在（最新快照）</h3>
+        <h3>目录数据（所选对比快照）</h3>
         <div id="detail-current-info" class="hint">加载中…</div>
       </div>
       ${bigfilesSectionHtml(`非 #${escapeHtml(range.a)} → #${escapeHtml(range.b)} 历史区间`)}
@@ -453,16 +453,16 @@ export function createDirectoryDetail({
     if (!target) return;
     const request = beginRequest("detailBrowse");
     try {
-      const r = await fetchJSON(`/api/browse?path=${encodeURIComponent(path)}`);
+      const r = await fetchJSON(`/api/browse?path=${encodeURIComponent(path)}&snapshot_id=${encodeURIComponent(rangeOf().b)}`);
       if (!request.current() || keyOf(rangeOf(), path) !== activeKey) return;
       const childN = (r.children || []).length;
       const trendN = (r.trend || []).length;
-      const at = r.snapshot_at ? String(r.snapshot_at).slice(0, 16).replace("T", " ") : "";
-      target.innerHTML = `<span>当前大小：<strong>${escapeHtml(fmtKB(r.size_kb || 0))}</strong></span>` +
+      const at = r.snapshot?.created_at ? String(r.snapshot.created_at).slice(0, 16).replace("T", " ") : "";
+      target.innerHTML = `<span>所选快照大小：<strong>${r.size_kb == null ? "未直接记录" : escapeHtml(fmtKB(r.size_kb))}</strong></span>` +
         (r.delta_kb != null
-          ? `<span class="num">较上快照：${escapeHtml(fmtDelta(r.delta_kb))}</span>` : "") +
+          ? `<span class="num">较同数据集前快照：${escapeHtml(fmtDelta(r.delta_kb))}</span>` : "") +
         `<span class="hint">直属子目录 ${childN} 个；该路径同数据集历史 ${trendN} 个点</span>` +
-        (at ? `<span class="hint" data-test="tree-detail-snapshot-at">最新快照：${escapeHtml(at)}</span>` : "");
+        (at ? `<span class="hint" data-test="tree-detail-snapshot-at">所选快照：${escapeHtml(at)}</span>` : "");
     } catch (e) {
       if (!request.current() || keyOf(rangeOf(), path) !== activeKey) return;
       const host = hostEl();
@@ -474,10 +474,9 @@ export function createDirectoryDetail({
       } else if (e.status === 0) {
         el.innerHTML = `<span class="hint">无法连接本地服务。</span>`;
       } else if (e.status === 400) {
-        // browse 恒绑定最新快照的数据集：所选 a/b 不是最新数据集时路径越界
-        // 属预期——如实说明口径差异，不冒充「当前所在」可用。
+        // 错配路径如实报错，不退回全局最新卷。
         el.innerHTML = `<span class="hint">当前所在不可用：${escapeHtml(e.message)}；` +
-          `本区绑定最新快照，不代表所选 #${escapeHtml(rangeOf().a)} → #${escapeHtml(rangeOf().b)} 区间。</span>`;
+          `本区绑定所选对比快照 #${escapeHtml(rangeOf().b)}。</span>`;
       } else {
         el.innerHTML = `<span class="hint">当前所在加载失败（HTTP ${e.status || "?"}）</span>`;
       }

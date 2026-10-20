@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,14 @@ def _isolated_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", runtime_dir / "data" / "fathom.db")
     monkeypatch.setattr(config, "REPORTS_DIR", reports_dir)
     monkeypatch.setattr(config, "LOGS_DIR", logs_dir)
+
+    # Integration calls omit today; freeze that production clock too. Otherwise
+    # fixtures dated September expire as the real calendar advances.
+    class FixedDate(dt.date):
+        @classmethod
+        def today(cls):
+            return cls(FROZEN_TODAY.year, FROZEN_TODAY.month, FROZEN_TODAY.day)
+    monkeypatch.setattr(reports, "dt", SimpleNamespace(date=FixedDate, timedelta=dt.timedelta))
 
 
 def _touch(path: Path, content: str = "synthetic") -> None:

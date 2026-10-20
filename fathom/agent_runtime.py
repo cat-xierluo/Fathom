@@ -8,8 +8,8 @@
 - 探测只在显式触发时运行：先受限已知安装位置与进程 PATH 枚举，再按需做
   有预算的登录 shell ``command -v`` 探测；禁止 eval 探测结果、自动安装与
   全盘遍历。预算：最多 16 个候选、单命令 3 秒、整个检测 20 秒、单命令
-  输出 16 KiB。覆盖空格路径、符号链接、失效 wrapper、非执行文件、重名
-  二进制、超时与不认识的版本；未知版本默认 unsupported。
+  输出 64 KiB。覆盖空格路径、符号链接、失效 wrapper、非执行文件、重名
+  二进制、超时与不认识的版本；已识别的新版本按适配器所需参数探测兼容。
 - 公共 runner：shell=False 参数数组；载荷优先 stdin；``start_new_session``
   独立进程组；超时/取消 SIGTERM → 宽限期 → SIGKILL，终态前 reap；
   stdout/stderr 分离且边读边限额；UTF-8 严格解码（坏字节即失败，不静默
@@ -105,7 +105,7 @@ TERM_GRACE_S = 3.0
 PROBE_MAX_CANDIDATES = 16
 PROBE_PER_COMMAND_TIMEOUT_S = 3.0
 PROBE_TOTAL_TIMEOUT_S = 20.0
-PROBE_PER_COMMAND_OUTPUT_CAP = 16 * 1024
+PROBE_PER_COMMAND_OUTPUT_CAP = 64 * 1024
 
 
 # --------------------------------------------------------------------------
@@ -161,7 +161,7 @@ class CandidateMeta:
     ``capability_cap``/``cap_reason_code`` 是该家能开放的天花板：即使本机
     安装且版本可读，也不得高于上限开放。当前上限 READY：Claude Code
     （严格禁工具，DEC-029 门）与 Codex CLI（OS 级 read-only 沙箱，
-    DEC-030 防破坏门），均仅限 ``verified_versions`` 内的版本。
+    DEC-030 防破坏门），历史实测版本直接可用，其余已识别版本检查所需 CLI 参数。
     """
 
     id: str
@@ -177,6 +177,8 @@ class CandidateMeta:
     cap_reason_code: str = "unsupported_by_contract"
     cap_reason: str = ""
     verified_versions: frozenset[str] = frozenset()
+    help_args: tuple[str, ...] = ("--help",)
+    required_capabilities: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
     #: ready 定级时 probe detail 的能力门句式（各家门的语义不同，如实分写）。
     gate_summary: str = "禁工具/隔离/认证形态/进程回收均有实证"
@@ -301,6 +303,9 @@ CANDIDATES: dict[str, CandidateMeta] = {
         capability_cap=_R,
         cap_reason_code="verified_version",
         verified_versions=frozenset({"2.1.237"}),
+        required_capabilities=("--bare", "--disable-slash-commands", "--disallowedTools",
+                               "--strict-mcp-config", "--no-session-persistence",
+                               "--output-format", "--print"),
         notes=(
             "唯一 ready 家：--bare + --disable-slash-commands + --disallowedTools * + "
             "--strict-mcp-config + --no-session-persistence + --output-format json",
@@ -385,6 +390,10 @@ CANDIDATES: dict[str, CandidateMeta] = {
             "裁决（2026-09-30）允许的能力，在设置页如实披露，不作失败条件"
         ),
         verified_versions=frozenset({"0.147.0"}),
+        help_args=("exec", "--help"),
+        required_capabilities=("--json", "--ephemeral", "--ignore-user-config",
+                               "--ignore-rules", "--skip-git-repo-check", "--sandbox",
+                               "--cd", "--config", "read-only"),
         gate_summary=(
             "OS 级 read-only 沙箱防破坏（写/删/破坏命令负例有实证）+ 隔离/"
             "不落盘/进程回收实证"
@@ -434,6 +443,9 @@ CANDIDATES: dict[str, CandidateMeta] = {
             "REPORT.md，2026-09-30；读取任意本机文件与联网是用户裁决允许的能力"
         ),
         verified_versions=frozenset({"0.21.5"}),
+        help_args=("chat", "--help"),
+        required_capabilities=("--query-file", "--format", "--run-budget", "-t",
+                               "--ignore-user-config", "--ignore-rules", "--source"),
         gate_summary=(
             "调用级只读工具集收敛防破坏（写/删/破坏命令负例有实证）+ "
             "隔离/进程回收实证"
@@ -956,6 +968,38 @@ def _version_probe(
             ),
             None,
         )
+    if version not in meta.verified_versions and meta.required_capabilities:
+        # No model call or user data: re-check the actual executable on every probe.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return RuntimeInfo(availability=Availability.BROKEN,
+                reason_code="probe_budget_exhausted", detail="兼容性检测预算用尽，请重试",
+                version=version, **base), None
+        help_cwd = Path(tempfile.mkdtemp(prefix="fathom-capabilities-"))
+        try:
+            help_result = runner.run(Invocation(argv=[path, *meta.help_args],
+                cwd=help_cwd, env=_probe_env(), stdin_bytes=None),
+                timeout_s=min(budget.per_command_timeout_s, remaining))
+        finally:
+            shutil.rmtree(help_cwd, ignore_errors=True)
+        if help_result.outcome is not RunOutcome.OK or help_result.exit_code != 0:
+            return RuntimeInfo(availability=Availability.BROKEN,
+                reason_code="capability_probe_failed",
+                detail=f"{path} 版本 {version}：调用参数检测失败（{help_result.outcome.value}）；可重新检测",
+                version=version, **base), None
+        help_text = help_result.stdout_text + "\n" + help_result.stderr_text
+        missing = [flag for flag in meta.required_capabilities
+                   if not re.search(r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", help_text)]
+        if missing:
+            return RuntimeInfo(availability=Availability.UNSUPPORTED,
+                reason_code="required_capabilities_missing",
+                detail=f"{path} 版本 {version}：帮助中未找到本适配器必需参数：{', '.join(missing)}",
+                version=version, notes=meta.notes, **base), None
+        return RuntimeInfo(availability=Availability.READY,
+            reason_code="compatible_capabilities",
+            detail=f"{path} 版本 {version}：所需调用参数可用；登录与实际分析结果在运行时检查",
+            version=version, notes=meta.notes + ("该版本未逐版实测；已检查参数兼容，沿用受控调用与结果校验。",),
+            **base), None
     if version not in meta.verified_versions:
         return (
             RuntimeInfo(
@@ -1017,7 +1061,7 @@ def _login_shell_lookup(
 ) -> str | None:
     """按需的登录 shell 探测：``<shell> -lc 'command -v <binary_name>'``。
 
-    登录 shell 会执行用户启动脚本，因此单独受预算约束（3 秒/16 KiB），
+    登录 shell 会执行用户启动脚本，因此单独受预算约束（3 秒/64 KiB），
     失败如实记录且不放大自动探测范围；输出只接受单行绝对路径，
     绝不 eval。
     """
@@ -1077,7 +1121,7 @@ def detect_runtime(
     budget = budget or ProbeBudget()
     runner = runner or AgentCliRunner(
         liveness_watch=False,
-        # 方案 §3.1 探测预算：单命令输出 16 KiB，同时约束 stdout 与 stderr
+        # 方案 §3.1 探测预算：单命令输出 64 KiB，同时约束 stdout 与 stderr
         # （登录 shell 探测同样经此 runner，受同一上限）。产品运行合同的
         # 256 KiB/64 KiB 上限只用于探测之外的受控调用，不在这里兜底。
         stdout_max_bytes=budget.per_command_output_cap,

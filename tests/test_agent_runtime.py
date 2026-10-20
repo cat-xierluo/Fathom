@@ -946,8 +946,8 @@ def test_get_adapter_rejects_unsupported(tmp_path):
 
 
 def test_build_minimal_env_whitelist(monkeypatch):
-    env = ar.build_minimal_env(path="/usr/bin:/bin", home="/Users/x")
-    assert env == {"PATH": "/usr/bin:/bin", "HOME": "/Users/x"}
+    env = ar.build_minimal_env(path="/usr/bin:/bin", home="/synthetic-home")
+    assert env == {"PATH": "/usr/bin:/bin", "HOME": "/synthetic-home"}
     monkeypatch.delenv("HOME", raising=False)
     with pytest.raises(ar.EnvError):
         ar.build_minimal_env(path="/usr/bin:/bin")
@@ -1293,7 +1293,7 @@ def test_probe_codex_ready_flip_on_verified_version(tmp_path):
 
 
 def test_probe_codex_unverified_version_still_unsupported(tmp_path):
-    """未知版本锚定（035A 口径）：0.158.0-alpha 不在已验证集合，不开放。"""
+    """新版本只返回版本行而未提供必要参数时，按缺少能力说明拒绝。"""
     script = version_script(tmp_path, "codex", "codex-cli 0.158.0")
     info = ar.detect_runtime(
         ar.get_candidate("codex-cli"),
@@ -1301,7 +1301,7 @@ def test_probe_codex_unverified_version_still_unsupported(tmp_path):
         login_shell_cmd=["/bin/echo"],
     )
     assert info.availability is ar.Availability.UNSUPPORTED
-    assert info.reason_code == "version_unverified"
+    assert info.reason_code == "required_capabilities_missing"
 
 
 # ==========================================================================
@@ -1536,7 +1536,7 @@ def test_probe_hermes_ready_flip_on_verified_version(tmp_path):
 
 
 def test_probe_hermes_unverified_version_still_unsupported(tmp_path):
-    """未知版本锚定（035A 口径）：0.22.0 不在已验证集合，不开放。"""
+    """新版本未提供适配器所需参数，不能只凭版本行宣称兼容。"""
     script = version_script(
         tmp_path, "hermes", "Hermes Agent v0.22.0+1234.abcdef (2026.10.1)")
     info = ar.detect_runtime(
@@ -1545,4 +1545,4 @@ def test_probe_hermes_unverified_version_still_unsupported(tmp_path):
         login_shell_cmd=["/bin/echo"],
     )
     assert info.availability is ar.Availability.UNSUPPORTED
-    assert info.reason_code == "version_unverified"
+    assert info.reason_code == "required_capabilities_missing"

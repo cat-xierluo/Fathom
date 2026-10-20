@@ -300,6 +300,14 @@ async function main() {
     record("ui-sunburst-context-latest", true, `#s${s3}`);
 
     // ---------- A1+A2+A5+A6：选最早快照（无前驱 → 差分未知） ----------
+    // Switching to another volume must discard the previous volume's path.
+    const switched = page.waitForResponse(r => r.url().includes('/api/browse?') && r.url().includes(`snapshot_id=${info.decoy}`));
+    await page.selectOption("[data-test='browse-snapshot-select']", String(info.decoy));
+    const switchResponse = await switched;
+    record("ui-cross-root-switch-http-ok", switchResponse.status() === 200, `status=${switchResponse.status()}`);
+    await page.waitForFunction(() => !document.querySelector('#tbl-browse').textContent.includes('加载中'));
+    const crossText = await page.locator('#tbl-browse').innerText();
+    record("ui-cross-root-switch-does-not-reuse-old-path", !crossText.includes('路径必须在数据集根'), crossText);
     await page.selectOption("[data-test='browse-snapshot-select']", String(s1));
     await page.waitForFunction((sid) =>
       document.querySelector("[data-test='sunburst-context']").textContent.includes(`#${sid}`),

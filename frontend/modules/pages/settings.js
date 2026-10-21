@@ -1161,6 +1161,7 @@ const ANALYSIS_REASON_LABELS = {
   capability_probe_failed: "调用参数检测失败，可重试",
   not_found: "本机未找到该命令行",
   version_probe_failed: "版本探测失败（启动后无有效输出）",
+  version_probe_transient: "版本探测暂时超时，可重试",
   version_unrecognized: "版本号未识别（可能未经测试）",
   version_unverified: "版本不在已验证清单内",
   probe_budget_exhausted: "本轮探测预算用尽，可稍后重测",

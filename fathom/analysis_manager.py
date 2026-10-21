@@ -257,7 +257,7 @@ def resolve_runtime(executable: str | None = None,
             status_code=403,
         )
     info = ar.detect_runtime(
-        meta, path_env="", extra_locations=[executable],
+        meta, path_env="", extra_locations=[executable], only_extra_locations=True,
         login_shell_cmd=["/bin/echo"],  # 复核不做登录 shell 探测：只认保存的路径
     )
     if info.availability is not ar.Availability.READY or not info.executable \

@@ -623,6 +623,63 @@ def test_probe_per_command_timeout_honored(tmp_path):
     assert "timed_out" in info.detail
 
 
+def test_probe_timeout_retries_once_and_can_recover(tmp_path):
+    """首次超时按冷启动重试一次；第二次成功即视为可用入口。"""
+    script = version_script(tmp_path, "fakecli", "1.0.0 (Fake)")
+
+    class OneTimeoutRunner:
+        """第一次调用超时，第二次返回成功版本行。"""
+
+        calls = 0
+
+        def run(self, invocation, *, timeout_s=0, cancel_event=None):
+            OneTimeoutRunner.calls += 1
+            if OneTimeoutRunner.calls == 1:
+                return ar.RunResult(
+                    outcome=ar.RunOutcome.TIMED_OUT, exit_code=143,
+                    stdout_text="", stderr_text="",
+                )
+            return ar.RunResult(
+                outcome=ar.RunOutcome.OK, exit_code=0,
+                stdout_text="1.0.0 (Fake)\n", stderr_text="",
+            )
+
+    budget = ar.ProbeBudget(per_command_timeout_s=0.3, total_timeout_s=5)
+    info = ar.detect_runtime(
+        make_meta(tmp_path), budget=budget, path_env="",
+        extra_locations=[script], login_shell_cmd=["/bin/echo"],
+        runner=OneTimeoutRunner(),
+    )
+    assert info.availability is ar.Availability.READY
+    assert info.version == "1.0.0"
+    assert OneTimeoutRunner.calls == 2
+
+
+def test_probe_timeout_retry_stops_after_one_retry(tmp_path):
+    """连续超时只重试一次；仍失败即如实报告瞬时失败。"""
+    script = version_script(tmp_path, "fakecli", "1.0.0 (Fake)")
+
+    class AlwaysTimeoutRunner:
+        calls = 0
+
+        def run(self, invocation, *, timeout_s=0, cancel_event=None):
+            AlwaysTimeoutRunner.calls += 1
+            return ar.RunResult(
+                outcome=ar.RunOutcome.TIMED_OUT, exit_code=143,
+                stdout_text="", stderr_text="",
+            )
+
+    budget = ar.ProbeBudget(per_command_timeout_s=0.3, total_timeout_s=5)
+    info = ar.detect_runtime(
+        make_meta(tmp_path), budget=budget, path_env="",
+        extra_locations=[script], login_shell_cmd=["/bin/echo"],
+        only_extra_locations=True, runner=AlwaysTimeoutRunner(),
+    )
+    assert info.availability is ar.Availability.BROKEN
+    assert info.reason_code == "version_probe_transient"
+    assert AlwaysTimeoutRunner.calls == 2
+
+
 def test_probe_output_cap_honored(tmp_path):
     """探测路径真实执行 16KiB 单命令输出上限，而非 256KiB 兜底。
 
@@ -635,7 +692,7 @@ def test_probe_output_cap_honored(tmp_path):
 echo "1.0.0 (Fake)"
 dd if=/dev/zero bs=1024 count=32 2>/dev/null
 ''')
-    budget = ar.ProbeBudget(per_command_output_cap=16 * 1024, per_command_timeout_s=3)
+    budget = ar.ProbeBudget(per_command_output_cap=16 * 1024, per_command_timeout_s=8)
     t0 = time.monotonic()
     info = _detect(make_meta(tmp_path), budget=budget, path_env="",
                    extra_locations=[script], login_shell_cmd=["/bin/echo"])
@@ -655,7 +712,7 @@ def test_probe_output_cap_covers_stderr(tmp_path):
 echo "1.0.0 (Fake)"
 dd if=/dev/zero bs=1024 count=32 1>&2 2>/dev/null
 ''')
-    budget = ar.ProbeBudget(per_command_output_cap=16 * 1024, per_command_timeout_s=3)
+    budget = ar.ProbeBudget(per_command_output_cap=16 * 1024, per_command_timeout_s=8)
     info = _detect(make_meta(tmp_path), budget=budget, path_env="",
                    extra_locations=[script], login_shell_cmd=["/bin/echo"])
     assert info.availability is ar.Availability.BROKEN
@@ -710,7 +767,10 @@ def test_probe_shared_deadline_respected(tmp_path):
         assert time.monotonic() - t0 <= 15
         assert set(infos) == {"x1", "x2"}
         for info in infos.values():
-            assert info.reason_code in ("probe_budget_exhausted", "version_probe_failed")
+                assert info.reason_code in (
+                    "probe_budget_exhausted", "version_probe_failed",
+                    "version_probe_transient",
+                )
     finally:
         ar.CANDIDATES.clear()
         ar.CANDIDATES.update(original)

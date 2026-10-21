@@ -7,9 +7,11 @@
   ``unknown / required / verified``，不把 ``--version`` 成功解释为已登录。
 - 探测只在显式触发时运行：先受限已知安装位置与进程 PATH 枚举，再按需做
   有预算的登录 shell ``command -v`` 探测；禁止 eval 探测结果、自动安装与
-  全盘遍历。预算：最多 16 个候选、单命令 3 秒、整个检测 20 秒、单命令
+  全盘遍历。预算：最多 16 个候选、单命令 8 秒、整个检测 20 秒、单命令
   输出 64 KiB。覆盖空格路径、符号链接、失效 wrapper、非执行文件、重名
   二进制、超时与不认识的版本；已识别的新版本按适配器所需参数探测兼容。
+  单命令 8 秒用于覆盖刚升级原生 CLI 的首次系统读入/验证，避免把冷启动
+  误判为损坏；已保存入口复核时只探测该入口，不换用另一个安装位置。
 - 公共 runner：shell=False 参数数组；载荷优先 stdin；``start_new_session``
   独立进程组；超时/取消 SIGTERM → 宽限期 → SIGKILL，终态前 reap；
   stdout/stderr 分离且边读边限额；UTF-8 严格解码（坏字节即失败，不静默
@@ -103,7 +105,7 @@ TERM_GRACE_S = 3.0
 
 #: 探测预算（方案 §3.1 起始值）。
 PROBE_MAX_CANDIDATES = 16
-PROBE_PER_COMMAND_TIMEOUT_S = 3.0
+PROBE_PER_COMMAND_TIMEOUT_S = 8.0
 PROBE_TOTAL_TIMEOUT_S = 20.0
 PROBE_PER_COMMAND_OUTPUT_CAP = 64 * 1024
 
@@ -854,6 +856,7 @@ class _ProbeFailure:
 
     path: str
     reason: str
+    transient: bool = False
 
 
 def _iter_candidate_paths(
@@ -912,22 +915,35 @@ def _version_probe(
             _ProbeFailure(path, "总预算已用尽"),
         )
 
-    probe_cwd = Path(tempfile.mkdtemp(prefix="fathom-probe-"))  # 中性隔离 cwd，避免加载任何目录内容
-    try:
-        result = runner.run(
-            Invocation(
-                argv=[path, *meta.version_args],
-                cwd=probe_cwd,
-                env=_probe_env(),
-                stdin_bytes=None,
-            ),
-            timeout_s=budget.per_command_timeout_s,
-        )
-    finally:
-        shutil.rmtree(probe_cwd, ignore_errors=True)
+    def run_version_probe():
+        probe_cwd = Path(tempfile.mkdtemp(prefix="fathom-probe-"))
+        try:
+            return runner.run(
+                Invocation(
+                    argv=[path, *meta.version_args],
+                    cwd=probe_cwd,
+                    env=_probe_env(),
+                    stdin_bytes=None,
+                ),
+                timeout_s=budget.per_command_timeout_s,
+            )
+        finally:
+            shutil.rmtree(probe_cwd, ignore_errors=True)
+
+    result = run_version_probe()
+    retry_note = ""
+    if result.outcome is RunOutcome.TIMED_OUT and time.monotonic() < deadline:
+        # 刚安装/刚升级的原生 CLI 首次执行可能要付系统级读入与校验成本，
+        # 会与 PATH/dyld 竞争而偶发超时。探测命令不带任何载荷，重试一次
+        # 是安全的；业务解读请求不在这里重试。
+        result = run_version_probe()
+        retry_note = "；已自动重试 1 次"
 
     if result.outcome is not RunOutcome.OK or result.exit_code != 0:
-        reason = f"版本命令失败（{result.outcome.value}，exit={result.exit_code}）"
+        reason = (
+            f"版本命令失败（{result.outcome.value}，exit={result.exit_code}）"
+            f"{retry_note}"
+        )
         if result.stderr_text:
             reason += f"；stderr 首行：{result.stderr_text.splitlines()[0][:120]}"
         return (
@@ -935,11 +951,16 @@ def _version_probe(
                 id=meta.id, display_name=meta.display_name, identity=meta.identity,
                 identity_evidence=meta.identity_evidence, official_docs=meta.official_docs,
                 availability=Availability.BROKEN, reason_code="version_probe_failed",
-                detail=f"{path}：{reason}",
+                # 错误体不透出可执行路径或 stderr（API 错误卫生合同）。
+                detail=reason,
                 executable=path, resolved_target=os.path.realpath(path),
                 capability_cap=meta.capability_cap,
             ),
-            _ProbeFailure(path, reason),
+            _ProbeFailure(
+                path, reason,
+                transient=result.outcome in {
+                    RunOutcome.TIMED_OUT, RunOutcome.SPAWN_FAILED},
+            ),
         )
 
     version = meta.parse_version(result.stdout_text)
@@ -1108,15 +1129,18 @@ def detect_runtime(
     deadline: float | None = None,
     path_env: str | None = None,
     extra_locations: Sequence[str | os.PathLike[str]] = (),
+    only_extra_locations: bool = False,
     login_shell_cmd: Sequence[str] | None = None,
     runner: AgentCliRunner | None = None,
 ) -> RuntimeInfo:
     """探测单个候选并返回 RuntimeInfo。
 
     ``path_env``/``extra_locations``/``login_shell_cmd`` 供测试注入合成
-    环境；生产路径留空即用当前进程环境。探测顺序：受限已知位置与 PATH
-    枚举 → 逐候选版本探测（按序取第一个可定级者）→ 均失败时按需登录
-    shell 探测一次。
+    环境；生产路径留空即用当前进程环境。``only_extra_locations=True`` 表示
+    已保存入口复核：只探测调用方显式给出的路径，失败也不枚举注册表或
+    PATH，更不静默换另一个入口。常规探测顺序：受限已知位置与 PATH 枚举
+    → 逐候选版本探测（按序取第一个可定级者）→ 均失败时按需登录 shell
+    探测一次。
     """
     budget = budget or ProbeBudget()
     runner = runner or AgentCliRunner(
@@ -1132,10 +1156,14 @@ def detect_runtime(
     precheck_failures: list[_ProbeFailure] = []
     probe_failures: list[_ProbeFailure] = []
 
-    candidates = _iter_candidate_paths(
-        meta, path_env=path_env, extra_locations=extra_locations,
-        cap=budget.max_candidates, notes=notes, precheck_failures=precheck_failures,
-    )
+    if only_extra_locations:
+        candidates = [str(path) for path in extra_locations[:budget.max_candidates]]
+    else:
+        candidates = _iter_candidate_paths(
+            meta, path_env=path_env, extra_locations=extra_locations,
+            cap=budget.max_candidates, notes=notes,
+            precheck_failures=precheck_failures,
+        )
 
     info: RuntimeInfo | None = None
     unrecognized_info: RuntimeInfo | None = None  # 可执行但版本不识别：候选事实，优先级低于可定级者
@@ -1154,7 +1182,7 @@ def detect_runtime(
             continue
         break
 
-    if info is None:
+    if info is None and not only_extra_locations:
         shell = list(login_shell_cmd) if login_shell_cmd else [
             os.environ.get("SHELL") or "/bin/zsh"
         ]
@@ -1183,12 +1211,20 @@ def detect_runtime(
             key = (f.path, f.reason)
             if key not in seen:
                 seen.add(key)
-                parts.append(f"{f.path}：{f.reason}")
+                # 只汇总原因类别，不透出候选路径（API 错误卫生合同）。
+                parts.append(f.reason)
+        failed_path = next(
+            (f.path for f in (*precheck_failures, *probe_failures)), None)
+        transient = any(f.transient for f in (*precheck_failures, *probe_failures))
         return RuntimeInfo(
             id=meta.id, display_name=meta.display_name, identity=meta.identity,
             identity_evidence=meta.identity_evidence, official_docs=meta.official_docs,
-            availability=Availability.BROKEN, reason_code="version_probe_failed",
+            availability=Availability.BROKEN,
+            reason_code=(
+                "version_probe_transient" if transient else "version_probe_failed"),
             detail="；".join(parts),
+            executable=failed_path,
+            resolved_target=os.path.realpath(failed_path) if failed_path else None,
             capability_cap=meta.capability_cap, notes=tuple(notes),
         )
     return RuntimeInfo(

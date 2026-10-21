@@ -27,7 +27,7 @@ run() { # name, logfile, cmd...
 }
 
 if has pytest; then
-  EXPECTED_PYTEST_PASSED=1814 FATHOM_PYTHON="$PY" \
+  EXPECTED_PYTEST_PASSED=1817 FATHOM_PYTHON="$PY" \
     run pytest "$LOG_DIR/pytest.log" bash scripts/ci_pytest.sh
 fi
 

@@ -901,6 +901,7 @@ def _version_probe(
     runner: AgentCliRunner,
     deadline: float,
     notes: list[str],
+    command_timeout_s: float | None = None,
 ) -> tuple[RuntimeInfo, _ProbeFailure | None]:
     """在预算内运行版本命令并按注册表策略定级；探测绝不发送业务数据。"""
     if time.monotonic() >= deadline:
@@ -915,7 +916,12 @@ def _version_probe(
             _ProbeFailure(path, "总预算已用尽"),
         )
 
-    def run_version_probe():
+    command_cap = (
+        budget.per_command_timeout_s
+        if command_timeout_s is None else command_timeout_s
+    )
+
+    def run_version_probe(timeout_s: float | None = None):
         probe_cwd = Path(tempfile.mkdtemp(prefix="fathom-probe-"))
         try:
             return runner.run(
@@ -925,27 +931,42 @@ def _version_probe(
                     env=_probe_env(),
                     stdin_bytes=None,
                 ),
-                timeout_s=budget.per_command_timeout_s,
+                # 单命令超时按总预算剩余量裁剪，保证「整个检测 20 秒」不被
+                # 单个挂起候选吃穿（否则后面的候选永远轮不到）。
+                timeout_s=max(
+                    0.05,
+                    min(
+                        command_cap,
+                        budget.per_command_timeout_s
+                        if timeout_s is None else timeout_s,
+                        max(0.05, deadline - time.monotonic()),
+                    ),
+                ),
             )
         finally:
             shutil.rmtree(probe_cwd, ignore_errors=True)
 
     result = run_version_probe()
     retry_note = ""
-    if result.outcome is RunOutcome.TIMED_OUT and time.monotonic() < deadline:
+    if result.outcome is RunOutcome.TIMED_OUT:
         # 刚安装/刚升级的原生 CLI 首次执行可能要付系统级读入与校验成本，
         # 会与 PATH/dyld 竞争而偶发超时。探测命令不带任何载荷，重试一次
         # 是安全的；业务解读请求不在这里重试。
-        result = run_version_probe()
-        retry_note = "；已自动重试 1 次"
+        # 重试必须受总预算约束，否则 8s+8s 会吃掉 20s 预算的一半，
+        # 让后面的候选根本没机会被探测。
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            # 重试同样受该候选的额度约束：一次挂起候选最多花 2×command_cap，
+            # 不会把总预算吃穿。
+            result = run_version_probe(
+                timeout_s=min(command_cap, remaining))
+            retry_note = "；已自动重试 1 次"
 
     if result.outcome is not RunOutcome.OK or result.exit_code != 0:
         reason = (
             f"版本命令失败（{result.outcome.value}，exit={result.exit_code}）"
             f"{retry_note}"
         )
-        if result.stderr_text:
-            reason += f"；stderr 首行：{result.stderr_text.splitlines()[0][:120]}"
         return (
             RuntimeInfo(
                 id=meta.id, display_name=meta.display_name, identity=meta.identity,
@@ -975,7 +996,7 @@ def _version_probe(
         return (
             RuntimeInfo(
                 availability=Availability.UNSUPPORTED, reason_code="version_unrecognized",
-                detail=f"{path} 可执行但版本输出无法识别，身份未确认；未知版本默认 unsupported",
+                detail=f"可执行但版本输出无法识别，身份未确认；未知版本默认 unsupported",
                 **base,
             ),
             None,
@@ -984,7 +1005,7 @@ def _version_probe(
         return (
             RuntimeInfo(
                 availability=Availability.UNSUPPORTED, reason_code=meta.cap_reason_code,
-                detail=f"{path} 版本 {version}；{meta.cap_reason}",
+                detail=f"版本 {version}；{meta.cap_reason}",
                 version=version, notes=meta.notes, **base,
             ),
             None,
@@ -1006,7 +1027,7 @@ def _version_probe(
         if help_result.outcome is not RunOutcome.OK or help_result.exit_code != 0:
             return RuntimeInfo(availability=Availability.BROKEN,
                 reason_code="capability_probe_failed",
-                detail=f"{path} 版本 {version}：调用参数检测失败（{help_result.outcome.value}）；可重新检测",
+                detail=f"版本 {version}：调用参数检测失败（{help_result.outcome.value}）；可重新检测",
                 version=version, **base), None
         help_text = help_result.stdout_text + "\n" + help_result.stderr_text
         missing = [flag for flag in meta.required_capabilities
@@ -1014,18 +1035,18 @@ def _version_probe(
         if missing:
             return RuntimeInfo(availability=Availability.UNSUPPORTED,
                 reason_code="required_capabilities_missing",
-                detail=f"{path} 版本 {version}：帮助中未找到本适配器必需参数：{', '.join(missing)}",
+                detail=f"版本 {version}：帮助中未找到本适配器必需参数：{', '.join(missing)}",
                 version=version, notes=meta.notes, **base), None
         return RuntimeInfo(availability=Availability.READY,
             reason_code="compatible_capabilities",
-            detail=f"{path} 版本 {version}：所需调用参数可用；登录与实际分析结果在运行时检查",
+            detail=f"版本 {version}：所需调用参数可用；登录与实际分析结果在运行时检查",
             version=version, notes=meta.notes + ("该版本未逐版实测；已检查参数兼容，沿用受控调用与结果校验。",),
             **base), None
     if version not in meta.verified_versions:
         return (
             RuntimeInfo(
                 availability=Availability.UNSUPPORTED, reason_code="version_unverified",
-                detail=(f"{path} 版本 {version} 不在已验证集合 "
+                detail=(f"版本 {version} 不在已验证集合 "
                         f"{sorted(meta.verified_versions)} 内；未验证版本不开放"),
                 version=version, notes=meta.notes, **base,
             ),
@@ -1034,7 +1055,7 @@ def _version_probe(
     return (
         RuntimeInfo(
             availability=Availability.READY, reason_code="verified_version",
-            detail=f"{path} 版本 {version} 通过能力门（{meta.gate_summary}）",
+            detail=f"版本 {version} 通过能力门（{meta.gate_summary}）",
             version=version, notes=meta.notes, **base,
         ),
         None,
@@ -1165,10 +1186,38 @@ def detect_runtime(
             precheck_failures=precheck_failures,
         )
 
+    # 单命令超时按「剩余总预算 / 剩余候选数」分摊：任何一个挂起候选都不许
+    # 吃掉整份预算，否则后面的候选永远轮不到（ISS-198 独审 P1-2）。
+    remaining_candidates = max(1, len(candidates))
+    per_command_cap = max(
+        0.5,
+        min(
+            budget.per_command_timeout_s,
+            max(0.5, (final_deadline - time.monotonic()) / remaining_candidates),
+        ),
+    )
+
     info: RuntimeInfo | None = None
     unrecognized_info: RuntimeInfo | None = None  # 可执行但版本不识别：候选事实，优先级低于可定级者
-    for path in candidates:
-        info, failure = _version_probe(path, meta, budget, runner, final_deadline, notes)
+    for index, path in enumerate(candidates):
+        # 额度预切分：总预算按候选数均分，每个候选最多用自己那份；
+        # 剩余预算若仍充裕，当前候选可临时借用后续候选的份额，但整体
+        # 不得超过总预算（ISS-198 独审 P1-2：挂起候选不得吃穿预算）。
+        left = max(1, len(candidates) - index)
+        budget_left = max(0.0, final_deadline - time.monotonic())
+        # 每个候选最多跑两次（首发 + 一次重试），所以单次额度是
+        # 「剩余预算 / 剩余候选 / 2」：这样任何数量的挂起候选都不会把
+        # 总预算吃穿，后面的候选仍有机会被探测。
+        share = max(
+            0.5,
+            min(
+                per_command_cap,
+                budget_left / left / 2.0,
+            ),
+        )
+        info, failure = _version_probe(
+            path, meta, budget, runner, final_deadline, notes,
+            command_timeout_s=share)
         if failure is not None:
             probe_failures.append(failure)
             info = None

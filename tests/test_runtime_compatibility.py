@@ -98,15 +98,25 @@ def test_probe_error_detail_has_no_path_or_stderr(tmp_path):
 
 
 def test_probe_spawn_failure_is_permanent_not_transient(tmp_path):
-    """P2-1：spawn 失败是永久失败，不该提示「暂时超时，可重试」。"""
+    """P2-1（ISS-198 三审追加）：spawn 失败是永久失败。
+
+    夹具必须**真正触发 SPAWN_FAILED**：文件存在且有执行位，但内容不是
+    合法可执行格式（macOS execve → ENOEXEC → 分类为 spawn 失败）。
+    早期夹具写的是合法 shell 脚本，根本没触发 spawn 失败，被「版本行缺失」
+    路径吃掉了——用例名与实际测的东西不是一回事，属弱断言漏网。
+    """
     script = tmp_path / 'runtime'
-    script.write_text('#!/bin/sh\necho hi\n')
+    script.write_bytes(b'\x00\x01\x02\x03not-an-executable')
     script.chmod(0o755)
     meta = replace(ar.get_candidate('claude-code'), known_locations=())
     info = ar.detect_runtime(
         meta, path_env='', extra_locations=[script], login_shell_cmd=['/bin/echo'])
-    # 文件存在且可执行 → 版本命令失败属永久（版本行缺失）而非 spawn 失败
+
+    assert info.availability is ar.Availability.BROKEN
+    # 永久失败：不得归为「暂时超时，可重试」
+    assert info.reason_code == 'version_probe_failed'
     assert info.reason_code != 'version_probe_transient'
+    assert 'spawn_failed' in info.detail
 
 
 def test_hanging_candidate_does_not_exhaust_total_budget(tmp_path):

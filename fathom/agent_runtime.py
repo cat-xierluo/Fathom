@@ -979,8 +979,7 @@ def _version_probe(
             ),
             _ProbeFailure(
                 path, reason,
-                transient=result.outcome in {
-                    RunOutcome.TIMED_OUT, RunOutcome.SPAWN_FAILED},
+                transient=result.outcome is RunOutcome.TIMED_OUT,
             ),
         )
 

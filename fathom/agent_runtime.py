@@ -88,6 +88,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from . import runtime_invocation as ri
+
 _LOG = logging.getLogger("fathom.agent_runtime")
 
 # --------------------------------------------------------------------------
@@ -270,6 +272,7 @@ class ParsedOutput:
     reason_code: str | None = None
     value: dict | None = None
     detail: str = ""
+    failure: ri.FailureClassification | None = None
 
 
 class UnknownCandidateError(KeyError):
@@ -1320,6 +1323,119 @@ class BaseCliAdapter:
             raise UnsupportedRuntimeError("RuntimeInfo 缺少 executable")
         self.info = info
 
+    def _parse_normalized(self, run: RunResult) -> ParsedOutput:
+        profile = ri.get_profile(self.id)
+        if run.outcome is not RunOutcome.OK:
+            reason = f"runner_{run.outcome.value}"
+            return ParsedOutput(
+                ok=False, reason_code=reason,
+                detail=run.detail or f"runner 结局 {run.outcome.value}",
+                failure=ri.classify_failure(reason),
+            )
+        normalized = ri.normalize_events(run.stdout_text, profile=profile)
+        # 保留既有调用方使用的元数据；正文只消费归一层选定的 final_text。
+        if profile.output_protocol is ri.OutputProtocol.SINGLE_JSON:
+            try:
+                raw = json.loads(run.stdout_text)
+            except ValueError:
+                raw = None
+            events = [raw] if isinstance(raw, dict) else []
+        else:
+            events = []
+            for line in run.stdout_text.splitlines():
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(obj, dict):
+                    events.append(obj)
+        results = [e for e in events if e.get("type") == "result"]
+        last = results[-1] if results else {}
+        error_items = sum(
+            e.get("type") == "item.completed"
+            and isinstance(e.get("item"), dict)
+            and e["item"].get("type") == "error" for e in events
+        )
+        diagnostics = normalized.to_dict()
+        # 不复制正文、原始事件或工具载荷到诊断字段。
+        diagnostics.pop("events")
+        diagnostics.pop("final_text")
+        value = {
+            "result": normalized.final_text,
+            "model": normalized.model,
+            "usage": dict(normalized.usage) if normalized.usage is not None else None,
+            "normalization": diagnostics,
+            # 声明的认证通道不是本次请求的认证取证，状态保持 unknown。
+            "auth": profile.active_auth_descriptor().to_dict(),
+        }
+        if self.id == "claude-code":
+            value.update({key: last.get(key) for key in (
+                "subtype", "num_turns", "session_id", "total_cost_usd")})
+        elif self.id == "codex-cli":
+            value.update(
+                thread_id=next((e.get("thread_id") for e in events
+                                if e.get("type") == "thread.started"), None),
+                turn_completed=normalized.terminal_ok is True,
+                error_items=error_items,
+                skipped_non_json_lines=normalized.bad_line_count,
+            )
+        else:
+            value.update(
+                session_id=next((e["session_id"] for e in reversed(events)
+                                 if isinstance(e.get("session_id"), str)), None),
+                tool_calls=sum(e.get("type") == "tool_use" for e in events),
+                skipped_non_json_lines=normalized.bad_line_count,
+            )
+        reason = normalized.reason_code
+        detail = normalized.detail
+        # 完整终态可以伴随良性 transport warning/幂等重复；但权限被拒
+        # 不能在 manager 丢失诊断后变成“完整分析成功”。
+        if normalized.tool_rejected_count:
+            reason = reason or "protocol_tool_rejected"
+            detail = detail or "工具请求被拒，分析完整性未得到确认"
+        if normalized.ok and reason is None:
+            return ParsedOutput(ok=True, value=value)
+        # 已有故障码保留；新的冲突/作用域/权限错误保留归一层精确原因。
+        if self.id == "claude-code":
+            if reason == "protocol_single_json_required":
+                reason = ("parse_failed_not_result" if events else "parse_failed_bad_json")
+            elif reason == "protocol_terminal_error":
+                if last.get("is_error") is True:
+                    reason = "app_error"
+                    value["result"] = last.get("result")
+                elif not isinstance(last.get("result"), str):
+                    reason = "parse_failed_missing_field"
+        elif self.id == "codex-cli":
+            if reason == "protocol_terminal_error" and any(
+                e.get("type") == "turn.failed" for e in events
+            ):
+                reason = "app_error_turn_failed"
+            elif reason in {"protocol_missing_terminal", "protocol_missing_final"}:
+                reason = ("app_error_stream_degraded" if error_items
+                          else "parse_failed_missing_agent_message")
+                if error_items:
+                    detail = "; ".join(normalized.warnings)[:200] or detail
+        else:
+            if reason == "protocol_terminal_error":
+                # 错误类型/布尔 exit 仍属协议错误，不套用旧应用错误码。
+                exit_code = last.get("exit_code")
+                error = last.get("error")
+                if (("exit_code" not in last or type(exit_code) is int)
+                        and (error is None or isinstance(error, (str, dict)))
+                        and (exit_code not in (0, None) or error)):
+                    reason = "app_error"
+            elif reason == "protocol_missing_terminal":
+                reason = "parse_failed_missing_result"
+            elif reason == "protocol_missing_final":
+                reason = "parse_failed_missing_field"
+        if reason == "protocol_no_parsable_events":
+            reason = "parse_failed_no_events"
+        reason = reason or "parse_failed_missing_field"
+        return ParsedOutput(
+            ok=False, reason_code=reason, value=value, detail=detail,
+            failure=ri.classify_failure(reason),
+        )
+
 
 class ClaudeCodeAdapter(BaseCliAdapter):
     """Claude Code 的 probe/build_invocation/parse_output 适配器。
@@ -1377,55 +1493,8 @@ class ClaudeCodeAdapter(BaseCliAdapter):
         )
 
     def parse_output(self, run: RunResult) -> ParsedOutput:
-        """三关中的第二、三关：应用层无错误 + 完整结果结构验证。
-
-        stream-json 误用（逐行事件）会在 JSON 解析处失败；单条非 result
-        事件在 type 校验处失败——发现工具事件类输出一律拒绝，绝不把
-        未知结构当正文放行。
-        """
-        if run.outcome is not RunOutcome.OK:
-            return ParsedOutput(
-                ok=False, reason_code=f"runner_{run.outcome.value}",
-                detail=run.detail or f"runner 结局 {run.outcome.value}",
-            )
-        try:
-            obj = json.loads(run.stdout_text)
-        except json.JSONDecodeError as exc:
-            return ParsedOutput(
-                ok=False, reason_code="parse_failed_bad_json",
-                detail=f"stdout 不是单个合法 JSON（含逐行事件残留时同样在此拒绝）：{exc}",
-            )
-        if not isinstance(obj, dict) or obj.get("type") != "result":
-            kind = obj.get("type") if isinstance(obj, dict) else type(obj).__name__
-            return ParsedOutput(
-                ok=False, reason_code="parse_failed_not_result",
-                detail=f"结果类型异常（type={kind}），拒绝放行",
-            )
-        if obj.get("is_error") is True:
-            return ParsedOutput(
-                ok=False, reason_code="app_error",
-                value={"subtype": obj.get("subtype"), "result": obj.get("result")},
-                detail="应用层报告错误（is_error=true）",
-            )
-        result_text = obj.get("result")
-        if not isinstance(result_text, str):
-            return ParsedOutput(
-                ok=False, reason_code="parse_failed_missing_field",
-                detail="结果缺少 result 字符串字段",
-            )
-        model = obj.get("model")
-        return ParsedOutput(
-            ok=True, reason_code=None,
-            value={
-                "result": result_text,
-                "subtype": obj.get("subtype"),
-                "num_turns": obj.get("num_turns"),
-                # 模型身份只取 CLI 报告的字段，不猜测 provider（用户可配网关）。
-                "model": model if isinstance(model, str) else None,
-                "session_id": obj.get("session_id"),
-                "total_cost_usd": obj.get("total_cost_usd"),
-            },
-        )
+        """消费 profile 的完整结果和终态结论，元数据不混入业务正文。"""
+        return self._parse_normalized(run)
 
 
 class CodexCliAdapter(BaseCliAdapter):
@@ -1488,123 +1557,8 @@ class CodexCliAdapter(BaseCliAdapter):
         )
 
     def parse_output(self, run: RunResult) -> ParsedOutput:
-        """三关中的第二、三关：JSONL 事件流的应用层错误判定与结构验证。
-
-        成功 = ``turn.completed`` + 非空 agent_message（exit 0 由 runner
-        保证）。降级 error item（WebSocket→HTTPS transport）与成功回复
-        共存是实测成功形态（035E E1-E5 与 ISS-126 负例全部如此，本机到
-        ChatGPT 后端网络抖动常态），因此 error item 在响应完整时只计数
-        披露、不阻断；响应缺失/不完整时以可辨 reason_code 归因应用层。
-        非 JSON 行跳过并计数（stdout 实测纯 JSONL，坏行出现即诊断信号；
-        无任何可解析事件则结构验证失败）。
-        """
-        if run.outcome is not RunOutcome.OK:
-            return ParsedOutput(
-                ok=False, reason_code=f"runner_{run.outcome.value}",
-                detail=run.detail or f"runner 结局 {run.outcome.value}",
-            )
-
-        events: list[dict] = []
-        bad_lines = 0
-        for line in run.stdout_text.splitlines():
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                ev = json.loads(text)
-            except json.JSONDecodeError:
-                bad_lines += 1
-                continue
-            if isinstance(ev, dict):
-                events.append(ev)
-            else:
-                bad_lines += 1
-        if not events:
-            return ParsedOutput(
-                ok=False, reason_code="parse_failed_no_events",
-                detail=f"stdout 无任何可解析 JSONL 事件（非 JSON 行 {bad_lines} 条）",
-            )
-
-        thread_id: str | None = None
-        usage: dict | None = None
-        turn_completed = False
-        turn_failed: list[dict] = []
-        agent_texts: list[str] = []
-        error_items: list[str] = []
-        for ev in events:
-            etype = ev.get("type")
-            if etype == "thread.started":
-                tid = ev.get("thread_id")
-                if isinstance(tid, str):
-                    thread_id = tid
-            elif etype == "turn.completed":
-                turn_completed = True
-                if isinstance(ev.get("usage"), dict):
-                    usage = ev["usage"]
-            elif etype == "turn.failed":
-                turn_failed.append(ev)
-            elif etype == "item.completed" and not turn_completed:
-                item = ev.get("item")
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "agent_message" and isinstance(item.get("text"), str):
-                    agent_texts.append(item["text"])
-                elif item.get("type") == "error":
-                    msg = item.get("message")
-                    error_items.append(
-                        msg if isinstance(msg, str)
-                        else json.dumps(item, ensure_ascii=False)[:200]
-                    )
-
-        if turn_failed:
-            return ParsedOutput(
-                ok=False, reason_code="app_error_turn_failed",
-                detail=f"turn.failed 事件：{json.dumps(turn_failed[0], ensure_ascii=False)[:200]}",
-            )
-
-        # 进度消息与最终输出分离：Codex 会把同一轮的中间说明也发成独立的
-        # agent_message（实测 0.147.0 最多三条，item 只有 id/text/type，
-        # 没有可用于区分的 phase 字段），最终输出是 turn.completed 之前的
-        # 最后一条 agent_message——收集在上面的循环里已按 turn.completed
-        # 截断。拼接全部会让合法最终 JSON 前面粘上进度文字，被下游单 JSON
-        # 验证判为 result_not_json。
-        # 这里只做「按协议选定最终输出」，不放宽结构验证，也不从任意文本
-        # 里猜取 JSON 片段。
-        nonempty_texts = [t for t in agent_texts if t.strip()]
-        result_text = nonempty_texts[-1].strip() if nonempty_texts else ""
-        if not turn_completed or not result_text:
-            # 响应缺失/不完整：error item（流断连降级仍空响应）优先归因应用层。
-            if error_items:
-                return ParsedOutput(
-                    ok=False, reason_code="app_error_stream_degraded",
-                    detail=(
-                        f"响应不完整（agent_message={'非空' if result_text else '空'}、"
-                        f"turn.completed={'是' if turn_completed else '否'}）；"
-                        f"error item {len(error_items)} 条，首条：{error_items[0][:200]}"
-                    ),
-                )
-            return ParsedOutput(
-                ok=False, reason_code="parse_failed_missing_agent_message",
-                detail=(
-                    f"缺完整 agent_message（turn.completed="
-                    f"{'是' if turn_completed else '否'}，非空 agent_message "
-                    f"{len(nonempty_texts)} 条，非 JSON 行 {bad_lines} 条）"
-                ),
-            )
-        return ParsedOutput(
-            ok=True, reason_code=None,
-            value={
-                "result": result_text,
-                "thread_id": thread_id,
-                "turn_completed": True,
-                # 降级等非致命 error item 与坏行如实计数披露（成功不掩盖网络抖动）。
-                "error_items": len(error_items),
-                "skipped_non_json_lines": bad_lines,
-                "usage": usage,
-                # 事件流不报告模型名（-m 未固定、用户可经网关换模型），不猜测。
-                "model": None,
-            },
-        )
+        """消费 profile 的完整结果和终态结论，元数据不混入业务正文。"""
+        return self._parse_normalized(run)
 
 
 class HermesAgentAdapter(BaseCliAdapter):
@@ -1677,97 +1631,8 @@ class HermesAgentAdapter(BaseCliAdapter):
         )
 
     def parse_output(self, run: RunResult) -> ParsedOutput:
-        """三关中的第二、三关：JSONL 事件流的应用层错误判定与结构验证。
-
-        成功 = 末尾 ``result`` 事件 exit_code 0 且 text 非空（进程 exit 0
-        由 runner 保证）。result 事件自带 ``error`` 字段（0.21.5 实测：
-        provider 400 时 exit_code=1 + error 文本）→ 可辨 app_error。只读
-        工具集内的 tool_use/tool_result 事件是合法形态（DEC-030 允许读取
-        与联网），计数披露不阻断；非 JSON 行跳过并计数，无任何可解析事件
-        则结构验证失败。
-        """
-        if run.outcome is not RunOutcome.OK:
-            return ParsedOutput(
-                ok=False, reason_code=f"runner_{run.outcome.value}",
-                detail=run.detail or f"runner 结局 {run.outcome.value}",
-            )
-
-        events: list[dict] = []
-        bad_lines = 0
-        for line in run.stdout_text.splitlines():
-            text = line.strip()
-            if not text:
-                continue
-            try:
-                ev = json.loads(text)
-            except json.JSONDecodeError:
-                bad_lines += 1
-                continue
-            if isinstance(ev, dict):
-                events.append(ev)
-            else:
-                bad_lines += 1
-        if not events:
-            return ParsedOutput(
-                ok=False, reason_code="parse_failed_no_events",
-                detail=f"stdout 无任何可解析 JSONL 事件（非 JSON 行 {bad_lines} 条）",
-            )
-
-        session_id: str | None = None
-        model: str | None = None
-        result_event: dict | None = None
-        tool_calls = 0
-        for ev in events:
-            etype = ev.get("type")
-            if etype == "system":
-                if isinstance(ev.get("session_id"), str):
-                    session_id = ev["session_id"]
-                m = ev.get("model")
-                model = m if isinstance(m, str) and m else None
-            elif etype == "tool_use":
-                tool_calls += 1
-            elif etype == "result":
-                result_event = ev
-                if isinstance(ev.get("session_id"), str):
-                    session_id = ev["session_id"]
-
-        if result_event is None:
-            return ParsedOutput(
-                ok=False, reason_code="parse_failed_missing_result",
-                detail=(
-                    f"缺 result 收尾事件（system {sum(1 for e in events if e.get('type') == 'system')}、"
-                    f"tool_use {tool_calls}、非 JSON 行 {bad_lines} 条）"
-                ),
-            )
-        app_error = result_event.get("error")
-        if result_event.get("exit_code") not in (0, None) or app_error:
-            return ParsedOutput(
-                ok=False, reason_code="app_error",
-                value={"session_id": session_id, "result": result_event.get("text")},
-                detail=(
-                    f"应用层报告错误（result.exit_code={result_event.get('exit_code')}）："
-                    f"{app_error if isinstance(app_error, str) else json.dumps(app_error, ensure_ascii=False)[:200]}"
-                ),
-            )
-        result_text = result_event.get("text")
-        if not isinstance(result_text, str) or not result_text.strip():
-            return ParsedOutput(
-                ok=False, reason_code="parse_failed_missing_field",
-                detail="result 事件缺少非空 text 字段",
-            )
-        tokens = result_event.get("tokens") if isinstance(result_event.get("tokens"), dict) else None
-        return ParsedOutput(
-            ok=True, reason_code=None,
-            value={
-                "result": result_text,
-                "session_id": session_id,
-                # --ignore-user-config 下 init 的 model 常为空串；只取 CLI 报告值。
-                "model": model,
-                "tool_calls": tool_calls,
-                "skipped_non_json_lines": bad_lines,
-                "usage": tokens,
-            },
-        )
+        """消费 profile 的完整结果和终态结论，元数据不混入业务正文。"""
+        return self._parse_normalized(run)
 
 
 def get_adapter(info: RuntimeInfo) -> BaseCliAdapter:
@@ -1817,8 +1682,23 @@ def dispatch_request(
     invocation = adapter.build_invocation(
         payload, cwd=cwd, env=env, payload_mode=payload_mode
     )
+    profile = ri.get_profile(adapter.id)
+    verdict = profile.verdict(invocation.argv)
+    if not verdict.usable:
+        # 在业务 runner 前拒绝；后来的成功输出不能补认缺失的安全参数。
+        reason = verdict.reason_code or "profile_protocol_mismatch"
+        run = RunResult(RunOutcome.SPAWN_FAILED, None, "", "", detail=verdict.detail)
+        parse = ParsedOutput(
+            ok=False, reason_code=reason, detail=verdict.detail,
+            value={"profile": verdict.to_dict()},
+            failure=ri.classify_failure(reason, failure_class=verdict.failure_class),
+        )
+        return DispatchResult(run=run, parse=parse)
     run = runner.run(invocation, timeout_s=timeout_s, cancel_event=cancel_event)
     parse = adapter.parse_output(run)
+    if parse.value is None:
+        parse.value = {}
+    parse.value["profile"] = verdict.to_dict()
     return DispatchResult(run=run, parse=parse)
 
 

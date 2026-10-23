@@ -799,7 +799,17 @@ class AnalysisManager:
 
     @staticmethod
     def _record_run_stats(rec: JobRecord, dispatch: "ar.DispatchResult") -> None:
-        """日志只记 job ID、结局、耗时、字节量、版本与 digest（方案 §6）。"""
+        """日志只记分类/不确定性、job ID、结局和运行统计（方案 §6）。"""
+        # 仅记录结构化分类，不把 CLI 输出/凭据写入日志；不改变终态或重试。
+        failure = dispatch.parse.failure
+        if failure is not None:
+            _LOG.info(
+                "analysis failure job_id=%s class=%s dispatch_uncertain=%s "
+                "auto_retry_safe=%s engine_switch_allowed=%s",
+                rec.job_id, failure.failure_class.value,
+                failure.dispatch_uncertain, failure.auto_retry_safe,
+                failure.engine_switch_allowed,
+            )
         _LOG.info(
             "analysis dispatch job_id=%s outcome=%s exit=%s wall_ms=%s "
             "stdout_bytes=%d stderr_bytes=%d runtime=%s adapter_contract=%s "

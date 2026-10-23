@@ -1815,6 +1815,12 @@ def _run_check(args: argparse.Namespace, payload: str) -> int:
         ),
         "cwd": str(cwd),
         "payload_mode": "argv" if args.argv_payload else "stdin",
+        # 载荷通道等降级项必须在这里可见：argv 形态下载荷对本机同用户
+        # 进程可见，不能只留在内部结构里让调用方看不到。
+        "profile_degradations": (
+            ((result.parse.value or {}).get("profile") or {}).get("degraded_optional")
+            if result.parse.value else None
+        ),
         "auth": "verified_on_this_request" if result.ok else "not_verified",
         "note": "本入口不回显 env/凭据；stderr 仅首行诊断",
     }, ensure_ascii=False, indent=2))

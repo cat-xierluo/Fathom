@@ -88,7 +88,9 @@ env:
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "77"
-  EXPECTED_AGENT_PASSED: "58"
+  # ISS-201 新增 2 条断言：新增失败原因码须有普通用户可读中文文案，
+  # 且文案不得出现回收/删除/清理或自动重试等误导词。58 + 2 = 60。
+  EXPECTED_AGENT_PASSED: "60"
   # ISS-148 树形同级变化回归（真实 FastAPI+生产页面实点）
   EXPECTED_TREE_PASSED: "74"
   # ISS-151 目录当前大文件回归（真实 FastAPI+生产页面实点）

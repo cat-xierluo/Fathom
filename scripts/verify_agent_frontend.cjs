@@ -12,7 +12,7 @@ const checks=[];const record=(name,ok,detail='')=>{checks.push({name,ok:!!ok,det
 function verifyNewReasonTexts(){
  const src=fs.readFileSync(path.join(__dirname,'..','frontend','modules','components','analysis-panel.js'),'utf8');
  const block=(src.match(/const ANALYSIS_JOB_REASON = \{([\s\S]*?)\n\};/)||[])[1]||'';
- const codes=['profile_required_flags_missing','profile_protocol_mismatch','profile_payload_channel_violation','protocol_tool_rejected','protocol_terminal_error','protocol_terminal_mismatch','protocol_unknown_permission_request','protocol_missing_terminal','protocol_missing_final'];
+ const codes=['profile_required_flags_missing','profile_protocol_mismatch','profile_payload_channel_violation','protocol_tool_rejected','protocol_terminal_error','protocol_terminal_mismatch','protocol_ambiguous_terminal','protocol_ambiguous_final','protocol_unknown_permission_request','protocol_missing_terminal','protocol_missing_final','protocol_duplicate_conflict','protocol_unsupported_fragment','protocol_single_json_required','protocol_no_parsable_events'];
  const missing=codes.filter(c=>!new RegExp(c+'\\s*:\\s*"[^"]{4,}"').test(block));
  record('agent.new-reason-codes-have-user-text',missing.length===0,'missing='+JSON.stringify(missing));
  const forbidden=/(可回收|回收空间|垃圾|删除|清理|自动重试|会自动重试)/;

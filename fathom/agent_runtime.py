@@ -1482,7 +1482,9 @@ class ClaudeCodeAdapter(BaseCliAdapter):
             stdin_bytes = payload.encode("utf-8")
         else:
             # 披露（方案 §5）：argv 载荷对本机同用户进程（ps 等）可见。
-            # 仅允许在 stdin 形态失效且经真实复验后显式选择。
+            # 仅允许在 stdin 形态失效且经真实复验后显式选择；profile 的
+            # 载荷通道核对会把它标成披露降级（payload_argv_visible），
+            # 默认产品路径不会走到这里。
             argv = [exe, "-p", payload, *flags]
             stdin_bytes = None
         return Invocation(
@@ -1684,6 +1686,36 @@ def dispatch_request(
     )
     profile = ri.get_profile(adapter.id)
     verdict = profile.verdict(invocation.argv)
+    # 载荷通道独立核对：argv 形态对本机同用户进程可见，只在调用方
+    # 显式开启回退时作为披露降级放行，默认路径不允许静默通过。
+    channel_verdict = profile.check_payload_channel(
+        "stdin" if invocation.stdin_bytes is not None else "argv",
+        allow_fallback=payload_mode == "argv",
+    )
+    if not channel_verdict.usable:
+        reason = channel_verdict.reason_code or "profile_payload_channel_violation"
+        run = RunResult(RunOutcome.SPAWN_FAILED, None, "", "", detail=channel_verdict.detail)
+        parse = ParsedOutput(
+            ok=False, reason_code=reason, detail=channel_verdict.detail,
+            value={"profile": verdict.to_dict()},
+            failure=ri.classify_failure(
+                reason, failure_class=channel_verdict.failure_class),
+        )
+        return DispatchResult(run=run, parse=parse)
+    if channel_verdict.degraded_optional:
+        verdict = ri.ProfileVerdict(
+            usable=verdict.usable,
+            missing_required=verdict.missing_required,
+            missing_protocol=verdict.missing_protocol,
+            degraded_optional=tuple(
+                dict.fromkeys(
+                    (*verdict.degraded_optional, *channel_verdict.degraded_optional)
+                )
+            ),
+            failure_class=verdict.failure_class,
+            reason_code=verdict.reason_code,
+            detail=verdict.detail,
+        )
     if not verdict.usable:
         # 在业务 runner 前拒绝；后来的成功输出不能补认缺失的安全参数。
         reason = verdict.reason_code or "profile_protocol_mismatch"

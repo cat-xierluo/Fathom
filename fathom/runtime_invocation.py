@@ -259,6 +259,10 @@ class InvocationProfile:
     final_selection: FinalSelection
     payload_channel: str
     auth_variants: tuple[AuthVariant, ...]
+    #: 是否存在**经披露的** argv 载荷回退形态。仅 Claude Code 有
+    #: （stdin 失效且经真实复验后显式选择）；Codex/Hermes 始终只走
+    #: stdin，因此该字段为 False，任何 argv 调用都直接拒绝。
+    argv_payload_fallback: bool = False
     third_party_retention: str = ""
     notes: tuple[str, ...] = ()
 
@@ -302,6 +306,52 @@ class InvocationProfile:
             f.name
             for f in self.optional_flags()
             if not argv_contains(argv, f.tokens)
+        )
+
+    def check_payload_channel(
+        self,
+        payload_channel: str,
+        *,
+        allow_fallback: bool = False,
+    ) -> ProfileVerdict:
+        """核对**实际载荷通道**与 profile 声明是否一致。
+
+        ``payload_channel`` 是本次调用真正使用的通道（"stdin" 或 "argv"）。
+        profile 声明 ``payload_channel="stdin"`` 时，argv 形态不被当作
+        合规载荷：它对本机同用户进程可见，只允许在显式开启的降级回退下
+        使用，并必须作为披露项出现，绝不在默认路径静默放行。
+        """
+        if payload_channel == self.payload_channel:
+            return ProfileVerdict(
+                usable=True,
+                missing_required=(),
+                missing_protocol=(),
+                degraded_optional=(),
+                failure_class=None,
+                reason_code=None,
+            )
+        if payload_channel == "argv" and allow_fallback and self.argv_payload_fallback:
+            # 显式选择的披露降级：可用，但必须让调用方看见。
+            return ProfileVerdict(
+                usable=True,
+                missing_required=(),
+                missing_protocol=(),
+                degraded_optional=("payload_argv_visible",),
+                failure_class=None,
+                reason_code=None,
+                detail="载荷经命令行参数传入，对本机同用户进程可见",
+            )
+        return ProfileVerdict(
+            usable=False,
+            missing_required=(),
+            missing_protocol=(),
+            degraded_optional=(),
+            failure_class=FailureClass.PROTOCOL,
+            reason_code="profile_payload_channel_violation",
+            detail=(
+                f"该引擎要求载荷经 {self.payload_channel} 传递，"
+                f"实际为 {payload_channel}；拒绝静默降级"
+            ),
         )
 
     def verdict(self, argv: Sequence[str]) -> ProfileVerdict:
@@ -672,7 +722,6 @@ class NormalizedStream:
     unknown_field_count: int = 0
     unknown_event_count: int = 0
     duplicate_count: int = 0
-    replay_count: int = 0
     tool_rejected_count: int = 0
     fragment_count: int = 0
     cross_turn_final_count: int = 0
@@ -687,13 +736,16 @@ class NormalizedStream:
         ``ok`` 只说明这次调用有明确成功终态且拿到了候选正文。ISS-202 的
         真实 ACP 实证显示：**权限被拒 ≠ prompt 失败**——工具被拒后
         ``session/prompt`` 仍以成功终态结束。因此「有终态且成功」不等于
-        「该做的分析做了」。本属性把「被拒工具」「重放」「重复」这些降级
-        信号排除在「干净成功」之外，调用方据此如实披露。
+        「该做的分析做了」。本属性把「被拒工具」「重复」这些降级信号排除
+        在「干净成功」之外，调用方据此如实披露。
+
+        这里**不**声称能识别重放：ISS-199 裁决「相同文本不能单独证明
+        重放」，在缺序号、游标或经验证的重放关联时无法判定，因此归一层
+        不提供重放计数字段，避免下游把「恒为零」误读为「已确认无重放」。
         """
         return (
             self.ok
             and self.tool_rejected_count == 0
-            and self.replay_count == 0
             and self.duplicate_count == 0
             and not self.warnings
         )
@@ -711,7 +763,6 @@ class NormalizedStream:
             "unknown_field_count": self.unknown_field_count,
             "unknown_event_count": self.unknown_event_count,
             "duplicate_count": self.duplicate_count,
-            "replay_count": self.replay_count,
             "tool_rejected_count": self.tool_rejected_count,
             "fragment_count": self.fragment_count,
             "cross_turn_final_count": self.cross_turn_final_count,
@@ -931,7 +982,6 @@ class _Accum:
     unknown_field_count: int = 0
     unknown_event_count: int = 0
     duplicate_count: int = 0
-    replay_count: int = 0
     tool_rejected_count: int = 0
     fragment_count: int = 0
     cross_turn_final_count: int = 0
@@ -1396,7 +1446,6 @@ def normalize_events(
             unknown_field_count=acc.unknown_field_count,
             unknown_event_count=acc.unknown_event_count,
             duplicate_count=acc.duplicate_count,
-            replay_count=acc.replay_count,
             tool_rejected_count=acc.tool_rejected_count,
             fragment_count=acc.fragment_count,
             cross_turn_final_count=acc.cross_turn_final_count,
@@ -1445,7 +1494,6 @@ def normalize_events(
         unknown_field_count=acc.unknown_field_count,
         unknown_event_count=acc.unknown_event_count,
         duplicate_count=acc.duplicate_count,
-        replay_count=acc.replay_count,
         tool_rejected_count=acc.tool_rejected_count,
         fragment_count=acc.fragment_count,
         cross_turn_final_count=acc.cross_turn_final_count,
@@ -1527,6 +1575,9 @@ CLAUDE_CODE_PROFILE = InvocationProfile(
     output_protocol=OutputProtocol.SINGLE_JSON,
     final_selection=FinalSelection.REPLACE_SINGLE,
     payload_channel="stdin",
+    # argv 形态是**已披露的降级回退**：stdin 失效且经真实复验后才显式选择，
+    # 使用时必须以 payload_argv_visible 披露，不在默认路径静默放行。
+    argv_payload_fallback=True,
     auth_variants=(
         AuthVariant(
             method=AuthMethod.BARE,

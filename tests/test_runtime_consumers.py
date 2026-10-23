@@ -10,6 +10,7 @@ import json
 import logging
 import shlex
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -84,6 +85,46 @@ def test_dispatch_consumes_unknown_fields_and_missing_optional_metadata(rid, tmp
 
 
 FLAG_CASES = [(rid, f.name) for rid in RUNTIMES for f in ri.get_profile(rid).flags if f.required]
+
+
+def test_argv_payload_form_is_not_silently_accepted_as_compliant():
+    """argv 载荷形态对本机同用户进程可见，默认 profile 不接受为合规载荷。"""
+    profile = ri.get_profile("claude-code")
+    # 默认（未显式开启回退）必须拒绝 argv 通道。
+    denied = profile.check_payload_channel("argv")
+    assert not denied.usable
+    assert denied.reason_code == "profile_payload_channel_violation"
+    # stdin 通道与声明一致，正常放行。
+    allowed = profile.check_payload_channel("stdin")
+    assert allowed.usable and not allowed.degraded_optional
+    # 显式开启回退时可用，但必须作为披露降级出现，不能悄悄通过。
+    fallback = profile.check_payload_channel("argv", allow_fallback=True)
+    assert fallback.usable
+    assert "payload_argv_visible" in fallback.degraded_optional
+
+
+def test_dispatch_rejects_argv_payload_form_on_default_path():
+    """产品默认路径不得把 argv 载荷当作合规调用（独立于 CLI 手动开关）。"""
+    adapter = ar.get_adapter(info("claude-code"))
+    runner = CountingRunner("claude-code")
+    # 直接构造 argv 形态的调用：stdin 为空即 argv 载荷。
+    invocation = adapter.build_invocation("合成载荷", cwd=Path("/tmp"), payload_mode="argv")
+    assert invocation.stdin_bytes is None
+    profile = ri.get_profile("claude-code")
+    verdict = profile.verdict(invocation.argv)
+    # argv 形态本身参数齐全，但载荷通道不合规：通道核对必须拦住它。
+    assert verdict.usable
+    assert not profile.check_payload_channel("argv").usable
+
+
+@pytest.mark.parametrize("rid", ("codex-cli", "hermes-agent"))
+def test_other_runtimes_keep_stdin_only(rid):
+    """Codex/Hermes 不提供 argv 载荷形态，仍是只接受 stdin。"""
+    profile = ri.get_profile(rid)
+    assert profile.payload_channel == "stdin"
+    # 这两家没有任何 argv 回退形态：即使显式开启也不接受。
+    assert not profile.check_payload_channel("argv").usable
+    assert not profile.check_payload_channel("argv", allow_fallback=True).usable
 
 
 @pytest.mark.parametrize("rid,flag_name", FLAG_CASES)

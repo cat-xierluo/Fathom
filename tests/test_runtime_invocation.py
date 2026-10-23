@@ -663,7 +663,6 @@ def test_same_content_different_items_is_not_proven_replay():
         {"type": "turn.completed"},
     ]
     stream = ri.normalize_events(events, profile=profile)
-    assert stream.replay_count == 0
     assert stream.clean_success is True
     assert len([e for e in stream.events if e.kind is ri.EventKind.FINAL]) == 2
     # 末条候选正文独立交付，不拼接。
@@ -1065,7 +1064,6 @@ def test_f8_ordinary_status_metadata_does_not_become_tool_rejection():
 def test_f9_same_content_different_ids_remains_clean():
     stream = _codex_stream(_message("body", "i2"))
     assert stream.clean_success
-    assert stream.replay_count == 0
     assert stream.duplicate_count == 0
     assert stream.final_text == "body"
 

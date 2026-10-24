@@ -66,6 +66,7 @@
 import { fetchJSON, beginRequest, invalidateRequest, revealInFinder } from "../request.js";
 import { state } from "../state.js";
 import { createAnalysisPanel } from "../components/analysis-panel.js";
+import { preferredContentSnapshot } from "./browse.js";
 import { datasetKey } from "../dataset.js";
 import { fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, hasChart, clearChart } from "../charts.js";
@@ -187,10 +188,10 @@ function findSnapshot(id) {
 
 /** 收敛锚点：当前 b（/api/snapshots 已按时间倒序，列表首个即最新）。
  * 不对称收敛下锚点恒为 b——它是「切换数据集」的唯一入口，也是口径基准。
- * b 不可用时兜底取列表首个，保证总有一个合法 b。 */
+ * b 不可用时按内容根优先级选默认，保证总有一个合法 b。 */
 function anchorSnapshot(snaps, selectedB) {
   const byId = new Map(snaps.map((s) => [String(s.id), s]));
-  return byId.get(String(selectedB)) || snaps[0] || null;
+  return byId.get(String(selectedB)) || preferredContentSnapshot(snaps);
 }
 
 /** 与锚点同数据集身份的快照（保持原顺序，不重排）。 */
@@ -210,7 +211,7 @@ function replaceSnapshotOptions(select, snaps) {
 
 /** 不对称收敛：b 侧**不收敛**（全列，用户改 b 即切换数据集），a 侧收敛到
  * b 所属数据集（只列同身份快照），跨数据集组合在选项层不可构造。
- * - b = keepB 仍在目录内则保留，否则取目录首个（最新）；
+ * - b = keepB 仍在目录内则保留，否则取默认内容根的最新快照；
  * - a = keepA 仍在 b 数据集内则保留，否则按「a 取其前驱」落定（组内 b 之外
  *   的最新一个），保证自动对比总有合法区间；
  * - userChanged 非空（用户改选任一侧）时**不排除** keepA === b：那是用户显式
@@ -223,9 +224,9 @@ function applyConvergedOptions(selA, selB, snaps, { keepA, keepB, userChanged = 
   const userEmptyB = Boolean(userChanged) && String(keepB) === "";
   const nextB = userEmptyB
     ? ""
-    : (findSnapshot(keepB) ? String(keepB) : String((snaps[0] || {}).id ?? ""));
+    : (findSnapshot(keepB) ? String(keepB) : String(preferredContentSnapshot(snaps)?.id ?? ""));
   // a 侧收敛的锚：正常恒为 b；b 被用户清空时退回 a 自身，避免两侧一起变空
-  const group = sameDatasetGroup(snaps, findSnapshot(nextB) || findSnapshot(keepA) || snaps[0] || null);
+  const group = sameDatasetGroup(snaps, findSnapshot(nextB) || findSnapshot(keepA) || preferredContentSnapshot(snaps));
   const ids = group.map((s) => String(s.id));
   const keepAOk = ids.includes(String(keepA)) && String(keepA) !== "";
   const predecessor = ids.find((id) => id !== nextB) || "";

@@ -578,7 +578,7 @@ async function runPhase(withStale) {
         incomparText.replace(/\s+/g, " ").slice(0, 70));
     }
 
-    // C3：实点主按钮 → 变化页，a/b 来自真实快照且一致
+    // C3：实点主按钮 → 变化页；ISS-206 同类根目录数相同，取时间更晚的真实成员 #4。
     /* ISS-178 R2：交接等待窗口与页面侧 `_handOffChangeEntry` 的 30s 对齐——
      * 套件窗口必须**严格大于**页面交接窗口（30s），这里取 45s 留 15s 余量：
      * 取等号时两者同时到期，交接若真没完成，先炸的是套件——整段记成
@@ -595,8 +595,8 @@ async function runPhase(withStale) {
     }, String(bAttr), { timeout: 45000 });
     const aVal = await page.$eval("#sel-a", (el) => el.value);
     const bVal = await page.$eval("#sel-b", (el) => el.value);
-    record("ui-cta-carries-real-b", bVal === String(bAttr) && bVal === String(s2[0]),
-      `cta-b=${bAttr} sel-b=${bVal} 摘要本轮成员快照=${s2[0]}`);
+    record("ui-cta-carries-real-b", bVal === String(bAttr) && bVal === String(s2[1]),
+      `cta-b=${bAttr} sel-b=${bVal} 摘要较新成员快照=${s2[1]}`);
     record("ui-cta-a-real-predecessor",
       Boolean(aVal) && aVal !== bVal && [...s1, ...s2].map(String).includes(aVal),
       `sel-a=${aVal} sel-b=${bVal}（a 须为真实且不同于 b）`);

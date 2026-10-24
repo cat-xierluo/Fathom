@@ -265,11 +265,20 @@ async function main() {
       return tr ? Number(tr.dataset.depth) : -1;
     }, p);
 
-    /* ---- 基线：默认最新数据集（ISS-149 后最新为 trendgap 排除掩码 #19 → #20）---- */
+    /* ---- ISS-206：默认内容最多的根（pages #12 → #13）；最新仍可手选 ---- */
     await page.goto(`${base}/#/changes`, { waitUntil: "networkidle" });
-    await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #19 → #20"),
-      20000, "默认对比完成");
+    await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #12 → #13"),
+      20000, "默认内容根对比完成");
     record("page-opens-default-diff", true, "状态行完成态出现");
+
+    const optionRoots = await page.evaluate(() => ({
+      a: [...document.querySelector('#sel-a').options].map(o => o.textContent),
+      b: [...document.querySelector('#sel-b').options].map(o => o.textContent),
+    }));
+    record("snapshot-selectors-show-actual-roots",
+      optionRoots.a.length > 0 && optionRoots.a.every(t => t.includes('/synthetic/pages')) &&
+      optionRoots.b.find(t => t.startsWith('#6 '))?.includes('/synthetic/hist') &&
+      optionRoots.b.find(t => t.startsWith('#13 '))?.includes('/synthetic/pages'), JSON.stringify(optionRoots));
 
     // weird 基线断言：默认数据集已随 ISS-149 seed 前移，显式切到 #14 → #15
     await page.selectOption("#sel-b", "15");

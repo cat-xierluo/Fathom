@@ -238,6 +238,11 @@ class RuntimeSelection:
     #: 没变。如实标记，不假装有更强保证。
     entry_identity_complete: bool = False
 
+    @property
+    def entry_identity_sendable(self) -> bool:
+        identity = getattr(self.capability_snapshot, "identity", None)
+        return self.entry_identity_complete or bool(identity and identity.sendable)
+
     def public_dict(self) -> dict:
         return {
             "id": self.id,
@@ -560,19 +565,22 @@ class AnalysisManager:
         # ISS-200：同版换文件——版本号、路径都没变，但入口二进制被替换。
         # 路径与版本比较看不出来，必须比入口指纹。
         #
+        # 完整链与已解析的动态程序都可复核；缺失/歧义链不能发送。
         # 取不到指纹（入口不可读）→ 无法复核，拒绝。
         # 指纹不同 → 入口确实变了，拒绝并要求重新预览。
-        if not runtime.entry_fingerprint:
-            raise AnalysisError(
-                "runtime_identity_incomplete",
-                "解读引擎入口身份无法确认，无法复核；请重新检测",
-            )
         if (preview.runtime.entry_fingerprint
                 and runtime.entry_fingerprint != preview.runtime.entry_fingerprint):
             raise AnalysisError(
                 "runtime_identity_changed",
                 "解读引擎入口在预览后发生变化（同版本但文件已更换），"
                 "请重新生成预览",
+            )
+        if (not runtime.entry_fingerprint
+                or not runtime.entry_identity_sendable
+                or not preview.runtime.entry_identity_sendable):
+            raise AnalysisError(
+                "runtime_identity_incomplete",
+                "解读引擎入口身份无法确认，无法复核；请重新检测",
             )
         conn = db.connect(self._db_path)
         try:
@@ -830,14 +838,20 @@ class AnalysisManager:
             binding_holder: list[rc.CallBinding] = []
 
             def _bind_call(invocation: "ar.Invocation") -> None:
-                # 绑定失败（身份不完整等）只意味着「本次调用不回填能力证据」，
-                # 不是业务失败：绝不让证据机制改变作业终态。
+                # 身份及调用配置绑定是发送门，失败时不能继续启动业务进程。
                 try:
                     binding_holder.append(
                         self._make_call_binding(preview, invocation))
-                except Exception:  # noqa: BLE001 - 证据机制不得影响派发
-                    _LOG.info("调用绑定未建立（本次不回填能力证据）runtime_id=%s",
-                              preview.runtime.id)
+                except rc.CallIdentityError as exc:
+                    raise AnalysisError(
+                        "runtime_identity_incomplete",
+                        "解读引擎调用身份无法绑定，请重新检测并预览",
+                    ) from exc
+                except rc.CallConfigurationError as exc:
+                    raise AnalysisError(
+                        "runtime_invocation_mismatch",
+                        "解读引擎调用与所选配置不一致，请重新预览",
+                    ) from exc
 
             dispatch = ar.dispatch_request(
                 adapter, runner, preview.bundle.prompt_text,
@@ -852,6 +866,9 @@ class AnalysisManager:
             duration_ms = int((time.monotonic() - rec.started_monotonic) * 1000)
             self._record_run_stats(rec, dispatch)
             self._settle(rec, dispatch, duration_ms)
+        except AnalysisError as exc:
+            duration_ms = int((time.monotonic() - rec.started_monotonic) * 1000)
+            self._finish(rec, "failed", exc.reason_code, duration_ms)
         except Exception as exc:  # noqa: BLE001 - 任何异常都要落到确定性终态
             _LOG.exception("分析执行线程异常 job_id=%s", rec.job_id)
             duration_ms = int((time.monotonic() - rec.started_monotonic) * 1000)
@@ -913,9 +930,6 @@ class AnalysisManager:
                 self._finish(rec, "failed",
                              f"result_{validated.reason_code}", duration_ms)
                 return
-            # ISS-200：真实受控调用成功**且**结果校验通过 → 回填能力证据。
-            # 回填只在此时发生；失败/取消/超时一律不回填（不得出现 VERIFIED）。
-            self._backfill_call_evidence(rec)
             # 模型身份是**元数据**，与受验证正文分开传递（ISS-133）：正文
             # schema 严格拒绝额外字段，所以 model 永远不会出现在
             # validated.value 里，只能从适配器报告处取。只保存 CLI 实际
@@ -940,23 +954,23 @@ class AnalysisManager:
         """生成独立的预期调用记录（ISS-200）。
 
         绑定四要素：runtime、版本、调用配置、入口指纹；再加 argv 摘要与
-        调用标识。``rc.bind_call`` 会核对 argv[0] 与快照入口一致、入口身份
-        必须完整——身份不完整则抛错，此时**不产生绑定**，也就没有后续可
-        回填的证据（宁可不回填，也不回填一条无绑定的事实）。
+        调用标识。``rc.bind_call`` 核对 argv[0] 与快照入口一致，并要求
+        执行链可唯一解析。PROBED 链可发送并保管记录；只有完整链成功
+        提交后才允许回填 VERIFIED。
         """
         snapshot = preview.runtime.capability_snapshot
         if snapshot is None:
-            raise ValueError("预览未冻结能力快照，无法建立调用绑定")
+            raise rc.CallIdentityError("预览未冻结能力快照，无法建立调用绑定")
         call_id = "call_" + uuid.uuid4().hex
-        return rc.bind_call(snapshot, list(invocation.argv), call_id)
+        return rc.bind_call(snapshot, list(invocation.argv), call_id, require_complete=False)
 
     def _backfill_call_evidence(self, rec: JobRecord) -> None:
         """把本次受控调用的成功证据回填进能力快照（尽力而为，不影响终态）。
 
         严格约束（ISS-200）：
 
-        - 证据只在「调用成功**且**结果校验通过」后回填；本方法只被
-          ``_settle`` 的成功分支调用。
+        - 证据只在「调用成功、结果校验通过且成功事务已提交」后回填；
+          本方法只被 ``_commit_success`` 的成功提交分支调用。
         - 回填必须经 ``rc.apply_call_evidence`` 的完整绑定核对：快照、
           独立调用记录与证据三方的 runtime/版本/profile/入口指纹/argv
           摘要/调用标识必须全部一致，否则拒绝回填（失败不回填 VERIFIED）。
@@ -964,7 +978,9 @@ class AnalysisManager:
         """
         preview = rec.preview
         snapshot = preview.runtime.capability_snapshot
-        if snapshot is None or not preview.call_binding:
+        if (snapshot is None or not preview.call_binding or snapshot.identity is None
+                or not snapshot.identity.identity_complete):
+            # PROBED dynamic programs can send, but do not gain VERIFIED evidence.
             return
         try:
             evidence = rc.CallEvidence(
@@ -981,19 +997,20 @@ class AnalysisManager:
             )
             updated = rc.apply_call_evidence(
                 snapshot, evidence, expected_call=preview.call_binding)
+            # 预览是 frozen dataclass：用 replace 落回新的快照副本。
+            rec.preview = replace(preview, capability_snapshot=updated)
+            runtime_cache.record_capability_evidence(
+                preview.runtime.id,
+                preview.runtime.executable,
+                preview.runtime.entry_fingerprint,
+                updated.public_dict(),
+                version=preview.runtime.version,
+            )
         except Exception:  # noqa: BLE001 - 证据回填失败不改变作业终态
             _LOG.exception("能力证据回填未生效（不影响作业终态）runtime_id=%s",
                            preview.runtime.id)
             return
-        # 预览是 frozen dataclass：用 replace 落回新的快照副本。
-        rec.preview = replace(preview, capability_snapshot=updated)
-        runtime_cache.record_capability_evidence(
-            preview.runtime.id,
-            preview.runtime.executable,
-            preview.runtime.entry_fingerprint,
-            updated.public_dict(),
-            version=preview.runtime.version,
-        )
+
     def _commit_success(self, rec: JobRecord, result: dict, duration_ms: int,
                         *, reported_model: str | None = None) -> None:
         """成功提交（线性化点）：提交门通过才允许可信正文 + succeeded
@@ -1063,6 +1080,8 @@ class AnalysisManager:
                 raise
             finally:
                 conn.close()
+            # 成功事务已经线性化；取消/撤权/升级拒绝分支均已返回。
+            self._backfill_call_evidence(rec)
             try:
                 self.prune_history()
             except Exception:  # noqa: BLE001 - 保留清理失败不影响终态

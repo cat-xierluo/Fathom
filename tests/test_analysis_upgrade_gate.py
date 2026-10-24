@@ -100,6 +100,7 @@ def test_prepared_upgrade_blocks_analysis_preview_and_start(env, monkeypatch):
     # journal 建立前：预览与派发正常可用
     manager = am.AnalysisManager(db_path=env.db_path, run_timeout_s=10)
     preview = manager.create_preview(a, b)
+    assert preview.runtime.entry_identity_sendable
 
     coord = _coordinator(env)
     result = coord.run_prepare()

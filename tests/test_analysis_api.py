@@ -69,10 +69,7 @@ def _new_preview(client, setup, key: str):
 
 def _cancel_script(client, setup, key: str) -> dict:
     """派发一个长驻进程的任务（取消路径可及），返回 job 视图。"""
-    setup["script"].write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "--version" ]; then echo "2.1.237 (Claude Code)"; exit 0; fi\n'
-        "cat > /dev/null\nsleep 30\n", encoding="utf-8")
+    make_fake_claude(setup["bin_dir"], mode="sleep")
     _, started = _new_preview(client, setup, key)
     return started["job"]
 

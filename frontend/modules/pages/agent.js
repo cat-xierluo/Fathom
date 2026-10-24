@@ -3,7 +3,13 @@ import { fetchJSON, apiPost, beginRequest, invalidateRequest } from '../request.
 import { escapeHtml } from '../format.js';
 import { datasetKey } from '../dataset.js';
 import { createAnalysisPanel } from '../components/analysis-panel.js';
+import {
+  runtimeCombinedStatus, runtimeDetectStatus, runtimeReasonDetail,
+} from '../runtime-status.js';
 let snapshots = [], jobs = [], nextOffset = null, openedJob = null;
+/* 最近一次检测结果（本次会话内有效）：普通面只显示短状态与下一动作，
+ * 技术细节（reason_code/detail/路径/版本）收进默认折叠的技术详情区。 */
+let detectedRuntime = null;
 // 自动恢复不能覆盖更晚的选点、历史点击或已确认的新尝试。
 let viewRevision = 0;
 const el = (id) => document.getElementById(id);
@@ -66,13 +72,39 @@ function updateRange() {
   } else panel.load();
 }
 const statusText = {starting:'启动中',running:'运行中',cancelling:'取消中',succeeded:'已完成',failed:'失败',cancelled:'已取消',timed_out:'超时',interrupted:'已中断'};
+/* 失败/取消态的普通面说明（不含机器码、不含路径）：
+ * 短状态只说「发生了什么」，具体原因码与引擎细节进折叠区。 */
+const JOB_FAILURE_TEXT = {
+  failed:'分析失败',
+  cancelled:'分析已取消',
+  timed_out:'分析超时',
+  interrupted:'分析被中断',
+};
+/* 任务历史行的技术详情：机器码 reason_code、引擎版本与各时间戳都收在
+ * 这里，默认折叠（ISS-203 普通面/技术详情分层合同）。 */
+function jobTechDetails(j) {
+  const lines = [];
+  if (j.reason_code) lines.push(`原因码：${j.reason_code}`);
+  if (j.runtime?.version) lines.push(`引擎版本：${j.runtime.version}`);
+  if (j.runtime?.model) lines.push(`模型：${j.runtime.model}`);
+  if (j.duration_ms != null) lines.push(`耗时：${Math.round(Number(j.duration_ms) / 1000)} 秒`);
+  if (j.finished_at) lines.push(`结束：${j.finished_at.replace('T',' ')}`);
+  if (j.revoked_at) lines.push(`撤销：${j.revoked_at.replace('T',' ')}`);
+  if (!lines.length) return '';
+  return `<details class="cfg-details" data-test="agent-job-tech-details"><summary>技术详情</summary><ul class="agent-job-tech-list">${
+    lines.map(line => `<li>${escapeHtml(line)}</li>`).join('')
+  }</ul></details>`;
+}
 function renderHistory(total) {
   el('agent-history-count').textContent = `共 ${total} 个任务；已显示 ${jobs.length} 个，在途优先。只展示本机仍保留的生命周期记录。`;
   el('agent-history-body').innerHTML = jobs.length ? jobs.map(j => `<tr>
     <td><button type="button" class="btn-mini" data-agent-job="${escapeHtml(j.job_id)}" aria-pressed="${openedJob?.job_id === j.job_id}">查看 #${escapeHtml(String(j.a_snapshot_id))} → #${escapeHtml(String(j.b_snapshot_id))}</button></td>
-    <td>${escapeHtml(j.revoked ? '已撤销（正文不再保留）' : j.analysis?.expired ? '已过期（原文可读）' : statusText[j.status] || j.status)}${j.reason_code ? `<br><span class="hint">${escapeHtml(j.reason_code)}</span>` : ''}</td>
+    <td>${escapeHtml(j.revoked ? '已撤销（正文不再保留）' : j.analysis?.expired ? '已过期（原文可读）' : statusText[j.status] || j.status)}${
+      !j.revoked && !j.analysis?.expired && JOB_FAILURE_TEXT[j.status]
+        ? `<br><span class="hint">${escapeHtml(JOB_FAILURE_TEXT[j.status])}</span>` : ''
+    }${jobTechDetails(j)}</td>
     <td>${escapeHtml(j.runtime?.id || '未上报')}<br><span class="hint">${escapeHtml(j.runtime?.version || '')}</span></td>
-    <td>${escapeHtml((j.created_at || '').replace('T',' '))}${j.finished_at ? `<br><span class="hint">结束 ${escapeHtml(j.finished_at.replace('T',' '))}</span>` : ''}${j.revoked_at ? `<br><span class="hint">撤销 ${escapeHtml(j.revoked_at.replace('T',' '))}</span>` : ''}${j.analysis ? `<br><span class="hint">原快照 ${escapeHtml(j.analysis.a_created_at || '')} → ${escapeHtml(j.analysis.b_created_at || '')}</span>` : ''}</td>
+    <td>${escapeHtml((j.created_at || '').replace('T',' '))}${j.analysis ? `<br><span class="hint">原快照 ${escapeHtml(j.analysis.a_created_at || '')} → ${escapeHtml(j.analysis.b_created_at || '')}</span>` : ''}</td>
   </tr>`).join('') : '<tr><td colspan="4" class="hint" data-test="agent-history-empty">尚无解读任务；打开页面不会自动派发。</td></tr>';
   el('agent-history-more').hidden = nextOffset == null;
 }
@@ -104,9 +136,7 @@ async function load() {
   try {
     const [cfg, data] = await Promise.all([fetchJSON('/api/config'),fetchJSON('/api/snapshots')]);
     if (!request.current()) return;
-    const runtime = cfg.analysis?.runtime;
-    const runtimeLabel = typeof runtime === 'string' ? runtime : runtime?.display_name || runtime?.id || '尚未选择';
-    el('agent-engine-summary').textContent = `${cfg.analysis?.enabled ? '变化解读已启用' : '变化解读未启用'} · 引擎 ${runtimeLabel}${runtime?.version ? ` v${runtime.version}` : ''}。以上为保存的配置；可检测当前版本。关闭引擎仍可查看保留的任务和原文。`;
+    renderEngineSummary(cfg.analysis || null);
     snapshots = [...data].sort((a,b)=>b.created_at.localeCompare(a.created_at) || b.id-a.id);
     let persisted; try { persisted = JSON.parse(sessionStorage.getItem('fathom-agent-range') || 'null'); } catch (_) {}
     fillSelectors();
@@ -120,6 +150,70 @@ async function load() {
     await loadHistory({restore:true});
   } catch (e) { if (request.current()) el('agent-range-status').textContent = `Agent 页面读取失败：${e.message}；可点击刷新重试。`; }
 }
+
+/* 普通面分层（ISS-203）：短状态 + 下一动作；技术细节默认折叠。
+ * 引擎摘要只说「现在是什么状态、下一步做什么」，
+ * 版本/路径/原因码等收进 <details class="cfg-details">。 */
+function renderEngineSummary(cfgAnalysis) {
+  const host = el('agent-engine-summary');
+  if (!host) return;
+  const runtime = cfgAnalysis?.runtime;
+  const saved = typeof runtime === 'string' ? { id: runtime } : runtime;
+  const status = runtimeCombinedStatus({
+    enabled: Boolean(cfgAnalysis?.enabled),
+    saved,
+    info: detectedRuntime,
+  });
+  const parts = [`<span data-test="agent-engine-short-status">${escapeHtml(status.text)}</span>`];
+  if (status.detail) parts.push(`<span class="hint" data-test="agent-engine-detail">${escapeHtml(status.detail)}</span>`);
+  if (status.action) {
+    parts.push(`<span class="hint" data-test="agent-engine-action">下一动作：${escapeHtml(status.action)}</span>`);
+  }
+  parts.push(agentTechDetailsHtml([
+    saved?.id ? `已保存引擎：${saved.id}` : '',
+    saved?.version ? `已保存版本：${saved.version}` : '',
+    saved?.executable ? `已保存入口：${saved.executable}` : '',
+    detectedRuntime?.version ? `检测版本：${detectedRuntime.version}` : '',
+    detectedRuntime?.reason_code ? `原因码：${detectedRuntime.reason_code}` : '',
+    detectedRuntime?.detail ? `检测说明：${detectedRuntime.detail}` : '',
+  ]));
+  host.innerHTML = parts.filter(Boolean).join(' ');
+}
+
+/* 技术详情折叠容器（默认收起）。lines 为空时不渲染空折叠区。 */
+function agentTechDetailsHtml(lines) {
+  const items = lines.filter(Boolean);
+  if (!items.length) return '';
+  return `<details class="cfg-details" data-test="agent-tech-details"><summary>技术详情</summary><ul class="agent-tech-list">${
+    items.map(line => `<li>${escapeHtml(line)}</li>`).join('')
+  }</ul></details>`;
+}
+
+/* 检测结果（普通面只显示短状态与下一动作；原因码/路径进折叠区）。 */
+function renderDetectResult(info, saved, moved) {
+  const host = el('agent-runtime-status');
+  if (!host) return;
+  const status = moved
+    ? { text: '引擎入口已变更', action: '前往设置重新选择', actionKind: 'settings',
+        detail: '检测到的入口与已保存的入口不同，需要重新选择并授权。' }
+    : runtimeDetectStatus(info);
+  const parts = [`<span data-test="agent-detect-short-status">${escapeHtml(status.text)}</span>`];
+  if (status.detail) parts.push(`<span class="hint">${escapeHtml(status.detail)}</span>`);
+  if (status.action) {
+    parts.push(`<span class="hint" data-test="agent-detect-action">下一动作：${escapeHtml(status.action)}</span>`);
+  }
+  const detailLine = runtimeReasonDetail(info?.reason_code);
+  parts.push(agentTechDetailsHtml([
+    info?.reason_code ? `原因码：${info.reason_code}` : '',
+    detailLine ? `说明：${detailLine}` : '',
+    info?.detail ? `检测说明：${info.detail}` : '',
+    info?.version ? `检测版本：${info.version}` : '',
+    info?.executable ? `检测入口：${info.executable}` : '',
+    saved?.executable ? `已保存入口：${saved.executable}` : '',
+  ]));
+  host.innerHTML = parts.filter(Boolean).join(' ');
+}
+
 async function detectSelectedRuntime() {
   const request = beginRequest('agentRuntime');
   const button = el('agent-detect');
@@ -136,13 +230,9 @@ async function detectSelectedRuntime() {
     if (!request.current()) return;
     const info = data.runtimes?.[id];
     if (!info) throw new Error('未返回所选引擎的检测结果');
-    const label = `${info.display_name || id}${info.version ? ` v${info.version}` : ''}`;
     const moved = selected?.executable && info.executable && info.executable !== selected.executable;
-    el('agent-runtime-status').textContent = moved
-      ? `${label}：检测到的入口与已保存入口不同，请去设置重新选择。`
-      : info.availability === 'ready'
-        ? `${label} · 调用参数可用。登录与分析结果将在执行时检查。`
-        : `${label} · ${info.detail || info.reason_code || '暂不可用'}；可重新检测。`;
+    detectedRuntime = info;
+    renderDetectResult(info, selected, moved);
   } catch (e) {
     if (request.current()) el('agent-runtime-status').textContent = `检测失败：${e.message}；可重试。`;
   } finally { if (request.current()) button.disabled = false; }

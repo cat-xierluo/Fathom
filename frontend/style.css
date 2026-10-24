@@ -1354,3 +1354,13 @@ code {
 #agent-history-more[hidden] { display:none; }
 /* 查看原任务是历史列表主动作，不沿用悬停才显现的辅助按钮。 */
 #page-agent [data-agent-job] { opacity:1; white-space:nowrap; }
+
+/* ISS-203 普通面/技术详情分层：技术清单默认收在 .cfg-details 折叠区内。
+ * 列表用紧凑行距，避免把普通面撑高；长路径允许断行不撑破窄视口。 */
+.agent-tech-list,
+.analysis-tech-list {
+  margin: 4px 0 0; padding-left: 18px;
+  font-size: var(--fs-hint); color: var(--muted); line-height: 1.5;
+}
+.agent-tech-list li,
+.analysis-tech-list li { overflow-wrap: anywhere; }

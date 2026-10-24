@@ -1117,7 +1117,17 @@ async def api_analysis_detect(request: Request):
     20 秒预算）。探测只读：不发送业务数据、不改用户 CLI 配置；结果
     如实区分 not_found/broken/unsupported/ready，认证恒 unknown（
     ``--version`` 成功不解释为已登录）。分析未启用也可检测（检测是
-    选择的前置）。"""
+    选择的前置）。
+
+    指定 ``runtime_id`` 且 settings 已保存该入口时，复核**保存的那个
+    入口**（``only_extra_locations``）：不重新枚举 PATH/已知位置，绝不
+    静默换成另一个入口（ISS-198「不静默换入口」 + ISS-200「入口身份
+    复核」）。未保存入口时退回常规枚举探测。
+
+    响应体走 ``public_dict()``：能力快照按 API 错误卫生合同脱敏（不含
+    本机绝对路径与内容摘要），但保留顶层 ``executable``/``resolved_target``
+    ——它们是前端「保存 → 复核同一入口」的功能往返令牌。
+    """
     body: dict = {}
     raw = await request.body()
     if raw.strip():
@@ -1133,11 +1143,17 @@ async def api_analysis_detect(request: Request):
             raise analysis_manager.AnalysisError(
                 "unknown_runtime", f"未知的 Runtime ID：{runtime_id!r}",
                 status_code=400)
-        infos = {runtime_id: agent_runtime.detect_runtime(
-            agent_runtime.get_candidate(runtime_id))}
+        meta = agent_runtime.get_candidate(runtime_id)
+        settings = config.effective_analysis_settings()
+        saved = (settings.runtime_id == runtime_id and settings.runtime_executable)
+        if saved:
+            infos = {runtime_id: agent_runtime.recheck_runtime(
+                meta, settings.runtime_executable)}
+        else:
+            infos = {runtime_id: agent_runtime.detect_runtime(meta)}
     else:
         infos = agent_runtime.probe_all()
-    return {"runtimes": {cid: info.to_dict() for cid, info in infos.items()}}
+    return {"runtimes": {cid: info.public_dict() for cid, info in infos.items()}}
 
 
 @app.post("/api/analysis/previews")

@@ -8,7 +8,7 @@
 # 断言口径：
 #   - fathom 源码必须来自当前工作区（TESTING 的防误测要求）；
 #   - pytest 非零退出（failed/error/收集失败）经 pipefail 直接判失败；
-#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 2018）；计数变化必须
+#   - 通过数必须等于 EXPECTED_PYTEST_PASSED（默认 2119）；计数变化必须
 #     显式同步本默认值与任务证据，不允许静默漂移。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -55,6 +55,13 @@ cd "$(dirname "$0")/.."
 # 验收入口——driver 清单/失败路径/身份与清理合同（1109+126=1235 分支基线；
 # 与 main 1680 合并后为 1820；ISS-201 调用配置与输出归一接入后
 # 追加 129 项纯函数层与 65 项消费者层回归，1820 + 129 + 65 = 2014；本次窄修另加 4 项载荷通道与前端文案回归，2014 + 4 = 2018）。
+# ISS-200 +98：tests/test_runtime_compatibility.py 换入已验收的入口身份与能力层
+# 回归（11 → 92，+81：能力快照证据分层、入口指纹失效、绑定回填、脱敏形态、
+# scoped blocker 作用域、预算耗尽不读文件等），另新增
+# tests/test_iss200_production_wiring.py 20 项生产接线回归（detect 复核保存
+# 入口、同版换文件拒绝、缓存失败不致命与不覆盖成功事实、成功才回填证据、
+# 真实受控调用成功回填 VERIFIED/失败不回填、执行中任务保留原身份）：
+# 2018 + 81 + 20 = 2119。
 # ISS-147 +38：tests/test_diff_children.py 绑定历史区间的同级差分
 # /api/diff/children——任务卡三反例红测（Top25 折叠丢父级 / 父净 0 被
 # 净变化筛选漏 / browse 时点错位）+ 分页游标绑定 + 四态行/结构节点 +
@@ -83,7 +90,7 @@ cd "$(dirname "$0")/.."
 # snapshot 实点不被 latest 覆盖/单快照与前驱跨口径差分未知/次级差分基线
 # 显式/多卷同路径身份约束/缺父结构导航与 404/稳定分页与游标绑定/root=/
 # HTML 字符路径/质量字段/趋势点身份/旧行为响应形态钉住）（1297 → 1318）。
-expected="${EXPECTED_PYTEST_PASSED:-2018}"
+expected="${EXPECTED_PYTEST_PASSED:-2119}"
 # ISS-154 +59：tests/test_scan_round_coordination.py 一轮多范围五份合同
 # （多范围协调/去重/顺序/钉住口径、成员阶段与轮次状态同源推导、时间跨度
 # 非原子、容量采样接线与无 statvfs 替补、报告命名隔离与轮次通知措辞、
@@ -101,7 +108,7 @@ expected="${EXPECTED_PYTEST_PASSED:-2018}"
 # 语义与既有行、查询语义不变、重复打开幂等）（1455 → 1463）。
 # ISS-187 +17（含episode1根/父fd替换3项）：冻结完整前端图/版本命名空间边界/实际loader及manifest安全。
 # ISS-191 净增25：固定启动盘/旧坏形状与资源边界/单次发现/写前失败回退，以及显式根真实查询，实际collect1656。
-expected="${EXPECTED_PYTEST_PASSED:-2018}"
+expected="${EXPECTED_PYTEST_PASSED:-2119}"
 py="${FATHOM_PYTHON:-.runtime/bin/python}"
 
 if [ ! -x "$py" ]; then

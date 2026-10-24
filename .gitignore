@@ -4,6 +4,9 @@ reports/
 logs/
 # 开发模式运行根=项目根，用户设置会落在这里（ISS-016A）
 settings.json
+# settings.json 的锁文件：同一次设置事务的稳定 flock 载体，按设计不删除
+# （删了会分裂 inode），因此与 settings.json 同口径排除，避免误入版本库。
+.settings.lock
 
 # 内部研究文档（用户指示：参照项目的研究资料不入 Git）
 docs/research/

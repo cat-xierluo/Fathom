@@ -70,6 +70,8 @@ const ANALYSIS_JOB_REASON = {
   runtime_unknown: "已保存的解读引擎不再是受支持的候选，请重新检测并选择",
   runtime_unsupported: "该引擎未通过能力门，当前版本暂不可用，请改选其他引擎",
   runtime_unavailable: "解读引擎当前不可用，请重新检测",
+  runtime_identity_changed: "解读引擎在预览后被更换（同版本但文件已变），请重新生成预览",
+  runtime_identity_incomplete: "解读引擎入口身份无法确认，本次未执行分析；请重新检测并选择",
   upgrade_in_progress: "应用正在升级，分析已被暂停；请待升级完成后重试",
 };
 

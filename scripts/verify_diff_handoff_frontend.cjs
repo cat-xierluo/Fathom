@@ -54,7 +54,9 @@ async function read(page){return page.evaluate(()=>({a:document.querySelector('#
 async function watch(page){await page.evaluate(()=>{window.__handoffMutations=0;new MutationObserver(()=>window.__handoffMutations++).observe(document.querySelector('#sel-b'),{childList:true});window.__diag=[];});}
 async function overview(page){const response=page.waitForResponse(r=>r.url().endsWith('/api/storage/summary'));await page.click('.nav-item[data-page="overview"]');await response;await page.waitForFunction(()=>!!document.querySelector('[data-test="storage-cta"]'));}
 async function warm(page,base){
- await page.goto(base+'/#/overview');await page.waitForSelector('[data-test="storage-cta"]');await page.click('[data-test="storage-cta"]');
+ // hash 返回会复用上轮 DOM（上一场景可能留下 b4）。预热必须等默认摘要 b3
+ // 真正呈现，不能点击旧 CTA 后再等待它自动变成 b3。
+ await page.goto(base+'/#/overview');await page.waitForSelector('[data-test="storage-cta"][data-b="3"]');await page.click('[data-test="storage-cta"]');
  await page.waitForFunction(()=>document.querySelector('#sel-b').value==='3'&&document.querySelector('#sel-a').value==='1');
  await page.selectOption('#sel-b','1');await page.selectOption('#sel-a','3');await page.waitForFunction(()=>document.querySelector('#sel-b').value==='1'&&document.querySelector('#sel-a').value==='3');
  await overview(page);await watch(page);

@@ -16,7 +16,7 @@ process.stderr.write(`${ok?'PASS':'FAIL'} ${name} ${detail}\n`);
 if(!ok)throw Error(name);
 }
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
-async function wait(fn){const until=Date.now()+12000;
+async function wait(fn,timeoutMs=12000){const until=Date.now()+timeoutMs;
 while(Date.now()<until){try{if(await fn())return;
 }catch{}await delay(100);
 }throw Error('timed out');
@@ -166,9 +166,10 @@ let page;
 return{status:r.status,body:await r.json()};
 };
  try{
-  await wait(async()=>{if(exited)throw Error('child exited');
-return(await request('/health')).status===200;
-});
+  // 冷启动导入曾实测超过 20 秒；只放宽服务就绪屏障，页面断言仍用 12 秒。
+  // 子进程提前退出时立即返回并报告原始日志，不吞掉失败后继续等到超时。
+  await wait(async()=>exited||(await request('/health')).status===200,60000);
+  if(exited)throw Error(`service exited before /health: ${fs.readFileSync(path.join(tmp,'service.log'),'utf8')}`);
 const health=(await request('/health')).body;
 service.token=(await request('/api/bootstrap')).body.token;
   record(`${kind}-health-bound`,health.pid===child.pid&&health.port===port&&health.runtime_mode===mode,`pid=${child.pid} port=${port}`);

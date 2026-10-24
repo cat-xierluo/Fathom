@@ -7,6 +7,18 @@ const { once } = require('events');
 const fs=require('fs'),os=require('os'),path=require('path');
 const evidence=fs.mkdtempSync(path.join(os.tmpdir(),'fathom-iss189-'));
 const checks=[];const record=(name,ok,detail='')=>{checks.push({name,ok:!!ok,detail});console.error(`${ok?'PASS':'FAIL'} ${name} ${detail}`);};
+// ISS-201：本切片新增的失败原因码必须在生产组件里有中文说明，
+// 否则用户会直接看到机器码。断言直接读生产源文件，不复制文案。
+function verifyNewReasonTexts(){
+ const src=fs.readFileSync(path.join(__dirname,'..','frontend','modules','components','analysis-panel.js'),'utf8');
+ const block=(src.match(/const ANALYSIS_JOB_REASON = \{([\s\S]*?)\n\};/)||[])[1]||'';
+ const codes=['profile_required_flags_missing','profile_protocol_mismatch','profile_payload_channel_violation','protocol_tool_rejected','protocol_terminal_error','protocol_terminal_mismatch','protocol_ambiguous_terminal','protocol_ambiguous_final','protocol_unknown_permission_request','protocol_missing_terminal','protocol_missing_final','protocol_duplicate_conflict','protocol_unsupported_fragment','protocol_single_json_required','protocol_no_parsable_events'];
+ const missing=codes.filter(c=>!new RegExp(c+'\\s*:\\s*"[^"]{4,}"').test(block));
+ record('agent.new-reason-codes-have-user-text',missing.length===0,'missing='+JSON.stringify(missing));
+ const forbidden=/(可回收|回收空间|垃圾|删除|清理|自动重试|会自动重试)/;
+ const offenders=codes.filter(c=>{const m=block.match(new RegExp(c+'\\s*:\\s*"([^"]*)"'));return m&&forbidden.test(m[1]);});
+ record('agent.new-reason-codes-avoid-misleading-words',offenders.length===0,'offenders='+JSON.stringify(offenders));
+}
 async function verifyLateRestore(browser) {
  for (const intent of ['selection','history']) {
   let release, entered;
@@ -232,6 +244,7 @@ async function main(){
   await verifyLateRestore(browser);
   await verifyHistoricalRerunRestore(browser);
   await verifyEvidenceControls(browser);
+  verifyNewReasonTexts();
   record('agent.no-unhandled-page-errors',errors.length===0,errors.join(';'));
  }finally{await browser.close();fixture.server.close();await once(fixture.server,'close');}
  const failed=checks.filter(c=>!c.ok).length;console.log(JSON.stringify({ok:!failed,passed:checks.length-failed,failed,evidence,checks},null,2));if(failed)process.exitCode=1;

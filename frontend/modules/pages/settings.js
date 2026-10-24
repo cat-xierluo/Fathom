@@ -1196,6 +1196,16 @@ const ANALYSIS_AUTH_BADGES = {
   unknown: { text: "认证待确认", cls: "warn" },
 };
 
+/* ISS-203：普通面只显示短状态 + 下一动作；原因码/detail/路径/版本收进
+ * 默认折叠的技术详情区。技术细节容器复用既有 .cfg-details 范式。 */
+function analysisTechDetailsHtml(lines, testId) {
+  const items = lines.filter(Boolean);
+  if (!items.length) return "";
+  return `<details class="cfg-details" data-test="${testId}"><summary>技术详情</summary><ul class="analysis-tech-list">${
+    items.map(line => `<li>${escapeHtml(line)}</li>`).join("")
+  }</ul></details>`;
+}
+
 function _ensureAnalysisPanel() {
   const host = document.getElementById("settings-analysis-extra");
   if (!host) return null;
@@ -1251,7 +1261,6 @@ function renderAnalysisRuntimes(body, cfgAnalysis, detectResult, detecting) {
     }
     const avail = ANALYSIS_AVAIL_BADGES[info.availability] ||
       { text: String(info.availability), cls: "miss" };
-    const reasonText = ANALYSIS_REASON_LABELS[info.reason_code] || info.reason_code || "";
     const capNote = ANALYSIS_RUNTIME_CAP_NOTES[id];   // 仅 ready 家登记（DEC-030 披露）
     const auth = ANALYSIS_AUTH_BADGES[info.auth_status];
     const selectable = info.availability === "ready";
@@ -1260,6 +1269,16 @@ function renderAnalysisRuntimes(body, cfgAnalysis, detectResult, detecting) {
     const isCurrent = runtime && runtime.id === id;
     const drift = isCurrent && info.executable && runtime.executable &&
       info.executable !== runtime.executable;
+	// ISS-203：未登记的 reason_code 不裸出到普通面；已登记的用中文文案。
+	// 机器码、检测说明、路径、版本一律进默认折叠的技术详情区。
+	const plainReason = ANALYSIS_REASON_LABELS[info.reason_code] || "";
+	const techDetails = analysisTechDetailsHtml([
+		info.reason_code ? `原因码：${info.reason_code}` : "",
+		info.detail ? `检测说明：${info.detail}` : "",
+		info.executable ? `检测入口：${info.executable}` : "",
+		info.resolved_target ? `解析入口：${info.resolved_target}` : "",
+		info.capability_cap ? `能力上限：${info.capability_cap}` : "",
+	], "analysis-runtime-tech-details");
     return `
       <li class="analysis-runtime-row${selectable ? "" : " analysis-runtime-disabled"}"
           data-test="analysis-runtime-row" data-runtime-id="${escapeHtml(id)}"
@@ -1272,9 +1291,10 @@ function renderAnalysisRuntimes(body, cfgAnalysis, detectResult, detecting) {
           ${active ? `<span class="quality-chip ok" data-test="analysis-active-badge">当前使用</span>` : ""}
           ${versionText ? `<span class="hint">${versionText}</span>` : ""}
         </div>
-        ${reasonText ? `<p class="analysis-reason" data-test="analysis-reason">${escapeHtml(reasonText)}${info.detail && (info.availability !== "ready" || info.reason_code === "compatible_capabilities") ? `：${escapeHtml(info.detail)}` : ""}</p>` : ""}
+	${plainReason ? `<p class="analysis-reason" data-test="analysis-reason">${escapeHtml(plainReason)}</p>` : ""}
         ${selectable && capNote ? `<p class="analysis-reason" data-test="analysis-cap-note">${escapeHtml(capNote)}</p>` : ""}
         ${drift ? `<p class="analysis-reason cfg-error">检测到的入口与已保存路径不同；重新选择会更新保存的引擎。</p>` : ""}
+	${techDetails}
         ${selectable ? `
         <div class="analysis-runtime-actions">
           <button type="button" class="btn" data-test="analysis-pick-btn" data-runtime-id="${escapeHtml(id)}">

@@ -2,6 +2,9 @@
 import { fetchJSON, beginRequest, invalidateRequest, apiPost, apiSend } from "../request.js";
 import { fmtKB, fmtDelta, escapeHtml } from "../format.js";
 import { icon } from "../../icons.js";
+import {
+  runtimeReasonStatus, runtimeReasonDetail, runtimeActionLabel,
+} from "../runtime-status.js";
 export function createAnalysisPanel(options) {
 const domain = options.domain || "analysis";
 const pollDomain = domain + "Poll";
@@ -63,6 +66,11 @@ const ANALYSIS_JOB_REASON = {
   owner_exit: "服务中断：本次分析未完成，不会自动重试",
   startup_aborted: "分析在启动阶段中断，未产生任何解读",
   plan_identity_unsupported: "所选区间跨计划、混搭或计量版本不一致，不能解读变化；请改选同一计划内的两个快照",
+  runtime_not_configured: "尚未选择解读引擎，请先在设置中完成检测与选择",
+  runtime_unknown: "已保存的解读引擎不再是受支持的候选，请重新检测并选择",
+  runtime_unsupported: "该引擎未通过能力门，当前版本暂不可用，请改选其他引擎",
+  runtime_unavailable: "解读引擎当前不可用，请重新检测",
+  upgrade_in_progress: "应用正在升级，分析已被暂停；请待升级完成后重试",
 };
 
 /* 事实条目 kind 的中文说明（与 facts 包 entry_legend 同口径）。 */
@@ -347,6 +355,41 @@ function handleAnalysisSendError(e) {
     renderAnalysis({ state: "disabled" });
     return;
   }
+  // ISS-203：引擎类 reason_code 有专用普通面文案与下一动作
+  // （runtime_not_configured / runtime_unknown / runtime_unsupported /
+  //  runtime_unavailable / upgrade_in_progress）。
+  if (code === "upgrade_in_progress") {
+    renderAnalysis({ state: "idle" });
+    const body = analysisBodyEl();
+    const note = document.createElement("p");
+    note.className = "hint cfg-error";
+    note.setAttribute("data-test", "analysis-upgrade-in-progress");
+    const st = runtimeReasonStatus(code);
+    note.textContent = `${st.text}；下一动作：${st.action}。`;
+    body.prepend(note);
+    return;
+  }
+  const runtimeStatus = runtimeReasonStatus(code);
+  if (runtimeStatus) {
+    renderAnalysis({ state: "idle" });
+    const body = analysisBodyEl();
+    const note = document.createElement("p");
+    note.className = "hint cfg-error";
+    note.setAttribute("data-test", "analysis-runtime-blocked");
+    note.textContent = `${runtimeStatus.text}；下一动作：${runtimeStatus.action}。`;
+    body.prepend(note);
+    if (runtimeStatus.actionKind === "settings") {
+      const row = document.createElement("div");
+      row.className = "perm-link-row";
+      row.innerHTML = `<button type="button" class="btn" data-test="analysis-goto-settings-2">${icon("settings", 14)} ${escapeHtml(runtimeActionLabel(runtimeStatus.actionKind))}</button>`;
+      body.prepend(row);
+      row.querySelector("[data-test='analysis-goto-settings-2']").addEventListener("click", () => {
+        window.__fathomSettingsSectionPending = "analysis";
+        location.hash = "#/settings";
+      });
+    }
+    return;
+  }
   // 其余（403 引擎不可用 / 404 快照失效 / 400 口径）：可读原因 + 回未分析
   const sel = analysisSel();
   renderAnalysis({ state: "idle" });
@@ -460,13 +503,32 @@ function renderAnalysisFailure({ job }) {
     : status === "timed_out" ? "分析超时"
       : status === "interrupted" ? "分析被中断"
         : status === "cancelling" ? "正在取消" : "分析失败";
+  // ISS-203 普通面分层：普通面只给「原因说明 + 下一动作」，
+  // 机器码 reason_code 与任务技术细节收进默认折叠区。
+  const runtimeStatus = runtimeReasonStatus(code);
+  const plainReason = runtimeStatus
+    ? runtimeStatus.text
+    : (ANALYSIS_JOB_REASON[code] || "未知原因");
+  const nextAction = runtimeStatus ? runtimeStatus.action : "重新生成预览";
+  const actionKind = runtimeStatus ? runtimeStatus.actionKind : "retry";
+  const techLines = [
+    code ? `原因码：${code}` : "",
+    code && !runtimeStatus ? `说明：${reason}` : "",
+    code && runtimeStatus ? `说明：${runtimeReasonDetail(code) || reason}` : "",
+    job?.duration_ms != null ? `耗时：${Math.round(Number(job.duration_ms) / 1000)} 秒` : "",
+    job?.finished_at ? `结束时间：${job.finished_at}` : "",
+  ].filter(Boolean);
   body.innerHTML = `
     <div data-test="analysis-state-failure">
       <p class="hint" data-test="analysis-failure-headline"><strong>${escapeHtml(headline)}</strong></p>
-      <p class="hint" data-test="analysis-failure-reason">原因：${escapeHtml(reason)}${code ? `（${escapeHtml(code)}）` : ""}</p>
+      <p class="hint" data-test="analysis-failure-reason">原因：${escapeHtml(plainReason)}</p>
+      <p class="hint" data-test="analysis-failure-next-action">下一动作：${escapeHtml(nextAction)}</p>
       <p class="hint">失败不会产生或改动任何解读记录；区间 ${rangeText} 的基础事实不受影响。</p>
+      ${techLines.length ? `<details class="cfg-details" data-test="analysis-failure-tech-details"><summary>技术详情</summary><ul class="analysis-tech-list">${
+        techLines.map(line => `<li>${escapeHtml(line)}</li>`).join('')
+      }</ul></details>` : ""}
       <div class="perm-link-row">
-        <button type="button" class="btn" data-test="analysis-retry-btn">${icon("activity", 14)} 重新生成预览</button>
+        <button type="button" class="btn" data-test="analysis-retry-btn">${icon("activity", 14)} ${escapeHtml(runtimeActionLabel(actionKind))}</button>
       </div>
     </div>`;
   body.querySelector("[data-test='analysis-retry-btn']").addEventListener("click", startAnalysisPreview);
@@ -658,9 +720,33 @@ async function startAnalysisPreview() {
     if (!request.current()) return;
     const code = e.reason_code;
     if (code === "analysis_disabled") { renderAnalysis({ state: "disabled" }); return; }
-    if (code && code.startsWith("runtime_")) {
+    if (code === "upgrade_in_progress") {
       body.innerHTML = `
-        <p class="hint cfg-error" data-test="analysis-runtime-blocked">无法生成预览：${escapeHtml(e.message)}</p>
+        <p class="hint cfg-error" data-test="analysis-upgrade-in-progress">${escapeHtml(runtimeReasonStatus(code).text)}；下一动作：${escapeHtml(runtimeReasonStatus(code).action)}。</p>
+        <div class="perm-link-row">
+          <button type="button" class="btn" data-test="analysis-retry-btn-2">${icon("activity", 14)} 重新生成预览</button>
+        </div>`;
+      body.querySelector("[data-test='analysis-retry-btn-2']").addEventListener("click", startAnalysisPreview);
+      return;
+    }
+    const runtimeStatus = runtimeReasonStatus(code);
+    if (runtimeStatus) {
+      body.innerHTML = `
+        <p class="hint cfg-error" data-test="analysis-runtime-blocked">${escapeHtml(runtimeStatus.text)}；下一动作：${escapeHtml(runtimeStatus.action)}。</p>
+        <div class="perm-link-row">
+          <button type="button" class="btn" data-test="analysis-goto-settings-2">${icon("settings", 14)} ${escapeHtml(runtimeActionLabel(runtimeStatus.actionKind))}</button>
+        </div>`;
+      body.querySelector("[data-test='analysis-goto-settings-2']").addEventListener("click", () => {
+        window.__fathomSettingsSectionPending = "analysis";
+        location.hash = "#/settings";
+      });
+      return;
+    }
+    if (code && code.startsWith("runtime_")) {
+      // 未登记的 runtime_* 码：普通面不给机器码，折叠区里保留原文供排查。
+      body.innerHTML = `
+        <p class="hint cfg-error" data-test="analysis-runtime-blocked">解读引擎当前不可用；下一动作：重新检测。</p>
+        <details class="cfg-details" data-test="analysis-runtime-tech-details"><summary>技术详情</summary><ul class="analysis-tech-list"><li>原因码：${escapeHtml(code)}</li><li>说明：${escapeHtml(e.message)}</li></ul></details>
         <div class="perm-link-row">
           <button type="button" class="btn" data-test="analysis-goto-settings-2">${icon("settings", 14)} 前往设置重新检测</button>
         </div>`;

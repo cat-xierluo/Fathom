@@ -19,6 +19,92 @@ function verifyNewReasonTexts(){
  const offenders=codes.filter(c=>{const m=block.match(new RegExp(c+'\\s*:\\s*"([^"]*)"'));return m&&forbidden.test(m[1]);});
  record('agent.new-reason-codes-avoid-misleading-words',offenders.length===0,'offenders='+JSON.stringify(offenders));
 }
+// ISS-203 切片 A：引擎状态相关的 reason_code 必须有普通中文文案与下一动作，
+// 且机器码不得出现在普通面。断言读生产源文件，不复制文案。
+const ISS203_RUNTIME_CODES=['runtime_not_configured','runtime_unknown','runtime_unsupported','runtime_unavailable','upgrade_in_progress'];
+// 误导词表：不得暗示「可回收/自动重试」等结论（与既有禁用词表同口径）。
+const ISS203_FORBIDDEN=/(可回收|回收空间|垃圾|删除|清理|自动重试|会自动重试)/;
+function verifyRuntimeStatusCopy(){
+ const src=fs.readFileSync(path.join(__dirname,'..','frontend','modules','runtime-status.js'),'utf8');
+ const missingText=ISS203_RUNTIME_CODES.filter(c=>!new RegExp(c+'\\s*:\\s*\\{[\\s\\S]{0,200}?text\\s*:\\s*"[^"]{4,}"').test(src));
+ record('agent.runtime-codes-have-user-text',missingText.length===0,'missing='+JSON.stringify(missingText));
+ const missingAction=ISS203_RUNTIME_CODES.filter(c=>{
+  const m=src.match(new RegExp(c+'\\s*:\\s*\\{([\\s\\S]*?)\\n\\s*\\},'));
+  return !m||!/action\s*:\s*"[^"]{2,}"/.test(m[1]);
+ });
+ record('agent.runtime-codes-have-next-action',missingAction.length===0,'missing='+JSON.stringify(missingAction));
+ // 普通面文案不得含机器码自身或误导词（可回收/自动重试等）。
+ const offenders=ISS203_RUNTIME_CODES.filter(c=>{
+  const m=src.match(new RegExp(c+'\\s*:\\s*\\{([\\s\\S]*?)\\n\\s*\\},'));
+  if(!m)return false;
+  return /text\s*:\s*"[^"]*(runner_|profile_|protocol_)/.test(m[1])||ISS203_FORBIDDEN.test(m[1]);
+ });
+ record('agent.runtime-codes-avoid-machine-codes',offenders.length===0,'offenders='+JSON.stringify(offenders));
+ // 普通面文案不得含本机路径形态（路径属于技术详情）。
+ const pathOffenders=ISS203_RUNTIME_CODES.filter(c=>{
+  const m=src.match(new RegExp(c+'\\s*:\\s*\\{([\\s\\S]*?)\\n\\s*\\},'));
+  return m&&/text\s*:\s*"[^"]*(\/[a-z]+\/|[A-Za-z]:\\\\)/.test(m[1]);
+ });
+ record('agent.runtime-codes-no-paths-in-plain-text',pathOffenders.length===0,'offenders='+JSON.stringify(pathOffenders));
+}
+// ISS-203：普通面分层——技术详情默认折叠、机器码不裸出。
+async function verifyLayeredStatus(browser){
+ const fixture=createFixture({configRuntimeObject:true,intercept(req,res,url){
+  if(url.pathname==='/api/snapshots'){json(res,200,SNAPSHOTS);return true;}
+  if(url.pathname==='/api/analysis/history'){
+   json(res,200,{jobs:[{job_id:'machine-code-job',a_snapshot_id:1,b_snapshot_id:2,status:'failed',reason_code:'runner_nonzero_exit',terminal:true,created_at:'2026-09-10T10:00:00',runtime:{id:'claude-code',version:'2.1.237'},revoked:false,analysis_id:null}],total:1,next_offset:null});return true;
+  }
+  return false;
+ }});
+ fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='enabled';
+ fixture.server.listen(0,'127.0.0.1');await once(fixture.server,'listening');const page=await browser.newPage({viewport:{width:1220,height:820}});
+ try {
+  await page.goto(`http://127.0.0.1:${fixture.server.address().port}/#/agent`);
+  await page.waitForSelector('[data-agent-job="machine-code-job"]');
+  // 普通面（历史表可见文本）不得出现机器码。
+  const plainText=await page.locator('#agent-history-body').innerText();
+  record('agent.reason-code-not-in-plain-surface',!plainText.includes('runner_nonzero_exit'),plainText.replace(/\s+/g,' ').slice(0,90));
+  // 机器码必须仍可在技术详情里查到（折叠内），不得被丢弃。
+  const details=page.locator('#agent-history-body details.cfg-details');
+  record('agent.tech-detail-container-exists',await details.count()>=1,'details='+await details.count());
+  record('agent.tech-detail-collapsed-by-default',await details.count()>=1&&await details.first().evaluate(n=>!n.hasAttribute('open')));
+  // 折叠内容不在 innerText 里（collapsed），用 textContent 读折叠区文字。
+  const detailText=await details.first().textContent().catch(()=>'');
+  record('agent.machine-code-kept-in-tech-detail',detailText.includes('runner_nonzero_exit'),detailText.replace(/\s+/g,' ').slice(0,90));
+  // 普通面须给短状态 + 下一动作；技术细节折叠默认收起。
+  const summary=await page.locator('#agent-engine-summary').innerText();
+  record('agent.engine-summary-has-short-status',summary.trim().length>0&&summary.trim().length<=60,JSON.stringify(summary.trim()));
+  record('agent.engine-summary-has-next-action',summary.includes('下一动作'),JSON.stringify(summary.trim()));
+  const engineTech=page.locator('#agent-engine-summary [data-test="agent-tech-details"]');
+  record('agent.engine-tech-detail-collapsed-by-default',await engineTech.count()===1&&await engineTech.evaluate(n=>!n.hasAttribute('open')));
+  const plainDetail=await page.locator('#agent-runtime-status').innerText();
+  record('agent.plain-surface-no-machine-code',!plainDetail.includes('runner_nonzero_exit')&&!plainDetail.includes('verified_version'),JSON.stringify(plainDetail.trim().slice(0,90)));
+ } finally {await page.close();fixture.server.close();await once(fixture.server,'close');}
+}
+
+// ISS-203：检测结果分三层——普通面短状态+下一动作；原因码/路径进折叠区。
+async function verifyDetectLayering(browser){
+ const fixture=createFixture({configRuntimeObject:true,intercept(req,res,url){
+  if(url.pathname==='/api/snapshots'){json(res,200,SNAPSHOTS);return true;}
+  if(url.pathname==='/api/analysis/history'){json(res,200,{jobs:[],total:0,next_offset:null});return true;}
+  return false;
+ }});
+ fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='enabled';
+ fixture.server.listen(0,'127.0.0.1');await once(fixture.server,'listening');const page=await browser.newPage({viewport:{width:1220,height:820}});
+ try {
+  await page.goto(`http://127.0.0.1:${fixture.server.address().port}/#/agent`);
+  await page.waitForSelector('[data-test="agent-engine-short-status"]');
+  await page.click('#agent-detect');
+  await page.waitForSelector('[data-test="agent-detect-short-status"]');
+  const plain=await page.locator('#agent-runtime-status').innerText();
+  record('agent.detect-plain-has-short-status',plain.includes('可用'),JSON.stringify(plain.replace(/\s+/g,' ').trim().slice(0,60)));
+  record('agent.detect-plain-no-path',!plain.includes('/fixture/bin'),JSON.stringify(plain.replace(/\s+/g,' ').trim().slice(0,60)));
+  const tech=page.locator('#agent-runtime-status [data-test="agent-tech-details"]');
+  record('agent.detect-tech-detail-collapsed-by-default',await tech.count()===1&&await tech.evaluate(n=>!n.hasAttribute('open')));
+  const techText=await tech.textContent();
+  record('agent.detect-tech-keeps-reason-code',techText.includes('verified_version')&&techText.includes('/fixture/bin'),techText.replace(/\s+/g,' ').trim().slice(0,90));
+ } finally {await page.close();fixture.server.close();await once(fixture.server,'close');}
+}
 async function verifyLateRestore(browser) {
  for (const intent of ['selection','history']) {
   let release, entered;
@@ -180,11 +266,19 @@ async function main(){
   await page.click('#agent-settings');await wait('#settings-analysis-extra');record('agent.configuration-stays-settings',await visible('#page-settings')&&await visible('#settings-analysis-extra'));
   snaps=[...SNAPSHOTS];fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='enabled';
   await page.click('.nav-item[data-page="agent"]');await wait('#agent-b option');await choose('agent-a',1);await wait('#agent-analysis-body [data-test="analysis-state-idle"]');
-  record('agent.engine-object-summary', (await page.locator('#agent-engine-summary').textContent()).includes('claude-code v2.1.237') && !(await page.locator('#agent-engine-summary').textContent()).includes('[object Object]') && !(await page.locator('#agent-engine-summary').textContent()).includes('/fixture/bin'));
+  // ISS-203：普通面只给短状态；引擎名/版本/路径进默认折叠的技术详情区。
+  // innerText 不含折叠内容，故普通面判定用 innerText、技术详情用 textContent。
+  const enginePlain=await page.locator('#agent-engine-summary').innerText();
+  const engineTech=await page.locator('#agent-engine-summary [data-test="agent-tech-details"]').textContent().catch(()=> '');
+  record('agent.engine-object-summary', !enginePlain.includes('[object Object]') && !enginePlain.includes('/fixture/bin') && !enginePlain.includes('2.1.237') && engineTech.includes('claude-code') && engineTech.includes('2.1.237'), JSON.stringify({plain:enginePlain.replace(/\s+/g,' ').trim().slice(0,60),tech:engineTech.replace(/\s+/g,' ').trim().slice(0,80)}));
   const detectsBefore = fixture.state.detects;
   await page.click('#agent-detect');
-  await page.waitForFunction(() => document.querySelector('#agent-runtime-status').textContent.includes('调用参数可用'));
-  record('agent.recheck-selected-runtime', fixture.state.detects === detectsBefore + 1 && (await page.locator('#agent-runtime-status').textContent()).includes('2.1.237'));
+  // ISS-203：检测结果的普通面是短状态（可用）+ 下一动作；
+  // 版本/路径/原因码在默认折叠的技术详情区。
+  await page.waitForSelector('[data-test="agent-detect-short-status"]');
+  const detectPlain=await page.locator('#agent-runtime-status').innerText();
+  const detectTech=await page.locator('#agent-runtime-status [data-test="agent-tech-details"]').textContent().catch(()=> '');
+  record('agent.recheck-selected-runtime', fixture.state.detects === detectsBefore + 1 && detectPlain.includes('可用') && detectTech.includes('2.1.237'), JSON.stringify({plain:detectPlain.replace(/\s+/g,' ').trim().slice(0,50),tech:detectTech.replace(/\s+/g,' ').trim().slice(0,70)}));
   record('agent.recheck-keeps-range', await page.inputValue('#agent-a') === '1' && await page.inputValue('#agent-b') === '3');
   record('agent.valid-range-ready',(await page.locator('#agent-range-status').textContent()).includes('#1 → #3'));
   await page.reload();await wait('#agent-analysis-body [data-test="analysis-state-idle"]');record('agent.selected-range-restored',await page.inputValue('#agent-a')==='1'&&await page.inputValue('#agent-b')==='3');
@@ -244,7 +338,10 @@ async function main(){
   await verifyLateRestore(browser);
   await verifyHistoricalRerunRestore(browser);
   await verifyEvidenceControls(browser);
+  await verifyLayeredStatus(browser);
+  await verifyDetectLayering(browser);
   verifyNewReasonTexts();
+  verifyRuntimeStatusCopy();
   record('agent.no-unhandled-page-errors',errors.length===0,errors.join(';'));
  }finally{await browser.close();fixture.server.close();await once(fixture.server,'close');}
  const failed=checks.filter(c=>!c.ok).length;console.log(JSON.stringify({ok:!failed,passed:checks.length-failed,failed,evidence,checks},null,2));if(failed)process.exitCode=1;

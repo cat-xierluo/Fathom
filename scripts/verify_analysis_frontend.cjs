@@ -234,6 +234,8 @@ function createFixture({ intercept, configRuntimeObject = false } = {}) {
     savedRuntime: null,
     slowPreviewMs: 0,
     previewOnceArmed: false,
+    previewReason: null,            // ISS-203：预览接口的一次性引擎错误码
+    previewReasonBudget: 0,         // 该错误还剩几次响应机会（覆盖 403 换令牌重试）
     jobsPosted: 0,                  // POST /api/analysis/jobs 计数（R4 断言）
     postedKeys: [],                 // 每次 POST 的 idempotency_key（ISS-137：重试是否复用同键）
     replayHits: 0,                  // 同键重放命中次数（replayed=true 分支）
@@ -295,6 +297,14 @@ function createFixture({ intercept, configRuntimeObject = false } = {}) {
       if (q.has("sc")) state.scenario = q.get("sc");
       if (q.has("slowPreviewMs")) state.slowPreviewMs = Number(q.get("slowPreviewMs")) || 0;
       if (q.get("armPreview409") === "1") state.previewOnceArmed = true;
+      // ISS-203：预览接口按指定 reason_code 拒绝一次（引擎类错误分流）。
+      if (q.has("previewReason")) {
+        state.previewReason = q.get("previewReason");
+        // 前端 apiSend 对 403 会换新令牌重试一次（既有生产行为），因此
+        // 合成错误必须覆盖两次请求，否则首次被消费后重试会成功，
+        // 页面呈现预览态而不是错误态（夹具假反例）。
+        state.previewReasonBudget = 2;
+      }
       if (q.has("holdRunning")) state.holdRunning = q.get("holdRunning") === "1";
       if (q.has("failJobsLookup")) state.failJobsLookup = q.get("failJobsLookup") === "1";
       // ISS-137：武装「受理后丢响应」——仅影响下一次 POST /api/analysis/jobs，
@@ -467,6 +477,16 @@ function createFixture({ intercept, configRuntimeObject = false } = {}) {
         state.previewOnceArmed = false;
         return json(res, 409, { reason_code: "preview_expired",
                                 detail: "预览已过期（TTL 5 分钟）；请重新生成预览" });
+      }
+      if (state.previewReason) {
+        // ISS-203：引擎类 reason_code 分流（403 拒绝 + 稳定机读码）。
+        const code = state.previewReason;
+        state.previewReasonBudget -= 1;
+        if (state.previewReasonBudget <= 0) {
+          state.previewReason = null;
+          state.previewReasonBudget = 0;
+        }
+        return json(res, 403, { reason_code: code, detail: `合成引擎错误 ${code}` });
       }
       const a = Number(url.searchParams.get("a") ?? JSON.parse(body || "{}").a);
       const b = Number(url.searchParams.get("b") ?? JSON.parse(body || "{}").b);
@@ -707,6 +727,24 @@ async function main() {
     const hermesBadges = await page.textContent(
       "[data-test='analysis-runtime-row'][data-runtime-id='hermes-agent']");
     record("settings.not-found-shown", hermesBadges.includes("未安装"), "");
+    /* ---------- ISS-203 切片 A：普通面 / 技术详情分层 ----------
+     * 普通面只显示短状态与下一动作；机器码、检测说明与路径收进默认折叠的
+     * <details class="cfg-details">。innerText 不含折叠内容，故普通面判定
+     * 用 innerText、折叠内容用 textContent。 */
+    const zRow = page.locator("[data-test='analysis-runtime-row'][data-runtime-id='zcode']");
+    const zPlain = await zRow.innerText();
+    const zTech = zRow.locator("[data-test='analysis-runtime-tech-details']");
+    record("settings.plain-surface-no-reason-code",
+      !zPlain.includes("tool_disable_unverifiable"),
+      zPlain.replace(/\s+/g, " ").trim().slice(0, 70));
+    record("settings.plain-surface-no-path", !zPlain.includes("/fixture/bin"),
+      zPlain.replace(/\s+/g, " ").trim().slice(0, 70));
+    record("settings.tech-detail-collapsed-by-default",
+      await zTech.count() === 1 && await zTech.evaluate((n) => !n.hasAttribute("open")));
+    const zTechText = await zTech.textContent().catch(() => "");
+    record("settings.tech-detail-keeps-reason-code",
+      zTechText.includes("tool_disable_unverifiable") && zTechText.includes("/fixture/bin"),
+      zTechText.replace(/\s+/g, " ").trim().slice(0, 80));
     const pickable = await page.$$("[data-test='analysis-pick-btn']");
     record("settings.only-ready-pickable", pickable.length === 2, `pickable=${pickable.length}`);
     await page.screenshot({ path: path.join(evidenceDir, "settings-detect-980x640.png") });
@@ -913,6 +951,23 @@ async function main() {
     record("changes.failure-readable (R3)",
       failText.includes("分析超时") && failText.includes("runner_timed_out"),
       failText.replace(/\s+/g, " ").slice(0, 80));
+    /* ---------- ISS-203 切片 A：失败态分层 ----------
+     * 普通面（innerText，不含折叠内容）只给原因说明与下一动作，
+     * 机器码 runner_timed_out 收进默认折叠的技术详情区。 */
+    const failPlain = await page.locator("[data-test='analysis-state-failure']").innerText();
+    record("changes.failure-plain-no-machine-code",
+      !failPlain.includes("runner_timed_out"),
+      failPlain.replace(/\s+/g, " ").trim().slice(0, 70));
+    record("changes.failure-plain-has-next-action",
+      failPlain.includes("下一动作"),
+      failPlain.replace(/\s+/g, " ").trim().slice(0, 70));
+    const failTech = page.locator("[data-test='analysis-failure-tech-details']");
+    record("changes.failure-tech-collapsed-by-default",
+      await failTech.count() === 1 && await failTech.evaluate((n) => !n.hasAttribute("open")));
+    const failTechText = await failTech.textContent().catch(() => "");
+    record("changes.failure-tech-keeps-machine-code",
+      failTechText.includes("runner_timed_out"),
+      failTechText.replace(/\s+/g, " ").trim().slice(0, 70));
     record("changes.failure-retry-offered",
       await page.isVisible("[data-test='analysis-retry-btn']"), "重试入口");
     await page.screenshot({ path: path.join(evidenceDir, "changes-failure-980x640.png") });
@@ -1379,6 +1434,41 @@ async function main() {
     record("changes.preview-409-recoverable",
       st.includes("生成发送预览") || st.includes("重新生成预览"),
       st.replace(/\s+/g, " ").slice(0, 60));
+
+    /* ---------- ISS-203 切片 A：引擎类 reason_code 的普通面文案 ----------
+     * 五个码各有普通中文文案与下一动作；普通面不得出现机器码，
+     * 也不得把后端 detail 原样透出。 */
+    const RUNTIME_CASES = [
+      ["runtime_not_configured", "尚未选择解读引擎", "前往设置选择引擎"],
+      ["runtime_unknown", "已保存的引擎不再受支持", "前往设置重新检测并选择"],
+      ["runtime_unsupported", "该引擎暂不支持变化解读", "前往设置改选其他引擎"],
+      ["runtime_unavailable", "解读引擎当前不可用", "重新检测"],
+      ["upgrade_in_progress", "应用正在升级", "升级完成后重试"],
+    ];
+    for (const [code, expectText, expectAction] of RUNTIME_CASES) {
+      // 每个用例从干净的未分析态起（上一个用例可能停在错误态，
+      // 那里没有「生成发送预览」入口）。
+      await page.reload();
+      await waitForText(page, "#diff-status", "已对比快照");
+      await page.waitForSelector("[data-test='analysis-preview-btn']", { timeout: 10000 })
+        .catch(() => {});
+      await page.evaluate((c) => fetch(`/__set?previewReason=${encodeURIComponent(c)}`),
+        code);
+      await page.click("[data-test='analysis-preview-btn']", { timeout: 10000 }).catch(() => {});
+      const shown = await page.waitForSelector(
+        "[data-test='analysis-runtime-blocked'], [data-test='analysis-upgrade-in-progress']",
+        { timeout: 8000 }).then(() => true).catch(() => false);
+      const plain = shown
+        ? await page.locator("[data-test='analysis-body']").innerText() : "";
+      record(`changes.runtime-code-plain-text[${code}]`,
+        shown && plain.includes(expectText) && plain.includes(expectAction) &&
+          !plain.includes(code),
+        plain.replace(/\s+/g, " ").trim().slice(0, 80));
+      // 未登记/未知 runtime_* 码：机器码只进折叠区，普通面不裸出。
+      record(`changes.runtime-code-next-action[${code}]`,
+        shown && plain.includes("下一动作"),
+        plain.replace(/\s+/g, " ").trim().slice(0, 80));
+    }
 
     /* ============ 视口 1220×820：关键态复验 ============ */
     const page2 = await browser.newPage({ viewport: { width: 1220, height: 820 } });

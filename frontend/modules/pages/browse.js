@@ -34,6 +34,7 @@ import { initChart, showChartMessage } from "../charts.js";
 import { initPageTabs } from "../tabs.js";
 import { createDirectoryDetail } from "../directory-detail.js";
 import { state } from "../state.js";
+import { datasetKey } from "../dataset.js";
 import { icon } from "../../icons.js";
 
 /* ISS-084：图表色与 style.css :root 语义 token 同源（单一色源，不硬编码）。
@@ -82,8 +83,9 @@ function renderSunburstContext(contextEl, t, snapList) {
 }
 
 /* ISS-206：三页共用的默认落点；只选默认，不排序/裁剪目录，也不改显式选择。
- * 每个根先取最新快照，再按 /、Data、普通内容根、系统辅助卷依次比较；
- * 同类根比较已记录目录数，最后比较时间，不能因旧快照目录数更多而回到旧时点。 */
+ * 先按 datasetKey 选出有至少两个快照的数据集，每组取最新快照作为代表；
+ * 再按 /、Data、普通内容根、系统辅助卷比较，同类根比较目录数与时间。
+ * 确实没有可比数据集时才按每根最新快照回退，保留单快照场景的默认落点。 */
 export function preferredContentSnapshot(snaps = []) {
   const rootOf = s => String(s.root || '').replace(/\/+$/, '') || (s.root ? '/' : '');
   const newer = (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) || Number(a.id || 0) - Number(b.id || 0);
@@ -94,13 +96,18 @@ export function preferredContentSnapshot(snaps = []) {
     if (root === '/System/Volumes/Data') return 2;
     return /^\/System\/Volumes\/(VM|Preboot|Update)(\/|$)/.test(root) ? 0 : 1;
   };
-  const latest = new Map();
+  const datasets = new Map(), latest = new Map();
   for (const snap of snaps) {
+    const key = datasetKey(snap), group = datasets.get(key) || [];
+    group.push(snap); datasets.set(key, group);
     const root = rootOf(snap), old = latest.get(root);
     if (!old || newer(snap, old) > 0) latest.set(root, snap);
   }
+  const comparable = [...datasets.values()].filter(group => group.length >= 2)
+    .map(group => group.reduce((best, snap) => newer(snap, best) > 0 ? snap : best));
+  const candidates = comparable.length ? comparable : [...latest.values()];
   const count = s => Number.isFinite(Number(s.dir_count)) ? Number(s.dir_count) : 0;
-  return [...latest.values()].reduce((best, snap) => {
+  return candidates.reduce((best, snap) => {
     if (!best) return snap;
     const score = priority(snap) - priority(best) || count(snap) - count(best) ||
       String(snap.created_at || '').localeCompare(String(best.created_at || ''));

@@ -6,11 +6,11 @@ const {chromium}=require('playwright');
 const {once}=require('events');
 const checks=[];
 const record=(name,ok,detail)=>{checks.push({name,ok:!!ok,detail});console.error(`${ok?'PASS':'FAIL'} ${name} ${JSON.stringify(detail)}`);};
-const snap=(id,root,dir_count=1)=>({id,root,dir_count,created_at:`2026-10-01T00:00:${String(id).padStart(2,'0')}`,min_kb:1024,exclude_names:'',total_kb:1000,collection_status:'full'});
+const snap=(id,root,dir_count=1,plan_id=null)=>({id,root,dir_count,plan_id,created_at:`2026-10-01T00:00:${String(id).padStart(2,'0')}`,min_kb:1024,exclude_names:'',total_kb:1000,collection_status:'full'});
 const system=[snap(29,'/System/Volumes/VM'),snap(28,'/System/Volumes/Preboot'),snap(27,'/System/Volumes/Update')];
 const scenarios=[
- {name:'root',snaps:[...system,snap(24,'/',100),snap(23,'/',200),snap(22,'/System/Volumes/Data',10000),snap(21,'/System/Volumes/Data',11000)],want:24},
- {name:'data',snaps:[...system,snap(22,'/System/Volumes/Data',10000),snap(21,'/System/Volumes/Data',11000)],want:22},
+ {name:'root',snaps:[...system,snap(26,'/',99999,'single-root-plan'),snap(24,'/',100),snap(23,'/',200),snap(22,'/System/Volumes/Data',10000),snap(21,'/System/Volumes/Data',11000)],want:24},
+ {name:'data',snaps:[...system,snap(26,'/System/Volumes/Data',99999,'single-data-plan'),snap(22,'/System/Volumes/Data',10000),snap(21,'/System/Volumes/Data',11000)],want:22},
  {name:'content',snaps:[...system,snap(18,'/Users/synthetic',50),snap(17,'/Users/synthetic',60)],want:18},
  {name:'system-only',snaps:system,want:29},
 ];

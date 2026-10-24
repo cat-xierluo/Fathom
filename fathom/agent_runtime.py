@@ -71,6 +71,7 @@ python）在打包 helper 的精简 PATH 下可能 broken，这正是注册表�
 from __future__ import annotations
 
 import codecs
+import datetime
 import enum
 import json
 import logging
@@ -88,6 +89,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from . import runtime_capabilities as rc
 from . import runtime_invocation as ri
 
 _LOG = logging.getLogger("fathom.agent_runtime")
@@ -180,6 +182,15 @@ class CandidateMeta:
     capability_cap: Availability = Availability.UNSUPPORTED
     cap_reason_code: str = "unsupported_by_contract"
     cap_reason: str = ""
+    #: 该负例**具体失败的能力名**（必须在 REQUIRED_CAPABILITIES /
+    #: OPTIONAL_CAPABILITIES 内）。原因码与能力名是两件事：cap_reason_code
+    #: 说「为什么」，cap_failed_capability 说「哪一项能力不成立」。
+    cap_failed_capability: str = "bounded_input"
+    #: 历史观察的作用域。缺省（None/空）表示「没有完整观察」，此时旧负例
+    #: 不得套到任何新版本或新入口上，只能记为待复核。
+    cap_observed_version: str | None = None
+    cap_observed_profile: str = ""
+    cap_entry_fingerprint: str = ""
     verified_versions: frozenset[str] = frozenset()
     help_args: tuple[str, ...] = ("--help",)
     required_capabilities: tuple[str, ...] = ()
@@ -217,8 +228,11 @@ class RuntimeInfo:
     auth_status: AuthStatus = AuthStatus.UNKNOWN
     capability_cap: Availability = Availability.UNSUPPORTED
     notes: tuple[str, ...] = ()
+    #: ISS-200：入口身份与能力快照（追加字段，不改变既有字段语义）。
+    capability_snapshot: rc.CapabilitySnapshot | None = None
 
     def to_dict(self) -> dict:
+        """完整形态：含入口路径，供本机内部消费与诊断。"""
         d = {
             "id": self.id,
             "display_name": self.display_name,
@@ -235,7 +249,33 @@ class RuntimeInfo:
             "auth_status": self.auth_status.value,
             "capability_cap": self.capability_cap.value,
             "notes": list(self.notes),
+            # ISS-200 追加：既有键语义不变，新键仅供兼容层消费。
+            "capability_snapshot": (
+                self.capability_snapshot.to_dict()
+                if self.capability_snapshot is not None else None
+            ),
         }
+        return d
+
+    def public_dict(self) -> dict:
+        """面向用户可见响应的脱敏形态（API 错误卫生合同，ISS-200 P2-3）。
+
+        脱敏范围：能力快照里的入口身份（``configured_path`` /
+        ``resolved_path`` / ``content_digest`` / ``mtime_ns`` / ``layers``）
+        ——它们是诊断噪声，且会把本机绝对路径与内容摘要交给前端。
+
+        **不**脱敏顶层 ``executable``/``resolved_target``：这两个是**功能
+        往返令牌**，前端把 ``executable`` 存进授权设置并原样回传给
+        ``analysis_manager.resolve_runtime`` 去复核同一个入口；换成不透明
+        摘要会直接打断「保存 → 复核 → 探测」整条链路（ISS-198 的
+        「不静默换入口」合同依赖路径一致）。它们是用户自己配置的入口，
+        属于「用户已知的信息」，不是泄露。
+        """
+        d = self.to_dict()
+        d["capability_snapshot"] = (
+            self.capability_snapshot.public_dict()
+            if self.capability_snapshot is not None else None
+        )
         return d
 
 
@@ -335,6 +375,12 @@ CANDIDATES: dict[str, CandidateMeta] = {
         version_pattern=r"^\s*(\d+\.\d+\.\d+)\s*$",
         capability_cap=_C,
         cap_reason_code="no_readonly_enforcement",
+        # 该负例失败的是「限定输入范围/只读边界」这一必需能力。
+        cap_failed_capability="bounded_input",
+        # 历史观察的作用域：仅当入口身份、版本与调用配置三者都完整匹配时，
+        # 该负例才继续适用。新版本/新入口不得继承这条负例（ISS-200）。
+        cap_observed_version="0.16.9",
+        cap_observed_profile="zcode-plan-mcp",
         cap_reason=(
             "0.16.9 实测（DEC-030 防破坏门重审，stream-json 事件流+文件系统对照）："
             "--mode plan 能把内置写类（Write/Edit/Bash 写命令）在权限层真实封死"
@@ -897,6 +943,124 @@ def _iter_candidate_paths(
     return out
 
 
+def _capability_snapshot_for(
+    meta: CandidateMeta,
+    path: str,
+    version: str | None,
+    *,
+    help_text: str | None = None,
+    missing_flags: Sequence[str] = (),
+    blocker: rc.ScopedBlocker | None = None,
+    unavailable_reason: str = "",
+    invocation_profile: str = "",
+    deadline: float | None = None,
+) -> rc.CapabilitySnapshot:
+    """由本次探测的证据构造能力快照（ISS-200）。
+
+    证据分层（ISS-199 §5.2）：
+
+    - **探测期不产生行为证据**。本函数只跑过 ``--version``/``--help``，
+      没有任何受控调用发生过，故必需能力一律记 ``unknown``，证据强度最高
+      只到 ``HELP``（参数存在性）。绝不写 ``supported/verified``。
+    - ``VERIFIED`` 只由 ``rc.apply_call_evidence`` 在**真实受控调用成功
+      且结果校验通过**后回填，并绑定该次调用的 argv 摘要 / 版本 / 调用配置。
+      探测期拿不到 VERIFIED——这是如实结论，不是缺口。
+    - 历史负例保留原观察范围，仅完整匹配当前入口/版本/配置时记
+      unsupported；不匹配时保留历史来源而将当前能力记 unknown。
+      探测失败或版本不可解析仅是当前探测观察，不是模型行为实测。
+    - 失败路径同样产出快照，且必需能力不得谎报 supported。
+    """
+    identity = rc.identify_entry(path, deadline=deadline, path_env=_probe_env().get("PATH"))
+    unsupported: dict[str, str] = {}
+    unknown: dict[str, str] = {}
+    evidence: dict[str, rc.EvidenceStrength] = {}
+    scope: dict[str, str] = {}
+    detail: dict[str, str] = {}
+
+    scope_text = f"version={version or 'unknown'};profile={invocation_profile or meta.id}"
+
+    # 1) 历史行为负例必须完整匹配；版本解析失败/未验证是本轮探测事实。
+    applies = blocker is not None and (
+        blocker.matches(meta.id, version, invocation_profile or meta.id, identity)
+        or blocker.reason_code in {"version_unrecognized", "version_unverified"})
+    if applies:
+        unsupported[blocker.capability] = blocker.detail or blocker.reason_code
+        evidence[blocker.capability] = rc.EvidenceStrength.NONE
+        scope[blocker.capability] = blocker.scope or scope_text
+        detail[blocker.capability] = (
+            f"该入口在 {blocker.scope} 范围内不满足 {blocker.capability}"
+            f"（原因 {blocker.reason_code}）")
+        for name in rc.REQUIRED_CAPABILITIES:
+            if name == blocker.capability:
+                continue
+            unknown[name] = "该入口存在已知阻断项，本轮未取得该能力的独立证据"
+            evidence[name] = rc.EvidenceStrength.NONE
+            detail[name] = "存在已知阻断项，本轮未取得行为证据"
+    else:
+        # 2) 无负例：探测期只证明「参数存在」，行为未验证。
+        for name in rc.REQUIRED_CAPABILITIES:
+            unknown[name] = ("仅完成参数存在性检查，未做受控调用实测" if help_text
+                             else "仅取得版本探测信息，未取得参数或行为证据")
+            evidence[name] = rc.EvidenceStrength.NONE
+            scope[name] = scope_text
+            detail[name] = ("探测期只运行了 --version/--help，无行为证据" if help_text
+                            else "本轮仅运行版本探测，无帮助参数或行为证据")
+
+    if identity is None or not identity.identity_complete:
+        unknown["executable_identity"] = "执行层身份不完整，需复核"
+        detail["executable_identity"] = "动态或不可读取的执行层未得到内容身份"
+
+    # 3) 必需参数缺失：该入口的必需能力整体不成立（帮助文本只证明存在性，
+    #    缺参数意味着连调用都不成立），故记 unsupported 而非 supported。
+    if missing_flags:
+        missing_detail = f"帮助文本中未找到必需参数：{', '.join(missing_flags)}"
+        for name in rc.REQUIRED_CAPABILITIES:
+            unknown.pop(name, None)
+            unsupported[name] = missing_detail
+            evidence[name] = rc.EvidenceStrength.HELP
+            scope[name] = scope_text
+            detail[name] = f"必需调用参数缺失，无法发起合规调用：{missing_detail}"
+
+    # 4) 可选能力：没有独立证据时一律 unknown，帮助文本不构成行为证据。
+    for name in rc.OPTIONAL_CAPABILITIES:
+        if name in unsupported:
+            continue
+        unknown[name] = (
+            "本轮未取得该能力的独立证据"
+            + ("；帮助文本只能证明参数存在" if help_text else "")
+        )
+        evidence.setdefault(name, rc.EvidenceStrength.NONE)
+        detail.setdefault(
+            name,
+            "本轮未取得该能力的独立证据；帮助文本不能证明行为"
+            if help_text else "本轮未取得该能力的独立证据")
+
+    # 5) 探测整体失败：必需能力未取得任何证据，不得被 supported 覆盖。
+    if unavailable_reason:
+        for name in rc.REQUIRED_CAPABILITIES:
+            if name not in unsupported:
+                unknown[name] = unavailable_reason
+                detail[name] = f"探测未成功，必需能力未取得证据：{unavailable_reason}"
+
+    return rc.build_snapshot(
+        meta.id,
+        identity=identity,
+        supported={},
+        unsupported=unsupported,
+        unknown=unknown,
+        evidence=evidence,
+        scope=scope,
+        detail=detail,
+        scoped_blockers=(blocker,) if blocker else (),
+        version=version,
+        invocation_profile=invocation_profile or meta.id,
+        observed_at=datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        declared_required_flags=meta.required_capabilities,
+        verified_versions=tuple(sorted(meta.verified_versions)),
+        capability_cap=meta.capability_cap.value,
+    )
+
+
 def _version_probe(
     path: str,
     meta: CandidateMeta,
@@ -915,6 +1079,9 @@ def _version_probe(
                 availability=Availability.NOT_FOUND, reason_code="probe_budget_exhausted",
                 detail="探测总预算已用尽，未完成版本核实",
                 capability_cap=meta.capability_cap,
+                capability_snapshot=_capability_snapshot_for(
+                    meta, path, None, deadline=deadline,
+                    unavailable_reason="探测总预算已用尽，未完成版本核实"),
             ),
             _ProbeFailure(path, "总预算已用尽"),
         )
@@ -979,6 +1146,9 @@ def _version_probe(
                 detail=reason,
                 executable=path, resolved_target=os.path.realpath(path),
                 capability_cap=meta.capability_cap,
+                capability_snapshot=_capability_snapshot_for(
+                    meta, path, None, deadline=deadline,
+                    unavailable_reason="版本探测未成功，必需能力未取得证据"),
             ),
             _ProbeFailure(
                 path, reason,
@@ -995,30 +1165,52 @@ def _version_probe(
         capability_cap=meta.capability_cap,
     )
     if version is None:
+        # 身份未确认 → 执行身份这一必需能力本身不成立。
+        blocker = rc.ScopedBlocker(
+            capability="executable_identity",
+            reason_code="version_unrecognized",
+            scope=f"version=unknown;profile={meta.id}",
+            detail="版本输出无法识别，执行身份未确认",
+        )
         return (
             RuntimeInfo(
                 availability=Availability.UNSUPPORTED, reason_code="version_unrecognized",
                 detail=f"可执行但版本输出无法识别，身份未确认；未知版本默认 unsupported",
+                capability_snapshot=_capability_snapshot_for(
+                    meta, path, None, deadline=deadline, blocker=blocker),
                 **base,
             ),
             None,
         )
     if meta.capability_cap is not Availability.READY:
-        return (
-            RuntimeInfo(
-                availability=Availability.UNSUPPORTED, reason_code=meta.cap_reason_code,
-                detail=f"版本 {version}；{meta.cap_reason}",
-                version=version, notes=meta.notes, **base,
-            ),
-            None,
+        # Keep the actual historical observation; never relabel it as this build.
+        historical = rc.ScopedBlocker(
+            capability=meta.cap_failed_capability, reason_code=meta.cap_reason_code,
+            scope=(f"version={meta.cap_observed_version or 'unknown'};"
+                   f"profile={meta.cap_observed_profile or 'unknown'}"),
+            detail=meta.cap_reason, runtime_id=meta.id,
+            version=meta.cap_observed_version, profile=meta.cap_observed_profile,
+            entry_fingerprint=meta.cap_entry_fingerprint,
         )
+        snapshot = _capability_snapshot_for(meta, path, version, deadline=deadline,
+                                             blocker=historical)
+        matched = historical.matches(meta.id, version, snapshot.invocation_profile,
+                                     snapshot.identity)
+        return RuntimeInfo(
+            availability=Availability.UNSUPPORTED,
+            reason_code=meta.cap_reason_code if matched else "capability_review_required",
+            detail=(f"版本 {version}；{meta.cap_reason}" if matched else
+                    f"版本 {version} 的当前入口与调用配置尚未完成能力复核；未开放调用"),
+            version=version, notes=meta.notes, capability_snapshot=snapshot, **base), None
     if version not in meta.verified_versions and meta.required_capabilities:
         # No model call or user data: re-check the actual executable on every probe.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return RuntimeInfo(availability=Availability.BROKEN,
                 reason_code="probe_budget_exhausted", detail="兼容性检测预算用尽，请重试",
-                version=version, **base), None
+                version=version, capability_snapshot=_capability_snapshot_for(
+                    meta, path, version, deadline=deadline,
+                    unavailable_reason="兼容性检测预算用尽，未完成帮助核实"), **base), None
         help_cwd = Path(tempfile.mkdtemp(prefix="fathom-capabilities-"))
         try:
             help_result = runner.run(Invocation(argv=[path, *meta.help_args],
@@ -1030,7 +1222,9 @@ def _version_probe(
             return RuntimeInfo(availability=Availability.BROKEN,
                 reason_code="capability_probe_failed",
                 detail=f"版本 {version}：调用参数检测失败（{help_result.outcome.value}）；可重新检测",
-                version=version, **base), None
+                version=version, capability_snapshot=_capability_snapshot_for(
+                    meta, path, version, deadline=deadline,
+                    unavailable_reason="调用参数探测未成功，未取得行为证据"), **base), None
         help_text = help_result.stdout_text + "\n" + help_result.stderr_text
         missing = [flag for flag in meta.required_capabilities
                    if not re.search(r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", help_text)]
@@ -1038,19 +1232,38 @@ def _version_probe(
             return RuntimeInfo(availability=Availability.UNSUPPORTED,
                 reason_code="required_capabilities_missing",
                 detail=f"版本 {version}：帮助中未找到本适配器必需参数：{', '.join(missing)}",
-                version=version, notes=meta.notes, **base), None
+                version=version, notes=meta.notes,
+                capability_snapshot=_capability_snapshot_for(
+                    meta, path, version, deadline=deadline, help_text=help_text,
+                    missing_flags=tuple(missing),
+                    unavailable_reason="必需调用参数缺失"),
+                **base), None
         return RuntimeInfo(availability=Availability.READY,
             reason_code="compatible_capabilities",
             detail=f"版本 {version}：所需调用参数可用；登录与实际分析结果在运行时检查",
             version=version, notes=meta.notes + ("该版本未逐版实测；已检查参数兼容，沿用受控调用与结果校验。",),
+            capability_snapshot=_capability_snapshot_for(
+                meta, path, version, deadline=deadline, help_text=help_text),
             **base), None
     if version not in meta.verified_versions:
+        blocker = rc.ScopedBlocker(
+            # 该构建未经本机验证 → 执行身份未在已验证集合内确认，
+            # 故绑定真实能力名 executable_identity，而不是原因码本身。
+            capability="executable_identity",
+            reason_code="version_unverified",
+            scope=f"version={version};profile={meta.id}",
+            detail=(f"版本 {version} 不在已验证集合 "
+                    f"{sorted(meta.verified_versions)} 内"),
+        )
         return (
             RuntimeInfo(
                 availability=Availability.UNSUPPORTED, reason_code="version_unverified",
                 detail=(f"版本 {version} 不在已验证集合 "
                         f"{sorted(meta.verified_versions)} 内；未验证版本不开放"),
-                version=version, notes=meta.notes, **base,
+                version=version, notes=meta.notes,
+                capability_snapshot=_capability_snapshot_for(
+                    meta, path, version, deadline=deadline, blocker=blocker),
+                **base,
             ),
             None,
         )
@@ -1058,7 +1271,9 @@ def _version_probe(
         RuntimeInfo(
             availability=Availability.READY, reason_code="verified_version",
             detail=f"版本 {version} 通过能力门（{meta.gate_summary}）",
-            version=version, notes=meta.notes, **base,
+            version=version, notes=meta.notes,
+            capability_snapshot=_capability_snapshot_for(meta, path, version, deadline=deadline),
+            **base,
         ),
         None,
     )
@@ -1248,11 +1463,13 @@ def detect_runtime(
         # 没有任何候选给出可识别版本：按「未知版本默认 unsupported」如实定级
         if notes:
             unrecognized_info.notes = tuple(unrecognized_info.notes) + tuple(notes)
+        _record_probe_cache(unrecognized_info)
         return unrecognized_info
 
     if info is not None:
         if notes:
             info.notes = tuple(info.notes) + tuple(notes)
+        _record_probe_cache(info)
         return info
 
     if precheck_failures or probe_failures:
@@ -1277,13 +1494,74 @@ def detect_runtime(
             executable=failed_path,
             resolved_target=os.path.realpath(failed_path) if failed_path else None,
             capability_cap=meta.capability_cap, notes=tuple(notes),
+            capability_snapshot=_capability_snapshot_for(
+                meta, failed_path or "", None, deadline=final_deadline,
+                unavailable_reason="版本探测未成功，必需能力未取得证据"),
         )
-    return RuntimeInfo(
+    not_found = RuntimeInfo(
         id=meta.id, display_name=meta.display_name, identity=meta.identity,
         identity_evidence=meta.identity_evidence, official_docs=meta.official_docs,
         availability=Availability.NOT_FOUND, reason_code="not_found",
         detail=f"已知安装位置与 PATH 中未发现 {meta.binary_name}（登录 shell 亦未命中）",
         capability_cap=meta.capability_cap, notes=tuple(notes),
+    )
+    _record_probe_cache(not_found)
+    return not_found
+
+
+def _record_probe_cache(info: RuntimeInfo) -> None:
+    """把一次探测结果记进最小持久缓存（尽力而为，失败不致命）。
+
+    缓存**不是能力背书**：它只保存「某时某入口观测到什么」，供后续比对
+    指纹、判断同版换文件使用。任何要据此放行的场合仍须重新探测。
+    """
+    from . import runtime_cache
+    snapshot = info.capability_snapshot
+    identity = snapshot.identity if snapshot is not None else None
+    # 身份不完整时也记录指纹：它仍覆盖已采集到的执行层，能发现「同一路径的
+    # 文件确实换了」。不完整这件事由快照自身的 identity_issues 如实记录，
+    # 不靠「不记指纹」来隐藏。
+    fingerprint = identity.fingerprint() if identity is not None else ""
+    executable = info.executable or ""
+    if not executable and identity is not None:
+        executable = identity.configured_path
+    try:
+        runtime_cache.record_probe(
+            info.id,
+            executable,
+            fingerprint,
+            info.to_dict(),
+            # 「成功事实」= 这次探测得到可用结论（ready）。失败/broken/
+            # not_found 不算成功事实，不得覆盖上一次成功事实。
+            success=info.availability is Availability.READY,
+            version=info.version,
+        )
+    except Exception:  # noqa: BLE001 - 缓存永不阻断探测结论
+        _LOG.warning("runtime 缓存写入失败（不影响探测结论）runtime_id=%s",
+                     info.id, exc_info=True)
+
+
+def recheck_runtime(
+    meta: CandidateMeta,
+    executable: str,
+    *,
+    budget: ProbeBudget | None = None,
+) -> RuntimeInfo:
+    """显式重测某个已保存入口（ISS-200）。
+
+    语义：重新取一份能力快照。**是否丢弃上一次成功事实由调用方决定**——
+    本函数自身不持有缓存，也就没有「旧快照」可丢；它只保证每次调用都重新
+    探测，而不是复用上一次的结论。
+
+    只做只读探测：不发模型请求、不读凭据、不安装、不后台轮询。
+    """
+    return detect_runtime(
+        meta,
+        budget=budget,
+        path_env="",
+        extra_locations=[executable],
+        only_extra_locations=True,
+        login_shell_cmd=["/bin/echo"],
     )
 
 
@@ -1657,6 +1935,9 @@ class DispatchResult:
 
     run: RunResult
     parse: ParsedOutput
+    #: 本次受控调用的 argv（ISS-200：受控调用证据回填需要它绑定调用记录）。
+    #: 载荷经 stdin 时 argv 不含业务正文；argv 形态下只记摘要，不回显正文。
+    argv: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -1679,8 +1960,15 @@ def dispatch_request(
     timeout_s: float = RUN_DEFAULT_TIMEOUT_S,
     cancel_event: threading.Event | None = None,
     payload_mode: str = "stdin",
+    before_run: Callable[[Invocation], None] | None = None,
 ) -> DispatchResult:
-    """统一派发入口：适配器只管合同，runner 只管进程，本函数串起三关。"""
+    """统一派发入口：适配器只管合同，runner 只管进程，本函数串起三关。
+
+    ``before_run`` 在 argv 构建完成、参数核对通过、**进程尚未启动**时被
+    调用一次（ISS-200）：调用方据此保管独立的预期调用记录
+    （``runtime_capabilities.bind_call``），使「真实受控调用成功」之后
+    才能回填能力证据成为可能。钩子自身的异常按未捕获处理（调用方负责）。
+    """
     invocation = adapter.build_invocation(
         payload, cwd=cwd, env=env, payload_mode=payload_mode
     )
@@ -1726,12 +2014,14 @@ def dispatch_request(
             failure=ri.classify_failure(reason, failure_class=verdict.failure_class),
         )
         return DispatchResult(run=run, parse=parse)
+    if before_run is not None:
+        before_run(invocation)
     run = runner.run(invocation, timeout_s=timeout_s, cancel_event=cancel_event)
     parse = adapter.parse_output(run)
     if parse.value is None:
         parse.value = {}
     parse.value["profile"] = verdict.to_dict()
-    return DispatchResult(run=run, parse=parse)
+    return DispatchResult(run=run, parse=parse, argv=tuple(invocation.argv))
 
 
 # --------------------------------------------------------------------------

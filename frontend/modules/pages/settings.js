@@ -1164,6 +1164,7 @@ const ANALYSIS_REASON_LABELS = {
   version_probe_transient: "版本探测暂时超时，可重试",
   version_unrecognized: "版本号未识别（可能未经测试）",
   version_unverified: "版本不在已验证清单内",
+  capability_review_required: "该版本的能力尚未完成复核，暂不开放调用",
   probe_budget_exhausted: "本轮探测预算用尽，可稍后重测",
   unsupported_by_contract: "当前产品合同未开放该引擎",
   tool_disable_unverifiable: "无法从外部证明其工具已全部禁用",

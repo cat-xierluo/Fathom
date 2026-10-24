@@ -63,6 +63,8 @@ const ANALYSIS_JOB_REASON = {
   owner_exit: "服务中断：本次分析未完成，不会自动重试",
   startup_aborted: "分析在启动阶段中断，未产生任何解读",
   plan_identity_unsupported: "所选区间跨计划、混搭或计量版本不一致，不能解读变化；请改选同一计划内的两个快照",
+  runtime_identity_changed: "解读引擎在预览后被更换（同版本但文件已变），请重新生成预览",
+  runtime_identity_incomplete: "解读引擎入口身份无法确认，本次未执行分析；请重新检测并选择",
 };
 
 /* 事实条目 kind 的中文说明（与 facts 包 entry_legend 同口径）。 */

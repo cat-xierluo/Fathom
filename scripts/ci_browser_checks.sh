@@ -182,6 +182,11 @@ assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
 node scripts/verify_agent_frontend.cjs | tee "$analysis_out"
 assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-91}" "agent frontend"
 
+# ISS-206：内容根默认落点、历史 CTA 与显式选择重入；32 项真实 Chromium 断言。
+# 重入须等新快照目录替换旧 option 后再核选点，不能用旧 DOM 证明选择保留。
+node scripts/verify_content_root_defaults.cjs | tee "$analysis_out"
+assert_result_json "$analysis_out" "${EXPECTED_CONTENT_ROOT_DEFAULTS_PASSED:-32}" "content root defaults frontend"
+
 # ISS-148：树形同级变化回归（真实 FastAPI 隔离入口 + 生产页面实点）。
 # 53 项——三层展开/聚焦/返回、父 0 子抵消、缺父结构节点、单侧未记录、
 # 分页加载更多、错误重试、a/b 与路径竞态、键盘可达、HTML 路径安全、

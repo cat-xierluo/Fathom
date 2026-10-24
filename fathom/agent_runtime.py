@@ -7,9 +7,11 @@
   ``unknown / required / verified``，不把 ``--version`` 成功解释为已登录。
 - 探测只在显式触发时运行：先受限已知安装位置与进程 PATH 枚举，再按需做
   有预算的登录 shell ``command -v`` 探测；禁止 eval 探测结果、自动安装与
-  全盘遍历。预算：最多 16 个候选、单命令 3 秒、整个检测 20 秒、单命令
-  输出 16 KiB。覆盖空格路径、符号链接、失效 wrapper、非执行文件、重名
-  二进制、超时与不认识的版本；未知版本默认 unsupported。
+  全盘遍历。预算：最多 16 个候选、单命令 8 秒、整个检测 20 秒、单命令
+  输出 64 KiB。覆盖空格路径、符号链接、失效 wrapper、非执行文件、重名
+  二进制、超时与不认识的版本；已识别的新版本按适配器所需参数探测兼容。
+  单命令 8 秒用于覆盖刚升级原生 CLI 的首次系统读入/验证，避免把冷启动
+  误判为损坏；已保存入口复核时只探测该入口，不换用另一个安装位置。
 - 公共 runner：shell=False 参数数组；载荷优先 stdin；``start_new_session``
   独立进程组；超时/取消 SIGTERM → 宽限期 → SIGKILL，终态前 reap；
   stdout/stderr 分离且边读边限额；UTF-8 严格解码（坏字节即失败，不静默
@@ -103,9 +105,9 @@ TERM_GRACE_S = 3.0
 
 #: 探测预算（方案 §3.1 起始值）。
 PROBE_MAX_CANDIDATES = 16
-PROBE_PER_COMMAND_TIMEOUT_S = 3.0
+PROBE_PER_COMMAND_TIMEOUT_S = 8.0
 PROBE_TOTAL_TIMEOUT_S = 20.0
-PROBE_PER_COMMAND_OUTPUT_CAP = 16 * 1024
+PROBE_PER_COMMAND_OUTPUT_CAP = 64 * 1024
 
 
 # --------------------------------------------------------------------------
@@ -161,7 +163,7 @@ class CandidateMeta:
     ``capability_cap``/``cap_reason_code`` 是该家能开放的天花板：即使本机
     安装且版本可读，也不得高于上限开放。当前上限 READY：Claude Code
     （严格禁工具，DEC-029 门）与 Codex CLI（OS 级 read-only 沙箱，
-    DEC-030 防破坏门），均仅限 ``verified_versions`` 内的版本。
+    DEC-030 防破坏门），历史实测版本直接可用，其余已识别版本检查所需 CLI 参数。
     """
 
     id: str
@@ -177,6 +179,8 @@ class CandidateMeta:
     cap_reason_code: str = "unsupported_by_contract"
     cap_reason: str = ""
     verified_versions: frozenset[str] = frozenset()
+    help_args: tuple[str, ...] = ("--help",)
+    required_capabilities: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
     #: ready 定级时 probe detail 的能力门句式（各家门的语义不同，如实分写）。
     gate_summary: str = "禁工具/隔离/认证形态/进程回收均有实证"
@@ -301,6 +305,9 @@ CANDIDATES: dict[str, CandidateMeta] = {
         capability_cap=_R,
         cap_reason_code="verified_version",
         verified_versions=frozenset({"2.1.237"}),
+        required_capabilities=("--bare", "--disable-slash-commands", "--disallowedTools",
+                               "--strict-mcp-config", "--no-session-persistence",
+                               "--output-format", "--print"),
         notes=(
             "唯一 ready 家：--bare + --disable-slash-commands + --disallowedTools * + "
             "--strict-mcp-config + --no-session-persistence + --output-format json",
@@ -385,6 +392,10 @@ CANDIDATES: dict[str, CandidateMeta] = {
             "裁决（2026-09-30）允许的能力，在设置页如实披露，不作失败条件"
         ),
         verified_versions=frozenset({"0.147.0"}),
+        help_args=("exec", "--help"),
+        required_capabilities=("--json", "--ephemeral", "--ignore-user-config",
+                               "--ignore-rules", "--skip-git-repo-check", "--sandbox",
+                               "--cd", "--config", "read-only"),
         gate_summary=(
             "OS 级 read-only 沙箱防破坏（写/删/破坏命令负例有实证）+ 隔离/"
             "不落盘/进程回收实证"
@@ -434,6 +445,9 @@ CANDIDATES: dict[str, CandidateMeta] = {
             "REPORT.md，2026-09-30；读取任意本机文件与联网是用户裁决允许的能力"
         ),
         verified_versions=frozenset({"0.21.5"}),
+        help_args=("chat", "--help"),
+        required_capabilities=("--query-file", "--format", "--run-budget", "-t",
+                               "--ignore-user-config", "--ignore-rules", "--source"),
         gate_summary=(
             "调用级只读工具集收敛防破坏（写/删/破坏命令负例有实证）+ "
             "隔离/进程回收实证"
@@ -842,6 +856,7 @@ class _ProbeFailure:
 
     path: str
     reason: str
+    transient: bool = False
 
 
 def _iter_candidate_paths(
@@ -886,6 +901,7 @@ def _version_probe(
     runner: AgentCliRunner,
     deadline: float,
     notes: list[str],
+    command_timeout_s: float | None = None,
 ) -> tuple[RuntimeInfo, _ProbeFailure | None]:
     """在预算内运行版本命令并按注册表策略定级；探测绝不发送业务数据。"""
     if time.monotonic() >= deadline:
@@ -900,34 +916,71 @@ def _version_probe(
             _ProbeFailure(path, "总预算已用尽"),
         )
 
-    probe_cwd = Path(tempfile.mkdtemp(prefix="fathom-probe-"))  # 中性隔离 cwd，避免加载任何目录内容
-    try:
-        result = runner.run(
-            Invocation(
-                argv=[path, *meta.version_args],
-                cwd=probe_cwd,
-                env=_probe_env(),
-                stdin_bytes=None,
-            ),
-            timeout_s=budget.per_command_timeout_s,
-        )
-    finally:
-        shutil.rmtree(probe_cwd, ignore_errors=True)
+    command_cap = (
+        budget.per_command_timeout_s
+        if command_timeout_s is None else command_timeout_s
+    )
+
+    def run_version_probe(timeout_s: float | None = None):
+        probe_cwd = Path(tempfile.mkdtemp(prefix="fathom-probe-"))
+        try:
+            return runner.run(
+                Invocation(
+                    argv=[path, *meta.version_args],
+                    cwd=probe_cwd,
+                    env=_probe_env(),
+                    stdin_bytes=None,
+                ),
+                # 单命令超时按总预算剩余量裁剪，保证「整个检测 20 秒」不被
+                # 单个挂起候选吃穿（否则后面的候选永远轮不到）。
+                timeout_s=max(
+                    0.05,
+                    min(
+                        command_cap,
+                        budget.per_command_timeout_s
+                        if timeout_s is None else timeout_s,
+                        max(0.05, deadline - time.monotonic()),
+                    ),
+                ),
+            )
+        finally:
+            shutil.rmtree(probe_cwd, ignore_errors=True)
+
+    result = run_version_probe()
+    retry_note = ""
+    if result.outcome is RunOutcome.TIMED_OUT:
+        # 刚安装/刚升级的原生 CLI 首次执行可能要付系统级读入与校验成本，
+        # 会与 PATH/dyld 竞争而偶发超时。探测命令不带任何载荷，重试一次
+        # 是安全的；业务解读请求不在这里重试。
+        # 重试必须受总预算约束，否则 8s+8s 会吃掉 20s 预算的一半，
+        # 让后面的候选根本没机会被探测。
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            # 重试同样受该候选的额度约束：一次挂起候选最多花 2×command_cap，
+            # 不会把总预算吃穿。
+            result = run_version_probe(
+                timeout_s=min(command_cap, remaining))
+            retry_note = "；已自动重试 1 次"
 
     if result.outcome is not RunOutcome.OK or result.exit_code != 0:
-        reason = f"版本命令失败（{result.outcome.value}，exit={result.exit_code}）"
-        if result.stderr_text:
-            reason += f"；stderr 首行：{result.stderr_text.splitlines()[0][:120]}"
+        reason = (
+            f"版本命令失败（{result.outcome.value}，exit={result.exit_code}）"
+            f"{retry_note}"
+        )
         return (
             RuntimeInfo(
                 id=meta.id, display_name=meta.display_name, identity=meta.identity,
                 identity_evidence=meta.identity_evidence, official_docs=meta.official_docs,
                 availability=Availability.BROKEN, reason_code="version_probe_failed",
-                detail=f"{path}：{reason}",
+                # 错误体不透出可执行路径或 stderr（API 错误卫生合同）。
+                detail=reason,
                 executable=path, resolved_target=os.path.realpath(path),
                 capability_cap=meta.capability_cap,
             ),
-            _ProbeFailure(path, reason),
+            _ProbeFailure(
+                path, reason,
+                transient=result.outcome is RunOutcome.TIMED_OUT,
+            ),
         )
 
     version = meta.parse_version(result.stdout_text)
@@ -942,7 +995,7 @@ def _version_probe(
         return (
             RuntimeInfo(
                 availability=Availability.UNSUPPORTED, reason_code="version_unrecognized",
-                detail=f"{path} 可执行但版本输出无法识别，身份未确认；未知版本默认 unsupported",
+                detail=f"可执行但版本输出无法识别，身份未确认；未知版本默认 unsupported",
                 **base,
             ),
             None,
@@ -951,16 +1004,48 @@ def _version_probe(
         return (
             RuntimeInfo(
                 availability=Availability.UNSUPPORTED, reason_code=meta.cap_reason_code,
-                detail=f"{path} 版本 {version}；{meta.cap_reason}",
+                detail=f"版本 {version}；{meta.cap_reason}",
                 version=version, notes=meta.notes, **base,
             ),
             None,
         )
+    if version not in meta.verified_versions and meta.required_capabilities:
+        # No model call or user data: re-check the actual executable on every probe.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return RuntimeInfo(availability=Availability.BROKEN,
+                reason_code="probe_budget_exhausted", detail="兼容性检测预算用尽，请重试",
+                version=version, **base), None
+        help_cwd = Path(tempfile.mkdtemp(prefix="fathom-capabilities-"))
+        try:
+            help_result = runner.run(Invocation(argv=[path, *meta.help_args],
+                cwd=help_cwd, env=_probe_env(), stdin_bytes=None),
+                timeout_s=min(budget.per_command_timeout_s, remaining))
+        finally:
+            shutil.rmtree(help_cwd, ignore_errors=True)
+        if help_result.outcome is not RunOutcome.OK or help_result.exit_code != 0:
+            return RuntimeInfo(availability=Availability.BROKEN,
+                reason_code="capability_probe_failed",
+                detail=f"版本 {version}：调用参数检测失败（{help_result.outcome.value}）；可重新检测",
+                version=version, **base), None
+        help_text = help_result.stdout_text + "\n" + help_result.stderr_text
+        missing = [flag for flag in meta.required_capabilities
+                   if not re.search(r"(?<![\w-])" + re.escape(flag) + r"(?![\w-])", help_text)]
+        if missing:
+            return RuntimeInfo(availability=Availability.UNSUPPORTED,
+                reason_code="required_capabilities_missing",
+                detail=f"版本 {version}：帮助中未找到本适配器必需参数：{', '.join(missing)}",
+                version=version, notes=meta.notes, **base), None
+        return RuntimeInfo(availability=Availability.READY,
+            reason_code="compatible_capabilities",
+            detail=f"版本 {version}：所需调用参数可用；登录与实际分析结果在运行时检查",
+            version=version, notes=meta.notes + ("该版本未逐版实测；已检查参数兼容，沿用受控调用与结果校验。",),
+            **base), None
     if version not in meta.verified_versions:
         return (
             RuntimeInfo(
                 availability=Availability.UNSUPPORTED, reason_code="version_unverified",
-                detail=(f"{path} 版本 {version} 不在已验证集合 "
+                detail=(f"版本 {version} 不在已验证集合 "
                         f"{sorted(meta.verified_versions)} 内；未验证版本不开放"),
                 version=version, notes=meta.notes, **base,
             ),
@@ -969,7 +1054,7 @@ def _version_probe(
     return (
         RuntimeInfo(
             availability=Availability.READY, reason_code="verified_version",
-            detail=f"{path} 版本 {version} 通过能力门（{meta.gate_summary}）",
+            detail=f"版本 {version} 通过能力门（{meta.gate_summary}）",
             version=version, notes=meta.notes, **base,
         ),
         None,
@@ -1017,7 +1102,7 @@ def _login_shell_lookup(
 ) -> str | None:
     """按需的登录 shell 探测：``<shell> -lc 'command -v <binary_name>'``。
 
-    登录 shell 会执行用户启动脚本，因此单独受预算约束（3 秒/16 KiB），
+    登录 shell 会执行用户启动脚本，因此单独受预算约束（3 秒/64 KiB），
     失败如实记录且不放大自动探测范围；输出只接受单行绝对路径，
     绝不 eval。
     """
@@ -1064,20 +1149,23 @@ def detect_runtime(
     deadline: float | None = None,
     path_env: str | None = None,
     extra_locations: Sequence[str | os.PathLike[str]] = (),
+    only_extra_locations: bool = False,
     login_shell_cmd: Sequence[str] | None = None,
     runner: AgentCliRunner | None = None,
 ) -> RuntimeInfo:
     """探测单个候选并返回 RuntimeInfo。
 
     ``path_env``/``extra_locations``/``login_shell_cmd`` 供测试注入合成
-    环境；生产路径留空即用当前进程环境。探测顺序：受限已知位置与 PATH
-    枚举 → 逐候选版本探测（按序取第一个可定级者）→ 均失败时按需登录
-    shell 探测一次。
+    环境；生产路径留空即用当前进程环境。``only_extra_locations=True`` 表示
+    已保存入口复核：只探测调用方显式给出的路径，失败也不枚举注册表或
+    PATH，更不静默换另一个入口。常规探测顺序：受限已知位置与 PATH 枚举
+    → 逐候选版本探测（按序取第一个可定级者）→ 均失败时按需登录 shell
+    探测一次。
     """
     budget = budget or ProbeBudget()
     runner = runner or AgentCliRunner(
         liveness_watch=False,
-        # 方案 §3.1 探测预算：单命令输出 16 KiB，同时约束 stdout 与 stderr
+        # 方案 §3.1 探测预算：单命令输出 64 KiB，同时约束 stdout 与 stderr
         # （登录 shell 探测同样经此 runner，受同一上限）。产品运行合同的
         # 256 KiB/64 KiB 上限只用于探测之外的受控调用，不在这里兜底。
         stdout_max_bytes=budget.per_command_output_cap,
@@ -1088,15 +1176,47 @@ def detect_runtime(
     precheck_failures: list[_ProbeFailure] = []
     probe_failures: list[_ProbeFailure] = []
 
-    candidates = _iter_candidate_paths(
-        meta, path_env=path_env, extra_locations=extra_locations,
-        cap=budget.max_candidates, notes=notes, precheck_failures=precheck_failures,
+    if only_extra_locations:
+        candidates = [str(path) for path in extra_locations[:budget.max_candidates]]
+    else:
+        candidates = _iter_candidate_paths(
+            meta, path_env=path_env, extra_locations=extra_locations,
+            cap=budget.max_candidates, notes=notes,
+            precheck_failures=precheck_failures,
+        )
+
+    # 单命令超时按「剩余总预算 / 剩余候选数」分摊：任何一个挂起候选都不许
+    # 吃掉整份预算，否则后面的候选永远轮不到（ISS-198 独审 P1-2）。
+    remaining_candidates = max(1, len(candidates))
+    per_command_cap = max(
+        0.5,
+        min(
+            budget.per_command_timeout_s,
+            max(0.5, (final_deadline - time.monotonic()) / remaining_candidates),
+        ),
     )
 
     info: RuntimeInfo | None = None
     unrecognized_info: RuntimeInfo | None = None  # 可执行但版本不识别：候选事实，优先级低于可定级者
-    for path in candidates:
-        info, failure = _version_probe(path, meta, budget, runner, final_deadline, notes)
+    for index, path in enumerate(candidates):
+        # 额度预切分：总预算按候选数均分，每个候选最多用自己那份；
+        # 剩余预算若仍充裕，当前候选可临时借用后续候选的份额，但整体
+        # 不得超过总预算（ISS-198 独审 P1-2：挂起候选不得吃穿预算）。
+        left = max(1, len(candidates) - index)
+        budget_left = max(0.0, final_deadline - time.monotonic())
+        # 每个候选最多跑两次（首发 + 一次重试），所以单次额度是
+        # 「剩余预算 / 剩余候选 / 2」：这样任何数量的挂起候选都不会把
+        # 总预算吃穿，后面的候选仍有机会被探测。
+        share = max(
+            0.5,
+            min(
+                per_command_cap,
+                budget_left / left / 2.0,
+            ),
+        )
+        info, failure = _version_probe(
+            path, meta, budget, runner, final_deadline, notes,
+            command_timeout_s=share)
         if failure is not None:
             probe_failures.append(failure)
             info = None
@@ -1110,7 +1230,7 @@ def detect_runtime(
             continue
         break
 
-    if info is None:
+    if info is None and not only_extra_locations:
         shell = list(login_shell_cmd) if login_shell_cmd else [
             os.environ.get("SHELL") or "/bin/zsh"
         ]
@@ -1139,12 +1259,20 @@ def detect_runtime(
             key = (f.path, f.reason)
             if key not in seen:
                 seen.add(key)
-                parts.append(f"{f.path}：{f.reason}")
+                # 只汇总原因类别，不透出候选路径（API 错误卫生合同）。
+                parts.append(f.reason)
+        failed_path = next(
+            (f.path for f in (*precheck_failures, *probe_failures)), None)
+        transient = any(f.transient for f in (*precheck_failures, *probe_failures))
         return RuntimeInfo(
             id=meta.id, display_name=meta.display_name, identity=meta.identity,
             identity_evidence=meta.identity_evidence, official_docs=meta.official_docs,
-            availability=Availability.BROKEN, reason_code="version_probe_failed",
+            availability=Availability.BROKEN,
+            reason_code=(
+                "version_probe_transient" if transient else "version_probe_failed"),
             detail="；".join(parts),
+            executable=failed_path,
+            resolved_target=os.path.realpath(failed_path) if failed_path else None,
             capability_cap=meta.capability_cap, notes=tuple(notes),
         )
     return RuntimeInfo(

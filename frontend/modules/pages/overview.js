@@ -127,7 +127,8 @@ function _renderCoverageClasses(coverage) {
     // 仍显式说明，避免误以为完整覆盖
     return `<span class="quality-chip warn">${icon("alert", 12)} 部分覆盖（未统计缺口细节）</span>`;
   }
-  return `<ul class="cov-classes" data-test="coverage-classes">${items.join("")}</ul>`;
+  return `<details class="cfg-details" data-test="coverage-details"><summary>部分覆盖 · 查看原因</summary>
+    <ul class="cov-classes" data-test="coverage-classes">${items.join("")}</ul></details>`;
 }
 
 /* /api/snapshots 的单飞请求（ISS-194）：本模块多处消费同一端点（质量行、
@@ -810,9 +811,15 @@ function _renderStorageReady(summary) {
          free === null ? "不可知" : escapeHtml(fmtBytes(free))}</span></div>
      </div>
      <p class="hint" data-test="storage-meta" title="${escapeHtml(_ovMeta(summary))}">${
-       escapeHtml(_ovMeta(summary))}</p>
-     ${_ovUnexplainedBlock(summary.unexplained)}
-     ${_ovMembersBlock(attr)}
+       escapeHtml(`采集时间 ${_shortTs(r?.finished_at || r?.started_at)} · ${r?.status === "full" ? "本轮已完成" : "本轮存在未完成或受限部分"}`)}</p>
+     <p class="hint" data-test="storage-coverage-summary">${attr?.comparable_to_previous === false
+       ? "本轮有未测得或不可比的目录，变化仅反映已测得部分。" : "容量为整盘读数；目录变化按实际扫描范围统计。"}</p>
+     <details class="cfg-details" data-test="storage-diagnostics">
+       <summary>测量详情与差额说明</summary>
+       <p class="hint">${escapeHtml(_ovMeta(summary))}</p>
+       ${_ovUnexplainedBlock(summary.unexplained)}
+       ${_ovMembersBlock(attr)}
+     </details>
      <div class="conclusion-actions">${_ovCta(summary)}</div>`;
   // 主按钮交接真实 a/b 给变化页（变化页自身校验）
   el.querySelector('[data-test="storage-cta"]')?.addEventListener("click", (ev) => {
@@ -839,7 +846,7 @@ function _renderStorageWaiting(kind) {
   if (!el) return;
   const text = kind === "empty"
     ? "还没有整盘采集数据。完成首扫后这里会出现整盘占用与变化；现在不显示任何容量数字。"
-    : "只有一轮采集，缺同计划前一轮可比基线，变化与未知差额都不可知；不会用单轮冒充差分。";
+    : "首轮扫描已记录。再扫描一次后可查看变化。";
   el.innerHTML =
     `<p class="conclusion-kicker" data-test="storage-kicker">整盘总览</p>
      <div class="state-wait" data-test="storage-state"><span class="dr-loading" data-dr-spin aria-hidden="true"></span>${escapeHtml(text)}</div>

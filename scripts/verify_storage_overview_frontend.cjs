@@ -534,6 +534,9 @@ async function runPhase(withStale) {
       return p && p.querySelector("[data-test='storage-unexplained'],[data-test='storage-headline'],[data-test='storage-state']");
     }, null, { timeout: 20000 });
 
+    record("ui-diagnostics-collapsed-by-default", await page.$eval("[data-test='storage-diagnostics']", el => !el.open));
+    await page.click("[data-test='storage-diagnostics'] > summary");
+    record("ui-diagnostics-can-expand", await page.locator("[data-test='storage-unexplained']").isVisible());
     const freeText = await page.$eval("[data-test='storage-free']", (el) => el.textContent);
     const usedText = await page.$eval("[data-test='storage-used']", (el) => el.textContent);
     record("ui-free-single-readout", freeText === "74.0 MB" && usedText === "99.9 GB",
@@ -887,7 +890,7 @@ const d2 = await (async () => {
     }));
     await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
     await page.reload({ waitUntil: "domcontentloaded" });
-await page.waitForSelector("[data-test='storage-unexplained']", { timeout: 20000 });
+await page.waitForSelector("[data-test='storage-unexplained']", { state: "attached", timeout: 20000 });
     const negFlat = (await page.$eval("[data-test='storage-unexplained']",
       (el) => el.textContent)).replace(/\s+/g, " ");
     const negBytes = await page.$eval("[data-test='storage-unexplained']", (el) => el.dataset.bytes);

@@ -235,8 +235,7 @@ def resolve_runtime(executable: str | None = None,
                     version: str | None = None) -> RuntimeSelection:
     """对 settings 保存的 Runtime 做真实探测复核（能力门在调用侧，不在
     settings 层背书）：仅探测**保存的那个路径**（不做 PATH 枚举、不做
-    登录 shell 探测），要求 READY、路径一致、版本与已验证集合一致；
-    路径移除、指向改变或升级到未验证版本一律失效，绝不静默换家。"""
+    登录 shell 探测），要求 READY、路径一致；新版本按必要参数复核，不静默换家。"""
     if not runtime_id or not executable:
         raise AnalysisError(
             "runtime_not_configured",
@@ -258,7 +257,7 @@ def resolve_runtime(executable: str | None = None,
             status_code=403,
         )
     info = ar.detect_runtime(
-        meta, path_env="", extra_locations=[executable],
+        meta, path_env="", extra_locations=[executable], only_extra_locations=True,
         login_shell_cmd=["/bin/echo"],  # 复核不做登录 shell 探测：只认保存的路径
     )
     if info.availability is not ar.Availability.READY or not info.executable \
@@ -266,16 +265,11 @@ def resolve_runtime(executable: str | None = None,
             != Path(executable).resolve(strict=False):
         raise AnalysisError(
             "runtime_unavailable",
-            "已选择的解读引擎当前不可用（已移动、损坏或版本变化）；"
-            "请重新检测并选择",
+            f"已选择的解读引擎当前不可用：{info.detail}；请重新检测",
             status_code=403,
         )
-    if version and info.version != version:
-        raise AnalysisError(
-            "runtime_version_changed",
-            "解读引擎已升级到未验证版本；请重新检测并确认",
-            status_code=403,
-        )
+    # Saved version is historical configuration, not a pin. The preview records
+    # the freshly detected version; start_job still rejects drift after preview.
     return RuntimeSelection(
         id=info.id,
         display_name=info.display_name,

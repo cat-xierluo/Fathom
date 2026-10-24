@@ -404,6 +404,16 @@ class TestPreviewInvalidation:
                               "key-rt")
         assert ei.value.reason_code == "preview_stale"
 
+    def test_compatible_upgrade_after_preview_requires_new_preview(self, ok_setup, monkeypatch):
+        manager = make_manager()
+        preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
+        upgraded = dataclasses.replace(preview.runtime, version="2.1.303")
+        monkeypatch.setattr(am, "resolve_runtime", lambda *args: upgraded)
+        with pytest.raises(am.AnalysisError) as ei:
+            manager.start_job(preview.preview_id, preview.request_digest, "upgrade-after-preview")
+        assert ei.value.reason_code == "preview_stale"
+        assert not agent_rows()
+
     def test_runtime_removed_after_preview_rejected(self, ok_setup):
         """已选路径被移除 → 复核失败，绝不静默换另一家。"""
         manager = make_manager()
@@ -986,15 +996,27 @@ class TestLeaseHandoffOnStart:
         lease.release()
         assert agent_rows() == []
 
-    def test_normal_path_unaffected(self, ok_setup):
+    def test_normal_path_unaffected(self, ok_setup, monkeypatch):
         """正常路径零变化：视图先行构造返回，job 正常跑到终态。"""
         manager = make_manager()
+        worker_done = threading.Event()
+        execute_job = manager._execute_job
+
+        def execute_and_signal(rec):
+            try:
+                execute_job(rec)
+            finally:
+                worker_done.set()
+
+        monkeypatch.setattr(manager, "_execute_job", execute_and_signal)
         preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
         job, replayed = manager.start_job(preview.preview_id,
                                           preview.request_digest, "key-136-ok")
         assert replayed is False and job["job_id"]
         final = wait_terminal(manager, job["job_id"])
         assert final["status"] == "succeeded"
+        # 数据库终态先于 worker 清理；取锁断言须等真实执行函数返回。
+        assert worker_done.wait(20.0), "worker 未完成租约收尾"
         lease = am.AnalysisLease.acquire(manager._lock_path, source="probe-136b")
         lease.release()
 

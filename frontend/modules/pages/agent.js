@@ -4,7 +4,7 @@ import { escapeHtml } from '../format.js';
 import { datasetKey } from '../dataset.js';
 import { createAnalysisPanel } from '../components/analysis-panel.js';
 import {
-  runtimeCombinedStatus, runtimeDetectStatus, runtimeReasonDetail,
+  runtimeCombinedStatus, runtimeDetectStatus, runtimeReasonDetail, runtimeIdentityStatus,
 } from '../runtime-status.js';
 let snapshots = [], jobs = [], nextOffset = null, openedJob = null;
 /* 最近一次检测结果（本次会话内有效）：普通面只显示短状态与下一动作，
@@ -164,7 +164,9 @@ function renderEngineSummary(cfgAnalysis) {
     saved,
     info: detectedRuntime,
   });
+  const identity = runtimeIdentityStatus(detectedRuntime);
   const parts = [`<span data-test="agent-engine-short-status">${escapeHtml(status.text)}</span>`];
+  if (identity?.sendable) parts.push(`<span class="hint" data-test="agent-identity-status">${escapeHtml(identity.text)}</span>`);
   if (status.detail) parts.push(`<span class="hint" data-test="agent-engine-detail">${escapeHtml(status.detail)}</span>`);
   if (status.action) {
     parts.push(`<span class="hint" data-test="agent-engine-action">下一动作：${escapeHtml(status.action)}</span>`);
@@ -176,6 +178,8 @@ function renderEngineSummary(cfgAnalysis) {
     detectedRuntime?.version ? `检测版本：${detectedRuntime.version}` : '',
     detectedRuntime?.reason_code ? `原因码：${detectedRuntime.reason_code}` : '',
     detectedRuntime?.detail ? `检测说明：${detectedRuntime.detail}` : '',
+    identity ? `身份等级：${identity.level} · ${identity.detail}` : '',
+    identity ? `发送资格：${identity.sendable ? '可发起解读' : '暂不可发起解读'}` : '',
   ]));
   host.innerHTML = parts.filter(Boolean).join(' ');
 }
@@ -197,7 +201,9 @@ function renderDetectResult(info, saved, moved) {
     ? { text: '引擎入口已变更', action: '前往设置重新选择', actionKind: 'settings',
         detail: '检测到的入口与已保存的入口不同，需要重新选择并授权。' }
     : runtimeDetectStatus(info);
+  const identity = runtimeIdentityStatus(info);
   const parts = [`<span data-test="agent-detect-short-status">${escapeHtml(status.text)}</span>`];
+  if (identity?.sendable) parts.push(`<span class="hint" data-test="agent-identity-status">${escapeHtml(identity.text)}</span>`);
   if (status.detail) parts.push(`<span class="hint">${escapeHtml(status.detail)}</span>`);
   if (status.action) {
     parts.push(`<span class="hint" data-test="agent-detect-action">下一动作：${escapeHtml(status.action)}</span>`);
@@ -210,6 +216,8 @@ function renderDetectResult(info, saved, moved) {
     info?.version ? `检测版本：${info.version}` : '',
     info?.executable ? `检测入口：${info.executable}` : '',
     saved?.executable ? `已保存入口：${saved.executable}` : '',
+    identity ? `身份等级：${identity.level} · ${identity.detail}` : '',
+    identity ? `发送资格：${identity.sendable ? '可发起解读' : '暂不可发起解读'}` : '',
   ]));
   host.innerHTML = parts.filter(Boolean).join(' ');
 }
@@ -233,6 +241,7 @@ async function detectSelectedRuntime() {
     const moved = selected?.executable && info.executable && info.executable !== selected.executable;
     detectedRuntime = info;
     renderDetectResult(info, selected, moved);
+    renderEngineSummary(cfg.analysis);
   } catch (e) {
     if (request.current()) el('agent-runtime-status').textContent = `检测失败：${e.message}；可重试。`;
   } finally { if (request.current()) button.disabled = false; }

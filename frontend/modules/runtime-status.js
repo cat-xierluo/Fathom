@@ -12,10 +12,8 @@
  */
 
 /* ---------- reason_code → 普通面文案 + 下一动作 ----------
- * 覆盖后端 AnalysisError 的 16 个 reason_code 中与「引擎状态」有关的
- * 五个（其余属预览/快照/幂等语义，由解读面板自行处理）：
- *   runtime_not_configured / runtime_unknown / runtime_unsupported /
- *   runtime_unavailable / upgrade_in_progress
+ * 覆盖引擎配置、入口身份、调用配置与升级停写原因；其余预览、
+ * 快照和幂等语义由解读面板自行处理。
  * 每个条目给出：
  *   text    普通面短状态（不含机器码、不含路径）
  *   action  下一动作（人类可读的动作名）
@@ -41,6 +39,21 @@ export const RUNTIME_REASON_STATUS = {
     action: "重新检测",
     actionKind: "detect",
   },
+  runtime_identity_incomplete: {
+    text: "引擎入口身份待确认",
+    action: "重新检测",
+    actionKind: "detect",
+  },
+  runtime_identity_changed: {
+    text: "引擎入口已变化",
+    action: "重新检测后生成新预览",
+    actionKind: "detect",
+  },
+  runtime_invocation_mismatch: {
+    text: "引擎调用配置不一致",
+    action: "重新生成预览",
+    actionKind: "retry",
+  },
   upgrade_in_progress: {
     text: "应用正在升级，暂不能发起分析",
     action: "升级完成后重试",
@@ -65,6 +78,9 @@ export const RUNTIME_REASON_DETAIL = {
   runtime_unknown: "已保存的解读引擎不再是受支持的候选，请重新检测并选择",
   runtime_unsupported: "该引擎未通过能力门，当前版本暂不可用",
   runtime_unavailable: "已选择的解读引擎当前不可用，请重新检测",
+  runtime_identity_incomplete: "引擎执行链尚不能确认，请重新检测入口",
+  runtime_identity_changed: "引擎入口在预览后发生变化，请重新检测并生成新预览",
+  runtime_invocation_mismatch: "引擎调用参数与所选配置不一致，请重新生成预览后再确认",
   upgrade_in_progress: "升级事务进行中，分析已被暂停；请待升级完成后重试",
 };
 
@@ -115,12 +131,33 @@ export function runtimeActionLabel(actionKind, fallback = "重新生成预览") 
  *   action     下一动作文案（null 表示无需动作）
  *   actionKind "detect" | "settings" | null —— 供调用方选按钮去向
  */
+/** 身份等级与发送资格独立于探测可用性；原始等级只供技术详情使用。 */
+export function runtimeIdentityStatus(info) {
+  const identity = info?.capability_snapshot?.identity;
+  if (!identity || !["identity_complete", "execution_chain_resolved", "assurance"]
+    .some(key => key in identity)) return null;
+  if (identity.identity_complete === true) {
+    return { text: "身份链完整", level: "COMPLETE", sendable: true,
+      detail: "已确认全部已知执行层" };
+  }
+  if (identity.execution_chain_resolved === true) {
+    return { text: "身份已探测", level: "PROBED", sendable: true,
+      detail: "入口和解释器已确认；动态程序仍保留探测级证据" };
+  }
+  return { text: "身份待确认", level: "UNRESOLVED", sendable: false,
+    detail: "入口信息不足，尚不能确认执行链" };
+}
+
 export function runtimeDetectStatus(info) {
   if (!info) return { text: "尚未检测", action: "检测当前状态", actionKind: "detect" };
   const code = info.reason_code;
   const reason = runtimeReasonStatus(code);
   if (reason) return { text: reason.text, action: reason.action, actionKind: reason.actionKind };
   if (info.availability === "ready") {
+    const identity = runtimeIdentityStatus(info);
+    if (identity && !identity.sendable) {
+      return { text: "入口身份待确认", action: "重新检测", actionKind: "detect" };
+    }
     return { text: "可用", action: null, actionKind: null };
   }
   const avail = runtimeAvailabilityStatus(info.availability);

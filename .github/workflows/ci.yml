@@ -84,13 +84,12 @@ env:
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "2119"
+  EXPECTED_PYTEST_PASSED: "2152"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "95"
-  # ISS-201 新增 2 条断言：新增失败原因码须有普通用户可读中文文案，
-  # 且文案不得出现回收/删除/清理或自动重试等误导词。58 + 2 = 60。
-  EXPECTED_AGENT_PASSED: "76"
+  # ISS-204：调用配置文案、身份等级/发送资格与两视口布局回归，76 + 15 = 91。
+  EXPECTED_AGENT_PASSED: "91"
   # ISS-148 树形同级变化回归（真实 FastAPI+生产页面实点）
   EXPECTED_TREE_PASSED: "74"
   # ISS-151 目录当前大文件回归（真实 FastAPI+生产页面实点）
@@ -139,7 +138,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 2119 项通过）
+      - name: pytest（断言 2152 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh

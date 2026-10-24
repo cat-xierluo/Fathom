@@ -84,7 +84,8 @@ function renderSunburstContext(contextEl, t, snapList) {
 
 /* ISS-206：三页共用的默认落点；只选默认，不排序/裁剪目录，也不改显式选择。
  * 先按 datasetKey 选出有至少两个快照的数据集，每组取最新快照作为代表；
- * 再按 /、Data、普通内容根、系统辅助卷比较，同类根比较目录数与时间。
+ * 同根代表先取最新，再按 /、Data、普通内容根、系统辅助卷比较；
+ * 目录数只在不同根之间比较，不能让旧数据集覆盖同根较新的可比数据集。
  * 确实没有可比数据集时才按每根最新快照回退，保留单快照场景的默认落点。 */
 export function preferredContentSnapshot(snaps = []) {
   const rootOf = s => String(s.root || '').replace(/\/+$/, '') || (s.root ? '/' : '');
@@ -96,16 +97,19 @@ export function preferredContentSnapshot(snaps = []) {
     if (root === '/System/Volumes/Data') return 2;
     return /^\/System\/Volumes\/(VM|Preboot|Update)(\/|$)/.test(root) ? 0 : 1;
   };
-  const datasets = new Map(), latest = new Map();
+  const datasets = new Map();
   for (const snap of snaps) {
     const key = datasetKey(snap), group = datasets.get(key) || [];
     group.push(snap); datasets.set(key, group);
-    const root = rootOf(snap), old = latest.get(root);
-    if (!old || newer(snap, old) > 0) latest.set(root, snap);
   }
   const comparable = [...datasets.values()].filter(group => group.length >= 2)
     .map(group => group.reduce((best, snap) => newer(snap, best) > 0 ? snap : best));
-  const candidates = comparable.length ? comparable : [...latest.values()];
+  const latest = new Map();
+  for (const snap of comparable.length ? comparable : snaps) {
+    const root = rootOf(snap), old = latest.get(root);
+    if (!old || newer(snap, old) > 0) latest.set(root, snap);
+  }
+  const candidates = [...latest.values()];
   const count = s => Number.isFinite(Number(s.dir_count)) ? Number(s.dir_count) : 0;
   return candidates.reduce((best, snap) => {
     if (!best) return snap;

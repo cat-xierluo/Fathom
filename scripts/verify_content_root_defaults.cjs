@@ -13,6 +13,15 @@ const scenarios=[
  {name:'data',snaps:[...system,snap(26,'/System/Volumes/Data',99999,'single-data-plan'),snap(22,'/System/Volumes/Data',10000),snap(21,'/System/Volumes/Data',11000)],want:22},
  {name:'content',snaps:[...system,snap(18,'/Users/synthetic',50),snap(17,'/Users/synthetic',60)],want:18},
  {name:'system-only',snaps:system,want:29},
+ // 同根旧 legacy 组目录更多；新 plan 跨日且可比；更晚的单快照 q 仍不可抢默认。
+ {name:'same-root-newest-comparable',snaps:[
+  {...snap(30,'/fixture/same-root',999999,'single-q'),created_at:'2026-10-04T12:00:00'},
+  {...snap(26,'/fixture/same-root',100,'new-plan'),created_at:'2026-10-03T12:00:00'},
+  {...snap(25,'/fixture/same-root',100,'new-plan'),created_at:'2026-10-02T12:00:00'},
+  ...system,
+  {...snap(20,'/fixture/same-root',10000),created_at:'2026-09-20T12:00:00'},
+  {...snap(19,'/fixture/same-root',10000),created_at:'2026-09-19T12:00:00'},
+ ],want:26},
 ];
 async function main(){
  const browser=await chromium.launch({headless:true});

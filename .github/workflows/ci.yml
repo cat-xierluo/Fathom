@@ -94,7 +94,7 @@ env:
   # 身份等级/发送资格与两视口布局 +9，82 → 91。
   EXPECTED_AGENT_PASSED: "91"
   # ISS-206 内容根默认落点与显式选择重入（新目录替换屏障）。
-  EXPECTED_CONTENT_ROOT_DEFAULTS_PASSED: "32"
+  EXPECTED_CONTENT_ROOT_DEFAULTS_PASSED: "40"
   # ISS-148 树形同级变化回归（真实 FastAPI+生产页面实点）；
   # ISS-205 快照 root 与分页总数回归 +2，74 → 76。
   EXPECTED_TREE_PASSED: "76"

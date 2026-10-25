@@ -10,6 +10,18 @@ const {spawn,execFileSync}=require('child_process');
 const {once}=require('events');
 const {chromium}=require('playwright');
 const {SEED_PY}=require('./verify_storage_overview_frontend.cjs');
+// Give the main content root a real second recorded directory in both rounds.
+// Equal counts previously made the newer media root win the content default;
+// this lifecycle fixture explicitly needs the legal same-plan #1 -> #3 entry.
+const HANDOFF_SEED_PY=SEED_PY+`
+conn = db.connect()
+for sid in (s1[0], s2[0]):
+    conn.execute("INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,0)",
+                 (sid, os.path.join(ROOT, "handoff-child")))
+    conn.execute("UPDATE snapshots SET dir_count=(SELECT count(*) FROM entries WHERE snapshot_id=?) WHERE id=?", (sid, sid))
+conn.commit()
+conn.close()
+`;
 const REPO=path.resolve(__dirname,'..');
 const PY=process.env.FATHOM_PYTHON||path.join(REPO,'.venv/bin/python');
 const idx=process.argv.indexOf('--evidence');
@@ -25,7 +37,7 @@ async function helper(){
  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'fathom-iss188-')),runtime=path.join(tmp,'runtime'),scanRoot=path.join(tmp,'scanroot');fs.mkdirSync(scanRoot);
  const port=await freePort(),env={...process.env,FATHOM_RUNTIME_DIR:runtime,FATHOM_DB:path.join(runtime,'data/fathom.db'),FATHOM_SCAN_ROOT:scanRoot,FATHOM_PORT:String(port),PYTHONPATH:REPO};
  delete env.ISS158_STALE;
- const seed=spawn(PY,['-c',SEED_PY,tmp],{cwd:REPO,env});let seedOut='';seed.stdout.on('data',c=>seedOut+=c);seed.stderr.on('data',c=>seedOut+=c);const [code]=await once(seed,'exit');if(code!==0)throw Error(`seed ${code}: ${seedOut}`);
+ const seed=spawn(PY,['-c',HANDOFF_SEED_PY,tmp],{cwd:REPO,env});let seedOut='';seed.stdout.on('data',c=>seedOut+=c);seed.stderr.on('data',c=>seedOut+=c);const [code]=await once(seed,'exit');if(code!==0)throw Error(`seed ${code}: ${seedOut}`);
  const info=JSON.parse(seedOut.trim().split('\n').pop());
  const serveEnv={...env,HOME:scanRoot,FATHOM_RUNTIME_MODE:'development'};delete serveEnv.FATHOM_SCAN_ROOT;
  const child=spawn(PY,['-m','fathom','--runtime-mode','development','serve'],{cwd:REPO,env:serveEnv});let log='';child.stdout.on('data',c=>log+=c);child.stderr.on('data',c=>log+=c);
@@ -100,9 +112,19 @@ async function verifyNewerManual(page,fixture,width,trace){
 async function secondRootSummary(page){
  const handler=async route=>{
   const response=await route.fetch(),summary=await response.json();
-  // Both are real current-round members. Choose the other root by legal member
-  // order; no invented snapshot or mismatched plan is inserted into the fixture.
-  summary.attribution.measured_members.reverse();await route.fulfill({response,json:summary});
+  // Model a narrower valid scope for the second CTA, using the other real
+  // current-round member and its original plan/snapshot. Member order no longer
+  // selects a content root. The omitted main member is zero in both rounds, so
+  // measured totals and capacity differences remain the same for this fixture.
+  const other=summary.attribution.measured_members.find(member=>member.snapshot_id===4);
+  if(!other)throw Error('second CTA fixture requires real current-round snapshot #4');
+  summary.scope.roots=[other.root];
+  summary.attribution.attribution_roots=[other.root];
+  summary.attribution.members=summary.attribution.members.filter(member=>member.plan_id===other.plan_id);
+  summary.attribution.measured_members=[other];
+  summary.attribution.plan_ids=[other.plan_id];
+  summary.attribution.measured_kb=other.total_kb;
+  await route.fulfill({response,json:summary});
  };
  await page.route('**/api/storage/summary',handler);return()=>page.unroute('**/api/storage/summary',handler);
 }

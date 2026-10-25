@@ -109,29 +109,55 @@ async function verifyNewerManual(page,fixture,width,trace){
   record(`${width}.explicit-equal-point-preserved`,(await read(page)).a==='2'&&(await read(page)).b==='2');
  }finally{await gate.close();}
 }
-async function secondRootSummary(page){
+// A separate network-boundary scenario, not a scope-filtered view of the
+// backend's existing two-member rounds. Both synthetic rounds contain one
+// real same-plan member (#2 -> #4); distinct round IDs avoid rewriting those
+// original rounds while a catalog response from the first scenario is held.
+function singleMemberSummary(summary,snapshots){
+ const other=summary.attribution.measured_members.find(member=>member.snapshot_id===4);
+ const current=snapshots.find(snapshot=>snapshot.id===4);
+ const previous=snapshots.find(snapshot=>snapshot.id===2);
+ const member=summary.attribution.members.find(item=>item.snapshot_id===4);
+ if(!other||!current||!previous||!member||current.plan_id!==previous.plan_id
+    ||current.root!==previous.root||current.root!==other.root
+    ||member.plan_id!==current.plan_id||other.plan_id!==current.plan_id
+    ||other.container_id!==summary.scope.container_id
+    ||current.collection_status!=='full'||previous.collection_status!=='full'){
+  throw Error('second CTA requires full same-plan #2/#4 in the selected container');
+ }
+ const round={...summary.round,round_id:summary.round.round_id+10000,
+  status:'full',message:null,member_status_counts:{done:1}};
+ const previousRound={...summary.previous_round,
+  round_id:summary.previous_round.round_id+10000,
+  status:'full',message:null,member_status_counts:{done:1}};
+ const measuredDelta=(current.total_kb-previous.total_kb)*1024;
+ const freeDelta=summary.unexplained.free_delta_bytes;
+ return {...summary,scope:{...summary.scope,roots:[other.root]},round,
+  previous_round:previousRound,
+  attribution:{...summary.attribution,round_id:round.round_id,
+   attribution_roots:[other.root],absorbed_roots:[],
+   members:[{...member,seq:0}],measured_members:[{...other,seq:0}],stale_members:[],
+   measured_kb:current.total_kb,plan_ids:[current.plan_id],
+   container_ids:[other.container_id],all_roots_full_quality:true,
+   comparable_to_previous:true},
+  comparability:{comparable:true,identity_reasons:[],scope_reasons:[],
+   member_reasons:[],own_reasons:[],previous_reasons:[]},
+  unexplained:{...summary.unexplained,comparable:true,reason:null,
+   measured_delta_bytes:measuredDelta,free_delta_bytes:freeDelta,
+   bytes:freeDelta-measuredDelta}};
+}
+async function secondRootSummary(page,fixture){
  const handler=async route=>{
   const response=await route.fetch(),summary=await response.json();
-  // Model a narrower valid scope for the second CTA, using the other real
-  // current-round member and its original plan/snapshot. Member order no longer
-  // selects a content root. The omitted main member is zero in both rounds, so
-  // measured totals and capacity differences remain the same for this fixture.
-  const other=summary.attribution.measured_members.find(member=>member.snapshot_id===4);
-  if(!other)throw Error('second CTA fixture requires real current-round snapshot #4');
-  summary.scope.roots=[other.root];
-  summary.attribution.attribution_roots=[other.root];
-  summary.attribution.members=summary.attribution.members.filter(member=>member.plan_id===other.plan_id);
-  summary.attribution.measured_members=[other];
-  summary.attribution.plan_ids=[other.plan_id];
-  summary.attribution.measured_kb=other.total_kb;
-  await route.fulfill({response,json:summary});
+  const snapshots=(await get(fixture.port,'/api/snapshots')).json;
+  await route.fulfill({response,json:singleMemberSummary(summary,snapshots)});
  };
  await page.route('**/api/storage/summary',handler);return()=>page.unroute('**/api/storage/summary',handler);
 }
 async function verifySecondCta(page,fixture,width,trace){
  const gate=await beginWarmCta(page,fixture,trace);let restore;
  try{
-  restore=await secondRootSummary(page);await overview(page);
+  restore=await secondRootSummary(page,fixture);await overview(page);
   await page.waitForFunction(()=>document.querySelector('[data-test="storage-cta"]').dataset.b==='4');
   await page.click('[data-test="storage-cta"]');await page.waitForFunction(()=>document.querySelector('#sel-b').value==='4');
   trace.push({event:'second-cta-applied',...await read(page)});

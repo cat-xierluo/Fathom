@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import time
+import sys
 from pathlib import Path
 
 import pytest
@@ -54,15 +55,14 @@ def make_fake_hermes(dir_path: Path, *, model: str | None,
     body = "\n".join(lines)
 
     script = dir_path / name
+    banner = f"Hermes Agent v{FAKE_HERMES_VERSION}+3840.g9a0a162 (2026.9.24)"
+    interpreter = Path(sys.executable).resolve()
     script.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "--version" ]; then\n'
-        # 版本行须匹配注册表的 version_pattern（Hermes Agent vX.Y.Z+git (date)），
-        # 否则能力门会判「引擎不可用」，根本走不到落库那一步。
-        f'  echo "Hermes Agent v{FAKE_HERMES_VERSION}+3840.g9a0a162 (2026.9.24)";'
-        " exit 0; fi\n"
-        "cat > /dev/null\n"
-        f"cat <<'EOS'\n{body}\nEOS\n", encoding="utf-8")
+        f"#!{interpreter}\nimport sys\n"
+        'if len(sys.argv) > 1 and sys.argv[1] == "--version":\n'
+        f'    print({banner!r})\n    sys.exit(0)\n'
+        'sys.stdin.buffer.read()\n'
+        f'sys.stdout.write({body!r} + "\\n")\n', encoding="utf-8")
     script.chmod(0o755)
     return script
 

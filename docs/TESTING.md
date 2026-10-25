@@ -11,7 +11,7 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的 pytest、浏览器和 Rust 入口核对源码来源、退出码与精确通过数。当前配置值以 `.github/workflows/ci.yml` 的 `EXPECTED_*` 为权威：pytest 2152、API/浏览器 39、前端 refresh 217、AI 解读前端 95、Agent 中心 97、Rust 单测 79、升级状态恢复 16。另有树形变化 76、目录大文件 36、分布快照 35、范围设置 177、整盘总览 71、交接时序 55、跨页排查 55、内容根默认选择 40，由 `scripts/ci_browser_checks.sh` 串行执行。配置期望不代表实际通过；每轮结果须绑定候选 OID、日志与退出码，失败不能通过修改期望数隐藏。
+仓库的 pytest、浏览器和 Rust 入口核对源码来源、退出码与精确通过数。当前配置值以 `.github/workflows/ci.yml` 的 `EXPECTED_*` 为权威：pytest 2152、API/浏览器 39、前端 refresh 217、AI 解读前端 95、Agent 中心 97、Rust 单测 83、升级状态恢复 16。另有树形变化 76、目录大文件 36、分布快照 35、范围设置 177、整盘总览 71、交接时序 55、跨页排查 55、内容根默认选择 40，由 `scripts/ci_browser_checks.sh` 串行执行。配置期望不代表实际通过；每轮结果须绑定候选 OID、日志与退出码，失败不能通过修改期望数隐藏。
 
 内容根专项覆盖辅助卷最新、同根单快照新计划、多个可比数据集和显式选择重入；重入先等待新目录替换旧选项，再检查保留值。Agent 回归分别覆盖检测生命周期和身份等级/发送资格；树形详情验证首页 100 条、分页总数 130 的真实读数。
 
@@ -49,7 +49,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest 和 Ru
 ```bash
 EXPECTED_PYTEST_PASSED=2152 /bin/bash scripts/ci_pytest.sh # ↔ pytest (arm64)，与CI计数一致
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 217 + AI 解读 95 + Agent 中心 97 + 前端家族（76/36/35/177/71/55/55）+ 内容根40+ 升级恢复16
-/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 79
+/bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 83
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
   rustup run stable cargo check --target x86_64-apple-darwin --locked --offline \
   --manifest-path apps/desktop/src-tauri/Cargo.toml  # ≈ cargo locked offline (x86_64)：交叉 check，非原生 build
@@ -258,7 +258,7 @@ FATHOM_UPGRADE_TEST_HELPER=/Applications/Fathom.app/Contents/Resources/helper/fa
 
 ### 升级终态跨后台重启恢复
 
-`node scripts/verify_updater_recovery.cjs` 的16项真实 Chromium 回归使用两个回环 HTTP origin 与显式 Tauri IPC 桥夹具，加载生产 settings/router 模块，验证 `#settings/about` 初始化、失败 kind/error/hint 与重试入口恢复、已安装后的重启入口、迟到回读/旧事件拒绝及忙碌响应不覆盖新操作；普通手动检查保留待重启终态，明确重试下载才开始新的失败重试。`ci_browser_checks.sh` 与 CI/本地入口以 `EXPECTED_UPDATER_RECOVERY_PASSED=16` 收口；默认 Rust 79项包含3项 presentation 状态机回归。
+`node scripts/verify_updater_recovery.cjs` 的16项真实 Chromium 回归使用两个回环 HTTP origin 与显式 Tauri IPC 桥夹具，加载生产 settings/router 模块，验证 `#settings/about` 初始化、失败 kind/error/hint 与重试入口恢复、已安装后的重启入口、迟到回读/旧事件拒绝及忙碌响应不覆盖新操作；普通手动检查保留待重启终态，明确重试下载才开始新的失败重试。`ci_browser_checks.sh` 与 CI/本地入口以 `EXPECTED_UPDATER_RECOVERY_PASSED=16` 收口；默认 Rust 83项包含3项 presentation 状态机回归。
 
 桥夹具只能证明前端与约定 IPC 形态兼容，不能证明冻结 helper 包含新前端、真实桌面 invoke 或应用替换可用。打包验收须在自有安装目录、合成历史与显式隔离运行根中，执行签名正确但损坏的更新包：确认真实 prepare/备份/rollback 后 helper 换端口，关于页仍显示失败原因且可重试；再使用正确包完成安装、确认重启，核对新版 app/helper、历史和数据库完整性。测试 endpoint/test key 仅用于隔离注入；正式资产仍须用已安装旧客户端的生产公钥标准验签。不得扫描 HOME 或修改生产调度。
 

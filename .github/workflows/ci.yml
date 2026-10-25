@@ -107,7 +107,7 @@ env:
   EXPECTED_DIFF_HANDOFF_PASSED: "55"
   # ISS-160 跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI+生产页面实点）
   EXPECTED_INVESTIGATION_PASSED: "55"
-  EXPECTED_CARGO_PASSED: "79"
+  EXPECTED_CARGO_PASSED: "83"
   EXPECTED_UPDATER_RECOVERY_PASSED: "16"
 
 jobs:
@@ -240,7 +240,7 @@ jobs:
           cargo --version
           [ "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION" ]
 
-      - name: Cargo.lock 锁定离线构建与单测（断言 79 项通过）
+      - name: Cargo.lock 锁定离线构建与单测（断言 83 项通过）
         env:
           CARGO_PREFETCH: '1'
         run: bash scripts/ci_cargo_locked.sh

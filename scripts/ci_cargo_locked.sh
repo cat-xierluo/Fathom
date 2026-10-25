@@ -13,7 +13,7 @@
 # 断言口径：Cargo.lock 必须入库存在；--locked 下锁与 Cargo.toml 不一致、
 # 或离线缺 crate 时 cargo 以非零退出，脚本随之失败；test 任一用例失败
 # 同样非零退出（pipefail 直通），通过数必须等于 EXPECTED_CARGO_PASSED
-# （默认 67），空跑与静默漂移由计数门禁拦下。
+# （默认 83），空跑与静默漂移由计数门禁拦下。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -37,8 +37,9 @@ echo "cargo locked offline build: ok"
 # 既有门）+ 2（ISS-114：原生 mask ABI 拒绝路径）= 67。
 # ISS-179：已有 71 项 + 升级回收/存活句柄/轮询失败回收 3 项 + ISS-182 恢复状态机 3 项 = 77；
 # ISS-187 资源内容revision导航/旧helper拒绝新增 2 项 = 79。
+# ISS-207 保留等待失败后的 Child 所有权及退出回收新增 4 项 = 83。
 # 真实冻结入口用例为显式 --ignored 验证，不计默认门禁。
-expected_tests="${EXPECTED_CARGO_PASSED:-79}"
+expected_tests="${EXPECTED_CARGO_PASSED:-83}"
 test_out="$(mktemp)"
 trap 'rm -f "$test_out"' EXIT
 cargo test --locked --offline --manifest-path "$manifest" | tee "$test_out"

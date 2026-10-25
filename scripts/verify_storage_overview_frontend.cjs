@@ -297,7 +297,8 @@ async function verifyCapacityEmptyStates(page, base) {
     });
     await page.route("**/api/volume-trend", fulfill(trend));
     await page.route("**/api/snapshots", fulfill(snapshots));
-    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    // Already on overview: one reload refreshes the fixture without aborting
+    // a new document\'s in-flight /api/status response with a second navigation.
     await page.reload({ waitUntil: "domcontentloaded" });
     // 落位判据：空态是 <p class="hint">，有数据是 echarts 容器——任一子元素
     // 出现即说明 loadVolumeTrend 已经判完空/非空（不是加载中的空容器）。
@@ -506,6 +507,8 @@ async function runPhase(withStale) {
   // ---------- 4. 真实 Chromium 实点生产总览页 ----------
   let browser = null;
   const consoleErrors = [];
+  const networkDiagnostics = [];
+  const consoleDiagnostics = [];
   const dialogs = [];
   let flowStage = "browser-start";
   let page = null;
@@ -516,7 +519,14 @@ async function runPhase(withStale) {
     record("chromium-launched", true);
     page = await browser.newPage({ viewport: { width: 1220, height: 820 } });
     await page.addInitScript(() => { window.__diag = []; });
+    page.on("requestfailed", request => networkDiagnostics.push({
+      stage: flowStage, url: request.url(), method: request.method(),
+      failure: request.failure(), at: Date.now(),
+    }));
     page.on("console", (m) => {
+      if (m.type() === "error") consoleDiagnostics.push({
+        stage: flowStage, text: m.text(), location: m.location(), at: Date.now(),
+      });
       /* ISS-178：「无法连接本地服务」是套件自起 serve 的重启竞态在页面
        * console 的回声（stash 基线同挂，非页面缺陷），与 Failed to load
        * resource 同类按资源噪音过滤；其余 console error 仍计失败。 */
@@ -833,7 +843,8 @@ const d2 = await (async () => {
         round: null, previous_round: null, attribution: null,
         unexplained: { bytes: null, comparable: false, reason: "尚无完整轮次对（需同主体、同计划的两轮）。" } }),
     }));
-    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    // Already on overview: one reload refreshes the fixture without aborting
+    // a new document\'s in-flight /api/status response with a second navigation.
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForSelector("[data-test='storage-headline']", { timeout: 20000 });
     const legacyHead = await page.$eval("[data-test='storage-headline']", (el) => el.textContent);
@@ -867,7 +878,8 @@ const d2 = await (async () => {
           capacity: null, round: kind === "single" ? { id: 1 } : null,
           previous_round: null, attribution: null, unexplained: null }),
       }));
-      await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+      // Already on overview: one reload refreshes the fixture without aborting
+      // a new document\'s in-flight /api/status response with a second navigation.
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.waitForSelector("[data-test='storage-state']", { timeout: 20000 });
       await checkObjectEntry(kind);
@@ -888,7 +900,8 @@ const d2 = await (async () => {
         unexplained: { bytes: -14 * 1024 ** 2, comparable: true,
           limitation: "尚无法由目录变化解释" } }),
     }));
-    await page.goto(`${base}/#/overview`, { waitUntil: "domcontentloaded" });
+    // Already on overview: one reload refreshes the fixture without aborting
+    // a new document\'s in-flight /api/status response with a second navigation.
     await page.reload({ waitUntil: "domcontentloaded" });
 await page.waitForSelector("[data-test='storage-unexplained']", { state: "attached", timeout: 20000 });
     const negFlat = (await page.$eval("[data-test='storage-unexplained']",
@@ -930,6 +943,8 @@ await page.waitForSelector("[data-test='storage-unexplained']", { state: "attach
       `phase=${PHASE} stage=${flowStage} expectedB=${expectedB} ${e.stack || e.message} DOM=${JSON.stringify(dom)}`);
     if (serveLog) process.stderr.write(`serve stderr 尾部: ${serveLog.slice(-500)}\n`);
   } finally {
+    fs.writeFileSync(path.join(SHOTS, "..", `network-${PHASE}.json`),
+      JSON.stringify({ console: consoleDiagnostics, failedRequests: networkDiagnostics }, null, 2));
     if (browser) await browser.close().catch(() => {});
   }
 

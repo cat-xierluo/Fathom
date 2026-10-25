@@ -95,9 +95,9 @@ run_selftest() {
     # shellcheck disable=SC2317
     "$setup_fn" "$tdir"
     if [ "$use_fake" = "1" ]; then
-      ( cd "$tdir" && FAKE_RELEASE_CANDIDATE=1 bash "$tdir/scripts/release_candidate_record.sh" ) >/dev/null 2>&1
+      ( cd "$tdir" && FAKE_RELEASE_CANDIDATE=1 "$BASH" "$tdir/scripts/release_candidate_record.sh" ) >/dev/null 2>&1
     else
-      ( cd "$tdir" && bash "$tdir/scripts/release_candidate_record.sh" ) >/dev/null 2>&1
+      ( cd "$tdir" && "$BASH" "$tdir/scripts/release_candidate_record.sh" ) >/dev/null 2>&1
     fi
     local got=$?
     if [ "$got" = "$expected" ]; then

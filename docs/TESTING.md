@@ -11,14 +11,14 @@
 .venv/bin/python -m pytest tests/ -q
 ```
 
-仓库的 pytest、浏览器和 Rust 入口核对源码来源、退出码与精确通过数。当前配置值以 `.github/workflows/ci.yml` 的 `EXPECTED_*` 为权威：pytest 2152、API/浏览器 39、前端 refresh 217、AI 解读前端 95、Agent 中心 97、Rust 单测 83、升级状态恢复 16。另有树形变化 76、目录大文件 36、分布快照 35、范围设置 177、整盘总览 71、交接时序 55、跨页排查 55、内容根默认选择 40，由 `scripts/ci_browser_checks.sh` 串行执行。配置期望不代表实际通过；每轮结果须绑定候选 OID、日志与退出码，失败不能通过修改期望数隐藏。
+仓库的 pytest、浏览器和 Rust 入口核对源码来源、退出码与精确通过数。当前配置值以 `.github/workflows/ci.yml` 的 `EXPECTED_*` 为权威：pytest 2215、API/浏览器 39、前端 refresh 217、AI 解读前端 95、Agent 中心 97、Rust 单测 83、升级状态恢复 16。另有树形变化 76、目录大文件 36、分布快照 35、范围设置 177、整盘总览 71、交接时序 55、跨页排查 55、内容根默认选择 40，由 `scripts/ci_browser_checks.sh` 串行执行。配置期望不代表实际通过；每轮结果须绑定候选 OID、日志与退出码，失败不能通过修改期望数隐藏。
 
 内容根专项覆盖辅助卷最新、同根单快照新计划、多个可比数据集和显式选择重入；重入先等待新目录替换旧选项，再检查保留值。Agent 回归分别覆盖检测生命周期和身份等级/发送资格；树形详情验证首页 100 条、分页总数 130 的真实读数。
 
 本地复跑使用 macOS 系统 `/bin/bash`，脚本不安装后台任务、不扫描 HOME、不发真实模型请求：
 
 ```bash
-EXPECTED_PYTEST_PASSED=2152 /bin/bash scripts/ci_pytest.sh
+EXPECTED_PYTEST_PASSED=2215 /bin/bash scripts/ci_pytest.sh
 /bin/bash scripts/ci_cargo_locked.sh
 npm install --prefix .runtime/playwright playwright@1.61.1
 FATHOM_PYTHON="$PWD/.venv/bin/python" \
@@ -47,7 +47,7 @@ GitHub CI 在原生 Apple Silicon 与 Intel runner 上分别执行 pytest 和 Ru
 **2026-09-15 至 09-26 历史状态**：`CI` workflow 曾因额度停用（`disabled_manually`，DEC-021——内部决定记录，未随公开库分发），当时 push/PR 不创建 run，`gh pr checks` 为空属预期。现已恢复实跑；下列本地替代链用于额度故障时按主干同一计数复跑，与云端作业对应：
 
 ```bash
-EXPECTED_PYTEST_PASSED=2152 /bin/bash scripts/ci_pytest.sh # ↔ pytest (arm64)，与CI计数一致
+EXPECTED_PYTEST_PASSED=2215 /bin/bash scripts/ci_pytest.sh # ↔ pytest (arm64)，与CI计数一致
 /bin/bash scripts/ci_browser_checks.sh               # ↔ API/浏览器检查 (arm64)：39 + 前端 refresh 217 + AI 解读 95 + Agent 中心 97 + 前端家族（76/36/35/177/71/55/55）+ 内容根40+ 升级恢复16
 /bin/bash scripts/ci_cargo_locked.sh                 # ↔ cargo locked offline (arm64)：build + 单测 83
 RUSTC="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin/rustc" \
@@ -256,6 +256,10 @@ FATHOM_UPGRADE_TEST_HELPER=/Applications/Fathom.app/Contents/Resources/helper/fa
 
 该测试创建独立临时运行根、空库、合成扫描根和随机回环端口，运行所指定的冻结 helper，但不复用生产实例、不扫描 HOME、不替换应用。断言 prepare 成功、一致备份真实生成、旧 helper 与实例文件退出，并执行 rollback 收口；日志与 JSON 留在测试输出所指临时目录。它验证真实冻结升级准备及壳的回收调用链，不代表完整下载/应用替换/重启升级已验收。
 
+### 完整应用回滚
+
+`tests/test_upgrade_bundle_restore.py` 的63项回归覆盖完整 app 备份与字节恢复、旧恢复材料不足、事务身份、损坏备份、容量预算，以及链接和普通路径组件经过恢复区时在副作用前拒绝。真实冻结验收另须观察回滚进程从安装目录迁出执行，再验证主壳、Info.plist、后台、其余资源与数据库/设置全部恢复；合成测试不能替代该阶段或签名插件的 GUI 更新事务。
+
 ### 升级终态跨后台重启恢复
 
 `node scripts/verify_updater_recovery.cjs` 的16项真实 Chromium 回归使用两个回环 HTTP origin 与显式 Tauri IPC 桥夹具，加载生产 settings/router 模块，验证 `#settings/about` 初始化、失败 kind/error/hint 与重试入口恢复、已安装后的重启入口、迟到回读/旧事件拒绝及忙碌响应不覆盖新操作；普通手动检查保留待重启终态，明确重试下载才开始新的失败重试。`ci_browser_checks.sh` 与 CI/本地入口以 `EXPECTED_UPDATER_RECOVERY_PASSED=16` 收口；默认 Rust 83项包含3项 presentation 状态机回归。
@@ -272,7 +276,7 @@ FATHOM_UPGRADE_TEST_HELPER=/Applications/Fathom.app/Contents/Resources/helper/fa
 
 `/health` 的 `frontend_revision`、只读 `/api/frontend-manifest` 与 `/_fathom/resources/<revision>/` 必须绑定同一完整前端内容图。执行 `pytest tests/test_frontend_resources.py tests/test_helper_identity.py tests/test_api_security.py -q`，覆盖实际 loader、相对模块/CSS/图片、旧 revision 拒绝、冻结后磁盘更替、路径/符号链接及根目录替换边界。HTML、裸兼容入口与 manifest 返回 no-store；版本空间内非 HTML 资源可 immutable。
 
-原生升级验收使用独立 bundle ID、合成运行根与固定端口：先加载旧资源并保留其 WebKit 缓存，退出自有应用后替换自有壳/helper，在同源重开并核对实际 WebView URL revision 与 HTTP 内容、范围/AI/Agent 入口、设置与历史。另验新端口重开。不得清生产缓存或用新 origin 通过代替同源升级证据。Rust 同 revision 跳过导航及保 hash 的单测不能替代真实更新失败恢复；未实跑的更新事务明确为 NOT_VERIFIED。退出后仅用进程与监听端口确认回收，避免原生观察工具自动重启已退出应用。
+原生升级验收使用独立安装目录、合成运行根与固定端口，并核对自有 PID 和可执行路径；完整应用恢复保持 `com.maoscripts.fathom` 标识，测试更新源与一次性公钥只覆盖隔离测试壳：先加载旧资源并保留其 WebKit 缓存，退出自有应用后替换自有壳/helper，在同源重开并核对实际 WebView URL revision 与 HTTP 内容、范围/AI/Agent 入口、设置与历史。另验新端口重开。不得清生产缓存或用新 origin 通过代替同源升级证据。Rust 同 revision 跳过导航及保 hash 的单测不能替代真实更新失败恢复；未实跑的更新事务明确为 NOT_VERIFIED。退出后仅用进程与监听端口确认回收，避免原生观察工具自动重启已退出应用。
 
 ### 启动盘采集身份验证
 

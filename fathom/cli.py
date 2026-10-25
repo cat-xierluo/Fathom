@@ -761,6 +761,12 @@ def cmd_upgrade_rollback(_: argparse.Namespace) -> int:
     （含损坏与旧格式）——这是 journal 的唯一清除通道之一；自动回滚路径
     只清自己的 journal。"""
     paths = upgrade.UpgradePaths.from_config()
+    try:
+        upgrade.relocate_rollback_helper(paths)
+    except (OSError, upgrade.RestoreFailed) as exc:
+        print(json.dumps({"ok": False, "kind": "restore_failed", "error": str(exc),
+                          "journal_preserved": True}, ensure_ascii=False))
+        return 1
     coord = upgrade.UpgradeCoordinator(paths)
     result = coord.rollback(reason="cli upgrade-rollback", own_journal_only=False)
     print(json.dumps(result, ensure_ascii=False))

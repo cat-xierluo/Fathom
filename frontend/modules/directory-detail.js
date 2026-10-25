@@ -455,7 +455,7 @@ export function createDirectoryDetail({
     try {
       const r = await fetchJSON(`/api/browse?path=${encodeURIComponent(path)}&snapshot_id=${encodeURIComponent(rangeOf().b)}`);
       if (!request.current() || keyOf(rangeOf(), path) !== activeKey) return;
-      const childN = (r.children || []).length;
+      const childN = r.pagination?.total ?? (r.children || []).length;
       const trendN = (r.trend || []).length;
       const at = r.snapshot?.created_at ? String(r.snapshot.created_at).slice(0, 16).replace("T", " ") : "";
       target.innerHTML = `<span>所选快照大小：<strong>${r.size_kb == null ? "未直接记录" : escapeHtml(fmtKB(r.size_kb))}</strong></span>` +

@@ -196,7 +196,7 @@ export function runtimeCombinedStatus({ enabled, saved, info }) {
   if (!saved) {
     return { text: "已启用但未选择引擎", action: "前往设置选择", actionKind: "settings", detail: "" };
   }
-  if (!info) {
+  if (!info || (saved.id && info.id && saved.id !== info.id)) {
     return { text: "已授权 · 未检测", action: "检测当前状态", actionKind: "detect", detail: "" };
   }
   // 入口漂移：探测到的可执行文件与已保存的不一致（技术细节只进折叠区）。

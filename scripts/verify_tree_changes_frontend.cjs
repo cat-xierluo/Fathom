@@ -157,9 +157,11 @@ def main(tmp):
         "/synthetic/oneside": 22000, "/synthetic/oneside/newcomer": 7000})
     ids["pages_a"] = insert(conn, "2026-09-12", "/synthetic/pages", {
         **{f"/synthetic/pages/c{i:03d}": 1000 + i for i in range(130)},
+        **{f"/synthetic/pages/c000/k{i:03d}": 1 for i in range(130)},
         "/synthetic/pages": 300000})
     ids["pages_b"] = insert(conn, "2026-09-13", "/synthetic/pages", {
         **{f"/synthetic/pages/c{i:03d}": 1000 + 2 * i for i in range(130)},
+        **{f"/synthetic/pages/c000/k{i:03d}": 1 for i in range(130)},
         "/synthetic/pages": 300130})
     names = ["<img src=x onerror=alert(1)>", "line1\\nline2", "tab\\tname", 'quo"te', "中文目录"]
     ids["weird_a"] = insert(conn, "2026-09-14", "/synthetic/weird",
@@ -649,6 +651,22 @@ async function main() {
     record("pages-load-more-130-no-duplicates",
       allRows.length === 130 && new Set(allRows).size === 130 && moreGone === null,
       `rows=${allRows.length} dup=${allRows.length - new Set(allRows).size}`);
+
+    let detailBrowsePage;
+    const observeBrowse = async response => {
+      const u = new URL(response.url());
+      if(u.pathname === '/api/browse' && u.searchParams.get('path') === '/synthetic/pages/c000')
+        detailBrowsePage = await response.json();
+    };
+    page.on('response', observeBrowse);
+    await page.click('#changes-body tr[data-path="/synthetic/pages/c000"] .tree-name');
+    await waitUntil(async () => (await page.textContent('#detail-current-info')).includes('直属子目录'), 10000, '分页详情就绪');
+    const childCountText = await page.textContent('#detail-current-info');
+    record("detail-browse-shows-total-beyond-first-page",
+      detailBrowsePage?.children.length === 100 && detailBrowsePage?.pagination.total === 130 &&
+      childCountText.includes('直属子目录 130 个'), JSON.stringify({shown:detailBrowsePage?.children.length,total:detailBrowsePage?.pagination.total,text:childCountText}));
+    page.off('response', observeBrowse);
+    await page.keyboard.press('Escape');
 
     /* ---- hist（#5 → #6）：旧区间详情绑定，最新口径另标 ---- */
     await page.selectOption("#sel-b", "6");

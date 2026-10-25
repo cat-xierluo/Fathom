@@ -203,7 +203,7 @@ function sameDatasetGroup(snaps, anchor) {
 
 function replaceSnapshotOptions(select, snaps) {
   const options = snaps.map((s) => {
-    const label = `#${s.id} ${s.created_at.slice(0, 16).replace("T", " ")}`;
+    const label = `#${s.id} ${s.created_at.slice(0, 16).replace("T", " ")} · ${s.root || "未知根"}`;
     return new Option(label, String(s.id));
   });
   select.replaceChildren(...options);

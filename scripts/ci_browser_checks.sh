@@ -179,8 +179,9 @@ assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
 
 # ISS-189：Agent 常驻入口、同口径选点、共享生命周期与跨区间有界历史。
 # 真实 Chromium + 模拟 HTTP backend；真实 helper/原生入口另行验收。
+# ISS-205 生命周期 6 项与 ISS-204 身份/调用配置 15 项共存，总计 97 项。
 node scripts/verify_agent_frontend.cjs | tee "$analysis_out"
-assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-91}" "agent frontend"
+assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-97}" "agent frontend"
 
 # ISS-206：内容根默认落点、历史 CTA 与显式选择重入及同根跨数据集优先级；40 项真实 Chromium 断言。
 # 重入须等新快照目录替换旧 option 后再核选点，不能用旧 DOM 证明选择保留。

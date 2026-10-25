@@ -163,6 +163,65 @@ async function verifyRuntimeIdentityAndMismatch(browser){
  } finally {await page.close();fixture.server.close();await once(fixture.server,'close');}
 }
 
+// ISS-205：真实设置授权、Agent 重入/刷新与迟到检测，合成 HTTP 零模型调用。
+async function verifyDetectionLifetime(browser) {
+ let selected={id:'claude-code',executable:'/fixture/bin/claude',version:'2.1.237'};
+ let settingsRevision=2,consentRevision=1,releaseDetect=null,delayDetect=false;
+ const fixture=createFixture({configRuntimeObject:true,async intercept(req,res,url,body){
+  if(url.pathname==='/api/snapshots'){json(res,200,SNAPSHOTS);return true;}
+  if(url.pathname==='/api/analysis/history'){json(res,200,{jobs:[],total:0,next_offset:null});return true;}
+  if(url.pathname==='/api/config'&&req.method==='PUT'){
+   selected=JSON.parse(body).analysis.runtime;settingsRevision++;consentRevision++;
+   json(res,200,{applied:true});return true;
+  }
+  if(url.pathname==='/api/analysis/runtimes/detect'&&delayDetect){
+   await new Promise(r=>releaseDetect=r);
+   json(res,200,{runtimes:{[selected.id]:{...selected,availability:'broken',reason_code:'runtime_unavailable',detail:'late detection'}}});return true;
+  }
+  return false;
+ }});
+ fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='enabled';
+ fixture.server.listen(0,'127.0.0.1');await once(fixture.server,'listening');const page=await browser.newPage();
+ await page.route('**/api/config',async route=>{
+  if(route.request().method()!=='GET'){await route.continue();return;}
+  const response=await route.fetch(),cfg=await response.json();
+  cfg.analysis={...cfg.analysis,runtime:selected,settings_revision:settingsRevision,consent_revision:consentRevision};
+  await route.fulfill({response,json:cfg});
+ });
+ const short=()=>page.locator('[data-test="agent-engine-short-status"]').textContent();
+ const detect=async()=>{await page.click('#agent-detect');await page.waitForSelector('[data-test="agent-detect-short-status"]');};
+ const saveInSettings=async id=>{
+  await page.click('#agent-settings');await page.waitForSelector('#btn-analysis-detect');
+  await page.click('#btn-analysis-detect');
+  await page.click(`[data-test="analysis-pick-btn"][data-runtime-id="${id}"]`);
+  await page.click('[data-test="analysis-confirm-yes"]');await page.waitForSelector('[data-test="analysis-note"]');
+  await page.click('.nav-item[data-page="agent"]');await page.waitForSelector('[data-test="agent-engine-short-status"]');
+ };
+ try{
+  await page.goto(`http://127.0.0.1:${fixture.server.address().port}/#/agent`);
+  await page.waitForSelector('[data-test="agent-engine-short-status"]');await detect();
+  record('agent.detect-updates-engine-summary',await short()==='可用',await short());
+  await saveInSettings('codex-cli');
+  record('agent.changed-engine-requires-new-detection',(await short()).includes('未检测')&&!(await short()).includes('入口已变更'),await short());
+  await detect();await saveInSettings('codex-cli');
+  record('agent.same-entry-new-authorization-requires-detection',selected.id==='codex-cli'&&settingsRevision===4&&consentRevision===3&&(await short()).includes('未检测'),JSON.stringify({selected,settingsRevision,consentRevision,status:await short()}));
+  await detect();await page.click('#agent-refresh');await page.waitForTimeout(150);
+  record('agent.refresh-invalidates-detection',(await short()).includes('未检测'),await short());
+  const mismatched=await page.evaluate(async()=>{
+   const {runtimeCombinedStatus}=await import('/modules/runtime-status.js');
+   return runtimeCombinedStatus({enabled:true,saved:{id:'codex-cli',executable:'/fixture/bin/codex'},info:{id:'claude-code',executable:'/fixture/bin/claude',availability:'broken'}});
+  });
+  record('agent.other-runtime-result-is-undetected',mismatched.text==='已授权 · 未检测',JSON.stringify(mismatched));
+  delayDetect=true;await page.click('#agent-detect');
+  await page.waitForFunction(()=>document.querySelector('#agent-detect').disabled);
+  const deadline=Date.now()+10000;
+  while(!releaseDetect&&Date.now()<deadline)await page.waitForTimeout(20);
+  if(!releaseDetect)throw new Error('延迟检测请求未到达夹具');
+  await page.click('#agent-refresh');releaseDetect();releaseDetect=null;await page.waitForTimeout(200);
+  record('agent.refresh-discards-late-detection',(await short()).includes('未检测')&&(await page.locator('#agent-runtime-status').textContent())===''&&!await page.locator('#agent-detect').isDisabled(),await short());
+  await page.screenshot({path:path.join(evidence,'iss205-detection-lifetime.png')});
+ }finally{if(releaseDetect)releaseDetect();await page.close();fixture.server.close();await once(fixture.server,'close');}
+}
 async function verifyLateRestore(browser) {
  for (const intent of ['selection','history']) {
   let release, entered;
@@ -398,6 +457,7 @@ async function main(){
   await verifyEvidenceControls(browser);
   await verifyLayeredStatus(browser);
   await verifyDetectLayering(browser);
+  await verifyDetectionLifetime(browser);
   await verifyRuntimeIdentityAndMismatch(browser);
   verifyNewReasonTexts();
   verifyRuntimeStatusCopy();

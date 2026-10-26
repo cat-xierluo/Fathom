@@ -979,6 +979,31 @@ enum UpdaterDownloadOutcome {
     Failed(String),
 }
 
+/// `upgrade-finalize` 的三态终局。安装/身份核验成功后，只有 helper 明确
+/// 返回 ok:true 才能进入 installed；数据库拒绝与结果不确定都不是成功。
+#[derive(Debug)]
+enum FinalizeDecision {
+    Installed,
+    DatabaseRejected(String),
+    Indeterminate(String),
+}
+
+fn classify_upgrade_finalize(result: Result<serde_json::Value, String>) -> FinalizeDecision {
+    match result {
+        Ok(payload) if payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) => {
+            FinalizeDecision::Installed
+        }
+        Ok(payload) => FinalizeDecision::DatabaseRejected(
+            payload
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("未知数据库校验失败")
+                .to_string(),
+        ),
+        Err(err) => FinalizeDecision::Indeterminate(err),
+    }
+}
+
 /// 下载候选并按 128 KiB 节流发 UPDATER_EVENT downloading 进度事件；取消
 /// 请求（UPDATER_CANCEL_EVENT → ctl）在 poll 边界受理。ISS-113 起两处
 /// 复用——安装事务的下载阶段（合同⑤前半）与后台预下载：同一路径、同一
@@ -1239,31 +1264,33 @@ async fn updater_install_transaction(
     // 走恢复链回到旧版；子命令无法执行/超时 → 无法确认失败类型，保守不
     // 回滚已成功的安装，半升级态可检测（upgrade-detect/upgrade-rollback）。
     ctl.begin(UpdaterInstallPhase::Finalizing);
-    match run_upgrade_phase(&helper_bin, &runtime_dir, &["upgrade-finalize"]) {
-        Ok(payload) => {
-            let ok = payload
-                .get("ok")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            if !ok {
-                let error = payload
-                    .get("error")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("未知数据库校验失败")
-                    .to_string();
-                return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
-                    "finalize 数据库校验失败", generation, serde_json::json!({ "ok": false, "state": "failed",
-                        "kind": "db_verify_failed", "error": error,
-                        "current_version": update.current_version, "available_version": update.version })));
-
-            }
+    let finalize_decision = classify_upgrade_finalize(run_upgrade_phase(
+        &helper_bin,
+        &runtime_dir,
+        &["upgrade-finalize"],
+    ));
+    match finalize_decision {
+        FinalizeDecision::Installed => {}
+        FinalizeDecision::DatabaseRejected(error) => {
+            return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+                "finalize 数据库校验失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                    "kind": "db_verify_failed", "error": error,
+                    "current_version": update.current_version, "available_version": update.version })));
         }
-        Err(err) => {
-            // 安装已成功且身份核验通过：子命令失败不轻率回滚；半升级态可
-            // 检测（upgrade-detect / upgrade-rollback 可恢复），如实落日志。
+        FinalizeDecision::Indeterminate(error) => {
+            // 安装已成功且身份核验通过，但收尾结果无法确认。不能盲目回滚，
+            // 更不能伪报 installed；保留候选/预下载、journal 与恢复材料，
+            // 由 upgrade-detect / upgrade-rollback 的既有恢复通道接续。
             eprintln!(
-                "[updater] upgrade-finalize 无法执行（journal 可能残留，可经 upgrade-detect 检测恢复）：{err}"
+                "[updater] upgrade-finalize 无法执行（journal 可能残留，可经 upgrade-detect 检测恢复）：{error}"
             );
+            let payload = serde_json::json!({ "ok": false, "state": "failed",
+                "kind": "half_upgraded_state",
+                "error": format!("升级收尾结果无法确认：{error}"),
+                "hint": "新版本文件可能已就位；恢复材料与升级日志已保留，请先恢复后再重试",
+                "current_version": update.current_version, "available_version": update.version });
+            let published = publish_updater_activity(app, generation, payload.clone());
+            return Ok(published.unwrap_or(payload));
         }
     }
     if let Ok(mut guard) = state.0.lock() {
@@ -2484,6 +2511,57 @@ mod tests {
     use super::*;
     use helper::ExhaustedInfo;
     use tauri::plugin::Plugin;
+
+    #[test]
+    fn upgrade_finalize_decision_never_reports_indeterminate_as_installed() {
+        match classify_upgrade_finalize(Err("timeout".to_string())) {
+            FinalizeDecision::Indeterminate(error) => assert_eq!(error, "timeout"),
+            other => panic!("子进程异常必须是 Indeterminate，不是 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upgrade_finalize_decision_rejects_database_failure() {
+        let decision = classify_upgrade_finalize(Ok(serde_json::json!({
+            "ok": false,
+            "kind": "db_verify_failed",
+            "error": "integrity_check failed"
+        })));
+        match decision {
+            FinalizeDecision::DatabaseRejected(error) => {
+                assert_eq!(error, "integrity_check failed")
+            }
+            other => panic!("数据库拒绝不能被当成安装成功：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn upgrade_finalize_decision_requires_explicit_ok_true() {
+        for ok in [serde_json::json!({"ok": true}), serde_json::json!({"ok": false}), serde_json::json!({})] {
+            let installed = matches!(
+                classify_upgrade_finalize(Ok(ok.clone())),
+                FinalizeDecision::Installed
+            );
+            assert_eq!(
+                installed,
+                ok.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)
+            );
+        }
+    }
+
+    #[test]
+    fn presentation_same_generation_keeps_terminal_after_download_notification() {
+        let mut state = UpdaterPresentationSnapshot::default();
+        let generation = state.begin();
+        state.record(generation, serde_json::json!({"state":"finalizing"}), true).unwrap();
+        let terminal = state.record(
+            generation,
+            serde_json::json!({"state":"failed", "kind":"half_upgraded_state"}),
+            true,
+        ).unwrap();
+        assert!(state.record(generation, serde_json::json!({"state":"downloaded"}), true).is_none());
+        assert_eq!(state.snapshot()["activity"], terminal);
+    }
 
     #[test]
     fn presentation_terminal_survives_reload_and_ready_notification() {

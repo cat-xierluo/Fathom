@@ -39,7 +39,7 @@ if has browser; then
   EXPECTED_DIR_BIGFILES_PASSED=36 EXPECTED_BROWSE_SNAPSHOT_PASSED=35 \
   EXPECTED_SCOPE_SETTINGS_PASSED=177 EXPECTED_STORAGE_OVERVIEW_PASSED=71 EXPECTED_DIFF_HANDOFF_PASSED=55 \
   EXPECTED_INVESTIGATION_PASSED=55 EXPECTED_UPDATER_RECOVERY_PASSED=16 FATHOM_PYTHON="$PY" \
-    EXPECTED_CARGO_PASSED=83 run browser "$LOG_DIR/browser.log" bash scripts/ci_browser_checks.sh
+    EXPECTED_CARGO_PASSED=100 run browser "$LOG_DIR/browser.log" bash scripts/ci_browser_checks.sh
 fi
 
 if has brand; then
@@ -47,7 +47,7 @@ if has brand; then
 fi
 
 if has cargo; then
-  EXPECTED_CARGO_PASSED=83 run cargo "$LOG_DIR/cargo.log" bash scripts/ci_cargo_locked.sh
+  EXPECTED_CARGO_PASSED=100 run cargo "$LOG_DIR/cargo.log" bash scripts/ci_cargo_locked.sh
   run opener "$LOG_DIR/opener.log" bash scripts/ci_tauri_opener_registered.sh
 fi
 

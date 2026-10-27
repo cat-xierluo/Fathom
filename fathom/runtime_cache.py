@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -84,11 +85,16 @@ class CachedEntry:
             runtime_id = raw["runtime_id"]
             executable = raw["executable"]
             fingerprint = raw["fingerprint"]
-            observed_at = float(raw["observed_at"])
+            timestamp = raw["observed_at"]
+            if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
+                return None
+            observed_at = float(timestamp)
+            if not math.isfinite(observed_at) or observed_at < 0:
+                return None
             success = bool(raw["success"])
             runtime_info = raw["runtime_info"]
             version = raw.get("version")
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, OverflowError):
             return None
         if not isinstance(runtime_id, str) or not isinstance(executable, str):
             return None
@@ -154,12 +160,16 @@ def save_entries(entries: dict[str, CachedEntry],
     调用方把返回值当作「尽力而为」：缓存写不进去不影响探测结论。
     """
     target = Path(path) if path is not None else cache_path()
-    payload = {
-        "schema": CACHE_SCHEMA_VERSION,
-        "entries": {key: entry.to_dict() for key, entry in entries.items()},
-    }
-    text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     try:
+        payload = {
+            "schema": CACHE_SCHEMA_VERSION,
+            "entries": {key: entry.to_dict() for key, entry in entries.items()},
+        }
+        if any(CachedEntry.from_dict(raw) is None
+               for raw in payload["entries"].values()):
+            return False
+        text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True,
+                          allow_nan=False) + "\n"
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_name(f"{target.name}.tmp-{os.getpid()}")
         try:
@@ -171,7 +181,7 @@ def save_entries(entries: dict[str, CachedEntry],
         except OSError:
             tmp.unlink(missing_ok=True)
             raise
-    except (OSError, UnicodeError) as exc:
+    except (OSError, UnicodeError, TypeError, ValueError, OverflowError) as exc:
         _LOG.warning("runtime cache 写入失败（不影响探测结论）：%s", exc)
         return False
     return True

@@ -28,6 +28,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
+import sys
 import subprocess
 from pathlib import Path
 
@@ -35,6 +37,36 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "release_candidate_record.sh"
+
+
+def _run_bash(arguments: list[str], *, cwd: str, env=None) -> subprocess.CompletedProcess:
+    bash = os.environ.get("FATHOM_TEST_BASH") or (
+        "/bin/bash" if sys.platform == "darwin" else "bash"
+    )
+    command = [bash, *arguments]
+    process = subprocess.Popen(
+        command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=45)
+    except subprocess.TimeoutExpired:
+        # 进程可能已恰好退出；保留原超时原因。
+        def stop_group(sig):
+            try:
+                os.killpg(process.pid, sig)
+            except ProcessLookupError:
+                pass
+        stop_group(signal.SIGTERM)
+        try:
+            stdout, stderr = process.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            stop_group(signal.SIGKILL)
+            stdout, stderr = process.communicate(timeout=3)
+        raise subprocess.TimeoutExpired(
+            command, 45, output=stdout, stderr=stderr,
+        ) from None
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 # ------------------------- fake 产物生成器 ------------------------------
@@ -209,12 +241,10 @@ def _run_script_in(
     # head_mismatch 反例需要真实生效，传 fake_env=False
     if fake_env:
         env["FAKE_RELEASE_CANDIDATE"] = "1"
-    return subprocess.run(
-        ["bash", str(scripts_dir / "release_candidate_record.sh")],
+    return _run_bash(
+        [str(scripts_dir / "release_candidate_record.sh")],
         cwd=str(work),
         env=env,
-        capture_output=True,
-        text=True,
     )
 
 
@@ -447,11 +477,9 @@ def test_consecutive_registration_no_selflock(tmp_path: Path) -> None:
 
 def test_selftest_exits_zero() -> None:
     """``--selftest`` 不依赖 git 状态与真实产物；调用即退 0。"""
-    result = subprocess.run(
-        ["bash", str(SCRIPT), "--selftest"],
+    result = _run_bash(
+        [str(SCRIPT), "--selftest"],
         cwd=str(REPO_ROOT),
-        capture_output=True,
-        text=True,
     )
     assert result.returncode == 0, (
         f"--selftest 必须退 0；实际={result.returncode}\n"

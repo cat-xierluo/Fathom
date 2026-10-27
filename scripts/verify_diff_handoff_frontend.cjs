@@ -10,6 +10,18 @@ const {spawn,execFileSync}=require('child_process');
 const {once}=require('events');
 const {chromium}=require('playwright');
 const {SEED_PY}=require('./verify_storage_overview_frontend.cjs');
+// Give the main content root a real second recorded directory in both rounds.
+// Equal counts previously made the newer media root win the content default;
+// this lifecycle fixture explicitly needs the legal same-plan #1 -> #3 entry.
+const HANDOFF_SEED_PY=SEED_PY+`
+conn = db.connect()
+for sid in (s1[0], s2[0]):
+    conn.execute("INSERT INTO entries(snapshot_id, path, size_kb) VALUES (?,?,0)",
+                 (sid, os.path.join(ROOT, "handoff-child")))
+    conn.execute("UPDATE snapshots SET dir_count=(SELECT count(*) FROM entries WHERE snapshot_id=?) WHERE id=?", (sid, sid))
+conn.commit()
+conn.close()
+`;
 const REPO=path.resolve(__dirname,'..');
 const PY=process.env.FATHOM_PYTHON||path.join(REPO,'.venv/bin/python');
 const idx=process.argv.indexOf('--evidence');
@@ -25,7 +37,7 @@ async function helper(){
  const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'fathom-iss188-')),runtime=path.join(tmp,'runtime'),scanRoot=path.join(tmp,'scanroot');fs.mkdirSync(scanRoot);
  const port=await freePort(),env={...process.env,FATHOM_RUNTIME_DIR:runtime,FATHOM_DB:path.join(runtime,'data/fathom.db'),FATHOM_SCAN_ROOT:scanRoot,FATHOM_PORT:String(port),PYTHONPATH:REPO};
  delete env.ISS158_STALE;
- const seed=spawn(PY,['-c',SEED_PY,tmp],{cwd:REPO,env});let seedOut='';seed.stdout.on('data',c=>seedOut+=c);seed.stderr.on('data',c=>seedOut+=c);const [code]=await once(seed,'exit');if(code!==0)throw Error(`seed ${code}: ${seedOut}`);
+ const seed=spawn(PY,['-c',HANDOFF_SEED_PY,tmp],{cwd:REPO,env});let seedOut='';seed.stdout.on('data',c=>seedOut+=c);seed.stderr.on('data',c=>seedOut+=c);const [code]=await once(seed,'exit');if(code!==0)throw Error(`seed ${code}: ${seedOut}`);
  const info=JSON.parse(seedOut.trim().split('\n').pop());
  const serveEnv={...env,HOME:scanRoot,FATHOM_RUNTIME_MODE:'development'};delete serveEnv.FATHOM_SCAN_ROOT;
  const child=spawn(PY,['-m','fathom','--runtime-mode','development','serve'],{cwd:REPO,env:serveEnv});let log='';child.stdout.on('data',c=>log+=c);child.stderr.on('data',c=>log+=c);
@@ -54,7 +66,9 @@ async function read(page){return page.evaluate(()=>({a:document.querySelector('#
 async function watch(page){await page.evaluate(()=>{window.__handoffMutations=0;new MutationObserver(()=>window.__handoffMutations++).observe(document.querySelector('#sel-b'),{childList:true});window.__diag=[];});}
 async function overview(page){const response=page.waitForResponse(r=>r.url().endsWith('/api/storage/summary'));await page.click('.nav-item[data-page="overview"]');await response;await page.waitForFunction(()=>!!document.querySelector('[data-test="storage-cta"]'));}
 async function warm(page,base){
- await page.goto(base+'/#/overview');await page.waitForSelector('[data-test="storage-cta"]');await page.click('[data-test="storage-cta"]');
+ // hash 返回会复用上轮 DOM（上一场景可能留下 b4）。预热必须等默认摘要 b3
+ // 真正呈现，不能点击旧 CTA 后再等待它自动变成 b3。
+ await page.goto(base+'/#/overview');await page.waitForSelector('[data-test="storage-cta"][data-b="3"]');await page.click('[data-test="storage-cta"]');
  await page.waitForFunction(()=>document.querySelector('#sel-b').value==='3'&&document.querySelector('#sel-a').value==='1');
  await page.selectOption('#sel-b','1');await page.selectOption('#sel-a','3');await page.waitForFunction(()=>document.querySelector('#sel-b').value==='1'&&document.querySelector('#sel-a').value==='3');
  await overview(page);await watch(page);
@@ -95,19 +109,55 @@ async function verifyNewerManual(page,fixture,width,trace){
   record(`${width}.explicit-equal-point-preserved`,(await read(page)).a==='2'&&(await read(page)).b==='2');
  }finally{await gate.close();}
 }
-async function secondRootSummary(page){
+// A separate network-boundary scenario, not a scope-filtered view of the
+// backend's existing two-member rounds. Both synthetic rounds contain one
+// real same-plan member (#2 -> #4); distinct round IDs avoid rewriting those
+// original rounds while a catalog response from the first scenario is held.
+function singleMemberSummary(summary,snapshots){
+ const other=summary.attribution.measured_members.find(member=>member.snapshot_id===4);
+ const current=snapshots.find(snapshot=>snapshot.id===4);
+ const previous=snapshots.find(snapshot=>snapshot.id===2);
+ const member=summary.attribution.members.find(item=>item.snapshot_id===4);
+ if(!other||!current||!previous||!member||current.plan_id!==previous.plan_id
+    ||current.root!==previous.root||current.root!==other.root
+    ||member.plan_id!==current.plan_id||other.plan_id!==current.plan_id
+    ||other.container_id!==summary.scope.container_id
+    ||current.collection_status!=='full'||previous.collection_status!=='full'){
+  throw Error('second CTA requires full same-plan #2/#4 in the selected container');
+ }
+ const round={...summary.round,round_id:summary.round.round_id+10000,
+  status:'full',message:null,member_status_counts:{done:1}};
+ const previousRound={...summary.previous_round,
+  round_id:summary.previous_round.round_id+10000,
+  status:'full',message:null,member_status_counts:{done:1}};
+ const measuredDelta=(current.total_kb-previous.total_kb)*1024;
+ const freeDelta=summary.unexplained.free_delta_bytes;
+ return {...summary,scope:{...summary.scope,roots:[other.root]},round,
+  previous_round:previousRound,
+  attribution:{...summary.attribution,round_id:round.round_id,
+   attribution_roots:[other.root],absorbed_roots:[],
+   members:[{...member,seq:0}],measured_members:[{...other,seq:0}],stale_members:[],
+   measured_kb:current.total_kb,plan_ids:[current.plan_id],
+   container_ids:[other.container_id],all_roots_full_quality:true,
+   comparable_to_previous:true},
+  comparability:{comparable:true,identity_reasons:[],scope_reasons:[],
+   member_reasons:[],own_reasons:[],previous_reasons:[]},
+  unexplained:{...summary.unexplained,comparable:true,reason:null,
+   measured_delta_bytes:measuredDelta,free_delta_bytes:freeDelta,
+   bytes:freeDelta-measuredDelta}};
+}
+async function secondRootSummary(page,fixture){
  const handler=async route=>{
   const response=await route.fetch(),summary=await response.json();
-  // Both are real current-round members. Choose the other root by legal member
-  // order; no invented snapshot or mismatched plan is inserted into the fixture.
-  summary.attribution.measured_members.reverse();await route.fulfill({response,json:summary});
+  const snapshots=(await get(fixture.port,'/api/snapshots')).json;
+  await route.fulfill({response,json:singleMemberSummary(summary,snapshots)});
  };
  await page.route('**/api/storage/summary',handler);return()=>page.unroute('**/api/storage/summary',handler);
 }
 async function verifySecondCta(page,fixture,width,trace){
  const gate=await beginWarmCta(page,fixture,trace);let restore;
  try{
-  restore=await secondRootSummary(page);await overview(page);
+  restore=await secondRootSummary(page,fixture);await overview(page);
   await page.waitForFunction(()=>document.querySelector('[data-test="storage-cta"]').dataset.b==='4');
   await page.click('[data-test="storage-cta"]');await page.waitForFunction(()=>document.querySelector('#sel-b').value==='4');
   trace.push({event:'second-cta-applied',...await read(page)});

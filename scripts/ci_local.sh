@@ -27,17 +27,19 @@ run() { # name, logfile, cmd...
 }
 
 if has pytest; then
-  EXPECTED_PYTEST_PASSED=2119 FATHOM_PYTHON="$PY" \
+  EXPECTED_PYTEST_PASSED=2219 FATHOM_PYTHON="$PY" \
     run pytest "$LOG_DIR/pytest.log" bash scripts/ci_pytest.sh
 fi
 
 if has browser; then
+  # ISS-205/204 合并实测：Agent 97；树形 76、内容根 40。
   EXPECTED_BROWSER_PASSED=39 EXPECTED_REFRESH_PASSED=217 \
-  EXPECTED_ANALYSIS_PASSED=95 EXPECTED_TREE_PASSED=74 EXPECTED_AGENT_PASSED=76 \
-  EXPECTED_DIR_BIGFILES_PASSED=36 EXPECTED_BROWSE_SNAPSHOT_PASSED=35 \
+  EXPECTED_ANALYSIS_PASSED=95 EXPECTED_TREE_PASSED=76 EXPECTED_AGENT_PASSED=97 \
+  EXPECTED_CONTENT_ROOT_DEFAULTS_PASSED=40 \
+  EXPECTED_DIR_BIGFILES_PASSED=36 EXPECTED_BROWSE_SNAPSHOT_PASSED=41 \
   EXPECTED_SCOPE_SETTINGS_PASSED=177 EXPECTED_STORAGE_OVERVIEW_PASSED=71 EXPECTED_DIFF_HANDOFF_PASSED=55 \
   EXPECTED_INVESTIGATION_PASSED=55 EXPECTED_UPDATER_RECOVERY_PASSED=16 FATHOM_PYTHON="$PY" \
-    EXPECTED_CARGO_PASSED=79 run browser "$LOG_DIR/browser.log" bash scripts/ci_browser_checks.sh
+    EXPECTED_CARGO_PASSED=100 run browser "$LOG_DIR/browser.log" bash scripts/ci_browser_checks.sh
 fi
 
 if has brand; then
@@ -45,7 +47,7 @@ if has brand; then
 fi
 
 if has cargo; then
-  EXPECTED_CARGO_PASSED=79 run cargo "$LOG_DIR/cargo.log" bash scripts/ci_cargo_locked.sh
+  EXPECTED_CARGO_PASSED=100 run cargo "$LOG_DIR/cargo.log" bash scripts/ci_cargo_locked.sh
   run opener "$LOG_DIR/opener.log" bash scripts/ci_tauri_opener_registered.sh
 fi
 

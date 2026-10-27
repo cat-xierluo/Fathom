@@ -975,3 +975,53 @@ def test_proven_direct_exec_hashes_each_layer_and_can_bind(tmp_path, command):
     after = rcap.identify_entry(entry)
     assert after.identity_complete
     assert rcap.entry_changed(before, after)
+
+@pytest.mark.parametrize('kind', ['dirname', 'basedir', 'explicit_node'])
+def test_iss204_resolved_dynamic_chain_has_stable_probed_identity(tmp_path, kind):
+    import shutil
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('node unavailable')
+    engine = tmp_path / 'engine'
+    engine.write_text('#!' + node + '\nconsole.log("same");\n')
+    entry = tmp_path / 'entry'
+    if kind == 'dirname':
+        body = 'exec "$(dirname "$0")/engine" "$@"'
+    elif kind == 'basedir':
+        body = 'BASEDIR=$(dirname "$0")\nexec "$BASEDIR/engine" "$@"'
+    else:
+        # Explicit interpreter + a script without a shebang remains PROBED.
+        engine.write_text('console.log("same");\n')
+        body = 'exec "' + node + '" "' + str(engine) + '" "$@"'
+    entry.write_text('#!/bin/sh\n' + body + '\n')
+    before = rcap.identify_entry(entry)
+    assert before.assurance == 'probed'
+    assert before.sendable and not before.identity_complete
+    assert str(engine) in before.layers
+    assert not rcap.entry_changed(before, rcap.identify_entry(entry))
+    st = engine.stat()
+    engine.write_bytes(engine.read_bytes().replace(b'same', b'edit'))
+    os.utime(engine, ns=(st.st_atime_ns, st.st_mtime_ns))
+    after = rcap.identify_entry(entry)
+    assert before.fingerprint() != after.fingerprint()
+    assert rcap.entry_changed(before, after)
+    snapshot = rcap.build_snapshot('fake', identity=after, version='1', invocation_profile='p')
+    with pytest.raises(rcap.CallIdentityError):
+        rcap.bind_call(snapshot, [str(entry)], 'call_0123456789abcdef')
+    rcap.bind_call(snapshot, [str(entry)], 'call_0123456789abcdef', require_complete=False)
+
+
+@pytest.mark.parametrize('kind', ['missing', 'ambiguous'])
+def test_iss204_unresolved_chain_never_sendable(tmp_path, kind):
+    entry = tmp_path / 'entry'
+    if kind == 'missing':
+        body = 'exec "' + str(tmp_path / 'missing') + '" "$@"'
+    else:
+        body = 'if [ "$CHOICE" = "a" ]; then exec /bin/echo "$@"; else exec /bin/cat "$@"; fi'
+    entry.write_text('#!/bin/sh\n' + body + '\n')
+    identity = rcap.identify_entry(entry)
+    assert not identity.sendable
+    assert identity.assurance == 'unresolved'
+    snapshot = rcap.build_snapshot('fake', identity=identity, version='1', invocation_profile='p')
+    with pytest.raises(rcap.CallIdentityError):
+        rcap.bind_call(snapshot, [str(entry)], 'call_0123456789abcdef', require_complete=False)

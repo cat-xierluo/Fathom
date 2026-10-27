@@ -84,15 +84,20 @@ env:
   NODE_VERSION: "22.22.3"
   RUST_VERSION: "1.88.0"
   PLAYWRIGHT_VERSION: "1.61.1"
-  EXPECTED_PYTEST_PASSED: "2119"
+  EXPECTED_PYTEST_PASSED: "2219"
   EXPECTED_BROWSER_PASSED: "39"
   EXPECTED_REFRESH_PASSED: "217"
   EXPECTED_ANALYSIS_PASSED: "95"
   # ISS-201 新增 2 条断言：新增失败原因码须有普通用户可读中文文案，
   # 且文案不得出现回收/删除/清理或自动重试等误导词。58 + 2 = 60。
-  EXPECTED_AGENT_PASSED: "76"
-  # ISS-148 树形同级变化回归（真实 FastAPI+生产页面实点）
-  EXPECTED_TREE_PASSED: "74"
+  # ISS-205 生命周期 6 项与 ISS-204 身份/调用配置 15 项同时保留：
+  # 原有 76 + 6 + 15 = 97（集成补漏后实测）。
+  EXPECTED_AGENT_PASSED: "97"
+  # ISS-206 内容根默认落点与显式选择重入（新目录替换屏障）。
+  EXPECTED_CONTENT_ROOT_DEFAULTS_PASSED: "40"
+  # ISS-148 树形同级变化回归（真实 FastAPI+生产页面实点）；
+  # ISS-205 快照 root 与分页总数回归 +2，74 → 76。
+  EXPECTED_TREE_PASSED: "76"
   # ISS-151 目录当前大文件回归（真实 FastAPI+生产页面实点）
   EXPECTED_DIR_BIGFILES_PASSED: "36"
   EXPECTED_SCOPE_SETTINGS_PASSED: "177"
@@ -102,7 +107,7 @@ env:
   EXPECTED_DIFF_HANDOFF_PASSED: "55"
   # ISS-160 跨页上下文/恢复/重扫核对闭环回归（真实 FastAPI+生产页面实点）
   EXPECTED_INVESTIGATION_PASSED: "55"
-  EXPECTED_CARGO_PASSED: "79"
+  EXPECTED_CARGO_PASSED: "100"
   EXPECTED_UPDATER_RECOVERY_PASSED: "16"
 
 jobs:
@@ -139,7 +144,7 @@ jobs:
           "$RUNNER_TEMP/fathom-venv/bin/python" -m pip install \
             -r packaging/requirements-dev.txt -c packaging/constraints.txt
 
-      - name: pytest（断言 2119 项通过）
+      - name: pytest（断言 2219 项通过）
         env:
           FATHOM_PYTHON: ${{ runner.temp }}/fathom-venv/bin/python
         run: bash scripts/ci_pytest.sh
@@ -235,7 +240,7 @@ jobs:
           cargo --version
           [ "$(rustc --version | awk '{print $2}')" = "$RUST_VERSION" ]
 
-      - name: Cargo.lock 锁定离线构建与单测（断言 79 项通过）
+      - name: Cargo.lock 锁定离线构建与单测（断言 100 项通过）
         env:
           CARGO_PREFETCH: '1'
         run: bash scripts/ci_cargo_locked.sh

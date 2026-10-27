@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-import shlex
+import sys
 import threading
 from pathlib import Path
 
@@ -183,13 +183,18 @@ def test_timeout_classification_is_consumed_and_never_retried(rid, tmp_path):
 
 def fake_cli(base, rid, raw, *, sleep=False):
     script, sends = base / "synthetic-cli", base / "sends"
+    # 固定解释器程序属于 PROBED 可发送链；保留真实 stdin、单次 sends
+    # 与 sleep/终态输出，不再通过 cat/printf 的动态 shell 链遮蔽消费者断言。
+    interpreter = Path(sys.executable).resolve()
     script.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "--version" ]; then echo ' + shlex.quote(BANNERS[rid]) + "; exit 0; fi\n"
-        "cat > /dev/null\n"
-        + "echo sent >> " + shlex.quote(str(sends)) + "\n"
-        + ("sleep 30\n" if sleep else "")
-        + "printf '%s\\n' " + shlex.quote(raw) + "\n",
+        f"#!{interpreter}\nimport sys, time\nfrom pathlib import Path\n"
+        'if len(sys.argv) > 1 and sys.argv[1] == "--version":\n'
+        f'    print({BANNERS[rid]!r})\n    sys.exit(0)\n'
+        'sys.stdin.buffer.read()\n'
+        f'with Path({str(sends)!r}).open("a", encoding="utf-8") as handle:\n'
+        '    handle.write("sent\\n")\n'
+        + ('time.sleep(30)\n' if sleep else '')
+        + f'sys.stdout.write({raw!r} + "\\n")\n',
         encoding="utf-8",
     )
     script.chmod(0o755)
@@ -205,6 +210,8 @@ def start_manager(isolated, rid, raw, *, timeout=10, sleep=False):
     manager = am.AnalysisManager(run_timeout_s=timeout,
         env_factory=lambda: ar.build_minimal_env(home=str(isolated["home"])))
     preview = manager.create_preview(a, b)
+    assert preview.runtime.entry_identity_sendable
+    assert preview.runtime.capability_snapshot.identity.assurance == "probed"
     job, replayed = manager.start_job(preview.preview_id, preview.request_digest, "consumer")
     assert not replayed
     return manager, job, sends

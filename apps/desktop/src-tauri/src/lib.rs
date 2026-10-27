@@ -979,6 +979,31 @@ enum UpdaterDownloadOutcome {
     Failed(String),
 }
 
+/// `upgrade-finalize` 的三态终局。安装/身份核验成功后，只有 helper 明确
+/// 返回 ok:true 才能进入 installed；数据库拒绝与结果不确定都不是成功。
+#[derive(Debug)]
+enum FinalizeDecision {
+    Installed,
+    DatabaseRejected(String),
+    Indeterminate(String),
+}
+
+fn classify_upgrade_finalize(result: Result<serde_json::Value, String>) -> FinalizeDecision {
+    match result {
+        Ok(payload) if payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) => {
+            FinalizeDecision::Installed
+        }
+        Ok(payload) => FinalizeDecision::DatabaseRejected(
+            payload
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("未知数据库校验失败")
+                .to_string(),
+        ),
+        Err(err) => FinalizeDecision::Indeterminate(err),
+    }
+}
+
 /// 下载候选并按 128 KiB 节流发 UPDATER_EVENT downloading 进度事件；取消
 /// 请求（UPDATER_CANCEL_EVENT → ctl）在 poll 边界受理。ISS-113 起两处
 /// 复用——安装事务的下载阶段（合同⑤前半）与后台预下载：同一路径、同一
@@ -1239,31 +1264,33 @@ async fn updater_install_transaction(
     // 走恢复链回到旧版；子命令无法执行/超时 → 无法确认失败类型，保守不
     // 回滚已成功的安装，半升级态可检测（upgrade-detect/upgrade-rollback）。
     ctl.begin(UpdaterInstallPhase::Finalizing);
-    match run_upgrade_phase(&helper_bin, &runtime_dir, &["upgrade-finalize"]) {
-        Ok(payload) => {
-            let ok = payload
-                .get("ok")
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false);
-            if !ok {
-                let error = payload
-                    .get("error")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("未知数据库校验失败")
-                    .to_string();
-                return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
-                    "finalize 数据库校验失败", generation, serde_json::json!({ "ok": false, "state": "failed",
-                        "kind": "db_verify_failed", "error": error,
-                        "current_version": update.current_version, "available_version": update.version })));
-
-            }
+    let finalize_decision = classify_upgrade_finalize(run_upgrade_phase(
+        &helper_bin,
+        &runtime_dir,
+        &["upgrade-finalize"],
+    ));
+    match finalize_decision {
+        FinalizeDecision::Installed => {}
+        FinalizeDecision::DatabaseRejected(error) => {
+            return Ok(rollback_upgrade_and_restart_helper(app, &helper_bin, &runtime_dir,
+                "finalize 数据库校验失败", generation, serde_json::json!({ "ok": false, "state": "failed",
+                    "kind": "db_verify_failed", "error": error,
+                    "current_version": update.current_version, "available_version": update.version })));
         }
-        Err(err) => {
-            // 安装已成功且身份核验通过：子命令失败不轻率回滚；半升级态可
-            // 检测（upgrade-detect / upgrade-rollback 可恢复），如实落日志。
+        FinalizeDecision::Indeterminate(error) => {
+            // 安装已成功且身份核验通过，但收尾结果无法确认。不能盲目回滚，
+            // 更不能伪报 installed；保留候选/预下载、journal 与恢复材料，
+            // 由 upgrade-detect / upgrade-rollback 的既有恢复通道接续。
             eprintln!(
-                "[updater] upgrade-finalize 无法执行（journal 可能残留，可经 upgrade-detect 检测恢复）：{err}"
+                "[updater] upgrade-finalize 无法执行（journal 可能残留，可经 upgrade-detect 检测恢复）：{error}"
             );
+            let payload = serde_json::json!({ "ok": false, "state": "failed",
+                "kind": "half_upgraded_state",
+                "error": format!("升级收尾结果无法确认：{error}"),
+                "hint": "新版本文件可能已就位；恢复材料与升级日志已保留，请先恢复后再重试",
+                "current_version": update.current_version, "available_version": update.version });
+            let published = publish_updater_activity(app, generation, payload.clone());
+            return Ok(published.unwrap_or(payload));
         }
     }
     if let Ok(mut guard) = state.0.lock() {
@@ -1521,8 +1548,257 @@ const UPGRADE_PHASE_TIMEOUT_S: u64 = 120;
 /// ISS-097：有界等待的轮询间隔。
 const UPGRADE_PHASE_POLL_MS: u64 = 50;
 
+/// ISS-207.PIPE-FIX：子进程输出捕获的单路上限（1 MiB）。超限一律明确失败——
+/// 截断的末行 JSON 不得被当成有效结果（"截断当成功"是最危险的假阳性）。
+const CHILD_CAPTURE_MAX_BYTES: u64 = 1024 * 1024;
+
+/// ISS-207.PIPE-FIX：错误信息里保留的输出尾部长度（字节）。错误文本本身
+/// 也要有界：尾部截断后仍能看清末行形状，不把整份输出灌进 UI/日志。
+const CHILD_CAPTURE_TAIL_BYTES: usize = 400;
+
+/// ISS-207.PIPE-FIX：私有捕获目录（0700）。只承载"创建后立即 unlink"的
+/// 临时文件——路径不长期可见（无链接/覆盖面），文件仅由父进程经 fd 持有，
+/// RAII 关闭时连目录一起消失。
+struct PrivateCaptureDir {
+    path: PathBuf,
+}
+
+impl PrivateCaptureDir {
+    /// 在 `root` 下建一个独占私有目录。名字含 pid+纳秒+序号，重名重试。
+    fn create(root: &Path, tag: &str) -> Result<Self, String> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|delta| delta.as_nanos())
+            .unwrap_or(0);
+        for _ in 0..32 {
+            let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+            let path = root.join(format!(
+                "fathom-capture-{tag}-{}-{stamp}-{seq}",
+                std::process::id()
+            ));
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&path) {
+                Ok(()) => return Ok(PrivateCaptureDir { path }),
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(err) => {
+                    return Err(format!("创建私有捕获目录失败（{}）：{err}", path.display()))
+                }
+            }
+        }
+        Err(format!(
+            "创建私有捕获目录失败（{}）：重试 32 次仍重名",
+            root.display()
+        ))
+    }
+}
+
+impl Drop for PrivateCaptureDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// ISS-207.PIPE-FIX：建一路捕获文件——create_new（不覆盖、不跟随已有
+/// 链接）+ 0600 权限，随后立刻 unlink：路径此后不存在，只有父进程持有的
+/// fd 维持文件存在；子进程经 dup 后的同一 inode 写入，父进程退出即消失。
+fn create_capture_file(dir: &PrivateCaptureDir, name: &str) -> Result<std::fs::File, String> {
+    let path = dir.path.join(name);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&path)
+        .map_err(|err| format!("创建捕获文件失败（{}）：{err}", path.display()))?;
+    std::fs::remove_file(&path)
+        .map_err(|err| format!("删除捕获文件路径失败（{}）：{err}", path.display()))?;
+    Ok(file)
+}
+
+/// ISS-207.PIPE-FIX：读取一路捕获输出（限额 1 MiB）。超限明确失败，绝不
+/// 返回截断内容冒充完整输出。
+fn read_captured_stream(file: &mut std::fs::File, label: &str) -> Result<Vec<u8>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let total = file
+        .metadata()
+        .map_err(|err| format!("{label} 捕获文件长度读取失败：{err}"))?
+        .len();
+    if total > CHILD_CAPTURE_MAX_BYTES {
+        return Err(format!(
+            "{label} 输出超过上限（{} 字节 > {} 字节），明确失败而非截断当成功",
+            total, CHILD_CAPTURE_MAX_BYTES
+        ));
+    }
+    file.seek(SeekFrom::Start(0))
+        .map_err(|err| format!("{label} 捕获文件定位失败：{err}"))?;
+    let mut buf = Vec::new();
+    let mut limited = (&mut *file).take(CHILD_CAPTURE_MAX_BYTES + 1);
+    limited
+        .read_to_end(&mut buf)
+        .map_err(|err| format!("{label} 捕获文件读取失败：{err}"))?;
+    if buf.len() as u64 > CHILD_CAPTURE_MAX_BYTES {
+        return Err(format!(
+            "{label} 输出超过上限（超过 {} 字节），明确失败而非截断当成功",
+            CHILD_CAPTURE_MAX_BYTES
+        ));
+    }
+    Ok(buf)
+}
+
+/// ISS-207.PIPE-FIX：一次子进程执行捕获到的两路输出。
+#[derive(Debug)]
+struct CapturedChildOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+/// ISS-207.PIPE-FIX：读取两路捕获输出。
+fn read_captured_output(
+    stdout_file: &mut std::fs::File,
+    stderr_file: &mut std::fs::File,
+) -> Result<CapturedChildOutput, String> {
+    let stdout = read_captured_stream(stdout_file, "stdout")?;
+    let stderr = read_captured_stream(stderr_file, "stderr")?;
+    Ok(CapturedChildOutput { stdout, stderr })
+}
+
+/// ISS-207.PIPE-FIX：真实终态描述（退出码或终止信号）。
+fn describe_exit(status: Option<std::process::ExitStatus>) -> String {
+    match status {
+        Some(status) => match status.code() {
+            Some(code) => format!("exit={code}"),
+            None => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::ExitStatusExt;
+                    format!("exit=信号({})", status.signal().unwrap_or(0))
+                }
+                #[cfg(not(unix))]
+                {
+                    "exit=无退出码".to_string()
+                }
+            }
+        },
+        None => "exit=未知".to_string(),
+    }
+}
+
+/// ISS-207.PIPE-FIX：输出尾部文本（有界；换行转义便于单行展示）。
+fn tail_text(bytes: &[u8], max_bytes: usize) -> String {
+    let slice = if bytes.len() > max_bytes {
+        &bytes[bytes.len() - max_bytes..]
+    } else {
+        bytes
+    };
+    String::from_utf8_lossy(slice)
+        .replace('\r', "\\r")
+        .replace('\n', "\\n")
+}
+
+/// ISS-207.PIPE-FIX：错误诊断尾部（真实终态 + 两路字节计数与尾部）。
+fn capture_diagnostics(
+    status: Option<std::process::ExitStatus>,
+    captured: &CapturedChildOutput,
+) -> String {
+    format!(
+        "{}，stdout {} 字节，stdout 尾部：{:?}，stderr {} 字节，stderr 尾部：{:?}",
+        describe_exit(status),
+        captured.stdout.len(),
+        tail_text(&captured.stdout, CHILD_CAPTURE_TAIL_BYTES),
+        captured.stderr.len(),
+        tail_text(&captured.stderr, CHILD_CAPTURE_TAIL_BYTES),
+    )
+}
+
+/// ISS-207.PIPE-FIX：把基础错误与捕获诊断合成一条有界错误文本。
+fn decorate_capture_error(
+    base: &str,
+    status: Option<std::process::ExitStatus>,
+    captured: Option<&CapturedChildOutput>,
+) -> String {
+    match captured {
+        Some(captured) => format!("{base}（{}）", capture_diagnostics(status, captured)),
+        None => format!("{base}（{}）", describe_exit(status)),
+    }
+}
+
+/// ISS-207.PIPE-FIX：核对子进程终态与结果载荷是否自洽。
+///
+/// 子命令协议：exit=0 ↔ ok:true、exit=1 ↔ ok:false（业务失败，kind 区分
+/// scan_busy/disk_full/external_service_instance 等）。因此：
+/// - exit=1 且 ok:false → **业务失败本体**，不是壳层硬错误，必须原样带回
+///   调用方的回滚分支（否则退化成 kind=internal，丢掉 ISS-110 手工 DMG 指引）。
+/// - exit≠0 却 ok:true → 进程失败与载荷自相矛盾，硬失败（不把异常当成功）。
+/// - exit=0 却 ok:false → 同为矛盾（进程成功但载荷称失败），硬失败。
+/// 载荷缺 "ok" 字段 → 协议不符，硬失败。
+fn verify_exit_payload_consistency(
+    status: std::process::ExitStatus,
+    payload: &serde_json::Value,
+    captured: &CapturedChildOutput,
+    label: &str,
+) -> Result<(), String> {
+    let claims_ok = payload.get("ok").and_then(|value| value.as_bool());
+    match (status.code(), claims_ok) {
+        (_, None) => Err(format!(
+            "{label}结果载荷缺少 ok 字段（{}）",
+            capture_diagnostics(Some(status), captured),
+        )),
+        (Some(0), Some(true)) | (Some(1), Some(false)) => Ok(()),
+        (Some(0), Some(false)) => Err(format!(
+            "{label}退出状态与结果载荷矛盾：进程成功但载荷 ok=false（{}）",
+            capture_diagnostics(Some(status), captured),
+        )),
+        (_, Some(true)) => Err(format!(
+            "{label}退出状态与结果载荷矛盾：进程失败但载荷 ok=true（{}）",
+            capture_diagnostics(Some(status), captured),
+        )),
+        (_, Some(false)) => Err(format!(
+            "{label}异常退出，不能作为业务失败（{}）",
+            capture_diagnostics(Some(status), captured),
+        )),
+    }
+}
+
+/// ISS-207.PIPE-FIX：终止并回收**本次自己 spawn 的**子进程，返回真实终态
+/// （尽力）。绝不触碰任何外部 PID。
+fn terminate_own_child(
+    child: &mut std::process::Child,
+) -> Result<std::process::ExitStatus, String> {
+    if let Ok(Some(status)) = child.try_wait() {
+        return Ok(status);
+    }
+    let kill_error = child.kill().err();
+    match child.wait() {
+        Ok(status) if kill_error.is_none() => Ok(status),
+        Ok(status) => Err(format!(
+            "终止请求失败：{}；回收终态 {}",
+            kill_error.unwrap(),
+            describe_exit(Some(status))
+        )),
+        Err(err) => Err(format!("回收失败：{err}；终止请求：{kill_error:?}")),
+    }
+}
+
+fn cleanup_child_error(child: &mut std::process::Child, base: String) -> String {
+    match terminate_own_child(child) {
+        Ok(_) => base,
+        Err(err) => format!("{base}；{err}"),
+    }
+}
+
 /// ISS-097：有界等待子进程退出。超时只 kill+wait **本次自己 spawn 的**
 /// 子进程（绝不触碰其他进程），返回 Err；不排队、不无限等待。
+#[cfg(test)]
 fn wait_child_bounded(
     child: &mut std::process::Child,
     timeout: std::time::Duration,
@@ -1531,30 +1807,56 @@ fn wait_child_bounded(
 }
 
 /// 等待协调子进程时轮询父壳自有 helper 的退出回收；不提前终止 helper。
+#[cfg(test)]
 fn wait_child_bounded_polled(
     child: &mut std::process::Child,
     timeout: std::time::Duration,
-    mut on_poll: impl FnMut() -> Result<(), String>,
+    on_poll: impl FnMut() -> Result<(), String>,
 ) -> Result<(), String> {
+    wait_child_bounded_polled_guarded(child, timeout, on_poll, || Ok(()), "升级协调子命令")
+        .map(|_| ())
+}
+
+/// ISS-207.PIPE-FIX：有界等待的带守卫版本。
+///
+/// 守卫（`guard`）在每次轮询时检查"输出是否已越限"，越限即视为明确失败：
+/// kill+wait 本次自有 Child 后返回 Err，避免子进程继续把磁盘写爆。
+/// `on_poll` 的错误原样返回（既有语义不变），`guard` 的错误单独标注。
+fn wait_child_bounded_polled_guarded(
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+    mut on_poll: impl FnMut() -> Result<(), String>,
+    mut guard: impl FnMut() -> Result<(), String>,
+    label: &str,
+) -> Result<std::process::ExitStatus, String> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if let Err(err) = on_poll() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(err);
+            return Err(cleanup_child_error(child, err));
+        }
+        if let Err(err) = guard() {
+            return Err(cleanup_child_error(child, err));
         }
         match child.try_wait() {
-            Ok(Some(_)) => return Ok(()),
+            Ok(Some(status)) => return Ok(status),
             Ok(None) => {}
-            Err(err) => return Err(format!("等待升级协调子进程失败：{err}")),
+            Err(err) => {
+                // try_wait 失败：仍须回收本次自有 Child（此前直接返回，
+                // 子进程会变成无人回收的僵尸）。
+                return Err(cleanup_child_error(
+                    child,
+                    format!("等待升级协调子进程失败：{err}"),
+                ));
+            }
         }
         if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "升级协调子命令超时（{} 秒）未返回，已终止本次自己启动的子进程；\
+            return Err(cleanup_child_error(
+                child,
+                format!(
+                    "{label}超时（{} 秒）未返回，已终止本次自己启动的子进程；\
                  可经 upgrade-detect 检测后用 upgrade-rollback 恢复",
-                timeout.as_secs()
+                    timeout.as_secs()
+                ),
             ));
         }
         std::thread::sleep(std::time::Duration::from_millis(UPGRADE_PHASE_POLL_MS));
@@ -1571,57 +1873,158 @@ fn run_upgrade_phase(
     run_upgrade_phase_polled(bin, runtime_dir, extra_args, || Ok(()))
 }
 
+/// ISS-207.PIPE-FIX：共用的子进程执行入口（升级协调子命令与 helper 身份
+/// 核验共用）。
+///
+/// 关键点：stdout/stderr 接**父进程自建的私有临时文件**（创建即 unlink），
+/// 不接管道。旧实现先 wait 退出、再从管道读，两步之间子进程正卡在"退出
+/// flush stdout"的写端上（A/B 已复现：管道下 614B 结果在 150s 仍未退出，
+/// 换文件后 3.381s rc0 且 JSON 完整）。接普通文件后，子进程写输出与父
+/// 进程何时读取完全解耦，等待与输出互不阻塞。
+///
+/// 保留原合同：stdin=null、120s deadline、50ms 轮询、on_poll 回收父壳自有
+/// helper、结果末行 JSON 解析、stderr 诊断。所有错误出口都对本次自有
+/// Child 做 kill+wait 并记录真实终态，不触碰外部 PID、不清 prepared
+/// journal、不改变回滚业务。
+fn run_child_with_capture(
+    root: &Path,
+    mut cmd: std::process::Command,
+    timeout: std::time::Duration,
+    mut on_poll: impl FnMut() -> Result<(), String>,
+    label: &str,
+) -> Result<(std::process::ExitStatus, CapturedChildOutput), String> {
+    let dir = PrivateCaptureDir::create(root, "child")?;
+    let mut stdout_file = create_capture_file(&dir, "stdout")?;
+    let mut stderr_file = create_capture_file(&dir, "stderr")?;
+    // 子进程经 dup 后的同一 inode 写入；父进程保留自己的 fd 供事后 seek/read。
+    let stdout_child = stdout_file
+        .try_clone()
+        .map_err(|err| format!("{label} 捕获文件复制失败：{err}"))?;
+    let stderr_child = stderr_file
+        .try_clone()
+        .map_err(|err| format!("{label} 捕获文件复制失败：{err}"))?;
+    cmd.stdout(std::process::Stdio::from(stdout_child));
+    cmd.stderr(std::process::Stdio::from(stderr_child));
+    cmd.stdin(std::process::Stdio::null());
+    let mut child = cmd
+        .spawn()
+        .map_err(|err| format!("{label} 启动失败：{err}"))?;
+    let status = match wait_child_bounded_polled_guarded(
+        &mut child,
+        timeout,
+        &mut on_poll,
+        || {
+            // 每 50ms 检查输出，越限立即回收；检查间可短暂超过阈值。
+            // 不能用进程级 RLIMIT_FSIZE：它也会截断协调子命令的数据库备份。
+            for (file, name) in [(&stdout_file, "stdout"), (&stderr_file, "stderr")] {
+                let len = file
+                    .metadata()
+                    .map_err(|err| format!("{label} {name} 捕获文件长度读取失败：{err}"))?
+                    .len();
+                if len > CHILD_CAPTURE_MAX_BYTES {
+                    return Err(format!(
+                        "{label} {name} 输出超过上限（{} 字节 > {} 字节），拒绝本次子进程输出",
+                        len, CHILD_CAPTURE_MAX_BYTES
+                    ));
+                }
+            }
+            Ok(())
+        },
+        label,
+    ) {
+        Ok(status) => status,
+        Err(err) => {
+            // 等待层已 kill+wait 本次自有 Child；这里补记真实终态与输出
+            // 尾部（尽力读，读失败不掩盖原始错误）。
+            let terminal = child.try_wait().ok().flatten();
+            return Err(
+                match read_captured_output(&mut stdout_file, &mut stderr_file) {
+                    Ok(captured) => decorate_capture_error(&err, terminal, Some(&captured)),
+                    Err(read_err) => decorate_capture_error(
+                        &format!("{err}；诊断读取失败：{read_err}"),
+                        terminal,
+                        None,
+                    ),
+                },
+            );
+        }
+    };
+    let captured = read_captured_output(&mut stdout_file, &mut stderr_file).map_err(|err| {
+        let err = cleanup_child_error(&mut child, err);
+        decorate_capture_error(&err, Some(status), None)
+    })?;
+    Ok((status, captured))
+}
+
 fn run_upgrade_phase_polled(
     bin: &Path,
     runtime_dir: &Path,
     extra_args: &[&str],
     on_poll: impl FnMut() -> Result<(), String>,
 ) -> Result<serde_json::Value, String> {
-    let mut child = upgrade_helper_command(bin, runtime_dir, extra_args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("启动升级协调子命令失败（{}）：{err}", bin.display()))?;
-    wait_child_bounded_polled(
-        &mut child, std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S), on_poll,
-    )?;
-    let output = child
-        .wait_with_output()
-        .map_err(|err| format!("读取升级协调子命令输出失败：{err}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    parse_json_last_line(&stdout).ok_or_else(|| {
+    let cmd = upgrade_helper_command(bin, runtime_dir, extra_args);
+    let (status, captured) = run_child_with_capture(
+        &std::env::temp_dir(),
+        cmd,
+        std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S),
+        on_poll,
+        "升级协调子命令",
+    )
+    .map_err(|err| format!("启动升级协调子命令失败（{}）：{err}", bin.display()))?;
+    let stdout = String::from_utf8_lossy(&captured.stdout);
+    let payload = parse_json_last_line(&stdout).ok_or_else(|| {
         format!(
-            "升级协调子命令未输出可解析 JSON（exit={:?}，stdout 尾部：{:?}，stderr 尾部：{:?}）",
-            output.status.code(),
-            stdout.lines().last().unwrap_or(""),
-            stderr.lines().last().unwrap_or(""),
+            "升级协调子命令未输出可解析 JSON（{}）",
+            capture_diagnostics(Some(status), &captured),
         )
-    })
+    })?;
+    // 子命令协议：退出码 0=ok:true、1=ok:false（业务失败，kind 区分
+    // scan_busy/disk_full/external_service_instance 等）。因此 **exit=1
+    // 且 ok:false 不是壳层硬错误**——它就是业务失败本体，必须原样带回给调用方的
+    // 回滚分支（否则会退化成 kind=internal，并丢掉 ISS-110 的手工 DMG 指引）。
+    // 只有终态与载荷自相矛盾时才是壳层硬错误。
+    verify_exit_payload_consistency(status, &payload, &captured, "升级协调子命令")?;
+    if !status.success() {
+        // 业务失败：记录真实终态与字节计数（诊断留痕），不改载荷语义。
+        eprintln!(
+            "[updater] 升级协调子命令以非零状态退出（{}）",
+            capture_diagnostics(Some(status), &captured)
+        );
+    }
+    Ok(payload)
 }
 
 /// 运行 helper 的 ``--version``（ISS-029 单行 JSON 身份面；静态、无运行时
 /// 副作用）并解析（ISS-097：同样有界等待）。
 fn probe_helper_identity(bin: &Path) -> Result<serde_json::Value, String> {
-    let mut child = std::process::Command::new(bin)
-        .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("运行 helper --version 失败（{}）：{err}", bin.display()))?;
-    wait_child_bounded(&mut child, std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|err| format!("读取 helper --version 输出失败：{err}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_json_last_line(&stdout).ok_or_else(|| {
+    let mut cmd = std::process::Command::new(bin);
+    cmd.arg("--version").stdin(std::process::Stdio::null());
+    let (status, captured) = run_child_with_capture(
+        &std::env::temp_dir(),
+        cmd,
+        std::time::Duration::from_secs(UPGRADE_PHASE_TIMEOUT_S),
+        || Ok(()),
+        "helper --version",
+    )
+    .map_err(|err| format!("运行 helper --version 失败（{}）：{err}", bin.display()))?;
+    let stdout = String::from_utf8_lossy(&captured.stdout);
+    let identity = parse_json_last_line(&stdout).ok_or_else(|| {
         format!(
-            "helper --version 输出不可解析（exit={:?}，stdout 尾部：{:?}）",
-            output.status.code(),
-            stdout.lines().last().unwrap_or(""),
+            "helper --version 输出不可解析（{}）",
+            capture_diagnostics(Some(status), &captured),
         )
-    })
+    })?;
+    // 身份面必须来自成功退出的进程：非零 exit 的 --version 不可信
+    // （stderr 已带真实诊断）。
+    // 注意：--version 的身份面是 {service, version, protocol_version, ...}，
+    // **没有 ok 字段**（那是协调子命令的协议），故不走上面的载荷一致性函数。
+    if !status.success() {
+        return Err(format!(
+            "helper --version 以非零状态退出（{}）",
+            capture_diagnostics(Some(status), &captured),
+        ));
+    }
+    Ok(identity)
 }
 
 /// ISS-040C：新 helper 身份核验（030A step6 握手语义的壳侧生产化）——
@@ -2108,6 +2511,57 @@ mod tests {
     use super::*;
     use helper::ExhaustedInfo;
     use tauri::plugin::Plugin;
+
+    #[test]
+    fn upgrade_finalize_decision_never_reports_indeterminate_as_installed() {
+        match classify_upgrade_finalize(Err("timeout".to_string())) {
+            FinalizeDecision::Indeterminate(error) => assert_eq!(error, "timeout"),
+            other => panic!("子进程异常必须是 Indeterminate，不是 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upgrade_finalize_decision_rejects_database_failure() {
+        let decision = classify_upgrade_finalize(Ok(serde_json::json!({
+            "ok": false,
+            "kind": "db_verify_failed",
+            "error": "integrity_check failed"
+        })));
+        match decision {
+            FinalizeDecision::DatabaseRejected(error) => {
+                assert_eq!(error, "integrity_check failed")
+            }
+            other => panic!("数据库拒绝不能被当成安装成功：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn upgrade_finalize_decision_requires_explicit_ok_true() {
+        for ok in [serde_json::json!({"ok": true}), serde_json::json!({"ok": false}), serde_json::json!({})] {
+            let installed = matches!(
+                classify_upgrade_finalize(Ok(ok.clone())),
+                FinalizeDecision::Installed
+            );
+            assert_eq!(
+                installed,
+                ok.get("ok").and_then(|v| v.as_bool()).unwrap_or(false)
+            );
+        }
+    }
+
+    #[test]
+    fn presentation_same_generation_keeps_terminal_after_download_notification() {
+        let mut state = UpdaterPresentationSnapshot::default();
+        let generation = state.begin();
+        state.record(generation, serde_json::json!({"state":"finalizing"}), true).unwrap();
+        let terminal = state.record(
+            generation,
+            serde_json::json!({"state":"failed", "kind":"half_upgraded_state"}),
+            true,
+        ).unwrap();
+        assert!(state.record(generation, serde_json::json!({"state":"downloaded"}), true).is_none());
+        assert_eq!(state.snapshot()["activity"], terminal);
+    }
 
     #[test]
     fn presentation_terminal_survives_reload_and_ready_notification() {
@@ -3131,5 +3585,499 @@ mod tests {
             .wait()
             .expect("已退出子进程的 wait 必须成功（状态已缓存）");
         assert!(status.success());
+    }
+
+    // ============ ISS-207.PIPE-FIX：子进程输出捕获（私有临时文件）测试 ============
+
+    /// 写一个可执行的临时脚本（用于模拟子进程行为），返回其路径。
+    fn write_test_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("写测试脚本失败");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+                .expect("设置脚本权限失败");
+        }
+        path
+    }
+
+    fn test_tmp_root(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "fathom-pipe-fix-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&root).expect("建测试根目录失败");
+        root
+    }
+
+    /// 契约核心：子进程在退出前向 stdout/stderr 各写显著大于任何管道缓冲的
+    /// 数据，末行输出合法 JSON——捕获必须两路都不丢，且末行 JSON 完整可解析。
+    /// 这正是管道接法下会挂起的场景（A/B：614B 结果在 150s 仍未退出）。
+    #[test]
+    fn capture_preserves_large_stdout_stderr_and_last_line_json() {
+        let root = test_tmp_root("large");
+        let script = write_test_script(
+            &root,
+            "large.sh",
+            "#!/bin/sh\n\
+             i=0\n\
+             while [ $i -lt 4000 ]; do\n\
+               printf 'stdout-line-%04d-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\\n' $i\n\
+               printf 'stderr-line-%04d-yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\\n' $i >&2\n\
+               i=$((i+1))\n\
+             done\n\
+             printf '{\"ok\":true,\"payload\":\"tail-json\"}\\n'\n",
+        );
+        let mut cmd = std::process::Command::new(&script);
+        cmd.stdin(std::process::Stdio::null());
+        let (status, captured) = run_child_with_capture(
+            &root,
+            cmd,
+            std::time::Duration::from_secs(30),
+            || Ok(()),
+            "测试子进程",
+        )
+        .expect("大输出子进程必须正常完成");
+        assert!(status.success(), "大输出子进程必须 rc0");
+        let stdout = String::from_utf8_lossy(&captured.stdout);
+        let stderr = String::from_utf8_lossy(&captured.stderr);
+        assert!(
+            stdout.lines().count() == 4001,
+            "stdout 不得丢行：{} 行",
+            stdout.lines().count()
+        );
+        assert!(
+            stderr.lines().count() == 4000,
+            "stderr 不得丢行：{} 行",
+            stderr.lines().count()
+        );
+        let parsed = parse_json_last_line(&stdout).expect("末行 JSON 必须可解析");
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["payload"], "tail-json");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 非零退出的真实终态必须被如实记录（含 exit 与两路字节计数/尾部）——
+    /// 解释层据此区分"业务失败（exit=1 + ok:false JSON）"与"进程异常"。
+    #[test]
+    fn capture_records_nonzero_exit_with_output_diagnostics() {
+        let root = test_tmp_root("nonzero");
+        let script = write_test_script(
+            &root,
+            "nonzero.sh",
+            "#!/bin/sh\n\
+             printf 'partial-output\\n'\n\
+             printf 'boom-diagnostic\\n' >&2\n\
+             exit 3\n",
+        );
+        let mut cmd = std::process::Command::new(&script);
+        cmd.stdin(std::process::Stdio::null());
+        let (status, captured) = run_child_with_capture(
+            &root,
+            cmd,
+            std::time::Duration::from_secs(30),
+            || Ok(()),
+            "测试子进程",
+        )
+        .expect("捕获层只负责取回输出与终态，不解释业务成败");
+        assert_eq!(status.code(), Some(3), "真实退出码必须被如实记录");
+        let diagnostics = capture_diagnostics(Some(status), &captured);
+        assert!(
+            diagnostics.contains("exit=3"),
+            "诊断须含真实 exit：{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("stdout 15 字节"),
+            "诊断须含 stdout 字节计数：{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("stderr 16 字节"),
+            "诊断须含 stderr 字节计数：{diagnostics}"
+        );
+        assert!(
+            diagnostics.contains("boom-diagnostic"),
+            "诊断须含 stderr 尾部：{diagnostics}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 坏 JSON 与空输出在解释层都必须明确失败，不得当成成功。
+    #[test]
+    fn capture_rejects_broken_and_empty_json() {
+        let root = test_tmp_root("badjson");
+        let broken = write_test_script(
+            &root,
+            "broken.sh",
+            "#!/bin/sh\nprintf 'not-json-at-all\\n'\n",
+        );
+        let mut cmd = std::process::Command::new(&broken);
+        cmd.stdin(std::process::Stdio::null());
+        let (status, captured) = run_child_with_capture(
+            &root,
+            cmd,
+            std::time::Duration::from_secs(30),
+            || Ok(()),
+            "测试子进程",
+        )
+        .expect("捕获层正常完成");
+        let stdout = String::from_utf8_lossy(&captured.stdout);
+        assert!(
+            parse_json_last_line(&stdout).is_none(),
+            "坏 JSON 不得被解析为有效结果"
+        );
+        let diagnostics = capture_diagnostics(Some(status), &captured);
+        assert!(
+            diagnostics.contains("not-json-at-all"),
+            "诊断须含 stdout 尾部：{diagnostics}"
+        );
+
+        let empty = write_test_script(&root, "empty.sh", "#!/bin/sh\nexit 0\n");
+        let mut cmd = std::process::Command::new(&empty);
+        cmd.stdin(std::process::Stdio::null());
+        let (status, captured) = run_child_with_capture(
+            &root,
+            cmd,
+            std::time::Duration::from_secs(30),
+            || Ok(()),
+            "测试子进程",
+        )
+        .expect("捕获层正常完成");
+        let stdout = String::from_utf8_lossy(&captured.stdout);
+        assert!(
+            parse_json_last_line(&stdout).is_none(),
+            "空输出不得被当成成功"
+        );
+        assert!(
+            capture_diagnostics(Some(status), &captured).contains("stdout 0 字节"),
+            "诊断须含 stdout 字节数"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 超时必须回收**本次自有**子进程（并留下真实终态），不触碰外部 PID。
+    #[test]
+    fn capture_timeout_reaps_own_child() {
+        let root = test_tmp_root("timeout");
+        let pidfile = root.join("pid");
+        let script = write_test_script(
+            &root,
+            "sleep.sh",
+            &format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec /bin/sleep 30\n",
+                pidfile.display()
+            ),
+        );
+        let mut cmd = std::process::Command::new(&script);
+        cmd.stdin(std::process::Stdio::null());
+        let startup_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let err = run_child_with_capture(
+            &root,
+            cmd,
+            std::time::Duration::from_millis(200),
+            || {
+                // 显式启动屏障：直到脚本交回有效 PID，避免把 shell 启动调度
+                // 延迟误当成 timeout 回收证据；不改变生产 deadline。
+                loop {
+                    if std::fs::read_to_string(&pidfile)
+                        .ok()
+                        .and_then(|pid| pid.trim().parse::<u32>().ok())
+                        .is_some_and(|pid| pid > 0)
+                    {
+                        return Ok(());
+                    }
+                    if std::time::Instant::now() >= startup_deadline {
+                        return Err("测试脚本未完成启动屏障".to_string());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            },
+            "测试子进程",
+        )
+        .expect_err("超时必须失败");
+        assert!(err.contains("超时"), "错误须说明超时：{err}");
+        assert!(
+            err.contains("信号") || err.contains("exit="),
+            "错误须含真实终态：{err}"
+        );
+        assert!(!err.contains("exit=未知"), "必须记录真实回收终态：{err}");
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        assert!(pid.trim().parse::<u32>().unwrap() > 0);
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-p", pid.trim(), "-o", "pid="])
+            .output()
+            .unwrap();
+        assert!(output.stdout.is_empty(), "本次 sleep 必须已回收");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// on_poll 失败必须回收本次自有子进程，原错误语义不变。
+    #[test]
+    fn capture_on_poll_failure_reaps_own_child() {
+        let root = test_tmp_root("onpoll");
+        let pidfile = root.join("pid");
+        let script = write_test_script(
+            &root,
+            "sleep.sh",
+            &format!(
+                "#!/bin/sh\necho $$ > '{}'\nexec /bin/sleep 30\n",
+                pidfile.display()
+            ),
+        );
+        let mut cmd = std::process::Command::new(&script);
+        cmd.stdin(std::process::Stdio::null());
+        let err = run_child_with_capture(
+            &root,
+            cmd,
+            std::time::Duration::from_secs(30),
+            || {
+                if pidfile.exists() {
+                    Err("probe failed".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+            "测试子进程",
+        )
+        .expect_err("on_poll 失败必须返回 Err");
+        assert!(
+            err.contains("probe failed"),
+            "on_poll 原始错误必须保留：{err}"
+        );
+        assert!(!err.contains("exit=未知"), "必须记录真实回收终态：{err}");
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        assert!(pid.trim().parse::<u32>().unwrap() > 0);
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-p", pid.trim(), "-o", "pid="])
+            .output()
+            .unwrap();
+        assert!(output.stdout.is_empty(), "本次 sleep 必须已回收");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 输出超限必须明确失败（不截断当成功），且回收本次自有子进程。
+    #[test]
+    fn capture_fails_when_output_exceeds_limit() {
+        let root = test_tmp_root("oversize");
+        // 写出超过 1 MiB 的 stdout：末行 JSON 完整，但整体越限。
+        let script = write_test_script(
+            &root,
+            "big.sh",
+            "#!/bin/sh\n\
+             head -c 1572864 /dev/zero | tr '\\0' 'z'\n\
+             printf '\\n'\n\
+             printf '{\"ok\":true}\\n'\n",
+        );
+        let mut cmd = std::process::Command::new(&script);
+        cmd.stdin(std::process::Stdio::null());
+        let err = run_child_with_capture(
+            &root,
+            cmd,
+            std::time::Duration::from_secs(60),
+            || Ok(()),
+            "测试子进程",
+        )
+        .expect_err("超限输出必须明确失败");
+        assert!(err.contains("超过上限"), "错误须说明超限：{err}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 捕获目录必须不留残留：文件创建后即 unlink，目录随 RAII 消失。
+    #[test]
+    fn capture_leaves_no_residual_files() {
+        let root = test_tmp_root("residual");
+        let script = write_test_script(&root, "ok.sh", "#!/bin/sh\nprintf '{\"ok\":true}\\n'\n");
+        let mut cmd = std::process::Command::new(&script);
+        cmd.stdin(std::process::Stdio::null());
+        run_child_with_capture(
+            &root,
+            cmd,
+            std::time::Duration::from_secs(30),
+            || Ok(()),
+            "测试子进程",
+        )
+        .expect("正常子进程必须完成");
+        let leftovers: Vec<_> = std::fs::read_dir(&root)
+            .expect("读测试根目录失败")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().starts_with("fathom-capture"))
+            .collect();
+        assert!(leftovers.is_empty(), "捕获目录不得残留：{leftovers:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 解释层合同：exit=1 + ok:false 是**业务失败本体**（必须原样带回回滚
+    /// 分支，不得退化成 kind=internal，也不得丢掉 ISS-110 手工 DMG 指引）。
+    #[test]
+    fn exit_payload_consistency_treats_nonzero_with_ok_false_as_business_failure() {
+        let captured = CapturedChildOutput {
+            stdout: b"{\"ok\":false,\"kind\":\"external_service_instance\"}".to_vec(),
+            stderr: Vec::new(),
+        };
+        let status = {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(1 << 8)
+        };
+        let payload = serde_json::json!({"ok": false, "kind": "external_service_instance"});
+        verify_exit_payload_consistency(status, &payload, &captured, "升级协调子命令")
+            .expect("exit=1 + ok:false 是业务失败本体，不是壳层硬错误");
+    }
+
+    /// 解释层合同：exit≠0 却声称 ok:true —— 矛盾，硬失败（不把异常当成功）。
+    #[test]
+    fn exit_payload_consistency_rejects_nonzero_with_ok_true() {
+        let captured = CapturedChildOutput {
+            stdout: b"{\"ok\":true}".to_vec(),
+            stderr: Vec::new(),
+        };
+        let status = {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(1 << 8)
+        };
+        let payload = serde_json::json!({"ok": true});
+        let err = verify_exit_payload_consistency(status, &payload, &captured, "升级协调子命令")
+            .expect_err("矛盾状态必须硬失败");
+        assert!(err.contains("矛盾"), "错误须说明矛盾：{err}");
+        assert!(err.contains("exit=1"), "错误须含真实终态：{err}");
+    }
+
+    /// 解释层合同：缺 ok 字段 = 协议不符，硬失败。
+    #[test]
+    fn exit_payload_consistency_rejects_missing_ok_field() {
+        let captured = CapturedChildOutput {
+            stdout: b"{\"kind\":\"whatever\"}".to_vec(),
+            stderr: Vec::new(),
+        };
+        let status = {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(0)
+        };
+        let payload = serde_json::json!({"kind": "whatever"});
+        let err = verify_exit_payload_consistency(status, &payload, &captured, "升级协调子命令")
+            .expect_err("缺 ok 字段必须硬失败");
+        assert!(err.contains("ok 字段"), "错误须说明缺字段：{err}");
+    }
+
+    #[test]
+    fn capture_upgrade_protocol_and_614_byte_result() {
+        let root = test_tmp_root("protocol");
+        let runtime = root.join("runtime");
+        // 真实协调入口，而非只测解析器：补齐到 614 字节（含换行）。
+        let payload = format!("{{\"ok\":true,\"padding\":\"{}\"}}", "p".repeat(589));
+        assert_eq!(payload.len() + 1, 614);
+        let script = write_test_script(
+            &root,
+            "614.sh",
+            &format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", payload),
+        );
+        let result = run_upgrade_phase(&script, &runtime, &[]).unwrap();
+        assert_eq!(result["padding"].as_str().unwrap().len(), 589);
+        for (name, body, expected) in [
+            (
+                "busy",
+                "printf '{\"ok\":false,\"kind\":\"scan_busy\"}\\n'; exit 1",
+                Some("scan_busy"),
+            ),
+            ("bad", "printf 'invalid-json\\n'", None),
+            ("empty", "exit 0", None),
+            ("false-success", "printf '{\"ok\":false}\\n'; exit 0", None),
+            ("true-failure", "printf '{\"ok\":true}\\n'; exit 1", None),
+            ("signal", "printf '{\"ok\":false}\\n'; kill -TERM $$", None),
+            ("other-exit", "printf '{\"ok\":false}\\n'; exit 3", None),
+        ] {
+            let script = write_test_script(&root, name, &format!("#!/bin/sh\n{body}\n"));
+            let result = run_upgrade_phase(&script, &runtime, &[]);
+            match expected {
+                Some(kind) => assert_eq!(result.unwrap()["kind"], kind),
+                None => assert!(result.is_err(), "{name} 必须拒绝：{result:?}"),
+            }
+        }
+        let identity = write_test_script(
+            &root,
+            "identity",
+            "#!/bin/sh\nprintf '{\"service\":\"fathom\",\"version\":\"0.4.2\"}\\n'\n",
+        );
+        assert_eq!(
+            probe_helper_identity(&identity).unwrap()["version"],
+            "0.4.2"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn capture_file_creation_permissions_and_io_errors() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let root = test_tmp_root("io-errors");
+        let dir = PrivateCaptureDir::create(&root, "test").unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir.path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let mut file = create_capture_file(&dir, "out").unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(!dir.path.join("out").exists(), "创建后立即 unlink");
+        file.write_all(b"test").unwrap();
+        assert_eq!(read_captured_stream(&mut file, "stdout").unwrap(), b"test");
+        std::fs::write(dir.path.join("occupied"), b"preserve").unwrap();
+        assert!(create_capture_file(&dir, "occupied")
+            .unwrap_err()
+            .contains("创建捕获文件失败"));
+        assert_eq!(
+            std::fs::read(dir.path.join("occupied")).unwrap(),
+            b"preserve"
+        );
+        std::fs::remove_file(dir.path.join("occupied")).unwrap();
+        assert!(PrivateCaptureDir::create(&root.join("missing"), "bad").is_err());
+        // /dev/null 可定位但不可读（write-only）；Unix socket 不支持 seek。
+        let mut write_only = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .unwrap();
+        assert!(read_captured_stream(&mut write_only, "stdout")
+            .unwrap_err()
+            .contains("读取失败"));
+        use std::os::fd::{FromRawFd, IntoRawFd};
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut unseekable = unsafe { std::fs::File::from_raw_fd(socket.into_raw_fd()) };
+        assert!(read_captured_stream(&mut unseekable, "stderr")
+            .unwrap_err()
+            .contains("定位失败"));
+        drop(dir);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn capture_running_output_limit_reaps_producer() {
+        let root = test_tmp_root("running-limit");
+        let pidfile = root.join("pid");
+        let script = write_test_script(&root, "producer", &format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec /bin/sh -c 'while :; do printf %08000d 0 >&2; done'\n", pidfile.display()));
+        let cmd = std::process::Command::new(script);
+        let started = std::time::Instant::now();
+        let err = run_child_with_capture(
+            &root,
+            cmd,
+            std::time::Duration::from_secs(5),
+            || Ok(()),
+            "producer",
+        )
+        .unwrap_err();
+        assert!(err.contains("超过上限"), "{err}");
+        assert!(!err.contains("exit=未知"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let pid = std::fs::read_to_string(pidfile).unwrap();
+        assert!(pid.trim().parse::<u32>().unwrap() > 0);
+        let status = std::process::Command::new("/bin/ps")
+            .args(["-p", pid.trim(), "-o", "pid="])
+            .output()
+            .unwrap();
+        assert!(status.stdout.is_empty(), "自有 producer 必须已回收");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

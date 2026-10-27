@@ -157,9 +157,11 @@ def main(tmp):
         "/synthetic/oneside": 22000, "/synthetic/oneside/newcomer": 7000})
     ids["pages_a"] = insert(conn, "2026-09-12", "/synthetic/pages", {
         **{f"/synthetic/pages/c{i:03d}": 1000 + i for i in range(130)},
+        **{f"/synthetic/pages/c000/k{i:03d}": 1 for i in range(130)},
         "/synthetic/pages": 300000})
     ids["pages_b"] = insert(conn, "2026-09-13", "/synthetic/pages", {
         **{f"/synthetic/pages/c{i:03d}": 1000 + 2 * i for i in range(130)},
+        **{f"/synthetic/pages/c000/k{i:03d}": 1 for i in range(130)},
         "/synthetic/pages": 300130})
     names = ["<img src=x onerror=alert(1)>", "line1\\nline2", "tab\\tname", 'quo"te', "中文目录"]
     ids["weird_a"] = insert(conn, "2026-09-14", "/synthetic/weird",
@@ -265,11 +267,20 @@ async function main() {
       return tr ? Number(tr.dataset.depth) : -1;
     }, p);
 
-    /* ---- 基线：默认最新数据集（ISS-149 后最新为 trendgap 排除掩码 #19 → #20）---- */
+    /* ---- ISS-206：默认内容最多的根（pages #12 → #13）；最新仍可手选 ---- */
     await page.goto(`${base}/#/changes`, { waitUntil: "networkidle" });
-    await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #19 → #20"),
-      20000, "默认对比完成");
+    await waitUntil(async () => (await page.textContent("#diff-status")).includes("已对比快照 #12 → #13"),
+      20000, "默认内容根对比完成");
     record("page-opens-default-diff", true, "状态行完成态出现");
+
+    const optionRoots = await page.evaluate(() => ({
+      a: [...document.querySelector('#sel-a').options].map(o => o.textContent),
+      b: [...document.querySelector('#sel-b').options].map(o => o.textContent),
+    }));
+    record("snapshot-selectors-show-actual-roots",
+      optionRoots.a.length > 0 && optionRoots.a.every(t => t.includes('/synthetic/pages')) &&
+      optionRoots.b.find(t => t.startsWith('#6 '))?.includes('/synthetic/hist') &&
+      optionRoots.b.find(t => t.startsWith('#13 '))?.includes('/synthetic/pages'), JSON.stringify(optionRoots));
 
     // weird 基线断言：默认数据集已随 ISS-149 seed 前移，显式切到 #14 → #15
     await page.selectOption("#sel-b", "15");
@@ -640,6 +651,22 @@ async function main() {
     record("pages-load-more-130-no-duplicates",
       allRows.length === 130 && new Set(allRows).size === 130 && moreGone === null,
       `rows=${allRows.length} dup=${allRows.length - new Set(allRows).size}`);
+
+    let detailBrowsePage;
+    const observeBrowse = async response => {
+      const u = new URL(response.url());
+      if(u.pathname === '/api/browse' && u.searchParams.get('path') === '/synthetic/pages/c000')
+        detailBrowsePage = await response.json();
+    };
+    page.on('response', observeBrowse);
+    await page.click('#changes-body tr[data-path="/synthetic/pages/c000"] .tree-name');
+    await waitUntil(async () => (await page.textContent('#detail-current-info')).includes('直属子目录'), 10000, '分页详情就绪');
+    const childCountText = await page.textContent('#detail-current-info');
+    record("detail-browse-shows-total-beyond-first-page",
+      detailBrowsePage?.children.length === 100 && detailBrowsePage?.pagination.total === 130 &&
+      childCountText.includes('直属子目录 130 个'), JSON.stringify({shown:detailBrowsePage?.children.length,total:detailBrowsePage?.pagination.total,text:childCountText}));
+    page.off('response', observeBrowse);
+    await page.keyboard.press('Escape');
 
     /* ---- hist（#5 → #6）：旧区间详情绑定，最新口径另标 ---- */
     await page.selectOption("#sel-b", "6");

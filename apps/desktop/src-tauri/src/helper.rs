@@ -621,8 +621,8 @@ impl HelperHandle {
     }
 
     /// ISS-110：本壳 helper pid 的只读读取（升级 prepare 的
-    /// ``--expected-helper-pid`` 来源）；无子进程（让位后句柄已被
-    /// wait_with_events 取走/未 adopt）时为 ``None``——壳据此传 0
+    /// ``--expected-helper-pid`` 来源）；无子进程（未 adopt 或已退出并回收）
+    /// 时为 ``None``——壳据此传 0
     /// （语义：本壳无 helper，任何存活同服务实例都非本壳所有）。
     pub fn helper_pid(&self) -> Option<u32> {
         self.own_child_pid()
@@ -674,17 +674,30 @@ impl HelperHandle {
     /// helper 的 cmd_serve 行为：成功让位 / 端口耗尽 由 helper 自己 exit code
     /// 与日志结构判定）。
     pub fn wait_with_events(&self) -> Result<HelperEvent, String> {
+        self.wait_with_events_until(
+            Instant::now() + Duration::from_secs(HANDSHAKE_TIMEOUT_S),
+            Child::try_wait,
+        )
+    }
+
+    fn wait_with_events_until(
+        &self,
+        deadline: Instant,
+        mut try_wait: impl FnMut(&mut Child) -> std::io::Result<Option<std::process::ExitStatus>>,
+    ) -> Result<HelperEvent, String> {
         let port_base: u16 = std::env::var("FATHOM_PORT")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_PORT);
         let log_path = self.runtime_dir.join("logs").join("helper.log");
         let log_path = log_path.as_path();
-        let mut child = match self.inner.lock() {
-            Ok(mut guard) => guard.take(),
+        // ISS-207: retain the owned Child on timeout or wait failure so stop(),
+        // retry and upgrade can still reap it. Only a confirmed exit clears it.
+        let mut guard = match self.inner.lock() {
+            Ok(guard) => guard,
             Err(_) => return Err("helper 句柄互斥锁中毒".to_string()),
         };
-        let child = match child.as_mut() {
+        let child = match guard.as_mut() {
             Some(child) => child,
             None => {
                 // 复用模式：helper 由外部持有；本壳仅观测，让位/耗尽由
@@ -696,10 +709,10 @@ impl HelperHandle {
             }
         };
         // 非阻塞探活 + 极短 sleep；用 try_wait 实现 bounded 等待。
-        let deadline = Instant::now() + Duration::from_secs(HANDSHAKE_TIMEOUT_S);
         loop {
-            match child.try_wait() {
+            match try_wait(child) {
                 Ok(Some(status)) => {
+                    *guard = None; // try_wait has reaped this child.
                     // ISS-060 (f)：只读本次 spawn 之后追加的日志段，避免跨运行
                     // 长驻日志复活历史事件。未记录偏移（adopt 未调用）时退到
                     // 「全文件扫描」旧行为。
@@ -943,6 +956,99 @@ mod tests {
         handle.stop().unwrap();
         handle.reap_exited_child().unwrap();
         assert_eq!(handle.helper_pid(), None);
+    }
+
+    // ISS-207: preserve ownership through failed startup waits. The fallback
+    // checks waitpid only for our own child, so a red assertion cannot leak it.
+    #[cfg(unix)]
+    struct WaitTestChild {
+        handle: HelperHandle,
+        pid: u32,
+    }
+
+    #[cfg(unix)]
+    impl WaitTestChild {
+        fn spawn(program: &str, args: &[&str]) -> Self {
+            let child = Command::new(program).args(args).spawn().unwrap();
+            let pid = child.id();
+            let handle = HelperHandle::new(tempdir());
+            handle.adopt(child, 1, 0);
+            Self { handle, pid }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for WaitTestChild {
+        fn drop(&mut self) {
+            let _ = self.handle.stop();
+            extern "C" {
+                fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+            }
+            let mut status = 0;
+            // WNOHANG = 1 on the supported Unix targets. A result of zero
+            // proves this is still our live, unreaped child before signalling.
+            if unsafe { waitpid(self.pid as i32, &mut status, 1) } == 0 {
+                let _ = Command::new("kill").args(["-KILL", &self.pid.to_string()]).status();
+                unsafe { waitpid(self.pid as i32, &mut status, 0); }
+            }
+            let _ = std::fs::remove_dir_all(&self.handle.runtime_dir);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_events_timeout_preserves_owned_child_for_stop() {
+        let owned = WaitTestChild::spawn("/bin/sleep", &["30"]);
+        let error = owned.handle.wait_with_events_until(Instant::now(), Child::try_wait)
+            .expect_err("a live child must time out");
+        assert!(error.contains("20s"), "production timeout diagnostic is unchanged");
+        assert_eq!(owned.handle.helper_pid(), Some(owned.pid));
+        assert!(owned.handle.inner.lock().unwrap().as_mut().unwrap().try_wait().unwrap().is_none());
+        owned.handle.stop().unwrap();
+        owned.handle.reap_exited_child().unwrap();
+        assert_eq!(owned.handle.helper_pid(), None, "stop must reap the retained child");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_events_error_preserves_owned_child_for_stop() {
+        let owned = WaitTestChild::spawn("/bin/sleep", &["30"]);
+        let error = owned.handle.wait_with_events_until(Instant::now(), |_| {
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "injected wait failure"))
+        }).expect_err("wait errors must be reported");
+        assert!(error.contains("injected wait failure"));
+        assert_eq!(owned.handle.helper_pid(), Some(owned.pid));
+        assert!(owned.handle.inner.lock().unwrap().as_mut().unwrap().try_wait().unwrap().is_none());
+        owned.handle.stop().unwrap();
+        owned.handle.reap_exited_child().unwrap();
+        assert_eq!(owned.handle.helper_pid(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_events_exit_reaps_child_and_clears_handle() {
+        let owned = WaitTestChild::spawn("/usr/bin/true", &[]);
+        let event = owned.handle.wait_with_events_until(
+            Instant::now() + Duration::from_secs(2), Child::try_wait,
+        ).unwrap();
+        assert!(matches!(event, HelperEvent::Exited { code: Some(0), signal: None }));
+        assert_eq!(owned.handle.helper_pid(), None);
+        owned.handle.stop().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wait_events_reused_instance_does_not_stop_external_child() {
+        let external = WaitTestChild::spawn("/bin/sleep", &["30"]);
+        let handle = HelperHandle::new(tempdir());
+        handle.reused.store(true, Ordering::SeqCst);
+        let event = handle.wait_with_events_until(Instant::now(), |_| {
+            panic!("no owned child must not call try_wait")
+        }).unwrap();
+        assert!(matches!(event, HelperEvent::Exited { code: Some(0), signal: None }));
+        handle.stop().unwrap();
+        assert!(external.handle.inner.lock().unwrap().as_mut().unwrap().try_wait().unwrap().is_none());
+        std::fs::remove_dir_all(handle.runtime_dir).unwrap();
     }
 
     #[test]

@@ -22,6 +22,7 @@
 import { fetchJSON, beginRequest, revealInFinder } from "../request.js";
 import { fmtBytes, fmtKB, fmtDelta, shortPath, escapeHtml } from "../format.js";
 import { initChart, showChartMessage } from "../charts.js";
+import { preferredContentSnapshot } from "./browse.js";
 import { state } from "../state.js";
 import { icon } from "../../icons.js";
 
@@ -685,19 +686,28 @@ function _ovMembersBlock(attr) {
   return out.join("");
 }
 
-function _ovCta(summary) {
+function _ovCta(summary, snaps) {
   const attr = summary?.attribution || null;
-  // b = 摘要**本轮成员**已落库的快照 ID（真实数据，非自造）。
-  // a 不从本轮成员取（那会和 b 相同）：摘要只暴露本轮归因，前一轮成员
-  // 未随负载给出，故不编造 a，交接时留空让变化页按自己的快照列表选一个
-  // 真实且不同于 b 的前驱；找不到就放弃交接，绝不塞假基线。
-  const bId = attr?.measured_members?.find((m) => m.snapshot_id)?.snapshot_id ?? null;
-  if (!bId) return "";
+  const measured = attr?.measured_members || [];
+  // 当前轮失败的内容根可能只有历史快照。仅从当前范围已有快照中选默认，
+  // 不能把 Update/VM 的成功次序当作内容优先级，也不把历史值冒充本轮贡献。
+  const roots = new Set([...(summary.scope?.roots || []), ...measured.map(m => m.root),
+    ...(attr?.stale_members || []).map(m => m.root)]);
+  const candidates = measured.filter(m => m.snapshot_id).map(m => ({
+    ...m, id:m.snapshot_id, created_at:m.snapshot_created_at,
+    ...snaps.find(s => String(s.id) === String(m.snapshot_id)),
+  }));
+  const ids = new Set(candidates.map(s => String(s.id)));
+  candidates.push(...snaps.filter(s => roots.has(s.root) && !ids.has(String(s.id))));
+  const chosen = preferredContentSnapshot(candidates);
+  if (!chosen?.id) return "";
+  const historical = !measured.some(m => String(m.snapshot_id) === String(chosen.id));
   return `<a class="btn primary" href="#/changes" data-test="storage-cta"
-    data-a="" data-b="${bId}">排查这次变化</a>`;
+    data-a="" data-b="${escapeHtml(String(chosen.id))}">${historical ? "查看已有目录快照" : "排查这次变化"}</a>
+    <span class="hint" data-test="storage-cta-snapshot">快照 #${escapeHtml(String(chosen.id))} · ${escapeHtml(chosen.root || "未知根")}</span>`;
 }
 
-/* ISS-158 a/b 交接：主按钮把**摘要里真实的快照 ID**带到变化页。
+/* ISS-158 / ISS-206 a/b 交接：主按钮把当前范围内真实的快照 ID 带到变化页。
  * 变化页是只读依赖（不在本卡可写范围），因此这里只做一次性交接：
  * 点击时记下 a/b，进入 #/changes 后等它自己的快照选项就绪，再写进
  * 它自有的 sel-a/sel-b 并派发 change——由变化页按自己的列表校验有效性。
@@ -791,7 +801,7 @@ function _handOffChangeEntry(a, b) {
   });
 }
 
-function _renderStorageReady(summary) {
+function _renderStorageReady(summary, snaps) {
   const el = _ovSlot();
   if (!el) return;
   const cap = summary.capacity || {};
@@ -820,8 +830,8 @@ function _renderStorageReady(summary) {
        ${_ovUnexplainedBlock(summary.unexplained)}
        ${_ovMembersBlock(attr)}
      </details>
-     <div class="conclusion-actions">${_ovCta(summary)}</div>`;
-  // 主按钮交接真实 a/b 给变化页（变化页自身校验）
+     <div class="conclusion-actions">${_ovCta(summary, snaps)}</div>`;
+  // 主按钮交接真实快照给变化页（历史入口已明示，变化页自身校验）
   el.querySelector('[data-test="storage-cta"]')?.addEventListener("click", (ev) => {
     const btn = ev.currentTarget;
     _handOffChangeEntry(btn.dataset.a, btn.dataset.b);
@@ -888,5 +898,8 @@ async function loadStorageOverview() {
   const rounds = summary.round && summary.previous_round ? 2
     : (summary.round ? 1 : 0);
   if (rounds < 2) { _renderStorageWaiting(rounds === 0 ? "empty" : "single"); return; }
-  _renderStorageReady(summary);
+  let snaps = [];
+  try { snaps = await _fetchSnapshotList(); } catch (_) { /* 列表失败仍保留摘要真实成员入口。 */ }
+  if (!request.current()) return;
+  _renderStorageReady(summary, snaps);
 }

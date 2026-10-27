@@ -55,7 +55,7 @@
 # ISS-149 树形套件 +14：trend 锚定窗口/缺测 null/排除隔离/等价表格
 # 键盘读数/真实悬停缺测标注/a-b 迟到响应不恢复旧曲线（60 → 74）。
 # ISS-159 新增分布页显式快照绑定回归（verify_browse_snapshot_frontend，
-# EXPECTED_BROWSE_SNAPSHOT_PASSED 默认 35）：真实 serve + 真实 Chromium，
+# EXPECTED_BROWSE_SNAPSHOT_PASSED 默认 41）：真实 serve + 真实 Chromium，
 # HTTP 层旧行为形态/历史实点/次级差分/404 语义 + 页面层快照选择/结构
 # 节点/HTML 转义/单时点详情/恢复/分页/三视口。
 # ISS-160 新增跨页上下文/恢复/重扫核对闭环回归
@@ -179,8 +179,14 @@ assert_result_json "$analysis_out" "$expected_analysis" "analysis frontend"
 
 # ISS-189：Agent 常驻入口、同口径选点、共享生命周期与跨区间有界历史。
 # 真实 Chromium + 模拟 HTTP backend；真实 helper/原生入口另行验收。
+# ISS-205 生命周期 6 项与 ISS-204 身份/调用配置 15 项共存，总计 97 项。
 node scripts/verify_agent_frontend.cjs | tee "$analysis_out"
-assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-76}" "agent frontend"
+assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-97}" "agent frontend"
+
+# ISS-206：内容根默认落点、历史 CTA 与显式选择重入及同根跨数据集优先级；40 项真实 Chromium 断言。
+# 重入须等新快照目录替换旧 option 后再核选点，不能用旧 DOM 证明选择保留。
+node scripts/verify_content_root_defaults.cjs | tee "$analysis_out"
+assert_result_json "$analysis_out" "${EXPECTED_CONTENT_ROOT_DEFAULTS_PASSED:-40}" "content root defaults frontend"
 
 # ISS-148：树形同级变化回归（真实 FastAPI 隔离入口 + 生产页面实点）。
 # 53 项——三层展开/聚焦/返回、父 0 子抵消、缺父结构节点、单侧未记录、
@@ -188,7 +194,7 @@ assert_result_json "$analysis_out" "${EXPECTED_AGENT_PASSED:-76}" "agent fronten
 # 三视口无横向溢出、AI 区与排行/日报次级可达。失败自身非零退出，
 # pipefail 直通判红；计数漂移由 EXPECTED_TREE_PASSED 兜底（同上口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_tree_changes_frontend.cjs | tee "$tree_out"
-expected_tree="${EXPECTED_TREE_PASSED:-74}"
+expected_tree="${EXPECTED_TREE_PASSED:-76}"
 assert_result_json "$tree_out" "$expected_tree" "tree changes frontend"
 
 # ISS-151：目录当前大文件回归（真实 FastAPI 隔离入口 + 生产页面实点）。
@@ -207,7 +213,7 @@ assert_result_json "$tree_out" "$expected_dir_bigfiles" "directory bigfiles fron
 # 溢出）。失败自身非零退出，pipefail 直通判红；计数漂移由
 # EXPECTED_BROWSE_SNAPSHOT_PASSED 兜底（同树形口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_browse_snapshot_frontend.cjs | tee "$tree_out"
-expected_browse_snapshot="${EXPECTED_BROWSE_SNAPSHOT_PASSED:-35}"
+expected_browse_snapshot="${EXPECTED_BROWSE_SNAPSHOT_PASSED:-41}"
 assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot frontend"
 
 # ISS-191 当前扫描对象只读呈现：93项真实隔离serve/Chromium回归。

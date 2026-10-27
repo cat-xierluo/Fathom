@@ -95,7 +95,18 @@ class EntryIdentity:
     digest_scope: str = "none"
     layer_identities: tuple[tuple[str, str, int, int, str], ...] = ()
     identity_complete: bool = False
+    # A uniquely resolved interpreter/program chain may be sendable without
+    # proving its dynamic application body. It never authorizes VERIFIED evidence.
+    execution_chain_resolved: bool = False
     identity_issues: tuple[str, ...] = ()
+
+    @property
+    def sendable(self) -> bool:
+        return self.identity_complete or self.execution_chain_resolved
+
+    @property
+    def assurance(self) -> str:
+        return "complete" if self.identity_complete else ("probed" if self.sendable else "unresolved")
 
     @property
     def is_wrapper(self) -> bool:
@@ -117,6 +128,8 @@ class EntryIdentity:
             "fingerprint": self.fingerprint(),
             "layer_identities": [list(layer) for layer in self.layer_identities],
             "identity_complete": self.identity_complete,
+            "execution_chain_resolved": self.execution_chain_resolved,
+            "assurance": self.assurance,
             "identity_issues": list(self.identity_issues),
         }
 
@@ -128,7 +141,8 @@ class EntryIdentity:
             "size": self.size_bytes, "mtime": self.mtime_ns,
             "digest": self.content_digest, "scope": self.digest_scope,
             "layers": self.layers, "identities": self.layer_identities,
-            "complete": self.identity_complete, "issues": self.identity_issues,
+            "complete": self.identity_complete, "resolved": self.execution_chain_resolved,
+            "issues": self.identity_issues,
         }, sort_keys=True, separators=(",", ":")))
 
     def public_dict(self) -> dict:
@@ -146,6 +160,8 @@ class EntryIdentity:
             "digest_scope": self.digest_scope,
             "readable": self.readable,
             "identity_complete": self.identity_complete,
+            "execution_chain_resolved": self.execution_chain_resolved,
+            "assurance": self.assurance,
             "fingerprint": opaque_digest(self.fingerprint()),
             "fingerprint_scope": "opaque_sha256",
         }
@@ -192,9 +208,12 @@ _DIGEST_CHUNK_BYTES = 1024 * 1024
 _SHEBANG_PROBE_BYTES = 4
 _SCRIPT_PARSE_MAX_BYTES = 1024 * 1024
 _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
-_INTERPRETERS = _SHELLS | {"node", "python", "python3"}
 _LITERAL_ASSIGNMENT = re.compile(
     r"([A-Za-z_][A-Za-z0-9_]*)=(?:\"([^\"$]*)\"|'([^'$]*)'|([^\s\"'$]*))")
+
+
+def _program_interpreter(name: str) -> bool:
+    return name == "node" or bool(re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)*)?", name))
 
 
 def _shell_dependencies(raw: str) -> tuple[tuple[str, ...], bool]:
@@ -245,25 +264,33 @@ def _shell_dependencies(raw: str) -> tuple[tuple[str, ...], bool]:
         if words[0] != "exec" or len(words) < 2:
             complete = False
             continue
-        target = words[1]
-        if re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", target):
-            # Unquoted expansion can split a path or glob into another command.
-            if not re.match(r'exec\s+"\$[A-Za-z_][A-Za-z0-9_]*"(?:\s|$)', line):
-                complete = False
-                continue
-            target = variables.get(target[1:], "")
+        def expand_literal(word: str) -> str:
+            match = re.fullmatch(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})(/[^$*?\[\]~]*)?", word)
+            if not match:
+                return word
+            # Expansion must stay a single quoted word, with a previously known
+            # literal value. Unquoted command selection is never inferred.
+            if not re.search(r'(?:^|\s)"' + re.escape(word) + r'"(?:\s|$)', line):
+                return ""
+            value = variables.get(match[1] or match[2])
+            return value + (match[3] or "") if value is not None else ""
+
+        target = expand_literal(words[1])
         if (not target.startswith("/")
                 or any(char in target for char in "$*?[]~")):
             complete = False
             continue
         dependencies.append(target)
-        args = words[2:]
-        if any("$" in word and word != "$@" for word in args):
+        args = [expand_literal(word) if word != "$@" else word for word in words[2:]]
+        if (any("$" in word and word != "$@" for word in args)
+                or any("$" in original and original != "$@" and not expanded
+                       for original, expanded in zip(words[2:], args))
+                or ("$@" in args and '\"$@\"' not in line)):
             complete = False
         name = Path(target).name
         if name == "env":
             complete = False  # env dispatch is not part of the direct-exec subset.
-        if name in _INTERPRETERS:
+        if name in _SHELLS or _program_interpreter(name):
             # An explicit interpreter adds a script layer; -c/-m, stdin, and
             # dynamic/relative script selection require semantics we do not infer.
             if (args and args[0].startswith("/")
@@ -289,65 +316,106 @@ def _script_layers(path: Path) -> tuple[str, ...]:
         raw = bounded.decode("utf-8")
     except (OSError, UnicodeError):
         return ()
-    return _shell_dependencies(raw)[0]
+    layers = _shell_dependencies(raw)[0]
+    if layers:
+        return layers
+    # The normalized dirname launcher is also a script wrapper. A plain script
+    # program (for example a shell echo) keeps the existing direct classification.
+    if any(line.strip().startswith("exec ") for line in raw.splitlines()[1:]):
+        dependencies, _, _, resolved = _script_dependencies(path)
+        if resolved:
+            return dependencies
+    return ()
 
 
-def _script_dependencies(path: Path, *, path_env: str | None = None):
-    """只解析静态 shebang 和 shell exec；动态目标不执行探索，报告不完整。"""
+def _script_dependencies(path: Path, *, path_env: str | None = None,
+                         invoked_path: str | None = None):
+    """Resolve the executable chain, independently of dynamic program semantics.
+
+    Native files and the finite shell grammar are fully proven. A known
+    interpreter running one fixed script is PROBED; we do not interpret JavaScript
+    or Python imports, or claim complete behavioral identity for these programs.
+    Unknown dispatch targets, interpreter flags and missing layers fail closed.
+    """
     try:
         with path.open("rb") as handle:
-            head = handle.read(_SHEBANG_PROBE_BYTES)
-            if not head.startswith(b"#!"):
-                return (), False, True
+            if not handle.read(_SHEBANG_PROBE_BYTES).startswith(b"#!"):
+                return (), False, True, True
             handle.seek(0)
-            line = handle.readline(4096).decode("utf-8", errors="replace").strip()
+            line = handle.readline(4096).decode("utf-8", errors="strict").strip()
         words = shlex.split(line[2:])
-    except (OSError, ValueError):
-        return (), True, False
+    except (OSError, UnicodeError, ValueError):
+        return (), True, False, False
     if not words or not words[0].startswith("/"):
-        return (), True, False
+        return (), True, False, False
     dependencies = [words[0]]
     interpreter = words[0]
-    complete = True
     if Path(interpreter).name == "env":
         args = words[1:]
         if args and args[0] == "-S":
             args = args[1:]
-            # Also accept a quoted env -S split-string.
             if len(args) == 1:
                 try:
                     args = shlex.split(args[0])
                 except ValueError:
-                    return tuple(dependencies), True, False
-        # Assignment/options alter executable lookup; do not guess their semantics.
+                    return tuple(dependencies), True, False, False
         if not args or args[0].startswith("-") or "=" in args[0]:
-            return tuple(dependencies), True, False
+            return tuple(dependencies), True, False, False
         interpreter = shutil.which(args[0], path=path_env)
         if interpreter is None:
-            return tuple(dependencies), True, False
+            return tuple(dependencies), True, False, False
         dependencies.append(interpreter)
+        if len(args) != 1:
+            # Preserve the known interpreter identity, but do not approve flags
+            # whose startup-file or dispatch semantics have not been proven.
+            return tuple(dependencies), True, False, False
+    elif len(words) != 1:
+        return tuple(dependencies), True, False, False
+    name = Path(interpreter).name
+    if _program_interpreter(name):
+        return tuple(dependencies), True, False, True
+    if name not in _SHELLS:
+        return tuple(dependencies), True, False, False
     try:
         if path.stat().st_size > _SCRIPT_PARSE_MAX_BYTES:
-            return tuple(dependencies), True, False
+            return tuple(dependencies), True, False, False
         with path.open("rb") as handle:
             bounded = handle.read(_SCRIPT_PARSE_MAX_BYTES + 1)
         if len(bounded) > _SCRIPT_PARSE_MAX_BYTES:
-            return tuple(dependencies), True, False
+            return tuple(dependencies), True, False, False
         raw = bounded.decode("utf-8")
     except (OSError, UnicodeError):
-        return tuple(dependencies), True, False
-    targets, body_complete = _shell_dependencies(raw)
+        return tuple(dependencies), True, False, False
+    # A common launcher uses only dirname($0) to select a fixed sibling. Resolve
+    # relative to the actual invoked path (which may itself be a symlink), and
+    # fingerprint the standard dirname utility as well. No shell is executed here.
+    dynamic = False
+    lines = raw.splitlines()
+    for index, body_line in enumerate(lines[1:], 1):
+        assignment = re.fullmatch(
+            r'\s*([A-Za-z_][A-Za-z0-9_]*)=(?:"\$\(dirname "\$0"\)"|\$\(dirname "\$0"\))\s*', body_line)
+        if assignment:
+            dirname = shutil.which("dirname", path=path_env)
+            if dirname is None or os.path.realpath(dirname) not in {"/usr/bin/dirname", "/bin/dirname"}:
+                return tuple(dependencies), True, False, False
+            lines[index] = assignment[1] + "=" + shlex.quote(str(Path(invoked_path or path).parent))
+            dependencies.append(dirname)
+            dynamic = True
+            continue
+        match = re.fullmatch(r'\s*exec "\$\(dirname "\$0"\)(/[^"$`\\*?\[\]]+)" "\$@"\s*', body_line)
+        if not match:
+            continue
+        dirname = shutil.which("dirname", path=path_env)
+        if dirname is None or os.path.realpath(dirname) not in {"/usr/bin/dirname", "/bin/dirname"}:
+            return tuple(dependencies), True, False, False
+        target = str(Path(invoked_path or path).parent) + match[1]
+        lines[index] = "exec " + shlex.quote(target) + ' "$@"'
+        dependencies.append(dirname)
+        dynamic = True
+    targets, resolved = _shell_dependencies("\n".join(lines))
     dependencies.extend(targets)
-    complete = complete and body_complete
-    # Interpreter flags can source files or select command strings; only the
-    # interpreter-only shell shebang is proven by this limited grammar.
-    if Path(interpreter).name not in _SHELLS:
-        complete = False
-    elif Path(words[0]).name != "env" and len(words) != 1:
-        complete = False
-    elif Path(words[0]).name == "env" and len(args) != 1:
-        complete = False
-    return tuple(dependencies), True, complete
+    dynamic = dynamic or any(_program_interpreter(Path(target).name) for target in targets)
+    return tuple(dependencies), True, resolved and not dynamic, resolved
 
 
 def identify_entry(path, *, deadline: float | None = None, path_env: str | None = None):
@@ -365,6 +433,7 @@ def identify_entry(path, *, deadline: float | None = None, path_env: str | None 
     layers: list[str] = []
     records = []
     issues = []
+    unresolved = False
     # Deduplicate only within this identify operation, including shared interpreters.
     digests: dict[str, tuple[str | None, bool, str]] = {}
     visited: set[str] = set()
@@ -372,7 +441,7 @@ def identify_entry(path, *, deadline: float | None = None, path_env: str | None 
     wrapper_kind = "symlink" if candidate.is_symlink() else "direct"
 
     def collect(item: Path, depth: int = 0):
-        nonlocal wrapper_kind
+        nonlocal wrapper_kind, unresolved
         if deadline is not None and time.monotonic() >= deadline:
             issues.append("budget_exhausted")
             return
@@ -415,9 +484,13 @@ def identify_entry(path, *, deadline: float | None = None, path_env: str | None 
         if deadline is not None and time.monotonic() >= deadline:
             issues.append("budget_exhausted")
             return
-        deps, is_script, complete = _script_dependencies(Path(real), path_env=path_env)
-        if not complete:
+        deps, is_script, complete, resolved = _script_dependencies(
+            Path(real), path_env=path_env, invoked_path=configured)
+        if not resolved:
+            unresolved = True
             issues.append("dynamic_or_unresolved_layer")
+        elif not complete:
+            issues.append("dynamic_application")
         if depth == 0 and is_script and _script_layers(Path(real)):
             wrapper_kind = "script"
         for dependency in deps:
@@ -431,6 +504,8 @@ def identify_entry(path, *, deadline: float | None = None, path_env: str | None 
         content_digest=outer[0], readable=outer[1], digest_scope=outer[2],
         layers=tuple(layers), wrapper_kind=wrapper_kind,
         layer_identities=tuple(records), identity_complete=bool(records) and not issues,
+        execution_chain_resolved=bool(records) and not unresolved
+            and not (set(issues) - {"dynamic_application"}),
         identity_issues=tuple(sorted(set(issues))),
     )
 
@@ -439,7 +514,7 @@ def entry_changed(before, after):
     """入口是否发生变化（用于缓存失效）。任一侧缺失即视为变化。"""
     if before is None or after is None:
         return before is not after
-    if not before.identity_complete or not after.identity_complete:
+    if not before.sendable or not after.sendable:
         return True
     return before.fingerprint() != after.fingerprint()
 
@@ -681,17 +756,28 @@ class CallBinding:
     argv_digest: str
 
 
-def bind_call(snapshot, argv: tuple[str, ...] | list[str], call_id: str) -> CallBinding:
-    """创建独立的预期调用记录（纯函数）；argv 使用无歧义 JSON 编码摘要。"""
-    if (not snapshot or not snapshot.identity or not snapshot.identity.identity_complete
-            or not snapshot.runtime_id or not snapshot.version or not snapshot.invocation_profile):
-        raise ValueError("调用记录需要完整入口、runtime、版本和配置")
+class CallIdentityError(ValueError):
+    """Missing, unreadable or unresolved executable identity."""
+
+
+class CallConfigurationError(ValueError):
+    """Invocation/runtime/profile does not match the selected configuration."""
+
+
+def bind_call(snapshot, argv: tuple[str, ...] | list[str], call_id: str,
+              *, require_complete: bool = True) -> CallBinding:
+    """Bind a sendable chain; complete identity remains mandatory for VERIFIED."""
+    if (not snapshot or not snapshot.identity or not snapshot.identity.sendable
+            or (require_complete and not snapshot.identity.identity_complete)):
+        raise CallIdentityError("调用记录需要可解析入口身份")
+    if not snapshot.runtime_id or not snapshot.version or not snapshot.invocation_profile:
+        raise CallConfigurationError("调用记录需要 runtime、版本和配置")
     if not call_id or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", call_id):
-        raise ValueError("调用关联标识缺失或格式错误")
+        raise CallConfigurationError("调用关联标识缺失或格式错误")
     if not argv or any(not isinstance(arg, str) for arg in argv):
-        raise ValueError("调用 argv 必须是非空字符串序列")
+        raise CallConfigurationError("调用 argv 必须是非空字符串序列")
     if _normalized(argv[0]) != snapshot.identity.configured_path:
-        raise ValueError("调用入口与快照不一致")
+        raise CallConfigurationError("调用入口与快照不一致")
     digest = "sha256:" + opaque_digest(json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")))
     return CallBinding(snapshot.runtime_id, snapshot.version, snapshot.invocation_profile,
                        snapshot.identity.fingerprint(), call_id, digest)

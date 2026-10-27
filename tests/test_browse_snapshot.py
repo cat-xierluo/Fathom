@@ -388,6 +388,39 @@ class TestEdgeShapes:
         by_name = {c["name"]: c for c in body["children"]}
         assert by_name["d"]["size_kb"] == 100
 
+    @pytest.mark.parametrize("root", ["/", ROOT])
+    @pytest.mark.parametrize("explicit_snapshot", [True, False])
+    def test_deep_crumbs_roundtrip_same_snapshot(self, client, root, explicit_snapshot):
+        """ISS-210：每个祖先都能回读；旧快照不串最新，非根测量保持原路径。"""
+        prefix = root.rstrip("/")
+        paths = [root, prefix + "/Users", prefix + "/Users/synthetic",
+                 prefix + "/Users/synthetic/project"]
+        sizes = {path: 8_000 - i * 1_000 for i, path in enumerate(paths)}
+        conn = db.connect()
+        try:
+            old = _insert_snapshot(conn, "2026-09-01", root, entries=sizes)
+            latest = _insert_snapshot(conn, "2026-09-02", root,
+                                      entries={p: n + 1_000 for p, n in sizes.items()})
+        finally:
+            conn.close()
+        query = {"snapshot_id": old} if explicit_snapshot else {}
+        response = client.get("/api/browse", params={**query, "path": paths[-1]})
+        assert response.status_code == 200
+        body = response.json()
+        for crumb in body["crumbs"]:
+            reread = client.get("/api/browse", params={**query, "path": crumb["path"]})
+            assert reread.status_code == 200, reread.text
+            assert crumb["path"].startswith("/") and "//" not in crumb["path"]
+            data = reread.json()
+            assert data["path"] == crumb["path"]
+            assert data["size_kb"] == sizes[crumb["path"]] + (0 if explicit_snapshot else 1_000)
+            if explicit_snapshot:
+                assert data["snapshot"]["id"] == old != latest
+        assert [c["path"] for c in body["crumbs"]] == paths
+        # 路径校验仍拒绝双斜杠，不能靠放宽输入检查让生成错误过关。
+        assert client.get("/api/browse", params={
+            "snapshot_id": old, "path": prefix + "//Users"}).status_code == 400
+
     def test_html_char_path_passthrough(self, client):
         """API 原样透传特殊字符路径（转义是渲染层责任），不截断不改写。"""
         tricky = "<b>&\"x"

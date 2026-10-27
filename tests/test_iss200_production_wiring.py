@@ -427,11 +427,11 @@ def _clang() -> str:
     pytest.skip("本机无 clang/cc，无法编译合成原生 CLI")
 
 
-def _compile_native_cli(target: Path) -> Path:
+def _compile_native_cli(target: Path, *, source_text: str = NATIVE_CLI_C) -> Path:
     """把合成 CLI 编译成原生可执行文件（原生二进制才有完整入口身份）。"""
     import subprocess
     source = target.with_suffix(".c")
-    source.write_text(NATIVE_CLI_C, encoding="utf-8")
+    source.write_text(source_text, encoding="utf-8")
     proc = subprocess.run([_clang(), "-O0", "-o", str(target), str(source)],
                           capture_output=True, text=True, timeout=300)
     if proc.returncode != 0 or not target.is_file():
@@ -489,7 +489,8 @@ def failing_setup(isolated, monkeypatch):  # noqa: F811 - isolated 见 conftest
     monkeypatch.setattr(runtime_cache, "cache_path", lambda runtime_dir=None: cache_file)
     bin_dir = isolated["runtime"] / "bin"
     bin_dir.mkdir()
-    script = make_fake_claude(bin_dir, mode="nonzero")
+    script = _compile_native_cli(bin_dir / "fake-claude", source_text=
+        NATIVE_CLI_C.replace("    char buf[8192];", "    return 3;\n    char buf[8192];"))
     enable_analysis(script)
     a, b = make_snapshots(isolated["scanroot"])
     return {"script": script, "a": a, "b": b, "cache": cache_file}
@@ -526,7 +527,8 @@ def test_running_job_keeps_original_identity(isolated, monkeypatch):  # noqa: F8
                                              make_snapshots, wait_running)
     bin_dir = isolated["runtime"] / "bin"
     bin_dir.mkdir()
-    script = make_fake_claude(bin_dir, mode="slow_ok")
+    script = _compile_native_cli(bin_dir / "fake-claude", source_text=
+        NATIVE_CLI_C.replace("    char buf[8192];", "    usleep(1200000);\n    char buf[8192];"))
     enable_analysis(script)
     a, b = make_snapshots(isolated["scanroot"])
 
@@ -561,3 +563,258 @@ def test_running_job_keeps_original_identity(isolated, monkeypatch):  # noqa: F8
         "cat > /dev/null\nsleep 30\n", encoding="utf-8")
     after = manager._jobs[job["job_id"]]
     assert after.preview.runtime.entry_fingerprint == frozen_fingerprint
+    manager.cancel_job(job["job_id"])
+    from tests.test_analysis_manager import wait_terminal
+    wait_terminal(manager, job["job_id"])
+
+# ISS-204: independent review counterexamples through production consumers.
+
+def test_iss204_incomplete_wrapper_cannot_dispatch(backfill_setup):
+    setup = backfill_setup
+    wrapper = setup['script'].with_name('wrapper')
+    wrapper.write_text('#!/bin/sh\nTARGET=$(cat "' + str(setup["script"]) +
+                       '.target")\nexec "$TARGET" "$@"\n')
+    setup["script"].with_name(setup["script"].name + '.target').write_text(str(setup["script"]))
+    wrapper.chmod(0o755)
+    from tests.test_analysis_manager import enable_analysis
+    enable_analysis(wrapper)
+    manager = am.AnalysisManager()
+    preview = manager.create_preview(setup['a'], setup['b'])
+    assert not preview.runtime.entry_identity_complete
+    fingerprint = preview.runtime.entry_fingerprint
+    # Replace only the hidden engine, preserving the wrapper and version output.
+    engine = setup['script']
+    _compile_native_cli(engine, source_text=NATIVE_CLI_C.replace('char buf[8192]', 'char buf[4096]'))
+    assert am.resolve_runtime(str(wrapper), 'claude-code', setup['version']).entry_fingerprint == fingerprint
+    with pytest.raises(am.AnalysisError) as exc:
+        manager.start_job(preview.preview_id, preview.request_digest, 'iss204-dynamic')
+    assert exc.value.reason_code == 'runtime_identity_incomplete'
+    from tests.test_analysis_manager import agent_rows
+    assert agent_rows() == []
+
+
+@pytest.mark.parametrize('winner', ['cancel', 'revoke', 'upgrade'])
+def test_iss204_revoked_success_never_backfills(backfill_setup, winner):
+    import threading
+    from tests.test_analysis_manager import (TestAcceptedCancelWins, wait_terminal,
+                                             agent_rows)
+    setup = backfill_setup
+    manager = am.AnalysisManager(run_timeout_s=20)
+    reached, resume = threading.Event(), threading.Event()
+    TestAcceptedCancelWins._paused_settle(manager, reached, resume)
+    preview = manager.create_preview(setup['a'], setup['b'])
+    job, _ = manager.start_job(preview.preview_id, preview.request_digest, 'iss204-' + winner)
+    try:
+        assert reached.wait(20)
+        if winner == 'cancel':
+            assert manager.cancel_job(job['job_id'])['status'] == 'cancelling'
+        elif winner == 'revoke':
+            config.update_user_settings({'analysis': {'enabled': False}})
+            manager.refresh_policy()
+        else:
+            from fathom import upgrade
+            upgrade.journal_path_from_db(config.DB_PATH).write_text('{}')
+    finally:
+        resume.set()
+    final = wait_terminal(manager, job['job_id'], timeout=20)
+    assert final['status'] == 'cancelled', final
+    assert agent_rows() == []
+    # Wait for optional after-commit work as well as the authoritative DB terminal.
+    deadline = time.monotonic() + 5
+    while job['job_id'] in manager._jobs and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert job['job_id'] not in manager._jobs
+    for entry in runtime_cache.load_entries(setup['cache']).values():
+        assert all(c['evidence'] != 'verified' for c in
+                   entry.runtime_info.get('capability_snapshot', {}).get('capabilities', []))
+
+
+@pytest.mark.parametrize('observed_at', [10 ** 400, float('nan'), float('inf'), -float('inf'), True, False, '1', -1])
+def test_iss204_bad_cache_timestamp_is_ignored(tmp_path, observed_at):
+    target = tmp_path / 'cache.json'
+    target.write_text(json.dumps({'schema': 1, 'entries': {'claude-code': {
+        'runtime_id': 'claude-code', 'executable': '/synthetic/cli',
+        'fingerprint': 'f', 'observed_at': observed_at, 'success': True,
+        'runtime_info': {}}}}))
+    assert runtime_cache.load_entries(target) == {}
+    assert runtime_cache.lookup('claude-code', path=target) is None
+
+
+def test_iss204_cache_exception_preserves_success(backfill_setup, monkeypatch):
+    from tests.test_analysis_manager import wait_terminal, agent_rows
+    setup = backfill_setup
+    def unavailable(*args, **kwargs):
+        raise OSError('synthetic cache persistence error')
+    monkeypatch.setattr(runtime_cache, 'record_capability_evidence', unavailable)
+    manager = am.AnalysisManager(run_timeout_s=20)
+    preview = manager.create_preview(setup['a'], setup['b'])
+    job, _ = manager.start_job(preview.preview_id, preview.request_digest, 'iss204-cache')
+    final = wait_terminal(manager, job['job_id'])
+    assert final['status'] == 'succeeded', final
+    assert len(agent_rows()) == 1
+
+
+def test_iss204_cache_serialization_failure_keeps_old_file(tmp_path):
+    target = tmp_path / 'cache.json'
+    assert runtime_cache.record_probe('cli', '/synthetic/cli', 'f', {}, success=True, path=target)
+    before = target.read_bytes()
+    assert not runtime_cache.record_probe('cli', '/synthetic/cli', 'f',
+                                          {'unsupported': object()}, success=True, path=target)
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("entry_kind", ["native", "symlink", "literal_wrapper"])
+def test_iss204_new_native_version_remains_usable(backfill_setup, entry_kind):
+    from tests.test_analysis_manager import enable_analysis, wait_terminal
+    setup = backfill_setup
+    engine = _compile_native_cli(setup["script"], source_text=
+                                 NATIVE_CLI_C.replace("2.1.237", "2.1.303"))
+    selected = engine
+    if entry_kind != "native":
+        selected = engine.with_name("entry")
+        if entry_kind == "symlink":
+            selected.symlink_to(engine)
+        else:
+            selected.write_text('#!/bin/sh\nexec "' + str(engine) + '" "$@"\n')
+            selected.chmod(0o755)
+    enable_analysis(selected)  # saved 2.1.237; probe must recognize the new version.
+    manager = am.AnalysisManager(run_timeout_s=20)
+    preview = manager.create_preview(setup["a"], setup["b"])
+    assert preview.runtime.version == "2.1.303"
+    assert preview.runtime.entry_identity_complete
+    job, _ = manager.start_job(preview.preview_id, preview.request_digest, "iss204-new")
+    assert wait_terminal(manager, job["job_id"])["status"] == "succeeded"
+
+
+@pytest.mark.parametrize("binding_problem", ["identity", "profile"])
+def test_iss204_missing_binding_stops_before_cli(backfill_setup, binding_problem):
+    from dataclasses import replace
+    from tests.test_analysis_manager import wait_terminal, agent_rows
+    setup = backfill_setup
+    marker = setup["script"].with_name("business-called")
+    source = NATIVE_CLI_C.replace('    char buf[8192];',
+        '    FILE *marker = fopen(' + json.dumps(str(marker)) + ', "w");\n'
+        '    if (marker) { fputs("sent", marker); fclose(marker); }\n'
+        '    char buf[8192];')
+    _compile_native_cli(setup["script"], source_text=source)
+    manager = am.AnalysisManager(run_timeout_s=20)
+    preview = manager.create_preview(setup["a"], setup["b"])
+    # Preserve complete frozen identity, but remove the required binding input.
+    snapshot = (None if binding_problem == "identity" else
+                replace(preview.runtime.capability_snapshot, invocation_profile=""))
+    manager._previews[preview.preview_id] = replace(preview, runtime=replace(
+        preview.runtime, capability_snapshot=snapshot))
+    job, _ = manager.start_job(preview.preview_id, preview.request_digest, "iss204-bind")
+    final = wait_terminal(manager, job["job_id"])
+    assert final["status"] == "failed", final
+    assert final["reason_code"] == ("runtime_identity_incomplete" if binding_problem == "identity"
+                                    else "runtime_invocation_mismatch")
+    assert not marker.exists(), "binding failure must prevent business execution"
+    assert agent_rows() == []
+
+
+@pytest.mark.parametrize("observed_at", [10 ** 400, float("nan"), float("inf")],
+                         ids=["huge-int", "nan", "infinity"])
+def test_iss204_bad_cache_cannot_break_success(backfill_setup, observed_at):
+    from tests.test_analysis_manager import wait_terminal, agent_rows
+    setup = backfill_setup
+    manager = am.AnalysisManager(run_timeout_s=20)
+    settle = manager._settle
+
+    def corrupt_cache_then_settle(rec, dispatch, duration_ms):
+        setup["cache"].write_text(json.dumps({"schema": 1, "entries": {
+            "claude-code": {"runtime_id": "claude-code",
+                "executable": str(setup["script"]), "fingerprint": "f",
+                "observed_at": observed_at, "success": True,
+                "runtime_info": {}}}}))
+        return settle(rec, dispatch, duration_ms)
+
+    manager._settle = corrupt_cache_then_settle
+    preview = manager.create_preview(setup["a"], setup["b"])
+    job, _ = manager.start_job(preview.preview_id, preview.request_digest, "iss204-bad")
+    assert wait_terminal(manager, job["job_id"])["status"] == "succeeded"
+    assert len(agent_rows()) == 1
+    deadline = time.monotonic() + 5
+    while job["job_id"] in manager._jobs and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert job["job_id"] not in manager._jobs
+    entry = runtime_cache.load_entries(setup["cache"])["claude-code"]
+    assert any(c["evidence"] == "verified" for c in
+               entry.runtime_info["capability_snapshot"]["capabilities"])
+
+@pytest.mark.parametrize('entry_kind', ['node', 'npm_symlink', 'dirname_wrapper'])
+def test_iss204_probed_node_chain_can_send_without_verified(backfill_setup, entry_kind):
+    import shutil
+    from tests.test_analysis_manager import enable_analysis, wait_terminal
+    setup = backfill_setup
+    node = shutil.which('node')
+    if not node:
+        pytest.skip('node unavailable')
+    engine = setup['script'].with_name('engine')
+    result = json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,
+                         'result': json.dumps({'schema_version': 1, 'summary': 's',
+                                              'findings': [], 'limitations': [], 'inspect_next': []})})
+    engine.write_text('#!' + node + '\n'
+        'if (process.argv[2] === "--version") { console.log("2.1.303 (Claude Code)"); }\n'
+        'else if (process.argv[2] === "--help") { console.log("--bare --disable-slash-commands '
+        '--disallowedTools --strict-mcp-config --no-session-persistence --output-format --print"); }\n'
+        'else { require("fs").readFileSync(0); console.log(' + json.dumps(result) + '); }\n')
+    engine.chmod(0o755)
+    selected = engine
+    if entry_kind == 'npm_symlink':
+        selected = engine.with_name('npm-cli')
+        selected.symlink_to(engine)
+    elif entry_kind == 'dirname_wrapper':
+        selected = engine.with_name('wrapper')
+        selected.write_text('#!/bin/sh\nexec "$(dirname "$0")/engine" "$@"\n')
+        selected.chmod(0o755)
+    enable_analysis(selected)
+    manager = am.AnalysisManager(run_timeout_s=20)
+    preview = manager.create_preview(setup['a'], setup['b'])
+    assert preview.runtime.version == '2.1.303'
+    assert not preview.runtime.entry_identity_complete
+    assert preview.runtime.capability_snapshot.identity.assurance == 'probed'
+    assert preview.runtime.entry_identity_sendable
+    job, _ = manager.start_job(preview.preview_id, preview.request_digest, 'iss204-node')
+    final = wait_terminal(manager, job['job_id'])
+    assert final['status'] == 'succeeded', final
+    deadline = time.monotonic() + 5
+    while job['job_id'] in manager._jobs and time.monotonic() < deadline:
+        time.sleep(.01)
+    for entry in runtime_cache.load_entries(setup['cache']).values():
+        assert all(c['evidence'] != 'verified' for c in
+                   entry.runtime_info.get('capability_snapshot', {}).get('capabilities', []))
+
+
+def test_iss204_one_bad_cache_entry_preserves_valid_sibling(tmp_path):
+    target = tmp_path / "cache.json"
+    valid = {"runtime_id": "good", "executable": "/synthetic/cli", "fingerprint": "f",
+             "observed_at": time.time(), "success": True, "runtime_info": {}}
+    bad = dict(valid, runtime_id="bad", observed_at=True)
+    target.write_text(json.dumps({"schema": 1, "entries": {"good": valid, "bad": bad}}))
+    assert set(runtime_cache.load_entries(target)) == {"good"}
+    assert runtime_cache.lookup("good", path=target) is not None
+
+
+@pytest.mark.parametrize("entry_kind", ["dirname", "basedir"])
+def test_iss204_resolved_wrapper_engine_swap_rejects_before_send(backfill_setup, entry_kind):
+    from tests.test_analysis_manager import enable_analysis, agent_rows
+    setup = backfill_setup
+    wrapper = setup["script"].with_name("wrapper")
+    if entry_kind == "dirname":
+        body = 'exec "$(dirname "$0")/fake-claude" "$@"'
+    else:
+        body = 'BASEDIR=$(dirname "$0")\nexec "$BASEDIR/fake-claude" "$@"'
+    wrapper.write_text('#!/bin/sh\n' + body + '\n')
+    wrapper.chmod(0o755)
+    enable_analysis(wrapper)
+    manager = am.AnalysisManager()
+    preview = manager.create_preview(setup["a"], setup["b"])
+    assert preview.runtime.entry_identity_sendable
+    assert not preview.runtime.entry_identity_complete
+    _compile_native_cli(setup["script"], source_text=
+                        NATIVE_CLI_C.replace('char buf[8192]', 'char buf[4096]'))
+    with pytest.raises(am.AnalysisError) as exc:
+        manager.start_job(preview.preview_id, preview.request_digest, "iss204-swap")
+    assert exc.value.reason_code == "runtime_identity_changed"
+    assert agent_rows() == []

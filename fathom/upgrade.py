@@ -107,6 +107,17 @@ ISS-098 恢复合同（安装后失败的真实旧 bundle 与数据恢复）：
   残骸）；恢复成功路径材料保留（journal 已清、停写结束；下次 prepare
   落盘新材料前先清旧残留）。
 
+ISS-208 完整应用恢复（替代以上 helper-only app 恢复范围）：
+
+- 标准 Contents/Resources/helper/fathom-helper 布局推导自有 app，核对
+  CFBundleIdentifier/CFBundleExecutable/来源版本，版本 2 manifest 保存整个
+  app 的内容 SHA256、文件权限、目录和内部符号链接；越界链接与特殊文件拒绝。
+- 恢复区位于 app 外，prepare 按完整 app 加数据库备份核预算；回滚额外核安装
+  卷暂存预算，验证副本/事务/目标路径，暂存验证后原子置换，再验完整旧 app。
+- 冻结 CLI 先将当前恢复执行器复制到运行根并 exec，避免替换自身资源目录；
+  Rust argv 无需改变。旧版 helper-only app 材料缺失主壳，明确失败并保留
+  journal、材料和手动 DMG 提示。独立 helper CLI 保留旧合同。
+
 ISS-110 外部同服务实例合同（prepare 前置拒绝，零信号零痕迹）：
 
 - **问题**：壳 + launchd 常驻服务并存时，``helper-instance.json`` 记录的
@@ -131,8 +142,12 @@ from __future__ import annotations
 
 import datetime as dt
 import errno
+import hashlib
 import json
 import os
+import plistlib
+import stat
+import sys
 import shutil
 import signal
 import socket
@@ -375,11 +390,11 @@ def restore_dir_from_runtime(runtime_dir: Path) -> Path:
     return Path(runtime_dir) / RESTORE_DIR_NAME
 
 
-def _tree_stats(path: Path) -> tuple[int, int]:
+def _tree_stats(path: Path, *, followlinks: bool = False) -> tuple[int, int]:
     """目录树的（文件数, 总字节数）；只统计普通文件。"""
     files = 0
     total = 0
-    for root, _dirs, names in os.walk(path):
+    for root, _dirs, names in os.walk(path, followlinks=followlinks):
         for name in names:
             try:
                 stat = os.stat(os.path.join(root, name))
@@ -426,6 +441,156 @@ def read_restore_manifest(paths: UpgradePaths) -> dict | None:
     return value
 
 
+def _app_from_helper(helper_dir: Path) -> Path | None:
+    """仅接受自有 app 的固定 helper 布局；不把任意祖先当安装根。"""
+    helper_dir = Path(os.path.abspath(helper_dir))
+    apps = [p for p in helper_dir.parents if p.suffix == ".app"]
+    if not apps:
+        return None
+    app = apps[0]
+    expected = app / "Contents/Resources/helper/fathom-helper"
+    if helper_dir != expected or app.is_symlink() or helper_dir.resolve() != expected.absolute():
+        raise RestoreFailed("app/helper 安装边界无效或经过符号链接；请手动恢复应用")
+    return app
+
+
+def _validate_restore_path_separation(
+    paths: UpgradePaths, helper_dir: Path, backup_path: Path | None = None
+) -> None:
+    """删除/写入前核路径分离；保护完整 app 和独立 helper 的链接解析依赖。"""
+    helper_dir = Path(helper_dir).absolute()
+    app = _app_from_helper(helper_dir)
+    source = (app or helper_dir).resolve()
+    protected = [paths.runtime_dir, restore_dir_from_runtime(paths.runtime_dir),
+                 paths.db_path, paths.lock_path, paths.instance_path, paths.journal_path]
+    if backup_path is not None:
+        protected.append(backup_path)
+    protected = [Path(item).resolve() for item in protected]
+
+    def check_source(candidate: Path) -> None:
+        if any(candidate.is_relative_to(item) or item.is_relative_to(candidate)
+               for item in protected):
+            raise RestoreFailed(
+                "源安装或链接依赖与运行根/恢复区/升级状态路径重叠；"
+                "已在任何删除和写入前拒绝，请使用相互独立的安装与运行目录"
+            )
+
+    check_source(source)
+    if not source.is_dir():
+        return
+
+    def resolve_dependency(path: Path) -> Path:
+        # 保留每个解析组件：普通目录也可能先进入恢复区，再经 .. 返回外部。
+        current = Path(path.anchor)
+        pending = list(reversed(path.parts[1:]))
+        hops = 0
+        while pending:
+            part = pending.pop()
+            if part == "..":
+                current = current.parent
+                continue
+            candidate = current / part
+            # 经过的组件只检查是否进入保护域；/ 等普通祖先不代表会被复制。
+            # 最终复制源仍由 check_source 双向检查，防止复制子树包含保护域。
+            if any(candidate.is_relative_to(item) for item in protected):
+                raise RestoreFailed("路径解析依赖与升级状态路径重叠；已在写入前拒绝")
+            if stat.S_ISLNK(candidate.lstat().st_mode):
+                hops += 1
+                if hops > 64:
+                    raise RestoreFailed("helper 链接循环或层数过多；已在写入前拒绝")
+                target = Path(os.readlink(candidate))
+                if target.is_absolute():
+                    current = Path(target.anchor)
+                    pending.extend(reversed(target.parts[1:]))
+                else:
+                    pending.extend(reversed(target.parts))
+            else:
+                current = candidate
+        check_source(current)
+        return current
+
+    # 两种安装均检查所有实际链接的解析组件。app 按 symlinks=True 保留链接，
+    # 不递归展开；独立 helper 与 copytree(symlinks=False) 一样进入链接目录。
+    # 当前祖先用于拒绝复制无法终止的循环；已完成目录只扫描一次，允许 DAG 别名。
+    active = set()
+    completed = set()
+    stack = [(app or helper_dir, None)]
+    while stack:
+        item, leaving = stack.pop()
+        if leaving is not None:
+            active.remove(leaving)
+            completed.add(leaving)
+            continue
+        preserve_link = app is not None and item.is_symlink()
+        item = resolve_dependency(item)
+        if preserve_link:
+            continue
+        info = item.stat()
+        if not stat.S_ISDIR(info.st_mode):
+            continue
+        identity = (info.st_dev, info.st_ino)
+        if identity in active:
+            raise RestoreFailed("helper 目录链接循环；已在任何删除和写入前拒绝")
+        if identity in completed:
+            continue
+        active.add(identity)
+        stack.append((item, identity))
+        with os.scandir(item) as entries:
+            stack.extend((Path(entry.path), None) for entry in entries)
+
+
+def _bundle_fingerprint(root: Path) -> dict:
+    """完整树指纹：文件内容、权限、目录与内部链接；越界链接/特殊文件拒绝。"""
+    root = root.resolve(strict=True)
+    result = {}
+
+    def walk_error(exc):
+        raise exc
+
+    for current, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
+        for name in sorted(dirs + files):
+            item = Path(current) / name
+            rel = item.relative_to(root).as_posix()
+            info = item.lstat()
+            mode = stat.S_IMODE(info.st_mode)
+            if item.is_symlink():
+                link = os.readlink(item)
+                if os.path.isabs(link) or not item.resolve(strict=True).is_relative_to(root):
+                    raise RestoreFailed(f"app 内链接越界：{rel}")
+                result[rel] = {"type": "link", "target": link}
+            elif stat.S_ISDIR(info.st_mode):
+                result[rel] = {"type": "dir", "mode": mode}
+            elif stat.S_ISREG(info.st_mode):
+                digest = hashlib.sha256()
+                with item.open("rb") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(block)
+                result[rel] = {"type": "file", "mode": mode, "bytes": info.st_size,
+                               "sha256": digest.hexdigest()}
+            else:
+                raise RestoreFailed(f"app 包含不支持的特殊文件：{rel}")
+    return result
+
+
+def _validate_owned_app(app: Path, version: str | None = None, *, saved: bool = False) -> None:
+    if not app.is_absolute() or (not saved and app.suffix != ".app") or app.is_symlink():
+        raise RestoreFailed("app 安装路径无效；请手动恢复应用")
+    # 不允许 bundle 内任意目录通过链接重定向；父目录规范化后由清单固定。
+    if app.exists() and app.resolve() != app:
+        raise RestoreFailed("app 安装路径经过符号链接")
+    try:
+        info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+        raise RestoreFailed(f"app Info.plist 无法核验：{exc}") from exc
+    if (not isinstance(info, dict)
+            or info.get("CFBundleIdentifier") != "com.maoscripts.fathom"
+            or info.get("CFBundleExecutable") != "fathom-desktop"
+            or not (app / "Contents/MacOS/fathom-desktop").is_file()):
+        raise RestoreFailed("不是自有 Fathom app 安装；拒绝恢复或备份")
+    if version is not None and str(info.get("CFBundleShortVersionString")) != version:
+        raise RestoreFailed("app 版本与升级来源不符")
+
+
 def save_old_bundle(
     paths: UpgradePaths,
     *,
@@ -436,9 +601,9 @@ def save_old_bundle(
     txn_id: str,
     disk_free=None,
 ) -> dict:
-    """ISS-098：落盘恢复材料（替换前）——旧 helper 副本 + manifest。
+    """落盘恢复材料：自有 app 保存完整包；独立 helper 保留旧格式。
 
-    磁盘预算：卷可用空间 <（helper 副本 + SQLite 备份）×
+    磁盘预算：卷可用空间 <（完整 app 或独立 helper 副本 + SQLite 备份）×
     ``RESTORE_DISK_BUDGET_FACTOR`` → ``disk_full`` 拒绝升级（此时 N+1
     尚未替换、零副作用）。复制途中 IO 失败向上抛（run_prepare 自动回滚
     并清理半成品恢复区）。旧残留恢复区在重建前清除——能走到本函数说明
@@ -446,7 +611,15 @@ def save_old_bundle(
 
     ``disk_free``：可选注入探针（无参调用返回字节数）；生产默认
     ``statvfs``。"""
-    helper_dir = Path(helper_dir)
+    helper_dir = Path(helper_dir).absolute()
+    _validate_restore_path_separation(paths, helper_dir, backup_path)
+    app = _app_from_helper(helper_dir)
+    fingerprint = None
+    if app is not None:
+        _validate_owned_app(app, str(from_version))
+        if paths.runtime_dir.resolve().is_relative_to(app.resolve()):
+            raise RestoreFailed("运行根不能位于待替换 app 内")
+        fingerprint = _bundle_fingerprint(app)
     entry = helper_dir / RESTORE_HELPER_ENTRY
     if not entry.is_file():
         raise UpgradeRefused(
@@ -454,21 +627,30 @@ def save_old_bundle(
             f"{helper_dir}；已拒绝升级",
             kind="helper_source_missing",
         )
-    files, size = _tree_stats(helper_dir)
+    # 独立 helper 的循环已由前置校验拒绝；预算/清单按实际解引用副本计数。
+    helper_files, helper_size = _tree_stats(helper_dir, followlinks=app is None)
+    files, size = _tree_stats(app) if app else (helper_files, helper_size)
     backup_bytes = backup_path.stat().st_size if backup_path and backup_path.is_file() else 0
     need = int((size + backup_bytes) * RESTORE_DISK_BUDGET_FACTOR)
     free = disk_free() if disk_free is not None else _disk_free_bytes(paths.runtime_dir)
+    if app is not None and free is None:
+        raise UpgradeRefused("无法核验完整 app 恢复材料磁盘预算；已拒绝升级", kind="disk_full")
     if free is not None and free < need:
         raise UpgradeRefused(
-            f"磁盘空间不足：恢复材料（旧 helper 副本 {size} B + SQLite 备份 "
+            f"磁盘空间不足：恢复材料（旧安装副本 {size} B + SQLite 备份 "
             f"{backup_bytes} B）× {RESTORE_DISK_BUDGET_FACTOR:g} ≈ 需 {need} B，"
             f"卷可用仅 {free} B；已在替换前拒绝升级而非赌磁盘。请清理空间后重试",
             kind="disk_full",
         )
     restore_dir = restore_dir_from_runtime(paths.runtime_dir)
+    if restore_dir.is_symlink():
+        raise RestoreFailed("恢复区是符号链接；已拒绝升级")
     shutil.rmtree(restore_dir, ignore_errors=True)
     (restore_dir / "helper").parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(helper_dir, restore_dir / "helper")
+    shutil.copytree(app or helper_dir, restore_dir / ("app" if app else "helper"),
+                    symlinks=app is not None)
+    if app is not None and _bundle_fingerprint(restore_dir / "app") != fingerprint:
+        raise RestoreFailed("app 备份完整指纹不符；已拒绝升级")
     manifest = {
         "service": SERVICE_IDENTITY,
         "txn_id": txn_id,
@@ -476,21 +658,140 @@ def save_old_bundle(
         "to_version": str(to_version),
         "helper_dir": str(helper_dir),
         "helper_entry": RESTORE_HELPER_ENTRY,
-        "helper_files": files,
-        "helper_bytes": size,
+        "helper_files": helper_files,
+        "helper_bytes": helper_size,
         "db_backup_path": str(backup_path) if backup_path else None,
         "created_at": _now(),
     }
+    if app is not None:
+        manifest.update(manifest_version=2, restore_scope="app", app_dir=str(app),
+                        app_fingerprint=fingerprint, app_files=files, app_bytes=size)
     _write_json_0600_atomic(restore_dir / RESTORE_MANIFEST_FILENAME, manifest)
     return {
         "restore_dir": str(restore_dir),
-        "helper_files": files,
-        "helper_bytes": size,
+        "helper_files": helper_files,
+        "helper_bytes": helper_size,
     }
 
 
+def _restore_complete_app(paths: UpgradePaths, manifest: dict) -> dict:
+    """先在安装卷暂存并校验，再原子置换；当前执行 helper 从安装区迁出。"""
+    restore_dir = restore_dir_from_runtime(paths.runtime_dir)
+    source = restore_dir / "app"
+    app = Path(str(manifest.get("app_dir", "")))
+    helper = Path(str(manifest.get("helper_dir", "")))
+    expected = manifest.get("app_fingerprint")
+    txn = manifest.get("txn_id", "")
+    journal = read_journal(paths)
+    if (not isinstance(txn, str) or len(txn) != 32
+            or any(c not in "0123456789abcdef" for c in txn)
+            or not journal or journal.get("txn_id") != txn
+            or journal.get("helper_dir") != str(helper)
+            or journal.get("from_version") != manifest.get("from_version")
+            or journal.get("to_version") != manifest.get("to_version")
+            or journal.get("backup_path") != manifest.get("db_backup_path")):
+        raise RestoreFailed("恢复清单与升级事务不匹配；材料与 journal 保留")
+    if (not app.is_absolute() or app.suffix != ".app" or app.is_symlink()
+            or app.parent.resolve() != app.parent
+            or _app_from_helper(helper) != app
+            or paths.runtime_dir.resolve().is_relative_to(app)):
+        raise RestoreFailed("恢复清单 app 安装边界无效；请手动恢复应用")
+    _validate_owned_app(source, str(manifest.get("from_version", "")), saved=True)
+    if not expected or _bundle_fingerprint(source) != expected:
+        raise RestoreFailed("完整 app 恢复材料指纹不符；请手动恢复应用")
+    # 安装后的 app 可能已残缺（这正是恢复触发条件）；可信旧副本、固定路径
+    # 和 journal 绑定决定写域，不要求坏安装还能通过身份校验。
+    # 冻结恢复进程若仍从 app 内运行，替换会丢失延迟加载的资源。
+    # CLI 入口先 exec 迁出安装区；独立 Python CLI 不受此限制。
+    if getattr(sys, "frozen", False) and Path(sys.executable).resolve().is_relative_to(app):
+        raise RestoreFailed("恢复 helper 正从待替换 app 运行；请从恢复区 app/Contents/Resources/helper/"
+                            "fathom-helper/fathom-helper 执行 upgrade-rollback")
+    stage = app.with_name(app.name + ".restore-stage-" + txn)
+    trash = app.with_name(app.name + ".pre-restore-" + txn)
+    if stage.is_symlink() or trash.is_symlink():
+        raise RestoreFailed("恢复暂存路径是符号链接；材料保留")
+    current_matches = False
+    if app.exists():
+        try:
+            current_matches = _bundle_fingerprint(app) == expected
+        except (OSError, RestoreFailed):
+            # 当前新包不可信，悬空/越界链接只表明它不是完整旧包；
+            # 不解引用复制该树，继续用已验证的旧副本暂存并整体置换。
+            pass
+    if current_matches:
+        for leftover in (stage, trash):
+            if leftover.exists():
+                shutil.rmtree(leftover)
+        return {"restored": True, "target": str(app), "manifest": manifest}
+    if trash.exists() and app.exists():
+        raise RestoreFailed("安装区与中断前副本同时在位；请核对后手动恢复，材料保留")
+    if stage.exists():
+        shutil.rmtree(stage)
+    free = _disk_free_bytes(app.parent)
+    size = sum(v.get("bytes", 0) for v in expected.values())
+    if free is None or free < int(size * RESTORE_DISK_BUDGET_FACTOR):
+        raise RestoreFailed("恢复安装卷磁盘预算不足或无法核验；材料与 journal 保留")
+    shutil.copytree(source, stage, symlinks=True)
+    if _bundle_fingerprint(stage) != expected:
+        raise RestoreFailed("恢复暂存 app 指纹不符；材料保留")
+    moved = False
+    if app.exists():
+        os.replace(app, trash)
+        moved = True
+    try:
+        os.replace(stage, app)
+        if _bundle_fingerprint(app) != expected:
+            raise RestoreFailed("恢复后完整 app 指纹不符；材料保留")
+    except Exception:
+        if app.exists():
+            shutil.rmtree(app)
+        if moved or trash.exists():
+            os.replace(trash, app)
+        raise
+    # 仅删除本事务移出的 app；中断后接续也绑定同一个 txn。
+    if trash.exists():
+        shutil.rmtree(trash)
+    return {"restored": True, "target": str(app), "manifest": manifest}
+
+
+def relocate_rollback_helper(paths: UpgradePaths) -> None:
+    """冻结 CLI 回滚先 exec 运行根副本，避免替换自身 onedir 的延迟加载风险。"""
+    if not getattr(sys, "frozen", False):
+        return
+    manifest = read_restore_manifest(paths)
+    if not manifest or manifest.get("manifest_version") != 2:
+        return  # 旧 helper-only app 材料后续 fail-closed，不修改安装区。
+    app = Path(str(manifest.get("app_dir", "")))
+    executable = Path(sys.executable).resolve()
+    if not app.is_absolute() or not executable.is_relative_to(app):
+        return
+    source = executable.parent
+    restore_dir = restore_dir_from_runtime(paths.runtime_dir)
+    if restore_dir.is_symlink():
+        raise RestoreFailed("恢复区是符号链接；材料与 journal 保留")
+    restore_dir = restore_dir.resolve()
+    if restore_dir.is_relative_to(app):
+        raise RestoreFailed("恢复区位于待替换 app 内；请手动恢复应用")
+    fingerprint = _bundle_fingerprint(source)
+    size = sum(v.get("bytes", 0) for v in fingerprint.values())
+    free = _disk_free_bytes(restore_dir)
+    if free is None or free < int(size * RESTORE_DISK_BUDGET_FACTOR):
+        raise RestoreFailed("恢复执行器磁盘预算不足或无法核验；材料与 journal 保留")
+    target = restore_dir / "recovery-helper"
+    if target.is_symlink():
+        raise RestoreFailed("恢复执行器路径是符号链接；材料保留")
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target, symlinks=True)
+    if _bundle_fingerprint(target) != fingerprint:
+        raise RestoreFailed("恢复执行器复制后指纹不符；材料与 journal 保留")
+    entry = target / executable.name
+    env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+    os.execve(str(entry), [str(entry), *sys.argv[1:]], env)
+
+
 def restore_old_bundle(paths: UpgradePaths, manifest: dict | None = None) -> dict:
-    """ISS-098：从恢复区恢复旧 helper 文件到 manifest 记录的安装路径。
+    """恢复 manifest 绑定的完整 app，或兼容独立 helper 的旧材料。
 
     返回 ``{"restored": True, ...}`` 或 ``{"restored": False, "reason": ...}``；
     ``reason=absent`` 表示恢复区从未建立（旧事务语义），其余 reason 表示
@@ -500,12 +801,21 @@ def restore_old_bundle(paths: UpgradePaths, manifest: dict | None = None) -> dic
     残缺 N）到 ``*.pre-restore``，复制成功并校验文件数/字节数一致后才删
     除移走件；失败则原样回移——中断后重跑本函数即接续。"""
     restore_dir = restore_dir_from_runtime(paths.runtime_dir)
+    if restore_dir.is_symlink():
+        raise RestoreFailed("恢复区是符号链接；材料与 journal 保留")
     if not restore_dir.is_dir():
         return {"restored": False, "reason": "absent"}
     if manifest is None:
         manifest = read_restore_manifest(paths)
     if manifest is None:
         return {"restored": False, "reason": "manifest_missing_or_corrupt"}
+    if manifest.get("manifest_version") == 2 and manifest.get("restore_scope") == "app":
+        return _restore_complete_app(paths, manifest)
+    if manifest.get("manifest_version") not in (None, 1):
+        raise RestoreFailed("不支持的恢复清单版本；请手动恢复应用，材料与 journal 保留")
+    if _app_from_helper(Path(str(manifest.get("helper_dir", "")))) is not None:
+        raise RestoreFailed("旧版仅保存 helper，缺少完整 app 的主壳与资源；无法自动恢复完整安装。"
+                            "请手动安装旧版 DMG，材料与 journal 保留")
     source = restore_dir / "helper"
     if not source.is_dir():
         return {"restored": False, "reason": "helper_copy_missing"}
@@ -978,6 +1288,14 @@ class UpgradeCoordinator:
         到一半」的半成品恢复区（材料保存成功后绝不清——那是恢复依据）。
         """
         self.steps_done = []
+        if self.helper_dir is not None:
+            try:
+                _validate_restore_path_separation(self.paths, self.helper_dir)
+            except (OSError, RestoreFailed) as exc:
+                # 尚未开始本次事务：绝不调用 rollback 清掉已有材料。
+                return {"ok": False, "kind": "invalid_restore_paths", "error": str(exc),
+                        "steps_done": [], "backup_path": None, "rollback_actions": [],
+                        "detected_state": detect_upgrade_state(self.paths)}
         try:
             self._preflight_external_instance()
             self._preflight_schema()
@@ -1145,6 +1463,9 @@ class UpgradeCoordinator:
         返回 ``ok=True``，维持 ISS-097 前的显式回滚语义。"""
         restore_dir = restore_dir_from_runtime(self.paths.runtime_dir)
         if not restore_dir.is_dir():
+            journal = read_journal(self.paths)
+            if journal and journal.get("restore_dir"):
+                return {"ok": False, "error": "已保存的恢复材料缺失；请手动安装旧版 DMG，journal 保留"}
             actions.append("restore_material_absent")
             return {"ok": True}
         manifest = read_restore_manifest(self.paths)

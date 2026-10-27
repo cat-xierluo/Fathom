@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import time
+import sys
 from pathlib import Path
 
 import pytest
@@ -62,12 +63,14 @@ def make_fake_codex(dir_path: Path, *, progress: list[str],
     body = "\n".join(lines)
 
     script = dir_path / name
+    banner = f"codex-cli {FAKE_CODEX_VERSION}"
+    interpreter = Path(sys.executable).resolve()
     script.write_text(
-        "#!/bin/sh\n"
-        'if [ "$1" = "--version" ]; then\n'
-        f'  echo "codex-cli {FAKE_CODEX_VERSION}"; exit 0; fi\n'
-        "cat > /dev/null\n"
-        f"cat <<'EOS'\n{body}\nEOS\n", encoding="utf-8")
+        f"#!{interpreter}\nimport sys\n"
+        'if len(sys.argv) > 1 and sys.argv[1] == "--version":\n'
+        f'    print({banner!r})\n    sys.exit(0)\n'
+        'sys.stdin.buffer.read()\n'
+        f'sys.stdout.write({body!r} + "\\n")\n', encoding="utf-8")
     script.chmod(0o755)
     return script
 

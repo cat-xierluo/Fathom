@@ -21,7 +21,7 @@ function verifyNewReasonTexts(){
 }
 // ISS-203 切片 A：引擎状态相关的 reason_code 必须有普通中文文案与下一动作，
 // 且机器码不得出现在普通面。断言读生产源文件，不复制文案。
-const ISS203_RUNTIME_CODES=['runtime_not_configured','runtime_unknown','runtime_unsupported','runtime_unavailable','upgrade_in_progress'];
+const ISS203_RUNTIME_CODES=['runtime_not_configured','runtime_unknown','runtime_unsupported','runtime_unavailable','runtime_identity_incomplete','runtime_identity_changed','runtime_invocation_mismatch','upgrade_in_progress'];
 // 误导词表：不得暗示「可回收/自动重试」等结论（与既有禁用词表同口径）。
 const ISS203_FORBIDDEN=/(可回收|回收空间|垃圾|删除|清理|自动重试|会自动重试)/;
 function verifyRuntimeStatusCopy(){
@@ -104,6 +104,123 @@ async function verifyDetectLayering(browser){
   const techText=await tech.textContent();
   record('agent.detect-tech-keeps-reason-code',techText.includes('verified_version')&&techText.includes('/fixture/bin'),techText.replace(/\s+/g,' ').trim().slice(0,90));
  } finally {await page.close();fixture.server.close();await once(fixture.server,'close');}
+}
+// ISS-204：真实生产组件消费身份等级及调用配置失败，普通面保持简短。
+async function verifyRuntimeIdentityAndMismatch(browser){
+ let tier='probed';
+ const failedJob={job_id:'invocation-mismatch',a_snapshot_id:1,b_snapshot_id:2,
+  status:'failed',reason_code:'runtime_invocation_mismatch',terminal:true,
+  created_at:'2026-10-25T10:00:00',runtime:{id:'claude-code'},revoked:false,analysis_id:null};
+ const fixture=createFixture({configRuntimeObject:true,intercept(req,res,url){
+  if(url.pathname==='/api/snapshots'){json(res,200,SNAPSHOTS);return true;}
+  if(url.pathname==='/api/analysis/history'){json(res,200,{jobs:[failedJob],total:1,next_offset:null});return true;}
+  if(url.pathname==='/api/analysis/jobs/invocation-mismatch'){json(res,200,{job:failedJob});return true;}
+  if(url.pathname==='/api/analysis/runtimes/detect'){
+   json(res,200,{runtimes:{'claude-code':{id:'claude-code',availability:'ready',
+    reason_code:'compatible_capabilities',executable:'/fixture/bin/claude',version:'2.1.237',
+    capability_snapshot:{identity:{assurance:tier,identity_complete:tier==='complete',
+     execution_chain_resolved:tier!=='unresolved'}}}}});return true;
+  }
+  return false;
+ }});
+ fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='enabled';
+ fixture.server.listen(0,'127.0.0.1');await once(fixture.server,'listening');
+ const page=await browser.newPage({viewport:{width:1220,height:820}});
+ try {
+  await page.goto(`http://127.0.0.1:${fixture.server.address().port}/#/agent`);
+  await page.waitForSelector('[data-agent-job="invocation-mismatch"]');
+  await page.click('[data-agent-job="invocation-mismatch"]');
+  await page.waitForSelector('#agent-analysis-body [data-test="analysis-state-failure"]');
+  const panel=page.locator('#agent-analysis-body');
+  const plain=await panel.innerText(), tech=panel.locator('details.cfg-details');
+  record('agent.invocation-mismatch-user-copy',plain.includes('调用配置不一致')&&plain.includes('重新生成预览')&&!plain.includes('runtime_invocation_mismatch'),plain.replace(/\s+/g,' ').slice(0,120));
+  record('agent.invocation-mismatch-detail-retained',await tech.count()===1&&!(await tech.getAttribute('open'))&&(await tech.textContent()).includes('runtime_invocation_mismatch'));
+  record('agent.invocation-mismatch-read-zero-send',fixture.state.jobsPosted===0);
+  for(tier of ['probed','complete','unresolved']){
+   const response=page.waitForResponse(r=>r.url().includes('/api/analysis/runtimes/detect'));
+   await page.click('#agent-detect');await response;
+   await page.waitForFunction(()=>!document.querySelector('#agent-detect').disabled);
+   const label={probed:'身份已探测',complete:'身份链完整',unresolved:'身份待确认'}[tier];
+   const detect=page.locator('#agent-runtime-status'), visible=await detect.innerText();
+   record('agent.identity-'+tier+'-compact',visible.includes(label)&&visible.length<100&&!/PROBED|COMPLETE|UNRESOLVED|\/fixture\//.test(visible),visible.replace(/\s+/g,' '));
+   const details=detect.locator('details.cfg-details'), detail=await details.textContent();
+   const sendable=tier==='unresolved'?'暂不可发起解读':'可发起解读';
+   record('agent.identity-'+tier+'-details',!(await details.getAttribute('open'))&&detail.includes(tier.toUpperCase())&&detail.includes(sendable),detail.replace(/\s+/g,' ').slice(0,150));
+   const summary=await page.locator('#agent-engine-summary').innerText();
+   record('agent.identity-'+tier+'-summary-current',summary.includes(label)&&(tier==='unresolved'?summary.includes('重新检测'):summary.includes('可用')),summary.replace(/\s+/g,' '));
+   const layouts=[];
+   for(const [width,height] of [[980,640],[1220,820]]){
+    await page.setViewportSize({width,height});
+    layouts.push(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth));
+    await page.screenshot({path:path.join(evidence,`agent-identity-${tier}-${width}.png`),fullPage:true});
+   }
+   await details.evaluate(n=>{n.open=true;});
+   layouts.push(await page.evaluate(()=>document.documentElement.scrollWidth<=document.documentElement.clientWidth));
+   await page.screenshot({path:path.join(evidence,`agent-identity-${tier}-details.png`),fullPage:true});
+   await details.evaluate(n=>{n.open=false;});
+   record('agent.identity-'+tier+'-layout',layouts.every(Boolean),'980/1220及展开详情无横向溢出');
+  }
+ } finally {await page.close();fixture.server.close();await once(fixture.server,'close');}
+}
+
+// ISS-205：真实设置授权、Agent 重入/刷新与迟到检测，合成 HTTP 零模型调用。
+async function verifyDetectionLifetime(browser) {
+ let selected={id:'claude-code',executable:'/fixture/bin/claude',version:'2.1.237'};
+ let settingsRevision=2,consentRevision=1,releaseDetect=null,delayDetect=false;
+ const fixture=createFixture({configRuntimeObject:true,async intercept(req,res,url,body){
+  if(url.pathname==='/api/snapshots'){json(res,200,SNAPSHOTS);return true;}
+  if(url.pathname==='/api/analysis/history'){json(res,200,{jobs:[],total:0,next_offset:null});return true;}
+  if(url.pathname==='/api/config'&&req.method==='PUT'){
+   selected=JSON.parse(body).analysis.runtime;settingsRevision++;consentRevision++;
+   json(res,200,{applied:true});return true;
+  }
+  if(url.pathname==='/api/analysis/runtimes/detect'&&delayDetect){
+   await new Promise(r=>releaseDetect=r);
+   json(res,200,{runtimes:{[selected.id]:{...selected,availability:'broken',reason_code:'runtime_unavailable',detail:'late detection'}}});return true;
+  }
+  return false;
+ }});
+ fixture.state.analysisEnabled=true;fixture.state.savedRuntime='claude-code';fixture.state.scenario='enabled';
+ fixture.server.listen(0,'127.0.0.1');await once(fixture.server,'listening');const page=await browser.newPage();
+ await page.route('**/api/config',async route=>{
+  if(route.request().method()!=='GET'){await route.continue();return;}
+  const response=await route.fetch(),cfg=await response.json();
+  cfg.analysis={...cfg.analysis,runtime:selected,settings_revision:settingsRevision,consent_revision:consentRevision};
+  await route.fulfill({response,json:cfg});
+ });
+ const short=()=>page.locator('[data-test="agent-engine-short-status"]').textContent();
+ const detect=async()=>{await page.click('#agent-detect');await page.waitForSelector('[data-test="agent-detect-short-status"]');};
+ const saveInSettings=async id=>{
+  await page.click('#agent-settings');await page.waitForSelector('#btn-analysis-detect');
+  await page.click('#btn-analysis-detect');
+  await page.click(`[data-test="analysis-pick-btn"][data-runtime-id="${id}"]`);
+  await page.click('[data-test="analysis-confirm-yes"]');await page.waitForSelector('[data-test="analysis-note"]');
+  await page.click('.nav-item[data-page="agent"]');await page.waitForSelector('[data-test="agent-engine-short-status"]');
+ };
+ try{
+  await page.goto(`http://127.0.0.1:${fixture.server.address().port}/#/agent`);
+  await page.waitForSelector('[data-test="agent-engine-short-status"]');await detect();
+  record('agent.detect-updates-engine-summary',await short()==='可用',await short());
+  await saveInSettings('codex-cli');
+  record('agent.changed-engine-requires-new-detection',(await short()).includes('未检测')&&!(await short()).includes('入口已变更'),await short());
+  await detect();await saveInSettings('codex-cli');
+  record('agent.same-entry-new-authorization-requires-detection',selected.id==='codex-cli'&&settingsRevision===4&&consentRevision===3&&(await short()).includes('未检测'),JSON.stringify({selected,settingsRevision,consentRevision,status:await short()}));
+  await detect();await page.click('#agent-refresh');await page.waitForTimeout(150);
+  record('agent.refresh-invalidates-detection',(await short()).includes('未检测'),await short());
+  const mismatched=await page.evaluate(async()=>{
+   const {runtimeCombinedStatus}=await import('/modules/runtime-status.js');
+   return runtimeCombinedStatus({enabled:true,saved:{id:'codex-cli',executable:'/fixture/bin/codex'},info:{id:'claude-code',executable:'/fixture/bin/claude',availability:'broken'}});
+  });
+  record('agent.other-runtime-result-is-undetected',mismatched.text==='已授权 · 未检测',JSON.stringify(mismatched));
+  delayDetect=true;await page.click('#agent-detect');
+  await page.waitForFunction(()=>document.querySelector('#agent-detect').disabled);
+  const deadline=Date.now()+10000;
+  while(!releaseDetect&&Date.now()<deadline)await page.waitForTimeout(20);
+  if(!releaseDetect)throw new Error('延迟检测请求未到达夹具');
+  await page.click('#agent-refresh');releaseDetect();releaseDetect=null;await page.waitForTimeout(200);
+  record('agent.refresh-discards-late-detection',(await short()).includes('未检测')&&(await page.locator('#agent-runtime-status').textContent())===''&&!await page.locator('#agent-detect').isDisabled(),await short());
+  await page.screenshot({path:path.join(evidence,'iss205-detection-lifetime.png')});
+ }finally{if(releaseDetect)releaseDetect();await page.close();fixture.server.close();await once(fixture.server,'close');}
 }
 async function verifyLateRestore(browser) {
  for (const intent of ['selection','history']) {
@@ -340,6 +457,8 @@ async function main(){
   await verifyEvidenceControls(browser);
   await verifyLayeredStatus(browser);
   await verifyDetectLayering(browser);
+  await verifyDetectionLifetime(browser);
+  await verifyRuntimeIdentityAndMismatch(browser);
   verifyNewReasonTexts();
   verifyRuntimeStatusCopy();
   record('agent.no-unhandled-page-errors',errors.length===0,errors.join(';'));

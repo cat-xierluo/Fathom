@@ -57,35 +57,40 @@ def _claude_json(result_text: str) -> str:
 
 def make_fake_claude(dir_path: Path, *, mode: str = "ok",
                      version_line: str = f"{FAKE_VERSION} (Claude Code)") -> Path:
-    """合成 claude 形态脚本：--version 过能力门；运行时按 mode 注入故障。"""
+    """Fixed Python program + resolved interpreter, with production fault semantics.
+
+    The previous shell bodies delegated to cat/dd/sleep through unproven command
+    lookup. Use one explicit interpreter program so identity tests do not mask the
+    lifecycle/upgrade gates these fixtures are intended to exercise.
+    """
+    import sys
+
+    def emit(text):
+        return "sys.stdout.write(r\'\'\'" + text + "\'\'\' + \"\\n\")\n"
+
+    bad_evidence = json.dumps({
+        "schema_version": 1, "summary": "s",
+        "findings": [{"text": "t", "evidence_ids": ["f-999"], "certainty": "observed"}],
+        "limitations": [], "inspect_next": [],
+    }, ensure_ascii=False)
     bodies = {
-        "ok": f'cat > /dev/null\ncat <<\'EOS\'\n{_claude_json(_INNER_RESULT)}\nEOS\n',
-        "app_error": 'cat > /dev/null\ncat <<\'EOS\'\n'
-                     '{"type":"result","subtype":"error_during_execution",'
-                     '"is_error":true,"result":"合成：应用层错误"}\nEOS\n',
-        "nonzero": "cat > /dev/null\necho boom >&2\nexit 3\n",
-        "output_limit": "cat > /dev/null\ndd if=/dev/zero bs=1024 count=300 "
-                        "2>/dev/null\n",
-        "bad_utf8": 'cat > /dev/null\nprintf "\\xff\\xfe\\xbd"\n',
-        "html_result": 'cat > /dev/null\ncat <<\'EOS\'\n'
-                       + _claude_json("<script>alert(1)</script>") + '\nEOS\n',
-        "unknown_evidence": 'cat > /dev/null\ncat <<\'EOS\'\n'
-                            + _claude_json(json.dumps({
-                                "schema_version": 1, "summary": "s",
-                                "findings": [{"text": "t",
-                                              "evidence_ids": ["f-999"],
-                                              "certainty": "observed"}],
-                                "limitations": [], "inspect_next": [],
-                              }, ensure_ascii=False)) + '\nEOS\n',
-        "sleep": "cat > /dev/null\nsleep 30\n",
-        "slow_ok": ("cat > /dev/null\nsleep 1.2\n"
-                    f"cat <<'EOS'\n{_claude_json(_INNER_RESULT)}\nEOS\n"),
+        "ok": emit(_claude_json(_INNER_RESULT)),
+        "app_error": emit('{"type":"result","subtype":"error_during_execution",'
+                          '"is_error":true,"result":"合成：应用层错误"}'),
+        "nonzero": 'sys.stderr.write("boom\\n")\nsys.exit(3)\n',
+        "output_limit": 'sys.stdout.buffer.write(b"x" * (300 * 1024))\n',
+        "bad_utf8": 'sys.stdout.buffer.write(bytes([255, 254, 189]))\n',
+        "html_result": emit(_claude_json("<script>alert(1)</script>")),
+        "unknown_evidence": emit(_claude_json(bad_evidence)),
+        "sleep": 'time.sleep(30)\n',
+        "slow_ok": 'time.sleep(1.2)\n' + emit(_claude_json(_INNER_RESULT)),
     }
     script = dir_path / "fake-claude"
-    script.write_text("#!/bin/sh\n"
-                      'if [ "$1" = "--version" ]; then '
-                      f'echo "{version_line}"; exit 0; fi\n'
-                      + bodies[mode], encoding="utf-8")
+    interpreter = Path(sys.executable).resolve()
+    script.write_text(f"#!{interpreter}\nimport sys, time\n"
+        'if len(sys.argv) > 1 and sys.argv[1] == "--version":\n'
+        f'    print({version_line!r})\n    sys.exit(0)\n'
+        'sys.stdin.buffer.read()\n' + bodies[mode], encoding="utf-8")
     script.chmod(0o755)
     return script
 
@@ -598,10 +603,7 @@ class TestDispatchDedup:
 
     def test_different_request_busy_409_no_queue(self, ok_setup):
         # 运行态换成慢脚本（直接重写同一已注册路径，身份/revision 不变）
-        ok_setup["script"].write_text(
-            "#!/bin/sh\n"
-            'if [ "$1" = "--version" ]; then echo "2.1.237 (Claude Code)"; exit 0; fi\n'
-            "cat > /dev/null\nsleep 30\n", encoding="utf-8")
+        make_fake_claude(ok_setup["bin_dir"], mode="sleep")
         manager = make_manager(run_timeout_s=10)
         preview = manager.create_preview(ok_setup["a"], ok_setup["b"])
         job, _ = manager.start_job(preview.preview_id, preview.request_digest,

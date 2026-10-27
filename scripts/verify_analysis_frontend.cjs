@@ -646,6 +646,20 @@ async function waitForText(page, selector, expected) {
     { selector, expected }, { timeout: 10000 });
 }
 
+/* 生命周期场景固定验证 #1 → #2，不依赖变化页的默认内容根/最新点。
+ * 每次导航或 reload 后均走真实下拉选择，再等该区间的 diff 收敛；
+ * 默认选择算法本身由 verify_content_root_defaults.cjs 单独验证。 */
+async function selectAnalysisRange(page) {
+  await waitForText(page, "#diff-status", "已对比快照");
+  if (await page.locator("#sel-b").inputValue() !== "2") {
+    await page.selectOption("#sel-b", "2");
+  }
+  if (await page.locator("#sel-a").inputValue() !== "1") {
+    await page.selectOption("#sel-a", "1");
+  }
+  await waitForText(page, "#diff-status", "已对比快照 #1 → #2");
+}
+
 async function noHorizOverflow(page, label) {
   const m = await page.evaluate(() => ({
     sw: document.documentElement.scrollWidth,
@@ -670,7 +684,7 @@ async function main() {
 
     /* ---------- R1 前置：变化页未启用态（AI 不可用不影响基础事实） ---------- */
     await page.goto(`${base}/#/changes`);
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     await page.waitForSelector("[data-test='analysis-state-disabled']");
     record("changes.state-disabled-visible", true);
     const netVisible = await page.isVisible("#changes-net");
@@ -819,7 +833,7 @@ async function main() {
 
     /* ---------- 变化页：R4 铺垫 + 预览 + 确认 + 运行中 ---------- */
     await page.evaluate(() => { location.hash = "#/changes"; });
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     await page.waitForSelector("[data-test='analysis-state-idle']");
     record("changes.state-idle", true);
 
@@ -862,7 +876,7 @@ async function main() {
 
     /* ---------- R4：运行中刷新页面 → 重入查原 job，不重复发送 ---------- */
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     await page.waitForSelector("[data-test='analysis-state-running']", { timeout: 10000 })
       .catch(async (e) => {
         const dump = await page.evaluate(() => ({
@@ -937,7 +951,7 @@ async function main() {
     record("changes.late-preview-not-overwrite (R2)",
       !afterLate.includes("确认并发送分析") && !afterLate.includes("2026-09-12）→ #2"),
       afterLate.replace(/\s+/g, " ").slice(0, 80));
-    await page.selectOption("#sel-a", "2");  // 恢复页面默认区间 #2 → #1
+    await page.selectOption("#sel-a", "1");  // 恢复本场景显式区间 #1 → #2
     // 改选回已完成区间：直接呈现既有解读（历史语义：不当作新分析）
     await page.waitForSelector("[data-test='analysis-state-done']");
 
@@ -987,7 +1001,7 @@ async function main() {
     /* ---------- R6 过期态 ---------- */
     await page.evaluate(() => fetch("/__set?sc=expired"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     await page.waitForSelector("[data-test='analysis-state-expired']", { timeout: 10000 });
     const expText = await page.textContent("[data-test='analysis-state-expired']");
     record("changes.expired-reason (R6)",
@@ -1004,7 +1018,7 @@ async function main() {
      * 旧终态」这个缺陷在浏览器门禁里根本不可能暴露。这里刻意不清空。 */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
 
     // 第一次：跑到 succeeded
     await page.click("[data-test='analysis-preview-btn']");
@@ -1090,7 +1104,7 @@ async function main() {
      * prompt，所以切引擎时 digest 不变——terminal 标志是唯一防线。 */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     await page.click("[data-test='analysis-preview-btn']");
     await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
     await page.click("[data-test='analysis-confirm-btn']");
@@ -1105,7 +1119,7 @@ async function main() {
       terminalWhileAway !== true, "页面离页期间不应已标终态（保证测的是重入路径）");
 
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     // 标记是异步落地的（要等 analyses 读层返回），轮询等它到位而不是
     // 刷新后立刻读一次——那会把测试自身的时序竞态误报成缺陷。
     const markedOnReentry = await page.waitForFunction(() => {
@@ -1133,7 +1147,7 @@ async function main() {
      * 只能靠 ISS-120 的区间查询重新发现后台正在跑的分析。 */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     await page.click("[data-test='analysis-preview-btn']");
     await page.waitForSelector("[data-test='analysis-state-preview']");
     await page.click("[data-test='analysis-confirm-btn']");
@@ -1143,7 +1157,7 @@ async function main() {
     await page.evaluate(() => { sessionStorage.clear(); });
     const postedBefore135 = fixture.state.jobs.size;
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     const resumed135 = await page.waitForSelector("[data-test='analysis-state-running']",
       { timeout: 10000 }).then(() => true).catch(() => false);
     const body135 = await page.textContent("[data-test='analysis-body']");
@@ -1159,7 +1173,7 @@ async function main() {
      * 跨会话重入时若先渲染旧报告，用户看到的是「已完成」而非正在跑的分析。 */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&holdRunning=0"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     await page.click("[data-test='analysis-preview-btn']");
     await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
     await page.click("[data-test='analysis-confirm-btn']");
@@ -1172,16 +1186,16 @@ async function main() {
     await page.waitForSelector("[data-test='analysis-state-running']", { timeout: 10000 });
 
     const oldCount = await page.evaluate(async () =>
-      ((await (await fetch("/api/analyses?a=2&b=1")).json()).analyses || []).length);
+      ((await (await fetch("/api/analyses?a=1&b=2")).json()).analyses || []).length);
     const inflightCount = await page.evaluate(async () =>
-      ((await (await fetch("/api/analysis/jobs?a=2&b=1")).json()).jobs || []).length);
+      ((await (await fetch("/api/analysis/jobs?a=1&b=2")).json()).jobs || []).length);
     record("changes.135-fixture-old-report-plus-inflight",
       oldCount >= 1 && inflightCount >= 1,
       `旧解读 ${oldCount} 条、在途 job ${inflightCount} 个`);
 
     await page.evaluate(() => { sessionStorage.clear(); });
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     const running135 = await page.waitForSelector("[data-test='analysis-state-running']",
       { timeout: 10000 }).then(() => true).catch(() => false);
     const done135 = await page.$("[data-test='analysis-state-done']");
@@ -1200,14 +1214,14 @@ async function main() {
      * analysisJob，必须确认恢复路径把它赋上值，否则取消按钮点不动。 */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&holdRunning=1"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     await page.click("[data-test='analysis-preview-btn']");
     await page.waitForSelector("[data-test='analysis-state-preview']");
     await page.click("[data-test='analysis-confirm-btn']");
     await page.waitForSelector("[data-test='analysis-state-running']", { timeout: 10000 });
     await page.evaluate(() => { sessionStorage.clear(); });
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     const canCancel = await page.waitForSelector("[data-test='analysis-cancel-btn']",
       { timeout: 10000 }).then(() => true).catch(() => false);
     record("changes.135-resumed-job-cancellable", canCancel,
@@ -1227,7 +1241,7 @@ async function main() {
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&holdRunning=1"));
     await page.evaluate(() => fetch("/__seedjob?a=3&b=1&k=other-range-key"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     const bodyGuard = await page.textContent("[data-test='analysis-body']");
     const mentionsOther = bodyGuard.includes("#3") && !bodyGuard.includes("job-other-range");
     record("changes.135-other-range-not-rendered",
@@ -1241,7 +1255,7 @@ async function main() {
     /* ---- 查询失败：如实说明 + 重试入口，且不派发 ---- */
     await page.evaluate(() => fetch("/__set?failJobsLookup=1"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     // CI 实录（PR #231 run 36898067729）：diff 完成时解读区查询链
     // （config → analyses → GET jobs 500）可能仍未收敛，body 停在
     // 「解读状态加载中…」占位，立即取样会把加载态当最终态。有界等待
@@ -1263,7 +1277,7 @@ async function main() {
     // 后续 409 用例才能继续。
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&failJobsLookup=0&holdRunning=0"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
     await page.click("[data-test='analysis-preview-btn']", { timeout: 10000 });
     await page.waitForSelector("[data-test='analysis-state-preview']", { timeout: 10000 });
     await page.click("[data-test='analysis-confirm-btn']");
@@ -1290,7 +1304,7 @@ async function main() {
      * holdRunning=1 贯穿：保证响应丢失后重试时 job 仍在途（幂等重放前提）。 */
     await page.evaluate(() => fetch("/__set?sc=enabled&reset=1&holdRunning=1"));
     await page.reload();
-    await waitForText(page, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page);
 
     // 武装「受理后丢响应」：仅下一次 POST jobs 生效（服务端 destroy + 浏览器 abort）
     await page.evaluate(() => fetch("/__set?dropPostResponse=1"));
@@ -1389,7 +1403,7 @@ async function main() {
       const dispatchedBefore137Reload = fixture.state.jobs.size;
       const rerunJob137 = [...fixture.state.jobs.values()].find((j) => j.status === "running");
       await page.reload();
-      await waitForText(page, "#diff-status", "已对比快照");
+      await selectAnalysisRange(page);
       const resumed137 = await page.waitForSelector("[data-test='analysis-state-running']",
         { timeout: 10000 }).then(() => true).catch(() => false);
       const resumedText137 = resumed137
@@ -1449,7 +1463,7 @@ async function main() {
       // 每个用例从干净的未分析态起（上一个用例可能停在错误态，
       // 那里没有「生成发送预览」入口）。
       await page.reload();
-      await waitForText(page, "#diff-status", "已对比快照");
+      await selectAnalysisRange(page);
       await page.waitForSelector("[data-test='analysis-preview-btn']", { timeout: 10000 })
         .catch(() => {});
       await page.evaluate((c) => fetch(`/__set?previewReason=${encodeURIComponent(c)}`),
@@ -1475,7 +1489,7 @@ async function main() {
     page2.on("pageerror", (e) => pageErrors.push(String(e)));
     await page.evaluate(() => fetch("/__set?sc=expired"));
     await page2.goto(`${base}/#/changes`);
-    await waitForText(page2, "#diff-status", "已对比快照");
+    await selectAnalysisRange(page2);
     await page2.waitForSelector("[data-test='analysis-state-expired']");
     await noHorizOverflow(page2, "expired-1220");
     await page2.screenshot({ path: path.join(evidenceDir, "changes-expired-1220x820.png") });

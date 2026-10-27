@@ -14,7 +14,7 @@
  *
  * 快照上下文（ISS-107 起，ISS-159 收紧为显式选择）：
  * - 页头快照选择器驱动两个分区（trees / browse 均带 snapshot_id），默认
- *   最新快照；两个分区的容量主读数都只指所选快照，不暗中转最新；
+ *   内容根的最新快照；两个分区的容量主读数都只指所选快照，不暗中转最新；
  * - 与前一可比快照的差分仅为次级：列头与 meta 明示基线快照（「较 #id」），
  *   单快照/跨口径时如实「无可比前驱快照，差分未知」，不冒充基线；
  * - 结构节点（该快照无直接入库记录、仅有已记录后代）大小为「未直接记录」
@@ -34,6 +34,7 @@ import { initChart, showChartMessage } from "../charts.js";
 import { initPageTabs } from "../tabs.js";
 import { createDirectoryDetail } from "../directory-detail.js";
 import { state } from "../state.js";
+import { datasetKey } from "../dataset.js";
 import { icon } from "../../icons.js";
 
 /* ISS-084：图表色与 style.css :root 语义 token 同源（单一色源，不硬编码）。
@@ -81,6 +82,43 @@ function renderSunburstContext(contextEl, t, snapList) {
   contextEl.textContent = `快照 #${t.snapshot_id} · ${when} · 根 ${rootText}`;
 }
 
+/* ISS-206：三页共用的默认落点；只选默认，不排序/裁剪目录，也不改显式选择。
+ * 先按 datasetKey 选出有至少两个快照的数据集，每组取最新快照作为代表；
+ * 同根代表先取最新，再按 /、Data、普通内容根、系统辅助卷比较；
+ * 目录数只在不同根之间比较，不能让旧数据集覆盖同根较新的可比数据集。
+ * 确实没有可比数据集时才按每根最新快照回退，保留单快照场景的默认落点。 */
+export function preferredContentSnapshot(snaps = []) {
+  const rootOf = s => String(s.root || '').replace(/\/+$/, '') || (s.root ? '/' : '');
+  const newer = (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')) || Number(a.id || 0) - Number(b.id || 0);
+  const priority = s => {
+    const root = rootOf(s);
+    if (!root) return -1;
+    if (root === '/') return 3;
+    if (root === '/System/Volumes/Data') return 2;
+    return /^\/System\/Volumes\/(VM|Preboot|Update)(\/|$)/.test(root) ? 0 : 1;
+  };
+  const datasets = new Map();
+  for (const snap of snaps) {
+    const key = datasetKey(snap), group = datasets.get(key) || [];
+    group.push(snap); datasets.set(key, group);
+  }
+  const comparable = [...datasets.values()].filter(group => group.length >= 2)
+    .map(group => group.reduce((best, snap) => newer(snap, best) > 0 ? snap : best));
+  const latest = new Map();
+  for (const snap of comparable.length ? comparable : snaps) {
+    const root = rootOf(snap), old = latest.get(root);
+    if (!old || newer(snap, old) > 0) latest.set(root, snap);
+  }
+  const candidates = [...latest.values()];
+  const count = s => Number.isFinite(Number(s.dir_count)) ? Number(s.dir_count) : 0;
+  return candidates.reduce((best, snap) => {
+    if (!best) return snap;
+    const score = priority(snap) - priority(best) || count(snap) - count(best) ||
+      String(snap.created_at || '').localeCompare(String(best.created_at || ''));
+    return score > 0 ? snap : best;
+  }, null);
+}
+
 /* ---------- 快照选择器（ISS-159） ---------- */
 
 function qualityText(snap) {
@@ -113,18 +151,19 @@ async function loadSnapshotPicker() {
   sel.replaceChildren(...snaps.map((s) =>
     new Option(`#${s.id} ${String(s.created_at || "").slice(0, 16).replace("T", " ")} · ${s.root || "未知范围"}`,
                String(s.id))));
-  // 恢复所选；所选已不在列表（被保留策略淘汰）时回落最新并如实提示。
+  // 恢复显式选择；没有有效选择时使用内容根默认落点，不改变选项顺序。
   const ids = snaps.map((s) => String(s.id));
-  const wanted = snapshotId() ? String(snapshotId()) : (ids[0] || "");
+  const fallback = String(preferredContentSnapshot(snaps)?.id ?? "");
+  const wanted = snapshotId() ? String(snapshotId()) : fallback;
   const fellBack = Boolean(snapshotId()) && !ids.includes(wanted);
-  sel.value = ids.includes(wanted) ? wanted : (ids[0] || "");
+  sel.value = ids.includes(wanted) ? wanted : fallback;
   state.browseSnapshotId = sel.value ? Number(sel.value) : null;
   alignBrowsePath();
   const qualityEl = document.getElementById("browse-snap-quality");
   if (qualityEl) {
     const snap = snaps.find((s) => String(s.id) === sel.value);
     qualityEl.textContent = fellBack
-      ? "所选快照已被保留策略淘汰，已恢复到最新快照。"
+      ? "所选快照已被保留策略淘汰，已恢复到默认内容根的最新快照。"
       : (qualityText(snap) || "");
   }
 }

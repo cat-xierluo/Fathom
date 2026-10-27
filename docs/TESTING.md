@@ -262,7 +262,7 @@ FATHOM_UPGRADE_TEST_HELPER=/Applications/Fathom.app/Contents/Resources/helper/fa
 
 ### 升级终态跨后台重启恢复
 
-`node scripts/verify_updater_recovery.cjs` 的16项真实 Chromium 回归使用两个回环 HTTP origin 与显式 Tauri IPC 桥夹具，加载生产 settings/router 模块，验证 `#settings/about` 初始化、失败 kind/error/hint 与重试入口恢复、已安装后的重启入口、迟到回读/旧事件拒绝及忙碌响应不覆盖新操作；普通手动检查保留待重启终态，明确重试下载才开始新的失败重试。`ci_browser_checks.sh` 与 CI/本地入口以 `EXPECTED_UPDATER_RECOVERY_PASSED` 收口；当前计数见 §1，默认 Rust 套件包含 3 项 presentation 状态机回归。
+`node scripts/verify_updater_recovery.cjs` 的16项真实 Chromium 回归使用两个回环 HTTP origin 与显式 Tauri IPC 桥夹具，加载生产 settings/router 模块，验证 `#settings/about` 初始化、失败 kind/error/hint 与重试入口恢复、已安装后的重启入口、迟到回读/旧事件拒绝及忙碌响应不覆盖新操作；普通手动检查保留待重启终态，明确重试下载才开始新的失败重试。`ci_browser_checks.sh` 与 CI/本地入口以 `EXPECTED_UPDATER_RECOVERY_PASSED` 收口；当前计数见 §1，默认 Rust 套件包含 4 项 presentation 状态机回归。
 
 桥夹具只能证明前端与约定 IPC 形态兼容，不能证明冻结 helper 包含新前端、真实桌面 invoke 或应用替换可用。打包验收须在自有安装目录、合成历史与显式隔离运行根中，执行签名正确但损坏的更新包：确认真实 prepare/备份/rollback 后 helper 换端口，关于页仍显示失败原因且可重试；再使用正确包完成安装、确认重启，核对新版 app/helper、历史和数据库完整性。测试 endpoint/test key 仅用于隔离注入；正式资产仍须用已安装旧客户端的生产公钥标准验签。不得扫描 HOME 或修改生产调度。
 

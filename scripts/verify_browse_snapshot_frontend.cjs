@@ -168,9 +168,17 @@ def main(tmp):
         s3_entries[os.path.join(ROOT, "crowd", "c%03d" % i)] = 1_000 + i
     s3 = insert(conn, "2026-09-23", ROOT, s3_entries)
     d1 = insert(conn, "2026-09-20", DECOY, {DECOY: 5_000})
+    # ISS-210：较旧的整盘根快照；所有路径只是 DB 字符串，绝不扫描。
+    slash_entries = {"/": 8_192_000, "/Users": 4_096_000,
+                     "/Users/synthetic": 2_048_000,
+                     "/Users/synthetic/project": 1_024_000,
+                     "/Users/synthetic/project/artifact": 512_000,
+                     "/Users/other": 1_000_000, "/Library": 2_000_000}
+    slash1 = insert(conn, "2026-09-18", "/", {p: n // 2 for p, n in slash_entries.items()})
+    slash2 = insert(conn, "2026-09-19", "/", slash_entries)
     conn.close()
     print(json.dumps({"s1": s1, "s2": s2, "s3": s3, "decoy": d1,
-                      "root": ROOT, "scanroot": scanroot}), flush=True)
+                      "root": ROOT, "scanroot": scanroot, "slash1": slash1, "slash2": slash2}), flush=True)
 
 main(sys.argv[1])
 `;
@@ -268,6 +276,18 @@ async function main() {
       && new Set([...p1names, ...p2names]).size === 130,
     `p1=${p1names.length} p2=${p2names.length}`);
 
+  // ISS-210：深层响应的每个祖先按同一个历史快照逐个真实 HTTP 回读。
+  const slashDeep = await get(`/api/browse?snapshot_id=${info.slash2}&path=%2FUsers%2Fsynthetic%2Fproject`);
+  const slashPaths = ["/", "/Users", "/Users/synthetic", "/Users/synthetic/project"];
+  const slashSizes = [8192000, 4096000, 2048000, 1024000];
+  for (const [i, expectedPath] of slashPaths.entries()) {
+    const crumb = slashDeep.json?.crumbs?.[i] || {path: ""};
+    const reply = await get(`/api/browse?snapshot_id=${info.slash2}&path=${encodeURIComponent(crumb.path)}`);
+    record(`http-root-crumb-${i}-roundtrip`, slashDeep.status === 200 && crumb.path === expectedPath &&
+      reply.status === 200 && reply.json?.path === expectedPath && reply.json?.snapshot?.id === info.slash2 &&
+      reply.json.size_kb === slashSizes[i], JSON.stringify({crumb, status:reply.status, snapshot:reply.json?.snapshot?.id, size:reply.json?.size_kb}));
+  }
+
   // ---------- 4. 真实 Chromium 实点生产页面 ----------
   let browser = null;
   const consoleErrors = [];
@@ -291,13 +311,43 @@ async function main() {
       document.querySelector("[data-test='browse-snapshot-select']").options.length >= 3,
       null, { timeout: 20000 });
 
-    // 默认最新快照：选择器与旭日上下文一致指 latest
+    // 可比内容根 / 优先于时间更新的普通根；默认快照与旭日上下文一致。
     const selDefault = await page.$eval("[data-test='browse-snapshot-select']", (el) => el.value);
-    record("ui-default-latest", selDefault === String(s3), `sel=${selDefault}`);
+    record("ui-default-content-root", selDefault === String(info.slash2), `sel=${selDefault}`);
     await page.waitForFunction((sid) =>
       document.querySelector("[data-test='sunburst-context']").textContent.includes(`#${sid}`),
-      s3, { timeout: 15000 });
-    record("ui-sunburst-context-latest", true, `#s${s3}`);
+      info.slash2, { timeout: 15000 });
+    record("ui-sunburst-context-default", true, `#s${info.slash2}`);
+    await page.click("[data-test='browse-tab-browser']");
+    for (const target of ["/Users", "/Users/synthetic", "/Users/synthetic/project"]) {
+      await page.click(rowSel(target));
+      await page.waitForFunction(p => document.querySelector('#crumbs .crumb.current')?.dataset.path === p &&
+        !document.querySelector('#tbl-browse').textContent.includes('加载中'), target);
+    }
+    const middleResponse = page.waitForResponse(r => {
+      const u = new URL(r.url());
+      return u.pathname === '/api/browse' && u.searchParams.get('path') === '/Users' &&
+        u.searchParams.get('snapshot_id') === String(info.slash2);
+    });
+    await page.click('#crumbs .crumb[data-path="/Users"]');
+    const middleReply = await middleResponse;
+    const middleBody = await middleReply.json();
+    await page.waitForFunction(() => document.querySelector('#crumbs .crumb.current')?.dataset.path === '/Users' &&
+      [...document.querySelectorAll('#tbl-browse tr[data-path]')].some(r => r.dataset.path === '/Users/other'));
+    const middleNames = await page.$$eval('#tbl-browse tr[data-path]', rows => rows.map(r => r.dataset.path).sort());
+    record('ui-root-middle-crumb-updates-directory-data', middleReply.status() === 200 &&
+      middleBody.snapshot.id === info.slash2 && middleBody.size_kb === 4096000 &&
+      JSON.stringify(middleNames) === JSON.stringify(['/Users/other','/Users/synthetic']) &&
+      (await page.locator(rowSel('/Users/synthetic')).innerText()).includes('2.0 GB') &&
+      !(await page.locator('#tbl-browse').innerText()).includes('path 含空段'), JSON.stringify({middleNames,size:middleBody.size_kb}));
+    await page.click('#crumbs .crumb[data-path="/"]');
+    await page.waitForFunction(() => document.querySelector('#crumbs .crumb.current')?.dataset.path === '/' &&
+      [...document.querySelectorAll('#tbl-browse tr[data-path]')].some(r => r.dataset.path === '/Library'));
+    const rootNames = await page.$$eval('#tbl-browse tr[data-path]', rows => rows.map(r => r.dataset.path).sort());
+    record('ui-root-crumb-restores-root-directory', JSON.stringify(rootNames) === JSON.stringify(['/Library','/Users']) &&
+      (await page.locator('#browser-meta').innerText()).includes(`#${info.slash2}`), JSON.stringify(rootNames));
+    await page.selectOption("[data-test='browse-snapshot-select']", String(s3));
+    await page.waitForFunction(sid => document.querySelector('#browser-meta').textContent.includes(`#${sid}`), s3);
 
     // ---------- A1+A2+A5+A6：选最早快照（无前驱 → 差分未知） ----------
     // Switching to another volume must discard the previous volume's path.

@@ -2300,7 +2300,7 @@ def _browse_crumbs(root_path: str, target: str) -> list[dict]:
     crumbs = [{"name": root_path.rsplit("/", 1)[-1] or "/", "path": root_path}]
     acc = root_path
     for seg in filter(None, parts):
-        acc = acc + "/" + seg
+        acc = acc.rstrip("/") + "/" + seg
         crumbs.append({"name": seg, "path": acc})
     return crumbs
 

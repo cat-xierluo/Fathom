@@ -55,7 +55,7 @@
 # ISS-149 树形套件 +14：trend 锚定窗口/缺测 null/排除隔离/等价表格
 # 键盘读数/真实悬停缺测标注/a-b 迟到响应不恢复旧曲线（60 → 74）。
 # ISS-159 新增分布页显式快照绑定回归（verify_browse_snapshot_frontend，
-# EXPECTED_BROWSE_SNAPSHOT_PASSED 默认 35）：真实 serve + 真实 Chromium，
+# EXPECTED_BROWSE_SNAPSHOT_PASSED 默认 41）：真实 serve + 真实 Chromium，
 # HTTP 层旧行为形态/历史实点/次级差分/404 语义 + 页面层快照选择/结构
 # 节点/HTML 转义/单时点详情/恢复/分页/三视口。
 # ISS-160 新增跨页上下文/恢复/重扫核对闭环回归
@@ -213,7 +213,7 @@ assert_result_json "$tree_out" "$expected_dir_bigfiles" "directory bigfiles fron
 # 溢出）。失败自身非零退出，pipefail 直通判红；计数漂移由
 # EXPECTED_BROWSE_SNAPSHOT_PASSED 兜底（同树形口径）。
 FATHOM_PYTHON="$tree_python" node scripts/verify_browse_snapshot_frontend.cjs | tee "$tree_out"
-expected_browse_snapshot="${EXPECTED_BROWSE_SNAPSHOT_PASSED:-35}"
+expected_browse_snapshot="${EXPECTED_BROWSE_SNAPSHOT_PASSED:-41}"
 assert_result_json "$tree_out" "$expected_browse_snapshot" "browse snapshot frontend"
 
 # ISS-191 当前扫描对象只读呈现：93项真实隔离serve/Chromium回归。
